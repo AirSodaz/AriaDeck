@@ -1,0 +1,16 @@
+[package]
+name = "ariadeck-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+ariadeck-telemetry = { path = "../../crates/ariadeck-telemetry" }
+ariadeck-ui = { path = "../../crates/ariadeck-ui" }
+gpui.workspace = true
+gpui_platform.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

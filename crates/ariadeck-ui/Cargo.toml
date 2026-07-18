@@ -1,0 +1,12 @@
+[package]
+name = "ariadeck-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+gpui.workspace = true
+
+[lints]
+workspace = true
