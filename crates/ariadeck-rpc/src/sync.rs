@@ -1,8 +1,13 @@
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+
 use ariadeck_application::{
     ConnectedSyncSession, DownloadSyncConnector, DownloadSyncSession, EngineCapabilities,
     InitialSyncSnapshot, LiveSyncSnapshot, RefreshHint, StoppedPage, SyncError, SyncErrorKind,
 };
-use ariadeck_domain::{Gid, GlobalStat, TaskSnapshot};
+use ariadeck_domain::{Gid, GlobalStat, TaskMetadata, TaskSnapshot};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
@@ -32,17 +37,78 @@ impl DownloadSyncConnector for RpcSyncConnector {
             .map_err(map_sync_error)?;
         let notifications = notification_hints(&transport);
         let authenticated = AuthenticatedTransport::new(transport.clone(), self.secret.clone());
-        let client = Aria2Client::new(authenticated);
-        Ok(ConnectedSyncSession::new(
-            Box::new(RpcSyncSession { client, transport }),
+        let client = Arc::new(Aria2Client::new(authenticated));
+        Ok(ConnectedSyncSession::new_with_gateways(
+            Box::new(RpcSyncSession {
+                client: client.clone(),
+                transport,
+                metadata_cache: Mutex::new(HashMap::new()),
+            }),
+            client.clone(),
+            client,
             notifications,
         ))
     }
 }
 
 struct RpcSyncSession {
-    client: Aria2Client<AuthenticatedTransport<WebSocketTransport>>,
+    client: Arc<Aria2Client<AuthenticatedTransport<WebSocketTransport>>>,
     transport: WebSocketTransport,
+    metadata_cache: Mutex<HashMap<Gid, (String, TaskMetadata)>>,
+}
+
+impl RpcSyncSession {
+    fn remember_tasks(&self, tasks: &[TaskSnapshot]) {
+        let mut cache = self
+            .metadata_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for task in tasks {
+            cache.insert(task.gid, (task.display_name.clone(), task.metadata.clone()));
+        }
+    }
+
+    async fn enrich_live_tasks(
+        &self,
+        mut tasks: Vec<TaskSnapshot>,
+    ) -> Result<Vec<TaskSnapshot>, SyncError> {
+        let mut missing = Vec::new();
+        {
+            let cache = self
+                .metadata_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for task in &mut tasks {
+                if let Some((display_name, metadata)) = cache.get(&task.gid) {
+                    task.display_name.clone_from(display_name);
+                    task.metadata.clone_from(metadata);
+                } else {
+                    missing.push(task.gid);
+                }
+            }
+        }
+        if missing.is_empty() {
+            return Ok(tasks);
+        }
+
+        let discovered = self
+            .client
+            .refresh_tasks(&missing)
+            .await
+            .map_err(map_sync_error)?;
+        let discovered = discovered
+            .into_iter()
+            .filter_map(|(gid, task)| task.map(|task| (gid, task)))
+            .collect::<HashMap<_, _>>();
+        self.remember_tasks(&discovered.values().cloned().collect::<Vec<_>>());
+        for task in &mut tasks {
+            if let Some(discovered) = discovered.get(&task.gid) {
+                task.display_name.clone_from(&discovered.display_name);
+                task.metadata.clone_from(&discovered.metadata);
+            }
+        }
+        Ok(tasks)
+    }
 }
 
 #[async_trait]
@@ -53,6 +119,9 @@ impl DownloadSyncSession for RpcSyncSession {
             .initial_sync_snapshot(stopped_count)
             .await
             .map_err(map_sync_error)?;
+        self.remember_tasks(&snapshot.active);
+        self.remember_tasks(&snapshot.waiting);
+        self.remember_tasks(&snapshot.stopped);
         let total = usize::try_from(snapshot.global_stat.stopped_tasks).unwrap_or(usize::MAX);
         Ok(InitialSyncSnapshot {
             capabilities: EngineCapabilities {
@@ -82,10 +151,9 @@ impl DownloadSyncSession for RpcSyncSession {
             .refresh_live_snapshot()
             .await
             .map_err(map_sync_error)?;
-        Ok(LiveSyncSnapshot {
-            active: snapshot.active,
-            waiting: snapshot.waiting,
-        })
+        let active = self.enrich_live_tasks(snapshot.active).await?;
+        let waiting = self.enrich_live_tasks(snapshot.waiting).await?;
+        Ok(LiveSyncSnapshot { active, waiting })
     }
 
     async fn refresh_stopped_page(
@@ -98,9 +166,10 @@ impl DownloadSyncSession for RpcSyncSession {
         let (global, tasks) = tokio::try_join!(
             self.client.get_global_stat(),
             self.client
-                .tell_stopped(offset_i64, count, TaskKey::LIST_PROJECTION)
+                .tell_stopped(offset_i64, count, TaskKey::DISCOVERY_PROJECTION)
         )
         .map_err(map_sync_error)?;
+        self.remember_tasks(&tasks);
         Ok(StoppedPage {
             offset,
             total: usize::try_from(global.stopped_tasks).unwrap_or(usize::MAX),
@@ -112,10 +181,17 @@ impl DownloadSyncSession for RpcSyncSession {
         &self,
         gids: &[Gid],
     ) -> Result<Vec<(Gid, Option<TaskSnapshot>)>, SyncError> {
-        self.client
+        let tasks = self
+            .client
             .refresh_tasks(gids)
             .await
-            .map_err(map_sync_error)
+            .map_err(map_sync_error)?;
+        let discovered = tasks
+            .iter()
+            .filter_map(|(_, task)| task.as_ref().cloned())
+            .collect::<Vec<_>>();
+        self.remember_tasks(&discovered);
+        Ok(tasks)
     }
 
     async fn close(&self) {

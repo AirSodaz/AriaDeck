@@ -1,12 +1,12 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use ariadeck_domain::{
     ConnectionState, DownloadTask, EngineSession, EngineSessionId, Gid, GlobalStat, ProfileId,
-    SessionGeneration, TaskSnapshot,
+    SessionGeneration, TaskDetails, TaskIdentity, TaskSnapshot,
 };
 use async_trait::async_trait;
 use thiserror::Error;
@@ -15,7 +15,11 @@ use tokio::{
     time::{Instant, Interval, MissedTickBehavior},
 };
 
-use crate::{DownloadStore, StoreError, StorePatch, TaskCounts, TaskListQuery, TaskListView};
+use crate::{
+    AppCommand, ApplicationError, ApplicationErrorCode, CommandOutcome, CommandService,
+    DownloadEngineGateway, DownloadStore, StoreError, StorePatch, TaskCounts, TaskDetailsGateway,
+    TaskListQuery, TaskListView,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineCapabilities {
@@ -69,6 +73,15 @@ pub trait DownloadSyncSession: Send + Sync {
 
 pub struct ConnectedSyncSession {
     session: Box<dyn DownloadSyncSession>,
+    command_gateway: Option<Arc<dyn DownloadEngineGateway>>,
+    details_gateway: Option<Arc<dyn TaskDetailsGateway>>,
+    notifications: mpsc::Receiver<RefreshHint>,
+}
+
+struct ConnectedSessionParts {
+    session: Box<dyn DownloadSyncSession>,
+    command_gateway: Option<Arc<dyn DownloadEngineGateway>>,
+    details_gateway: Option<Arc<dyn TaskDetailsGateway>>,
     notifications: mpsc::Receiver<RefreshHint>,
 }
 
@@ -80,12 +93,34 @@ impl ConnectedSyncSession {
     ) -> Self {
         Self {
             session,
+            command_gateway: None,
+            details_gateway: None,
             notifications,
         }
     }
 
-    fn into_parts(self) -> (Box<dyn DownloadSyncSession>, mpsc::Receiver<RefreshHint>) {
-        (self.session, self.notifications)
+    #[must_use]
+    pub fn new_with_gateways(
+        session: Box<dyn DownloadSyncSession>,
+        command_gateway: Arc<dyn DownloadEngineGateway>,
+        details_gateway: Arc<dyn TaskDetailsGateway>,
+        notifications: mpsc::Receiver<RefreshHint>,
+    ) -> Self {
+        Self {
+            session,
+            command_gateway: Some(command_gateway),
+            details_gateway: Some(details_gateway),
+            notifications,
+        }
+    }
+
+    fn into_parts(self) -> ConnectedSessionParts {
+        ConnectedSessionParts {
+            session: self.session,
+            command_gateway: self.command_gateway,
+            details_gateway: self.details_gateway,
+            notifications: self.notifications,
+        }
     }
 }
 
@@ -265,6 +300,44 @@ impl SyncHandle {
         receiver.await.ok()
     }
 
+    pub async fn execute(&self, session: EngineSession, command: AppCommand) -> CommandOutcome {
+        let (sender, receiver) = oneshot::channel();
+        if self
+            .commands
+            .send(Control::Execute {
+                session,
+                command,
+                sender,
+            })
+            .await
+            .is_err()
+        {
+            return unavailable_command_outcome("The synchronization coordinator is unavailable.");
+        }
+        receiver.await.unwrap_or_else(|_| {
+            unavailable_command_outcome("The synchronization coordinator stopped unexpectedly.")
+        })
+    }
+
+    pub async fn task_details(
+        &self,
+        session: EngineSession,
+        task: TaskIdentity,
+    ) -> Result<TaskDetails, ApplicationError> {
+        let (sender, receiver) = oneshot::channel();
+        self.commands
+            .send(Control::TaskDetails {
+                session,
+                task,
+                sender,
+            })
+            .await
+            .map_err(|_| unavailable_error("The synchronization coordinator is unavailable."))?;
+        receiver.await.map_err(|_| {
+            unavailable_error("The synchronization coordinator stopped unexpectedly.")
+        })?
+    }
+
     pub async fn stop(&self) {
         let _ = self.cancellation.send(true);
         let mut completion = self.completion.clone();
@@ -282,6 +355,58 @@ enum Control {
         query: TaskListQuery,
         sender: oneshot::Sender<StoreSnapshot>,
     },
+    Execute {
+        session: EngineSession,
+        command: AppCommand,
+        sender: oneshot::Sender<CommandOutcome>,
+    },
+    TaskDetails {
+        session: EngineSession,
+        task: TaskIdentity,
+        sender: oneshot::Sender<Result<TaskDetails, ApplicationError>>,
+    },
+}
+
+enum UnavailableControlDisposition {
+    Continue,
+    RetryNow,
+    Stop,
+}
+
+fn handle_unavailable_control(
+    control: Option<Control>,
+    store: &DownloadStore,
+    state: &ConnectionState,
+    activity: &mut ActivityMode,
+    force_refresh_retries: bool,
+) -> UnavailableControlDisposition {
+    match control {
+        Some(Control::SetActivity(mode)) => {
+            *activity = mode;
+            UnavailableControlDisposition::Continue
+        }
+        Some(Control::ForceRefresh) if force_refresh_retries => {
+            UnavailableControlDisposition::RetryNow
+        }
+        Some(Control::ForceRefresh) => UnavailableControlDisposition::Continue,
+        Some(Control::Snapshot { query, sender }) => {
+            let _ = sender.send(build_snapshot(store, state, &query));
+            UnavailableControlDisposition::Continue
+        }
+        Some(Control::Execute { sender, .. }) => {
+            let _ = sender.send(unavailable_command_outcome(
+                "Task commands are unavailable until aria2 is connected and synchronized.",
+            ));
+            UnavailableControlDisposition::Continue
+        }
+        Some(Control::TaskDetails { sender, .. }) => {
+            let _ = sender.send(Err(unavailable_error(
+                "Task details are unavailable until aria2 is connected and synchronized.",
+            )));
+            UnavailableControlDisposition::Continue
+        }
+        None => UnavailableControlDisposition::Stop,
+    }
 }
 
 pub fn spawn_sync_coordinator(
@@ -356,10 +481,25 @@ async fn run_coordinator(
             },
         );
 
-        let connect_result = tokio::select! {
-            biased;
-            () = wait_for_cancellation(&mut cancellation) => return,
-            result = connector.connect() => result,
+        let connect = connector.connect();
+        tokio::pin!(connect);
+        let connect_result = loop {
+            tokio::select! {
+                biased;
+                () = wait_for_cancellation(&mut cancellation) => return,
+                command = commands.recv() => match handle_unavailable_control(
+                    command,
+                    &store,
+                    &state,
+                    &mut activity,
+                    false,
+                ) {
+                    UnavailableControlDisposition::Continue
+                    | UnavailableControlDisposition::RetryNow => {}
+                    UnavailableControlDisposition::Stop => return,
+                },
+                result = &mut connect => break result,
+            }
         };
         let connected = match connect_result {
             Ok(connected) => connected,
@@ -418,15 +558,38 @@ async fn run_coordinator(
             }
         };
 
-        let (session, notifications) = connected.into_parts();
+        let ConnectedSessionParts {
+            session,
+            command_gateway,
+            details_gateway,
+            notifications,
+        } = connected.into_parts();
         set_state(&events, &mut state, ConnectionState::Authenticating);
-        let initial_result = tokio::select! {
-            biased;
-            () = wait_for_cancellation(&mut cancellation) => {
-                session.close().await;
-                return;
+        let initial_snapshot = session.initial_snapshot(config.stopped_page_size);
+        tokio::pin!(initial_snapshot);
+        let initial_result = loop {
+            tokio::select! {
+                biased;
+                () = wait_for_cancellation(&mut cancellation) => {
+                    session.close().await;
+                    return;
+                }
+                command = commands.recv() => match handle_unavailable_control(
+                    command,
+                    &store,
+                    &state,
+                    &mut activity,
+                    false,
+                ) {
+                    UnavailableControlDisposition::Continue
+                    | UnavailableControlDisposition::RetryNow => {}
+                    UnavailableControlDisposition::Stop => {
+                        session.close().await;
+                        return;
+                    }
+                },
+                result = &mut initial_snapshot => break result,
             }
-            result = session.initial_snapshot(config.stopped_page_size) => result,
         };
         let initial = match initial_result {
             Ok(initial) => initial,
@@ -509,6 +672,8 @@ async fn run_coordinator(
 
         match run_connected(
             session.as_ref(),
+            command_gateway.as_ref(),
+            details_gateway.as_ref(),
             notifications,
             &mut commands,
             &mut store,
@@ -592,6 +757,8 @@ async fn run_coordinator(
 #[allow(clippy::too_many_arguments)]
 async fn run_connected(
     session: &dyn DownloadSyncSession,
+    command_gateway: Option<&Arc<dyn DownloadEngineGateway>>,
+    details_gateway: Option<&Arc<dyn TaskDetailsGateway>>,
     mut notifications: mpsc::Receiver<RefreshHint>,
     commands: &mut mpsc::Receiver<Control>,
     store: &mut DownloadStore,
@@ -634,6 +801,71 @@ async fn run_connected(
                     }
                     Some(Control::Snapshot { query, sender }) => {
                         let _ = sender.send(build_snapshot(store, state, &query));
+                    }
+                    Some(Control::Execute {
+                        session: expected_session,
+                        command,
+                        sender,
+                    }) => {
+                        if expected_session != store.session() {
+                            let _ = sender.send(CommandOutcome::failure(stale_session_error()));
+                            continue;
+                        }
+                        let Some(gateway) = command_gateway else {
+                            let _ = sender.send(CommandOutcome::failure(unsupported_error(
+                                "The connected engine does not expose task commands.",
+                            )));
+                            continue;
+                        };
+                        let service = CommandService::new(config.profile_id, gateway.clone());
+                        let task_statuses = match &command {
+                            AppCommand::RemoveTasks(request) => request
+                                .tasks
+                                .iter()
+                                .filter(|identity| identity.profile_id == config.profile_id)
+                                .filter_map(|identity| {
+                                    store
+                                        .task(identity.gid)
+                                        .map(|task| (*identity, task.status))
+                                })
+                                .collect::<HashMap<_, _>>(),
+                            _ => HashMap::new(),
+                        };
+                        let outcome = tokio::select! {
+                            biased;
+                            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
+                            outcome = service.execute(command, &task_statuses) => outcome,
+                        };
+                        if outcome.has_successes() {
+                            pending_full = true;
+                        }
+                        let _ = sender.send(outcome);
+                    }
+                    Some(Control::TaskDetails {
+                        session: expected_session,
+                        task,
+                        sender,
+                    }) => {
+                        if expected_session != store.session() {
+                            let _ = sender.send(Err(stale_session_error()));
+                            continue;
+                        }
+                        if task.profile_id != config.profile_id {
+                            let _ = sender.send(Err(wrong_profile_error()));
+                            continue;
+                        }
+                        let Some(gateway) = details_gateway else {
+                            let _ = sender.send(Err(unsupported_error(
+                                "The connected engine does not expose task details.",
+                            )));
+                            continue;
+                        };
+                        let result = tokio::select! {
+                            biased;
+                            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
+                            result = gateway.task_details(task.gid) => result.map_err(Into::into),
+                        };
+                        let _ = sender.send(result);
                     }
                     None => return ConnectedExit::Stop,
                 }
@@ -875,13 +1107,16 @@ async fn wait_for_retry_delay(
             biased;
             () = wait_for_cancellation(cancellation) => return false,
             () = &mut sleep => return true,
-            command = commands.recv() => match command {
-                Some(Control::SetActivity(mode)) => *activity = mode,
-                Some(Control::ForceRefresh) => return true,
-                Some(Control::Snapshot { query, sender }) => {
-                    let _ = sender.send(build_snapshot(store, state, &query));
-                }
-                None => return false,
+            command = commands.recv() => match handle_unavailable_control(
+                command,
+                store,
+                state,
+                activity,
+                true,
+            ) {
+                UnavailableControlDisposition::Continue => {}
+                UnavailableControlDisposition::RetryNow => return true,
+                UnavailableControlDisposition::Stop => return false,
             }
         }
     }
@@ -898,13 +1133,16 @@ async fn wait_for_manual_retry(
         tokio::select! {
             biased;
             () = wait_for_cancellation(cancellation) => return false,
-            command = commands.recv() => match command {
-                Some(Control::SetActivity(mode)) => *activity = mode,
-                Some(Control::ForceRefresh) => return true,
-                Some(Control::Snapshot { query, sender }) => {
-                    let _ = sender.send(build_snapshot(store, state, &query));
-                }
-                None => return false,
+            command = commands.recv() => match handle_unavailable_control(
+                command,
+                store,
+                state,
+                activity,
+                true,
+            ) {
+                UnavailableControlDisposition::Continue => {}
+                UnavailableControlDisposition::RetryNow => return true,
+                UnavailableControlDisposition::Stop => return false,
             }
         }
     }
@@ -966,6 +1204,34 @@ fn emit_patch(events: &broadcast::Sender<SyncEvent>, patch: StorePatch) {
 
 fn emit_error(events: &broadcast::Sender<SyncEvent>, error: SyncError) {
     let _ = events.send(SyncEvent::Error(error));
+}
+
+fn unavailable_command_outcome(summary: &str) -> CommandOutcome {
+    CommandOutcome::failure(unavailable_error(summary))
+}
+
+fn unavailable_error(summary: &str) -> ApplicationError {
+    ApplicationError::new(ApplicationErrorCode::Disconnected, summary, true)
+}
+
+fn stale_session_error() -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorCode::StaleSession,
+        "The task view belongs to an obsolete engine session. Refresh and try again.",
+        true,
+    )
+}
+
+fn wrong_profile_error() -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorCode::WrongProfile,
+        "The task belongs to a different engine profile.",
+        false,
+    )
+}
+
+fn unsupported_error(summary: &str) -> ApplicationError {
+    ApplicationError::new(ApplicationErrorCode::Unsupported, summary, false)
 }
 
 fn connection_failure(error: &SyncError) -> ariadeck_domain::ConnectionFailure {
@@ -1084,7 +1350,7 @@ mod tests {
         },
     };
 
-    use ariadeck_domain::{DownloadStatus, TaskSnapshot};
+    use ariadeck_domain::{DownloadStatus, EnginePath, TaskDetails, TaskFile, TaskSnapshot};
 
     use super::*;
 
@@ -1227,6 +1493,88 @@ mod tests {
     struct ScriptedConnector {
         steps: Mutex<VecDeque<Result<ConnectedSyncSession, SyncError>>>,
         calls: AtomicUsize,
+    }
+
+    #[derive(Default)]
+    struct FakeInteractiveGateway {
+        command_calls: Mutex<Vec<(&'static str, Gid)>>,
+        details_calls: Mutex<Vec<Gid>>,
+    }
+
+    #[async_trait]
+    impl DownloadEngineGateway for FakeInteractiveGateway {
+        async fn add_download(
+            &self,
+            _request: &crate::AddDownloadRequest,
+        ) -> Result<Gid, crate::GatewayError> {
+            let gid = Gid::from_u64(99);
+            self.command_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(("add", gid));
+            Ok(gid)
+        }
+
+        async fn pause(&self, gid: Gid) -> Result<(), crate::GatewayError> {
+            self.record_command("pause", gid);
+            Ok(())
+        }
+
+        async fn resume(&self, gid: Gid) -> Result<(), crate::GatewayError> {
+            self.record_command("resume", gid);
+            Ok(())
+        }
+
+        async fn remove(
+            &self,
+            gid: Gid,
+            _target: crate::TaskRemovalTarget,
+        ) -> Result<(), crate::GatewayError> {
+            self.record_command("remove", gid);
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl TaskDetailsGateway for FakeInteractiveGateway {
+        async fn task_details(&self, gid: Gid) -> Result<TaskDetails, crate::GatewayError> {
+            self.details_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(gid);
+            Ok(TaskDetails {
+                gid,
+                directory: Some(EnginePath::new("/downloads")),
+                info_hash: None,
+                piece_length: None,
+                piece_count: None,
+                files: vec![TaskFile {
+                    index: 1,
+                    path: EnginePath::new("/downloads/item.bin"),
+                    length: ariadeck_domain::ByteCount::new(10),
+                    completed_length: ariadeck_domain::ByteCount::new(5),
+                    selected: true,
+                }],
+            })
+        }
+    }
+
+    impl FakeInteractiveGateway {
+        fn record_command(&self, operation: &'static str, gid: Gid) {
+            self.command_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((operation, gid));
+        }
+    }
+
+    struct HangingConnector;
+
+    #[async_trait]
+    impl DownloadSyncConnector for HangingConnector {
+        async fn connect(&self) -> Result<ConnectedSyncSession, SyncError> {
+            std::future::pending().await
+        }
     }
 
     #[async_trait]
@@ -1408,6 +1756,112 @@ mod tests {
         assert_eq!(connector.calls.load(Ordering::Relaxed), 2);
         handle.stop().await;
         drop(notification_tx);
+    }
+
+    #[tokio::test]
+    async fn commands_and_details_require_the_exact_connected_session() {
+        let profile_id = ProfileId::new();
+        let gid = Gid::from_u64(11);
+        let targeted_calls = Arc::new(Mutex::new(Vec::new()));
+        let gateway = Arc::new(FakeInteractiveGateway::default());
+        let (notification_tx, notification_rx) = mpsc::channel(16);
+        let connector = Arc::new(ScriptedConnector {
+            steps: Mutex::new(VecDeque::from([Ok(
+                ConnectedSyncSession::new_with_gateways(
+                    Box::new(FakeSession {
+                        initial: initial_snapshot(gid),
+                        targeted_calls,
+                    }),
+                    gateway.clone(),
+                    gateway.clone(),
+                    notification_rx,
+                ),
+            )])),
+            calls: AtomicUsize::new(0),
+        });
+        let handle = spawn_sync_coordinator(connector, test_config(profile_id));
+        let snapshot = wait_until_connected(&handle).await;
+        let identity = TaskIdentity::new(profile_id, gid);
+
+        let outcome = handle
+            .execute(snapshot.session, AppCommand::PauseTasks(vec![identity]))
+            .await;
+        assert!(matches!(outcome, CommandOutcome::Success { .. }));
+        let details = handle.task_details(snapshot.session, identity).await;
+        assert!(matches!(details, Ok(TaskDetails { gid: value, .. }) if value == gid));
+
+        let stale_session = EngineSession::new(
+            profile_id,
+            EngineSessionId::new(),
+            snapshot.session.generation,
+        );
+        let stale_outcome = handle
+            .execute(stale_session, AppCommand::PauseTasks(vec![identity]))
+            .await;
+        let CommandOutcome::Failure { failed } = stale_outcome else {
+            panic!("expected stale-session failure");
+        };
+        assert_eq!(failed[0].error.code, ApplicationErrorCode::StaleSession);
+        let stale_details = handle.task_details(stale_session, identity).await;
+        assert!(matches!(
+            stale_details,
+            Err(ApplicationError {
+                code: ApplicationErrorCode::StaleSession,
+                ..
+            })
+        ));
+
+        assert_eq!(
+            gateway
+                .command_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_slice(),
+            &[("pause", gid)]
+        );
+        assert_eq!(
+            gateway
+                .details_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_slice(),
+            &[gid]
+        );
+        handle.stop().await;
+        drop(notification_tx);
+    }
+
+    #[tokio::test]
+    async fn commands_are_rejected_while_the_connector_is_still_pending() {
+        let profile_id = ProfileId::new();
+        let handle = spawn_sync_coordinator(Arc::new(HangingConnector), test_config(profile_id));
+        let snapshot = tokio::time::timeout(
+            Duration::from_millis(100),
+            handle.snapshot(TaskListQuery::default()),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("snapshot request was not serviced while connecting"))
+        .unwrap_or_else(|| panic!("coordinator stopped while connecting"));
+
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(100),
+            handle.execute(
+                snapshot.session,
+                AppCommand::AddDownload(crate::AddDownloadRequest {
+                    uris: vec!["https://example.test/item".into()],
+                    destination: None,
+                    options: Vec::new(),
+                }),
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("command was queued while connecting"));
+        let CommandOutcome::Failure { failed } = outcome else {
+            panic!("expected disconnected command failure");
+        };
+        assert_eq!(failed[0].error.code, ApplicationErrorCode::Disconnected);
+
+        handle.stop().await;
     }
 
     #[tokio::test]

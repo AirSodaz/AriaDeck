@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::fmt;
 
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
@@ -38,10 +38,65 @@ pub struct TaskError {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TaskMetadata {
-    pub directory: Option<PathBuf>,
+    pub directory: Option<EnginePath>,
     pub primary_uri: Option<String>,
     pub info_hash: Option<String>,
     pub file_count: u32,
+}
+
+/// Path in the engine's own filesystem namespace.
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EnginePath(String);
+
+impl EnginePath {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for EnginePath {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl From<String> for EnginePath {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for EnginePath {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskFile {
+    pub index: u32,
+    pub path: EnginePath,
+    pub length: ByteCount,
+    pub completed_length: ByteCount,
+    pub selected: bool,
+}
+
+/// On-demand task projection used by the details drawer.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskDetails {
+    pub gid: Gid,
+    pub directory: Option<EnginePath>,
+    pub info_hash: Option<String>,
+    pub piece_length: Option<ByteCount>,
+    pub piece_count: Option<u32>,
+    pub files: Vec<TaskFile>,
 }
 
 /// Adapter-produced task values without application revision metadata.

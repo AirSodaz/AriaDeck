@@ -87,8 +87,15 @@ change.
 
 ### Stage 6 - Interactive download commands and task details
 
+- [x] Bind command and details requests to the exact engine session and reject stale requests.
+- [x] Reject commands immediately while connecting, synchronizing, stale, or disconnected.
+- [x] Model remote engine paths without treating them as local filesystem paths.
+- [x] Add an on-demand typed task-details projection with file metadata.
+- [x] Keep high-frequency live refreshes on a lightweight projection and cache static metadata.
+- [x] Distinguish live-task removal from stopped download-result removal.
+- [x] Report mutating RPC timeouts and disconnects as unknown outcomes without auto-retry.
 - [ ] Extend the typed aria2 adapter for add, pause, resume, retry, and remove commands.
-- [ ] Execute commands through the application ports with structured outcomes.
+- [x] Execute commands through the application ports with structured outcomes.
 - [ ] Add a focused add-download flow for URLs and magnet links.
 - [ ] Add row actions and keyboard commands for the safe task lifecycle operations.
 - [ ] Add a right-side details drawer that preserves list context and selection.
@@ -177,6 +184,8 @@ failures, and reset only after a configurable stable connection interval.
 | 2026-07-19 | Post-Stage 5 smoke process check | Pass - zero residual `aria2c` or `ariadeck-desktop` processes |
 | 2026-07-19 | `cargo test --workspace` | Pass - 51 tests, 2 ignored across 12 suites after Stage 5 |
 | 2026-07-19 | `cargo clippy --workspace --all-targets -- -D warnings` | Pass - no issues after Stage 5 |
+| 2026-07-19 | `cargo test -p ariadeck-domain -p ariadeck-application -p ariadeck-rpc` | Pass - 53 tests, 2 ignored for the reviewed Stage 6 session-bound command/details foundation |
+| 2026-07-19 | `cargo clippy -p ariadeck-domain -p ariadeck-application -p ariadeck-rpc --all-targets -- -D warnings` | Pass - no issues in the Stage 6 backend slice |
 
 ## Known Gaps
 
@@ -195,3 +204,4 @@ failures, and reset only after a configurable stable connection interval.
 - `feat: implement typed aria2 websocket RPC` - Stage 3 transport and adapter.
 - `feat: coordinate aria2 synchronization and reconnects` - Stage 4 live-state coordinator.
 - `feat: build live virtualized download workspace` - Stage 5 native presentation and composition.
+- `feat: add session-bound task command foundation` - Stage 6 command and details backend checkpoint.

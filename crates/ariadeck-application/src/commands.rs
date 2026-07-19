@@ -1,13 +1,17 @@
-use std::{collections::HashSet, path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
-use ariadeck_domain::{ProfileId, TaskIdentity};
+use ariadeck_domain::{DownloadStatus, EnginePath, ProfileId, TaskIdentity};
+use url::Url;
 
-use crate::{DownloadEngineGateway, GatewayError, GatewayErrorKind};
+use crate::{DownloadEngineGateway, GatewayError, GatewayErrorKind, TaskRemovalTarget};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AddDownloadRequest {
     pub uris: Vec<String>,
-    pub destination: Option<PathBuf>,
+    pub destination: Option<EnginePath>,
     pub options: Vec<(String, String)>,
 }
 
@@ -20,6 +24,25 @@ impl AddDownloadRequest {
                 false,
             ));
         }
+        for uri in &self.uris {
+            let parsed = Url::parse(uri.trim()).map_err(|error| {
+                ApplicationError::new(
+                    ApplicationErrorCode::Validation,
+                    format!("Invalid download URI: {error}"),
+                    false,
+                )
+            })?;
+            if !matches!(
+                parsed.scheme(),
+                "http" | "https" | "ftp" | "sftp" | "magnet"
+            ) {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::Validation,
+                    format!("Unsupported download URI scheme: {}", parsed.scheme()),
+                    false,
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -27,6 +50,12 @@ impl AddDownloadRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RemoveTasksRequest {
     pub tasks: Vec<TaskIdentity>,
+    pub scope: TaskRemovalScope,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TaskRemovalScope {
+    TaskOnly,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,11 +91,32 @@ pub enum CommandOutcome {
     },
 }
 
+impl CommandOutcome {
+    #[must_use]
+    pub fn failure(error: ApplicationError) -> Self {
+        Self::Failure {
+            failed: vec![ItemFailure { item: None, error }],
+        }
+    }
+
+    #[must_use]
+    pub fn has_successes(&self) -> bool {
+        match self {
+            Self::Success { succeeded } | Self::PartialSuccess { succeeded, .. } => {
+                !succeeded.is_empty()
+            }
+            Self::Failure { .. } => false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplicationErrorCode {
     Validation,
     WrongProfile,
+    StaleSession,
     Disconnected,
+    OutcomeUnknown,
     Authentication,
     Timeout,
     Rejected,
@@ -80,7 +130,9 @@ impl ApplicationErrorCode {
         match self {
             Self::Validation => "validation.invalid_request",
             Self::WrongProfile => "command.wrong_profile",
+            Self::StaleSession => "command.stale_session",
             Self::Disconnected => "rpc.disconnected",
+            Self::OutcomeUnknown => "rpc.command_outcome_unknown",
             Self::Authentication => "rpc.authentication_failed",
             Self::Timeout => "rpc.timeout",
             Self::Rejected => "rpc.command_rejected",
@@ -112,6 +164,7 @@ impl From<GatewayError> for ApplicationError {
     fn from(error: GatewayError) -> Self {
         let code = match error.kind {
             GatewayErrorKind::Disconnected => ApplicationErrorCode::Disconnected,
+            GatewayErrorKind::OutcomeUnknown => ApplicationErrorCode::OutcomeUnknown,
             GatewayErrorKind::Authentication => ApplicationErrorCode::Authentication,
             GatewayErrorKind::Timeout => ApplicationErrorCode::Timeout,
             GatewayErrorKind::Rejected => ApplicationErrorCode::Rejected,
@@ -136,16 +189,28 @@ impl CommandService {
         }
     }
 
-    pub async fn execute(&self, command: AppCommand) -> CommandOutcome {
+    pub async fn execute(
+        &self,
+        command: AppCommand,
+        task_statuses: &HashMap<TaskIdentity, DownloadStatus>,
+    ) -> CommandOutcome {
         match command {
             AppCommand::AddDownload(request) => self.add_download(request).await,
-            AppCommand::PauseTasks(tasks) => self.execute_batch(tasks, TaskOperation::Pause).await,
+            AppCommand::PauseTasks(tasks) => {
+                self.execute_batch(tasks, TaskOperation::Pause, task_statuses)
+                    .await
+            }
             AppCommand::ResumeTasks(tasks) => {
-                self.execute_batch(tasks, TaskOperation::Resume).await
+                self.execute_batch(tasks, TaskOperation::Resume, task_statuses)
+                    .await
             }
             AppCommand::RemoveTasks(request) => {
-                self.execute_batch(request.tasks, TaskOperation::Remove)
-                    .await
+                self.execute_batch(
+                    request.tasks,
+                    TaskOperation::Remove(request.scope),
+                    task_statuses,
+                )
+                .await
             }
         }
     }
@@ -174,6 +239,7 @@ impl CommandService {
         &self,
         tasks: Vec<TaskIdentity>,
         operation: TaskOperation,
+        task_statuses: &HashMap<TaskIdentity, DownloadStatus>,
     ) -> CommandOutcome {
         if tasks.is_empty() {
             return CommandOutcome::Failure {
@@ -208,7 +274,25 @@ impl CommandService {
             let result = match operation {
                 TaskOperation::Pause => self.gateway.pause(identity.gid).await,
                 TaskOperation::Resume => self.gateway.resume(identity.gid).await,
-                TaskOperation::Remove => self.gateway.remove(identity.gid).await,
+                TaskOperation::Remove(TaskRemovalScope::TaskOnly) => {
+                    let Some(status) = task_statuses.get(&identity).copied() else {
+                        failed.push(ItemFailure {
+                            item: Some(item),
+                            error: ApplicationError::new(
+                                ApplicationErrorCode::Rejected,
+                                "The task is no longer present in the current engine session.",
+                                false,
+                            ),
+                        });
+                        continue;
+                    };
+                    let target = if status.is_terminal() {
+                        TaskRemovalTarget::DownloadResult
+                    } else {
+                        TaskRemovalTarget::LiveTask
+                    };
+                    self.gateway.remove(identity.gid, target).await
+                }
             };
             match result {
                 Ok(()) => succeeded.push(item),
@@ -241,12 +325,12 @@ impl CommandService {
 enum TaskOperation {
     Pause,
     Resume,
-    Remove,
+    Remove(TaskRemovalScope),
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::{collections::HashMap, sync::Mutex};
 
     use ariadeck_domain::Gid;
     use async_trait::async_trait;
@@ -257,6 +341,7 @@ mod tests {
     #[derive(Default)]
     struct FakeGateway {
         calls: Mutex<Vec<(TaskOperation, Gid)>>,
+        removals: Mutex<Vec<(Gid, TaskRemovalTarget)>>,
         fail_gid: Option<Gid>,
     }
 
@@ -274,8 +359,12 @@ mod tests {
             self.record(TaskOperation::Resume, gid)
         }
 
-        async fn remove(&self, gid: Gid) -> Result<(), GatewayError> {
-            self.record(TaskOperation::Remove, gid)
+        async fn remove(&self, gid: Gid, target: TaskRemovalTarget) -> Result<(), GatewayError> {
+            self.removals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((gid, target));
+            self.record(TaskOperation::Remove(TaskRemovalScope::TaskOnly), gid)
         }
     }
 
@@ -302,13 +391,15 @@ mod tests {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway {
             calls: Mutex::default(),
+            removals: Mutex::default(),
             fail_gid: Some(Gid::from_u64(2)),
         });
         let service = CommandService::new(profile_id, gateway.clone());
         let one = TaskIdentity::new(profile_id, Gid::from_u64(1));
         let two = TaskIdentity::new(profile_id, Gid::from_u64(2));
 
-        let outcome = block_on(service.execute(AppCommand::PauseTasks(vec![one, one, two])));
+        let outcome =
+            block_on(service.execute(AppCommand::PauseTasks(vec![one, one, two]), &HashMap::new()));
 
         let CommandOutcome::PartialSuccess { succeeded, failed } = outcome else {
             panic!("expected partial success");
@@ -332,9 +423,13 @@ mod tests {
         let service = CommandService::new(profile_id, gateway.clone());
         let foreign = TaskIdentity::new(ProfileId::new(), Gid::from_u64(1));
 
-        let outcome = block_on(service.execute(AppCommand::RemoveTasks(RemoveTasksRequest {
-            tasks: vec![foreign],
-        })));
+        let outcome = block_on(service.execute(
+            AppCommand::RemoveTasks(RemoveTasksRequest {
+                tasks: vec![foreign],
+                scope: TaskRemovalScope::TaskOnly,
+            }),
+            &HashMap::new(),
+        ));
 
         let CommandOutcome::Failure { failed } = outcome else {
             panic!("expected command failure");
@@ -346,6 +441,61 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn add_download_rejects_unsupported_or_malformed_uris() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway);
+
+        for uri in ["not a uri", "file:///tmp/item.bin", "javascript:alert(1)"] {
+            let outcome = block_on(service.execute(
+                AppCommand::AddDownload(AddDownloadRequest {
+                    uris: vec![uri.into()],
+                    destination: None,
+                    options: Vec::new(),
+                }),
+                &HashMap::new(),
+            ));
+            let CommandOutcome::Failure { failed } = outcome else {
+                panic!("expected URI validation failure for {uri}");
+            };
+            assert_eq!(failed[0].error.code, ApplicationErrorCode::Validation);
+        }
+    }
+
+    #[test]
+    fn removal_targets_live_tasks_and_terminal_results_separately() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+        let live = TaskIdentity::new(profile_id, Gid::from_u64(1));
+        let complete = TaskIdentity::new(profile_id, Gid::from_u64(2));
+
+        let statuses = HashMap::from([
+            (live, DownloadStatus::Active),
+            (complete, DownloadStatus::Complete),
+        ]);
+        let outcome = block_on(service.execute(
+            AppCommand::RemoveTasks(RemoveTasksRequest {
+                tasks: vec![live, complete],
+                scope: TaskRemovalScope::TaskOnly,
+            }),
+            &statuses,
+        ));
+
+        assert!(matches!(outcome, CommandOutcome::Success { .. }));
+        assert_eq!(
+            *gateway
+                .removals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![
+                (live.gid, TaskRemovalTarget::LiveTask),
+                (complete.gid, TaskRemovalTarget::DownloadResult),
+            ]
         );
     }
 }

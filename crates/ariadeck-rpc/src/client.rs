@@ -1,7 +1,8 @@
 use ariadeck_application::{
-    AddDownloadRequest, DownloadEngineGateway, GatewayError, GatewayErrorKind,
+    AddDownloadRequest, DownloadEngineGateway, GatewayError, GatewayErrorKind, TaskDetailsGateway,
+    TaskRemovalTarget,
 };
-use ariadeck_domain::{Gid, GlobalStat, TaskSnapshot};
+use ariadeck_domain::{Gid, GlobalStat, TaskDetails, TaskSnapshot};
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
@@ -94,10 +95,7 @@ where
             .map(|(key, value)| (key, Value::String(value)))
             .collect::<Map<_, _>>();
         if let Some(destination) = &request.destination {
-            options.insert(
-                "dir".into(),
-                Value::String(destination.to_string_lossy().into_owned()),
-            );
+            options.insert("dir".into(), Value::String(destination.as_str().to_owned()));
         }
         self.call_gid(
             "aria2.addUri",
@@ -121,6 +119,26 @@ where
             .await
     }
 
+    pub async fn remove_download_result(&self, gid: Gid) -> Result<Gid, RpcError> {
+        self.call_gid("aria2.removeDownloadResult", vec![json!(gid.to_string())])
+            .await
+    }
+
+    pub async fn task_details(&self, gid: Gid) -> Result<TaskDetails, RpcError> {
+        const METHOD: &str = "aria2.tellStatus";
+        let value = self
+            .transport
+            .call(
+                METHOD,
+                vec![
+                    json!(gid.to_string()),
+                    task_keys(TaskKey::DETAILS_PROJECTION),
+                ],
+            )
+            .await?;
+        decode::<TaskWire>(METHOD, value)?.into_details(METHOD)
+    }
+
     pub async fn shutdown(&self) -> Result<(), RpcError> {
         let value = self.transport.call("aria2.shutdown", Vec::new()).await?;
         match value.as_str() {
@@ -137,7 +155,7 @@ where
         &self,
         stopped_count: u32,
     ) -> Result<InitialRpcSnapshot, RpcError> {
-        let keys = task_keys(TaskKey::LIST_PROJECTION);
+        let keys = task_keys(TaskKey::DISCOVERY_PROJECTION);
         let results = self
             .transport
             .batch(vec![
@@ -174,7 +192,11 @@ where
             next_batch_result(&mut results, "aria2.tellWaiting")?,
         )?;
         let waiting = self
-            .complete_waiting_snapshot(waiting, global_stat.waiting_tasks)
+            .complete_waiting_snapshot(
+                waiting,
+                global_stat.waiting_tasks,
+                TaskKey::DISCOVERY_PROJECTION,
+            )
             .await?;
         let stopped = decode_tasks(
             "aria2.tellStopped",
@@ -217,7 +239,7 @@ where
             next_batch_result(&mut results, "aria2.tellWaiting")?,
         )?;
         let waiting = self
-            .complete_waiting_snapshot(waiting, global_stat.waiting_tasks)
+            .complete_waiting_snapshot(waiting, global_stat.waiting_tasks, TaskKey::LIST_PROJECTION)
             .await?;
         Ok(LiveRpcSnapshot { active, waiting })
     }
@@ -226,6 +248,7 @@ where
         &self,
         mut waiting: Vec<TaskSnapshot>,
         expected_total: u32,
+        projection: &[TaskKey],
     ) -> Result<Vec<TaskSnapshot>, RpcError> {
         let loaded = u32::try_from(waiting.len()).map_err(|error| RpcError::InvalidData {
             method: "aria2.tellWaiting".into(),
@@ -236,7 +259,7 @@ where
             return Ok(waiting);
         }
 
-        let keys = task_keys(TaskKey::LIST_PROJECTION);
+        let keys = task_keys(projection);
         let mut offset = loaded;
         let mut calls = Vec::new();
         while offset < expected_total {
@@ -261,7 +284,7 @@ where
         if gids.is_empty() {
             return Ok(Vec::new());
         }
-        let keys = task_keys(TaskKey::LIST_PROJECTION);
+        let keys = task_keys(TaskKey::DISCOVERY_PROJECTION);
         let results = self
             .transport
             .batch(
@@ -361,32 +384,50 @@ where
     T: RpcTransport,
 {
     async fn add_download(&self, request: &AddDownloadRequest) -> Result<Gid, GatewayError> {
-        self.add_uri(request).await.map_err(map_gateway_error)
+        self.add_uri(request).await.map_err(map_mutation_error)
     }
 
     async fn pause(&self, gid: Gid) -> Result<(), GatewayError> {
         Aria2Client::pause(self, gid)
             .await
             .map(|_| ())
-            .map_err(map_gateway_error)
+            .map_err(map_mutation_error)
     }
 
     async fn resume(&self, gid: Gid) -> Result<(), GatewayError> {
         Aria2Client::resume(self, gid)
             .await
             .map(|_| ())
-            .map_err(map_gateway_error)
+            .map_err(map_mutation_error)
     }
 
-    async fn remove(&self, gid: Gid) -> Result<(), GatewayError> {
-        Aria2Client::remove(self, gid)
-            .await
-            .map(|_| ())
-            .map_err(map_gateway_error)
+    async fn remove(&self, gid: Gid, target: TaskRemovalTarget) -> Result<(), GatewayError> {
+        let result = match target {
+            TaskRemovalTarget::LiveTask => match Aria2Client::remove(self, gid).await {
+                Err(error) if live_task_became_stopped(&error) => {
+                    self.remove_download_result(gid).await
+                }
+                result => result,
+            },
+            TaskRemovalTarget::DownloadResult => self.remove_download_result(gid).await,
+        };
+        result.map(|_| ()).map_err(map_mutation_error)
     }
 }
 
-fn map_gateway_error(error: RpcError) -> GatewayError {
+#[async_trait]
+impl<T> TaskDetailsGateway for Aria2Client<T>
+where
+    T: RpcTransport,
+{
+    async fn task_details(&self, gid: Gid) -> Result<TaskDetails, GatewayError> {
+        Aria2Client::task_details(self, gid)
+            .await
+            .map_err(map_query_error)
+    }
+}
+
+fn map_query_error(error: RpcError) -> GatewayError {
     let (kind, retryable) = match &error {
         RpcError::Closed | RpcError::Transport(_) => (GatewayErrorKind::Disconnected, true),
         RpcError::Timeout { .. } => (GatewayErrorKind::Timeout, true),
@@ -401,6 +442,35 @@ fn map_gateway_error(error: RpcError) -> GatewayError {
         }
     };
     GatewayError::new(kind, error.to_string(), retryable)
+}
+
+fn map_mutation_error(error: RpcError) -> GatewayError {
+    let kind = match &error {
+        RpcError::Closed
+        | RpcError::Transport(_)
+        | RpcError::Timeout { .. }
+        | RpcError::Protocol(_)
+        | RpcError::InvalidData { .. } => GatewayErrorKind::OutcomeUnknown,
+        RpcError::Remote { message, .. }
+            if message.to_ascii_lowercase().contains("unauthorized") =>
+        {
+            GatewayErrorKind::Authentication
+        }
+        RpcError::Remote { .. } => GatewayErrorKind::Rejected,
+        RpcError::Serialization(_) => GatewayErrorKind::Internal,
+    };
+    GatewayError::new(kind, error.to_string(), false)
+}
+
+fn live_task_became_stopped(error: &RpcError) -> bool {
+    let RpcError::Remote { message, .. } = error else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    !message.contains("unauthorized")
+        && (message.contains("not found")
+            || message.contains("not active")
+            || message.contains("stopped"))
 }
 
 #[cfg(test)]
@@ -468,7 +538,7 @@ mod tests {
             Ok(stat) => stat,
             Err(error) => panic!("getGlobalStat failed: {error}"),
         };
-        let tasks = match client.tell_active(TaskKey::LIST_PROJECTION).await {
+        let tasks = match client.tell_active(TaskKey::DISCOVERY_PROJECTION).await {
             Ok(tasks) => tasks,
             Err(error) => panic!("tellActive failed: {error}"),
         };
@@ -504,6 +574,107 @@ mod tests {
             calls[0].1[1]["max-download-limit"],
             Value::String("1M".into())
         );
+    }
+
+    #[tokio::test]
+    async fn details_projection_decodes_engine_paths_and_files() {
+        let transport = ScriptedTransport::new([Ok(json!({
+            "gid": "0000000000000009",
+            "dir": "/srv/downloads",
+            "infoHash": "abc123",
+            "pieceLength": "1048576",
+            "numPieces": "4",
+            "files": [{
+                "index": "1",
+                "path": "/srv/downloads/archive.iso",
+                "length": "4194304",
+                "completedLength": "1048576",
+                "selected": "true",
+                "uris": [{"uri": "https://secret.example/item"}]
+            }]
+        }))]);
+        let client = Aria2Client::new(transport);
+
+        let details = match client.task_details(Gid::from_u64(9)).await {
+            Ok(details) => details,
+            Err(error) => panic!("tellStatus details failed: {error}"),
+        };
+
+        assert_eq!(details.gid, Gid::from_u64(9));
+        assert_eq!(
+            details
+                .directory
+                .as_ref()
+                .map(ariadeck_domain::EnginePath::as_str),
+            Some("/srv/downloads")
+        );
+        assert_eq!(details.files.len(), 1);
+        assert_eq!(details.files[0].path.as_str(), "/srv/downloads/archive.iso");
+        assert!(details.files[0].selected);
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(calls[0].0, "aria2.tellStatus");
+        assert_eq!(
+            calls[0].1[1],
+            json!([
+                "gid",
+                "files",
+                "dir",
+                "infoHash",
+                "pieceLength",
+                "numPieces"
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_removal_uses_remove_download_result() {
+        let transport = ScriptedTransport::new([Ok(json!("0000000000000009"))]);
+        let client = Aria2Client::new(transport);
+
+        let result = DownloadEngineGateway::remove(
+            &client,
+            Gid::from_u64(9),
+            TaskRemovalTarget::DownloadResult,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(calls[0].0, "aria2.removeDownloadResult");
+    }
+
+    #[tokio::test]
+    async fn live_removal_falls_back_when_the_task_completed_before_rpc_execution() {
+        let transport = ScriptedTransport::new([
+            Err(RpcError::Remote {
+                code: 1,
+                message: "GID is not found in active downloads".into(),
+                data: None,
+            }),
+            Ok(json!("0000000000000009")),
+        ]);
+        let client = Aria2Client::new(transport);
+
+        let result =
+            DownloadEngineGateway::remove(&client, Gid::from_u64(9), TaskRemovalTarget::LiveTask)
+                .await;
+
+        assert!(result.is_ok());
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(calls[0].0, "aria2.remove");
+        assert_eq!(calls[1].0, "aria2.removeDownloadResult");
     }
 
     #[tokio::test]
@@ -545,6 +716,22 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(calls.len(), 4);
+        assert_eq!(
+            calls[1].1[0],
+            json!([
+                "gid",
+                "status",
+                "totalLength",
+                "completedLength",
+                "uploadLength",
+                "downloadSpeed",
+                "uploadSpeed",
+                "connections",
+                "errorCode",
+                "errorMessage",
+                "verifyIntegrityPending"
+            ])
+        );
         assert_eq!(calls[3].0, "aria2.tellWaiting");
         assert_eq!(calls[3].1[0], json!(1_000));
         assert_eq!(calls[3].1[1], json!(1));
@@ -552,7 +739,7 @@ mod tests {
 
     #[test]
     fn authentication_remote_error_maps_to_gateway_category() {
-        let error = map_gateway_error(RpcError::Remote {
+        let error = map_query_error(RpcError::Remote {
             code: 1,
             message: "Unauthorized".into(),
             data: None,
@@ -560,5 +747,31 @@ mod tests {
 
         assert_eq!(error.kind, GatewayErrorKind::Authentication);
         assert!(!error.retryable);
+    }
+
+    #[test]
+    fn mutating_timeout_is_reported_as_an_unknown_outcome() {
+        let error = map_mutation_error(RpcError::Timeout {
+            method: "aria2.addUri".into(),
+        });
+
+        assert_eq!(error.kind, GatewayErrorKind::OutcomeUnknown);
+        assert!(!error.retryable);
+    }
+
+    #[test]
+    fn malformed_mutation_responses_are_reported_as_unknown_outcomes() {
+        for rpc_error in [
+            RpcError::Protocol("malformed response".into()),
+            RpcError::InvalidData {
+                method: "aria2.addUri".into(),
+                field: "result".into(),
+                message: "expected GID".into(),
+            },
+        ] {
+            let error = map_mutation_error(rpc_error);
+            assert_eq!(error.kind, GatewayErrorKind::OutcomeUnknown);
+            assert!(!error.retryable);
+        }
     }
 }

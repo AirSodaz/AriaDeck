@@ -9,10 +9,12 @@ mod view;
 
 pub use commands::{
     AddDownloadRequest, AppCommand, ApplicationError, ApplicationErrorCode, CommandItem,
-    CommandOutcome, CommandService, ItemFailure, RemoveTasksRequest,
+    CommandOutcome, CommandService, ItemFailure, RemoveTasksRequest, TaskRemovalScope,
 };
 pub use history::{SpeedHistory, SpeedHistoryError, SpeedSample};
-pub use ports::{DownloadEngineGateway, GatewayError, GatewayErrorKind};
+pub use ports::{
+    DownloadEngineGateway, GatewayError, GatewayErrorKind, TaskDetailsGateway, TaskRemovalTarget,
+};
 pub use store::{
     DownloadStore, OrderPatch, StoreError, StorePatch, TaskCollection, TaskFieldPatch,
 };

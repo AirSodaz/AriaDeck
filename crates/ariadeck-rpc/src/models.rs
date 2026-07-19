@@ -1,7 +1,6 @@
-use std::path::PathBuf;
-
 use ariadeck_domain::{
-    ByteCount, ByteRate, DownloadStatus, Gid, GlobalStat, TaskError, TaskMetadata, TaskSnapshot,
+    ByteCount, ByteRate, DownloadStatus, EnginePath, Gid, GlobalStat, TaskDetails, TaskError,
+    TaskFile, TaskMetadata, TaskSnapshot,
 };
 use serde::Deserialize;
 
@@ -31,6 +30,8 @@ pub enum TaskKey {
     BitTorrent,
     Directory,
     InfoHash,
+    PieceLength,
+    NumPieces,
 }
 
 impl TaskKey {
@@ -46,10 +47,34 @@ impl TaskKey {
         Self::ErrorCode,
         Self::ErrorMessage,
         Self::VerifyIntegrityPending,
+    ];
+
+    /// Used only when a task first enters the adapter cache or is explicitly refreshed.
+    pub const DISCOVERY_PROJECTION: &'static [Self] = &[
+        Self::Gid,
+        Self::Status,
+        Self::TotalLength,
+        Self::CompletedLength,
+        Self::UploadLength,
+        Self::DownloadSpeed,
+        Self::UploadSpeed,
+        Self::Connections,
+        Self::ErrorCode,
+        Self::ErrorMessage,
+        Self::VerifyIntegrityPending,
         Self::Files,
         Self::BitTorrent,
         Self::Directory,
         Self::InfoHash,
+    ];
+
+    pub const DETAILS_PROJECTION: &'static [Self] = &[
+        Self::Gid,
+        Self::Files,
+        Self::Directory,
+        Self::InfoHash,
+        Self::PieceLength,
+        Self::NumPieces,
     ];
 
     #[must_use]
@@ -71,6 +96,8 @@ impl TaskKey {
             Self::BitTorrent => "bittorrent",
             Self::Directory => "dir",
             Self::InfoHash => "infoHash",
+            Self::PieceLength => "pieceLength",
+            Self::NumPieces => "numPieces",
         }
     }
 }
@@ -155,6 +182,10 @@ pub(crate) struct TaskWire {
     dir: String,
     #[serde(default)]
     info_hash: String,
+    #[serde(default)]
+    piece_length: String,
+    #[serde(default)]
+    num_pieces: String,
 }
 
 impl TaskWire {
@@ -217,21 +248,71 @@ impl TaskWire {
             connections: parse_u32(method, "connections", &self.connections)?,
             error,
             metadata: TaskMetadata {
-                directory: non_empty(&self.dir).map(PathBuf::from),
+                directory: non_empty(&self.dir).map(EnginePath::new),
                 primary_uri,
                 info_hash: non_empty(&self.info_hash).map(str::to_owned),
                 file_count: u32::try_from(self.files.len()).unwrap_or(u32::MAX),
             },
         })
     }
+
+    pub(crate) fn into_details(self, method: &str) -> Result<TaskDetails, RpcError> {
+        let files = self
+            .files
+            .iter()
+            .map(|file| file.to_domain(method))
+            .collect::<Result<Vec<_>, _>>()?;
+        let gid = self
+            .gid
+            .parse::<Gid>()
+            .map_err(|error| RpcError::InvalidData {
+                method: method.into(),
+                field: "gid".into(),
+                message: error.to_string(),
+            })?;
+        Ok(TaskDetails {
+            gid,
+            directory: non_empty(&self.dir).map(EnginePath::new),
+            info_hash: non_empty(&self.info_hash).map(str::to_owned),
+            piece_length: parse_optional_u64(method, "pieceLength", &self.piece_length)?
+                .map(ByteCount::new),
+            piece_count: parse_optional_u32(method, "numPieces", &self.num_pieces)?,
+            files,
+        })
+    }
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct FileWire {
+    #[serde(default)]
+    index: String,
     #[serde(default)]
     path: String,
     #[serde(default)]
+    length: String,
+    #[serde(default)]
+    completed_length: String,
+    #[serde(default)]
+    selected: String,
+    #[serde(default)]
     uris: Vec<UriWire>,
+}
+
+impl FileWire {
+    fn to_domain(&self, method: &str) -> Result<TaskFile, RpcError> {
+        Ok(TaskFile {
+            index: parse_u32(method, "files.index", &self.index)?,
+            path: EnginePath::new(&self.path),
+            length: ByteCount::new(parse_u64(method, "files.length", &self.length)?),
+            completed_length: ByteCount::new(parse_u64(
+                method,
+                "files.completedLength",
+                &self.completed_length,
+            )?),
+            selected: parse_bool(method, "files.selected", &self.selected)?,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -289,6 +370,23 @@ fn parse_u32(method: &str, field: &str, value: &str) -> Result<u32, RpcError> {
 fn parse_optional_u32(method: &str, field: &str, value: &str) -> Result<Option<u32>, RpcError> {
     let parsed = parse_u32(method, field, value)?;
     Ok((parsed != 0).then_some(parsed))
+}
+
+fn parse_optional_u64(method: &str, field: &str, value: &str) -> Result<Option<u64>, RpcError> {
+    let parsed = parse_u64(method, field, value)?;
+    Ok((parsed != 0).then_some(parsed))
+}
+
+fn parse_bool(method: &str, field: &str, value: &str) -> Result<bool, RpcError> {
+    match value {
+        "" | "false" => Ok(false),
+        "true" => Ok(true),
+        _ => Err(RpcError::InvalidData {
+            method: method.into(),
+            field: field.into(),
+            message: format!("expected true or false, got {value}"),
+        }),
+    }
 }
 
 fn non_empty(value: &str) -> Option<&str> {
