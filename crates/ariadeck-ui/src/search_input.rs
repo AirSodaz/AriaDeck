@@ -715,7 +715,7 @@ impl gpui::Render for TextField {
             .child(TextFieldElement { input: cx.entity() });
 
         div()
-            .h(px(36.0))
+            .h(px(38.0))
             .w_full()
             .min_w(px(180.0))
             .max_w(px(460.0))

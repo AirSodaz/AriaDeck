@@ -23,11 +23,47 @@ use crate::{
 };
 
 const SPEED_CHART_SAMPLES: usize = 120;
+const TITLEBAR_HEIGHT: f32 = 56.0;
+const TITLEBAR_SIDE_WIDTH: f32 = 240.0;
+const TITLEBAR_HORIZONTAL_PADDING: f32 = 12.0;
+const SEARCH_WIDTH: f32 = 460.0;
+const SIDEBAR_WIDTH: f32 = 208.0;
+const DETAILS_DRAWER_WIDTH: f32 = 360.0;
+const TASK_LAYOUT_WIDE_MIN_WIDTH: f32 = 820.0;
+const TASK_ROW_HEIGHT: f32 = 68.0;
 
 #[cfg(target_os = "macos")]
 const TITLEBAR_BRAND_INSET: f32 = 52.0;
 #[cfg(not(target_os = "macos"))]
 const TITLEBAR_BRAND_INSET: f32 = 0.0;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TaskLayoutMode {
+    Compact,
+    Wide,
+}
+
+fn task_layout_mode(viewport_width: f32, details_open: bool) -> TaskLayoutMode {
+    let details_width = if details_open {
+        DETAILS_DRAWER_WIDTH
+    } else {
+        0.0
+    };
+    let main_width = viewport_width - SIDEBAR_WIDTH - details_width;
+    if main_width >= TASK_LAYOUT_WIDE_MIN_WIDTH {
+        TaskLayoutMode::Wide
+    } else {
+        TaskLayoutMode::Compact
+    }
+}
+
+fn centered_search_bounds(viewport_width: f32) -> (f32, f32) {
+    let available_width =
+        (viewport_width - 2.0 * (TITLEBAR_SIDE_WIDTH + TITLEBAR_HORIZONTAL_PADDING)).max(0.0);
+    let width = available_width.min(SEARCH_WIDTH);
+    let left = (viewport_width - width) / 2.0;
+    (left, left + width)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AppShellEvent {
@@ -1232,8 +1268,11 @@ impl AppShell {
 
     fn render_header(&mut self, _window: &Window, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
+        let (search_left, search_right) =
+            centered_search_bounds(f32::from(_window.viewport_size().width));
+        let search_width = search_right - search_left;
         let brand = div()
-            .w(px(184.0))
+            .w(px(TITLEBAR_SIDE_WIDTH))
             .flex_none()
             .flex()
             .items_center()
@@ -1253,40 +1292,45 @@ impl AppShell {
                     .child("AriaDeck"),
             );
         div()
-            .h(px(48.0))
+            .h(px(TITLEBAR_HEIGHT))
             .flex_none()
             .flex()
             .items_center()
-            .gap_3()
             .px_3()
+            .border_b_1()
+            .border_color(colors.border)
             .bg(colors.toolbar_surface)
             .child(brand)
-            .child(titlebar_drag_region())
             .child(
                 div()
-                    .max_w(px(520.0))
                     .flex_1()
                     .min_w_0()
-                    .child(self.search_input.clone()),
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(div().w(px(search_width)).child(self.search_input.clone())),
             )
             .child(
                 div()
-                    .ml_auto()
+                    .w(px(TITLEBAR_SIDE_WIDTH))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .child(self.render_add_button(cx)),
+                    .justify_end()
+                    .gap_2()
+                    .child(self.render_add_button(cx))
+                    .when(cfg!(target_os = "windows"), |actions| {
+                        #[cfg(target_os = "windows")]
+                        {
+                            actions.child(self.render_window_controls(_window))
+                        }
+                        #[cfg(not(target_os = "windows"))]
+                        {
+                            actions
+                        }
+                    }),
             )
-            .when(cfg!(target_os = "windows"), |header| {
-                #[cfg(target_os = "windows")]
-                {
-                    header.child(self.render_window_controls(_window))
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    header
-                }
-            })
     }
 
     #[cfg(target_os = "windows")]
@@ -1294,7 +1338,7 @@ impl AppShell {
         let colors = self.theme.colors;
         let maximized = window.is_maximized();
         div()
-            .h(px(48.0))
+            .h(px(TITLEBAR_HEIGHT))
             .flex_none()
             .flex()
             .items_center()
@@ -1321,7 +1365,8 @@ impl AppShell {
     fn render_add_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let colors = self.theme.colors;
         let enabled = self.snapshot.commands_available() && !self.add_dialog.open;
-        IconButton::new("open-add-download", IconName::Plus)
+        Button::new("open-add-download", "Add")
+            .icon(IconName::Plus)
             .aria_label(if enabled {
                 "Add a URL or magnet download"
             } else {
@@ -1353,20 +1398,22 @@ impl AppShell {
                     .tab_stop(true)
                     .role(Role::Button)
                     .aria_label(format!("{}, {count} tasks", filter.label()))
-                    .h(px(34.0))
+                    .h(px(38.0))
                     .w_full()
-                    .px_2()
+                    .px_3()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap_3()
                     .rounded_md()
                     .text_xs()
                     .text_color(if selected {
-                        colors.text_primary
+                        colors.accent
                     } else {
                         colors.text_secondary
                     })
-                    .when(selected, |element| element.bg(colors.surface_active))
+                    .when(selected, |element| {
+                        element.bg(with_alpha(colors.accent, 0.09))
+                    })
                     .when(!selected, |element| {
                         element.hover(|style| style.bg(colors.surface_hover))
                     })
@@ -1376,24 +1423,40 @@ impl AppShell {
                         this.set_filter(filter, window, cx);
                     }))
                     .child(Icon::new(icon).size(IconSize::Small).color(if selected {
-                        colors.text_primary
+                        colors.accent
                     } else {
                         colors.text_muted
                     }))
                     .child(div().flex_1().child(filter.short_label()))
                     .child(
                         div()
+                            .h(px(22.0))
+                            .min_w(px(22.0))
+                            .px_1()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .bg(if selected {
+                                with_alpha(colors.accent, 0.12)
+                            } else {
+                                colors.surface_active
+                            })
                             .font_features(tabular_numbers())
                             .text_xs()
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(colors.text_muted)
+                            .text_color(if selected {
+                                colors.accent
+                            } else {
+                                colors.text_muted
+                            })
                             .child(count.to_string()),
                     ),
             );
         }
 
         div()
-            .w(px(196.0))
+            .w(px(SIDEBAR_WIDTH))
             .flex_none()
             .flex()
             .flex_col()
@@ -1401,7 +1464,7 @@ impl AppShell {
             .border_r_1()
             .border_color(colors.border)
             .bg(colors.surface)
-            .p_2()
+            .p_3()
             .child(div().flex().flex_col().gap_1().children(filters))
             .child(
                 div()
@@ -1410,22 +1473,22 @@ impl AppShell {
                     .tab_stop(true)
                     .role(Role::Button)
                     .aria_label("Open application settings")
-                    .h(px(34.0))
+                    .h(px(38.0))
                     .w_full()
-                    .px_2()
+                    .px_3()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap_3()
                     .rounded_md()
                     .text_xs()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(if self.page == AppPage::Settings {
-                        colors.text_primary
+                        colors.accent
                     } else {
                         colors.text_secondary
                     })
                     .when(self.page == AppPage::Settings, |element| {
-                        element.bg(colors.surface_active)
+                        element.bg(with_alpha(colors.accent, 0.09))
                     })
                     .cursor_pointer()
                     .hover(|style| style.bg(colors.surface_hover))
@@ -1433,11 +1496,13 @@ impl AppShell {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_settings(&OpenSettings, window, cx);
                     }))
-                    .child(
-                        Icon::new(IconName::Settings)
-                            .size(IconSize::Small)
-                            .color(colors.text_muted),
-                    )
+                    .child(Icon::new(IconName::Settings).size(IconSize::Small).color(
+                        if self.page == AppPage::Settings {
+                            colors.accent
+                        } else {
+                            colors.text_muted
+                        },
+                    ))
                     .child("Settings"),
             )
     }
@@ -1524,40 +1589,71 @@ impl AppShell {
             )
     }
 
-    fn render_main(&mut self, cx: &mut Context<Self>) -> Div {
+    fn render_task_header(&self, layout: TaskLayoutMode) -> Div {
+        let colors = self.theme.colors;
+        let header = div()
+            .h(px(36.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap_3()
+            .px_3()
+            .border_b_1()
+            .border_color(colors.border)
+            .bg(colors.toolbar_surface)
+            .text_xs()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(colors.text_muted)
+            .child(div().w(px(32.0)).flex_none());
+
+        match layout {
+            TaskLayoutMode::Wide => header
+                .child(div().flex_1().min_w_0().child("Name"))
+                .child(div().w(px(132.0)).flex_none().child("Progress"))
+                .child(div().w(px(88.0)).flex_none().child("Speed"))
+                .child(div().w(px(124.0)).flex_none().child("Size"))
+                .child(div().w(px(72.0)).flex_none().child("ETA"))
+                .child(div().w(px(86.0)).flex_none().text_center().child("Status")),
+            TaskLayoutMode::Compact => header
+                .child(div().flex_1().min_w_0().child("Task"))
+                .child(div().w(px(112.0)).flex_none().child("Progress"))
+                .child(div().w(px(78.0)).flex_none().text_center().child("Status")),
+        }
+    }
+
+    fn render_main(&mut self, layout: TaskLayoutMode, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
         let task_count = self.snapshot.tasks.len();
-        let content = if task_count == 0 {
-            self.render_empty_state(cx)
-        } else {
-            div()
-                .id("download-task-list")
-                .role(Role::List)
-                .aria_label(format!("Downloads, {task_count} visible tasks"))
-                .size_full()
-                .child(
-                    uniform_list(
-                        "download-tasks",
-                        task_count,
-                        cx.processor(|this, range: Range<usize>, _window, cx| {
-                            this.rendered_range = range.clone();
-                            range
-                                .filter_map(|index| {
-                                    this.snapshot
-                                        .tasks
-                                        .get(index)
-                                        .cloned()
-                                        .map(|task| this.render_task_row(index, task, cx))
-                                })
-                                .collect::<Vec<_>>()
-                        }),
+        let content =
+            if task_count == 0 {
+                self.render_empty_state(cx)
+            } else {
+                div()
+                    .id("download-task-list")
+                    .role(Role::List)
+                    .aria_label(format!("Downloads, {task_count} visible tasks"))
+                    .size_full()
+                    .child(
+                        uniform_list(
+                            "download-tasks",
+                            task_count,
+                            cx.processor(move |this, range: Range<usize>, _window, cx| {
+                                this.rendered_range = range.clone();
+                                range
+                                    .filter_map(|index| {
+                                        this.snapshot.tasks.get(index).cloned().map(|task| {
+                                            this.render_task_row(index, task, layout, cx)
+                                        })
+                                    })
+                                    .collect::<Vec<_>>()
+                            }),
+                        )
+                        .track_scroll(&self.list_scroll)
+                        .h_full()
+                        .w_full(),
                     )
-                    .track_scroll(&self.list_scroll)
-                    .h_full()
-                    .w_full(),
-                )
-                .into_any_element()
-        };
+                    .into_any_element()
+            };
 
         let center = div()
             .flex_1()
@@ -1568,7 +1664,7 @@ impl AppShell {
             .bg(colors.background)
             .child(
                 div()
-                    .h(px(44.0))
+                    .h(px(52.0))
                     .flex_none()
                     .flex()
                     .items_center()
@@ -1596,6 +1692,7 @@ impl AppShell {
                     )
                     .child(self.render_task_toolbar(cx)),
             )
+            .child(self.render_task_header(layout))
             .child(div().flex_1().min_h_0().child(content));
 
         div()
@@ -1651,6 +1748,8 @@ impl AppShell {
             .flex_none()
             .flex()
             .items_center()
+            .border_t_1()
+            .border_color(colors.border)
             .bg(colors.toolbar_surface)
             .child(status_button)
             .child(
@@ -2052,6 +2151,21 @@ impl AppShell {
                     .flex_col()
                     .child(
                         div()
+                            .h(px(34.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .px_4()
+                            .border_b_1()
+                            .border_color(colors.border)
+                            .bg(colors.toolbar_surface)
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(colors.text_secondary)
+                            .child("Details"),
+                    )
+                    .child(
+                        div()
                             .flex_none()
                             .flex()
                             .flex_col()
@@ -2098,20 +2212,33 @@ impl AppShell {
                     )
                     .child(
                         div()
-                            .h(px(38.0))
+                            .h(px(42.0))
                             .flex_none()
                             .flex()
                             .items_center()
                             .justify_between()
                             .px_4()
+                            .border_t_1()
+                            .border_b_1()
+                            .border_color(colors.border)
+                            .bg(colors.toolbar_surface)
                             .child(
                                 div()
-                                    .text_sm()
+                                    .text_xs()
                                     .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(colors.text_secondary)
                                     .child("Files"),
                             )
                             .child(
                                 div()
+                                    .h(px(22.0))
+                                    .min_w(px(22.0))
+                                    .px_1()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .bg(colors.surface_active)
                                     .font_features(tabular_numbers())
                                     .text_xs()
                                     .text_color(colors.text_muted)
@@ -2127,7 +2254,7 @@ impl AppShell {
             .id("task-details-drawer")
             .role(Role::Complementary)
             .aria_label(format!("Task details for {}", overview.display_name))
-            .w(px(360.0))
+            .w(px(DETAILS_DRAWER_WIDTH))
             .flex_none()
             .min_h_0()
             .flex()
@@ -2137,12 +2264,31 @@ impl AppShell {
             .bg(colors.surface)
             .child(
                 div()
-                    .h(px(52.0))
+                    .h(px(68.0))
                     .flex_none()
                     .flex()
                     .items_center()
                     .gap_3()
                     .px_4()
+                    .border_b_1()
+                    .border_color(colors.border)
+                    .child(
+                        div()
+                            .size(px(36.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(colors.border)
+                            .bg(colors.elevated_surface)
+                            .child(
+                                Icon::new(task_status_icon(overview.status))
+                                    .size(IconSize::Small)
+                                    .color(task_status_color(overview.status, colors)),
+                            ),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -2183,6 +2329,7 @@ impl AppShell {
                         })),
                     ),
             )
+            .child(task_overview_summary(&overview, colors))
             .child(body)
             .into_any_element()
     }
@@ -2191,6 +2338,7 @@ impl AppShell {
         &mut self,
         index: usize,
         task: DownloadRowView,
+        layout: TaskLayoutMode,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let colors = self.theme.colors;
@@ -2220,7 +2368,11 @@ impl AppShell {
             format_rate(task.download_rate),
             format_eta(task.eta_seconds)
         );
-        div()
+        let progress_label = format_percent(basis_points);
+        let rate_label = format_rate(task.download_rate);
+        let eta_label = format_eta(task.eta_seconds);
+        let status_badge = task_status_badge(task.status, colors);
+        let row = div()
             .id(stable_id)
             .role(Role::ListItem)
             .aria_label(aria_label)
@@ -2228,17 +2380,22 @@ impl AppShell {
             .aria_position_in_set(index + 1)
             .aria_size_of_set(task_count)
             .when(selected, |row| row.aria_active_descendant())
-            .h(px(56.0))
+            .h(px(TASK_ROW_HEIGHT))
             .w_full()
             .flex_none()
             .flex()
             .items_center()
             .gap_3()
             .px_3()
+            .border_b_1()
+            .border_color(colors.border)
             .bg(if selected {
-                colors.surface_active
+                with_alpha(colors.accent, 0.07)
             } else {
                 colors.background
+            })
+            .when(selected, |row| {
+                row.border_1().border_color(with_alpha(colors.accent, 0.72))
             })
             .hover(|style| style.bg(colors.surface_hover))
             .cursor_pointer()
@@ -2247,99 +2404,117 @@ impl AppShell {
             }))
             .child(
                 div()
-                    .w(px(20.0))
+                    .size(px(32.0))
                     .flex_none()
                     .flex()
                     .items_center()
                     .justify_center()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.elevated_surface)
                     .child(
                         Icon::new(task_status_icon(task.status))
                             .size(IconSize::Small)
                             .color(status_color),
                     ),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(task.display_name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .font_features(tabular_numbers())
-                                    .text_xs()
-                                    .text_color(colors.text_muted)
-                                    .child(size_label),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .h(px(4.0))
-                                    .rounded_full()
-                                    .overflow_hidden()
-                                    .bg(colors.progress_track)
-                                    .child(div().h_full().w(relative(progress)).rounded_full().bg(
-                                        if task.status == TaskStatusView::Failed {
-                                            colors.danger
-                                        } else if task.status == TaskStatusView::Complete {
-                                            colors.success
-                                        } else {
-                                            colors.progress_download
-                                        },
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .w(px(52.0))
-                                    .flex_none()
-                                    .font_features(tabular_numbers())
-                                    .text_right()
-                                    .text_xs()
-                                    .text_color(colors.text_secondary)
-                                    .child(format_percent(basis_points)),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .w(px(156.0))
-                    .flex_none()
-                    .grid()
-                    .grid_cols(2)
-                    .gap_x_4()
-                    .child(metric(
-                        "Down",
-                        format_rate(task.download_rate),
-                        colors.text_secondary,
-                    ))
-                    .child(metric(
-                        "ETA",
-                        format_eta(task.eta_seconds),
-                        colors.text_secondary,
-                    )),
-            )
+            );
+
+        match layout {
+            TaskLayoutMode::Wide => row
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .truncate()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(task.display_name),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .font_features(tabular_numbers())
+                                .text_xs()
+                                .text_color(colors.text_muted)
+                                .child(format!("GID {}", task.identity.gid)),
+                        ),
+                )
+                .child(
+                    div()
+                        .w(px(132.0))
+                        .flex_none()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .font_features(tabular_numbers())
+                        .text_xs()
+                        .text_color(colors.text_secondary)
+                        .child(progress_label)
+                        .child(task_progress_bar(progress, task.status, colors)),
+                )
+                .child(task_table_value(88.0, rate_label, colors))
+                .child(task_table_value(124.0, size_label, colors))
+                .child(task_table_value(72.0, eta_label, colors))
+                .child(
+                    div()
+                        .w(px(86.0))
+                        .flex_none()
+                        .flex()
+                        .justify_center()
+                        .child(status_badge),
+                ),
+            TaskLayoutMode::Compact => row
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .truncate()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(task.display_name),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .font_features(tabular_numbers())
+                                .text_xs()
+                                .text_color(colors.text_muted)
+                                .child(format!("{size_label} · {rate_label} · {eta_label}")),
+                        ),
+                )
+                .child(
+                    div()
+                        .w(px(112.0))
+                        .flex_none()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .font_features(tabular_numbers())
+                        .text_xs()
+                        .text_color(colors.text_secondary)
+                        .child(progress_label)
+                        .child(task_progress_bar(progress, task.status, colors)),
+                )
+                .child(
+                    div()
+                        .w(px(78.0))
+                        .flex_none()
+                        .flex()
+                        .justify_center()
+                        .child(status_badge),
+                ),
+        }
     }
 
     fn render_add_download_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -2645,8 +2820,12 @@ impl AppShell {
                 ),
                 true,
             ),
-            _ => (IconName::Inbox, "Queue is clear".to_owned(), false),
+            _ => (IconName::Inbox, "No downloads".to_owned(), false),
         };
+        let show_add = self.query.filter == WorkspaceFilter::All
+            && self.query.search.trim().is_empty()
+            && self.snapshot.commands_available()
+            && !self.add_dialog.open;
 
         div()
             .size_full()
@@ -2662,9 +2841,20 @@ impl AppShell {
                     .gap_3()
                     .text_center()
                     .child(
-                        Icon::new(icon)
-                            .size(IconSize::Large)
-                            .color(colors.text_muted),
+                        div()
+                            .size(px(48.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(colors.border)
+                            .bg(colors.elevated_surface)
+                            .child(
+                                Icon::new(icon)
+                                    .size(IconSize::Large)
+                                    .color(colors.text_muted),
+                            ),
                     )
                     .child(
                         div()
@@ -2683,6 +2873,18 @@ impl AppShell {
                                         .update(cx, |input, cx| input.set_text("", cx));
                                     window.focus(&this.focus_handle, cx);
                                     this.emit_query(cx);
+                                }))
+                                .render(colors),
+                        )
+                    })
+                    .when(show_add, |element| {
+                        element.child(
+                            Button::new("add-download-empty-state", "Add download")
+                                .icon(IconName::Plus)
+                                .aria_label("Add a URL or magnet download")
+                                .style(ButtonStyle::Primary)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_add_download(&OpenAddDownload, window, cx);
                                 }))
                                 .render(colors),
                         )
@@ -2710,6 +2912,10 @@ impl Focusable for AppShell {
 impl Render for AppShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = self.theme.colors;
+        let task_layout = task_layout_mode(
+            f32::from(window.viewport_size().width),
+            self.details_drawer.is_some(),
+        );
         div()
             .id("download-workspace")
             .key_context("DownloadWorkspace")
@@ -2747,7 +2953,7 @@ impl Render for AppShell {
                     .flex()
                     .child(self.render_sidebar(cx))
                     .child(match self.page {
-                        AppPage::Downloads => self.render_main(cx).into_any_element(),
+                        AppPage::Downloads => self.render_main(task_layout, cx).into_any_element(),
                         AppPage::Settings => self.render_settings_page(cx).into_any_element(),
                     }),
             )
@@ -2771,18 +2977,6 @@ fn theme_for_scheme(scheme: ColorSchemeView) -> Theme {
     match scheme {
         ColorSchemeView::Light => Theme::light(),
         ColorSchemeView::Dark => Theme::dark(),
-    }
-}
-
-fn titlebar_drag_region() -> Div {
-    let region = div().flex_1().min_w_0().h_full();
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    {
-        region.window_control_area(WindowControlArea::Drag)
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        region
     }
 }
 
@@ -2860,7 +3054,7 @@ fn window_control_button(
     };
     button
         .render(colors)
-        .h(px(48.0))
+        .h(px(TITLEBAR_HEIGHT))
         .w(px(46.0))
         .min_w(px(46.0))
         .px_0()
@@ -2998,6 +3192,79 @@ fn task_status_icon(status: TaskStatusView) -> IconName {
         TaskStatusView::Removed => IconName::Trash2,
         TaskStatusView::Unknown => IconName::CircleHelp,
     }
+}
+
+fn task_overview_summary(task: &DownloadRowView, colors: crate::ThemeColors) -> Div {
+    let basis_points = task.progress_basis_points();
+    let progress = f32::from(basis_points.unwrap_or(0)) / 10_000.0;
+    let size_label = if task.total_bytes == 0 {
+        format_bytes(task.completed_bytes)
+    } else {
+        format!(
+            "{} / {}",
+            format_bytes(task.completed_bytes),
+            format_bytes(task.total_bytes)
+        )
+    };
+    let eta_label = task.eta_seconds.filter(|seconds| *seconds > 0).map_or_else(
+        || task.status.label().to_owned(),
+        |seconds| format!("{} remaining", format_eta(Some(seconds))),
+    );
+
+    div()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .border_b_1()
+        .border_color(colors.border)
+        .bg(colors.elevated_surface)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(colors.text_secondary)
+                        .child("Progress"),
+                )
+                .child(task_status_badge(task.status, colors)),
+        )
+        .child(
+            div()
+                .flex()
+                .items_baseline()
+                .justify_between()
+                .font_features(tabular_numbers())
+                .child(
+                    div()
+                        .text_size(px(24.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format_percent(basis_points)),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(colors.text_muted)
+                        .child(eta_label),
+                ),
+        )
+        .child(task_progress_bar(progress, task.status, colors).h(px(5.0)))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .font_features(tabular_numbers())
+                .text_xs()
+                .text_color(colors.text_muted)
+                .child(size_label)
+                .child(format_rate(task.download_rate)),
+        )
 }
 
 fn drawer_message(
@@ -3175,27 +3442,6 @@ fn stale_session_error() -> OperationErrorView {
     }
 }
 
-fn metric(label: &'static str, value: String, text_color: Hsla) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap_0p5()
-        .child(
-            div()
-                .text_xs()
-                .text_color(with_alpha(text_color, 0.7))
-                .child(label),
-        )
-        .child(
-            div()
-                .font_features(tabular_numbers())
-                .text_xs()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(text_color)
-                .child(value),
-        )
-}
-
 fn tabular_numbers() -> FontFeatures {
     FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
 }
@@ -3230,6 +3476,57 @@ fn task_status_color(status: TaskStatusView, colors: crate::ThemeColors) -> Hsla
         TaskStatusView::Verifying => colors.information,
         TaskStatusView::Unknown => colors.text_muted,
     }
+}
+
+fn task_progress_bar(progress: f32, status: TaskStatusView, colors: crate::ThemeColors) -> Div {
+    let fill = match status {
+        TaskStatusView::Failed | TaskStatusView::Removed => colors.danger,
+        TaskStatusView::Complete => colors.success,
+        _ => colors.progress_download,
+    };
+    div()
+        .h(px(4.0))
+        .w_full()
+        .rounded_full()
+        .overflow_hidden()
+        .bg(colors.progress_track)
+        .child(
+            div()
+                .h_full()
+                .w(relative(progress.clamp(0.0, 1.0)))
+                .rounded_full()
+                .bg(fill),
+        )
+}
+
+fn task_table_value(width: f32, value: String, colors: crate::ThemeColors) -> Div {
+    div()
+        .w(px(width))
+        .flex_none()
+        .truncate()
+        .font_features(tabular_numbers())
+        .text_xs()
+        .text_color(colors.text_secondary)
+        .child(value)
+}
+
+fn task_status_badge(status: TaskStatusView, colors: crate::ThemeColors) -> Div {
+    let color = task_status_color(status, colors);
+    div()
+        .h(px(22.0))
+        .max_w_full()
+        .px_2()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_sm()
+        .border_1()
+        .border_color(with_alpha(color, 0.28))
+        .bg(with_alpha(color, 0.1))
+        .text_size(px(11.0))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(color)
+        .child(status.label())
 }
 
 fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
@@ -3296,6 +3593,23 @@ mod tests {
                     selected: true,
                 })
                 .collect(),
+        }
+    }
+
+    #[test]
+    fn task_layout_uses_the_remaining_main_pane_width() {
+        assert_eq!(task_layout_mode(1_180.0, false), TaskLayoutMode::Wide);
+        assert_eq!(task_layout_mode(1_180.0, true), TaskLayoutMode::Compact);
+        assert_eq!(task_layout_mode(960.0, false), TaskLayoutMode::Compact);
+        assert_eq!(task_layout_mode(1_400.0, true), TaskLayoutMode::Wide);
+    }
+
+    #[test]
+    fn search_bounds_are_centered_and_ignore_workspace_drawers() {
+        for viewport_width in [960.0, 1_180.0, 1_600.0] {
+            let (left, right) = centered_search_bounds(viewport_width);
+            assert!(((left + right) / 2.0 - viewport_width / 2.0).abs() < f32::EPSILON);
+            assert!(right - left <= SEARCH_WIDTH);
         }
     }
 
