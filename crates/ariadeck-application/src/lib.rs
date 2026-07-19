@@ -9,7 +9,8 @@ mod view;
 
 pub use commands::{
     AddDownloadRequest, AppCommand, ApplicationError, ApplicationErrorCode, CommandItem,
-    CommandOutcome, CommandService, ItemFailure, RemoveTasksRequest, TaskRemovalScope,
+    CommandOutcome, CommandService, ItemFailure, RemoveTasksRequest, TaskCommandContext,
+    TaskRemovalScope,
 };
 pub use history::{SpeedHistory, SpeedHistoryError, SpeedSample};
 pub use ports::{

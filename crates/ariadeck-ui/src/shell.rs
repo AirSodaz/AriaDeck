@@ -11,12 +11,12 @@ use crate::{
     AddDownloadRequestView, AddDownloadResultView, ClearSearch, CloseAddDownload,
     CommandOutcomeView, ConnectionView, DownloadRowView, EngineSessionView, FocusNext,
     FocusPrevious, FocusSearch, OpenAddDownload, OpenTaskDetails, OperationErrorView,
-    PauseSelectedTask, RemoveSelectedTask, RequestId, ResumeSelectedTask, SearchInputEvent,
-    SelectNextTask, SelectPreviousTask, SubmitAddDownload, TaskCommandRequestView,
-    TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView, TaskDetailsRequestView,
-    TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity, TaskStatusView, TextField,
-    TextFieldConfig, Theme, ThemeMode, ToggleTheme, WorkspaceFilter, WorkspaceQuery,
-    WorkspaceSnapshot, format_bytes, format_eta, format_percent, format_rate,
+    PauseSelectedTask, RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask,
+    SearchInputEvent, SelectNextTask, SelectPreviousTask, SubmitAddDownload,
+    TaskCommandRequestView, TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView,
+    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity,
+    TaskStatusView, TextField, TextFieldConfig, Theme, ThemeMode, ToggleTheme, WorkspaceFilter,
+    WorkspaceQuery, WorkspaceSnapshot, format_bytes, format_eta, format_percent, format_rate,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -278,13 +278,18 @@ impl AppShell {
 
         self.pending_task_command = None;
         match result.outcome {
-            CommandOutcomeView::Success { .. } => {
+            CommandOutcomeView::Success { task } => {
                 self.status_notice = Some(StatusNotice {
                     message: result.command.success_label().into(),
                     is_error: false,
                 });
                 if result.command == TaskCommandView::RemoveTask {
                     self.selected = None;
+                    self.details_drawer = None;
+                } else if result.command == TaskCommandView::Retry {
+                    if let Some(identity) = task {
+                        self.selected = Some(identity);
+                    }
                     self.details_drawer = None;
                 }
             }
@@ -676,6 +681,15 @@ impl AppShell {
         self.begin_task_command(TaskCommandView::Resume, cx);
     }
 
+    fn retry_selected(
+        &mut self,
+        _: &RetrySelectedTask,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.begin_task_command(TaskCommandView::Retry, cx);
+    }
+
     fn remove_selected(
         &mut self,
         _: &RemoveSelectedTask,
@@ -700,6 +714,7 @@ impl AppShell {
         let allowed = match command {
             TaskCommandView::Pause => task.status.can_pause(),
             TaskCommandView::Resume => task.status.can_resume(),
+            TaskCommandView::Retry => task.status.can_retry(),
             TaskCommandView::RemoveTask => task.status.can_remove(),
         };
         if !allowed {
@@ -1205,6 +1220,7 @@ impl AppShell {
         let details_enabled = self.snapshot.commands_available();
         let pause_enabled = commands_available && task.status.can_pause();
         let resume_enabled = commands_available && task.status.can_resume();
+        let retry_enabled = commands_available && task.status.can_retry();
         let remove_enabled = commands_available && task.status.can_remove();
 
         div()
@@ -1251,6 +1267,16 @@ impl AppShell {
                             this.begin_task_command(TaskCommandView::Resume, cx);
                         }))
                     }),
+                )
+            })
+            .when(task.status.can_retry(), |element| {
+                element.child(
+                    toolbar_button("retry-task-action", "Retry", retry_enabled, false, colors)
+                        .when(retry_enabled, |button| {
+                            button.on_click(cx.listener(|this, _, _window, cx| {
+                                this.begin_task_command(TaskCommandView::Retry, cx);
+                            }))
+                        }),
                 )
             })
             .child(
@@ -1970,6 +1996,7 @@ impl Render for AppShell {
             .on_action(cx.listener(Self::open_task_details_action))
             .on_action(cx.listener(Self::pause_selected))
             .on_action(cx.listener(Self::resume_selected))
+            .on_action(cx.listener(Self::retry_selected))
             .on_action(cx.listener(Self::remove_selected))
             .on_action(cx.listener(Self::toggle_theme))
             .on_action(cx.listener(Self::focus_next))
@@ -2163,6 +2190,7 @@ fn task_command_label(command: TaskCommandView) -> &'static str {
     match command {
         TaskCommandView::Pause => "Pause",
         TaskCommandView::Resume => "Resume",
+        TaskCommandView::Retry => "Retry",
         TaskCommandView::RemoveTask => "Remove",
     }
 }
@@ -2387,6 +2415,53 @@ mod tests {
                 first
             );
             assert_eq!(shell.next_request_id, first.get() + 1);
+        });
+    }
+
+    #[gpui::test]
+    fn successful_retry_selects_the_new_task_identity(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell.snapshot.tasks[0].status = TaskStatusView::Failed;
+            shell.selected = Some(shell.snapshot.tasks[0].identity.clone());
+            shell
+        });
+        let (request_id, session, old_identity) = view.update(cx, |shell, cx| {
+            shell.begin_task_command(TaskCommandView::Retry, cx);
+            let pending = shell
+                .pending_task_command
+                .as_ref()
+                .expect("retry must become pending");
+            (
+                pending.request_id,
+                pending.session.clone(),
+                pending.identity.clone(),
+            )
+        });
+        let new_identity = TaskIdentity {
+            profile_id: old_identity.profile_id.clone(),
+            gid: "0000000000000063".into(),
+        };
+
+        view.update(cx, |shell, cx| {
+            shell.set_task_command_result(
+                TaskCommandResultView {
+                    request_id,
+                    session,
+                    identity: old_identity,
+                    command: TaskCommandView::Retry,
+                    outcome: CommandOutcomeView::Success {
+                        task: Some(new_identity.clone()),
+                    },
+                },
+                cx,
+            );
+        });
+        view.read_with(cx, |shell, _| {
+            assert_eq!(shell.selected.as_ref(), Some(&new_identity));
+            assert!(shell.pending_task_command.is_none());
+            assert!(shell.details_drawer.is_none());
         });
     }
 

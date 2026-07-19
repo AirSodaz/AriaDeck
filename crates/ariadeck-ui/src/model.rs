@@ -44,6 +44,11 @@ impl TaskStatusView {
     }
 
     #[must_use]
+    pub const fn can_retry(self) -> bool {
+        matches!(self, Self::Failed)
+    }
+
+    #[must_use]
     pub const fn can_remove(self) -> bool {
         !matches!(self, Self::Removed)
     }
@@ -211,6 +216,7 @@ impl RequestId {
 pub enum TaskCommandView {
     Pause,
     Resume,
+    Retry,
     RemoveTask,
 }
 
@@ -220,6 +226,7 @@ impl TaskCommandView {
         match self {
             Self::Pause => "Pausing task...",
             Self::Resume => "Resuming task...",
+            Self::Retry => "Creating a new task from the failed source...",
             Self::RemoveTask => "Removing task...",
         }
     }
@@ -229,6 +236,7 @@ impl TaskCommandView {
         match self {
             Self::Pause => "Task paused.",
             Self::Resume => "Task resumed.",
+            Self::Retry => "Retry task accepted by aria2.",
             Self::RemoveTask => "Task removed from aria2.",
         }
     }
@@ -476,5 +484,12 @@ mod tests {
         };
 
         assert_eq!(row.progress_basis_points(), Some(10_000));
+    }
+
+    #[test]
+    fn retry_is_available_only_for_failed_tasks() {
+        assert!(TaskStatusView::Failed.can_retry());
+        assert!(!TaskStatusView::Paused.can_retry());
+        assert!(!TaskStatusView::Complete.can_retry());
     }
 }

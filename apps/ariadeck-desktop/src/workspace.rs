@@ -242,6 +242,7 @@ async fn execute_task_command(
             let app_command = match command {
                 TaskCommandView::Pause => AppCommand::PauseTasks(vec![task]),
                 TaskCommandView::Resume => AppCommand::ResumeTasks(vec![task]),
+                TaskCommandView::Retry => AppCommand::RetryTasks(vec![task]),
                 TaskCommandView::RemoveTask => AppCommand::RemoveTasks(RemoveTasksRequest {
                     tasks: vec![task],
                     scope: TaskRemovalScope::TaskOnly,

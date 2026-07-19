@@ -10,8 +10,8 @@ pub use actions::init;
 pub use actions::{
     Backspace, ClearSearch, CloseAddDownload, Copy, Cut, Delete, FocusNext, FocusPrevious,
     FocusSearch, MoveEnd, MoveHome, MoveLeft, MoveRight, OpenAddDownload, OpenTaskDetails, Paste,
-    PauseSelectedTask, RemoveSelectedTask, ResumeSelectedTask, SelectAll, SelectLeft,
-    SelectNextTask, SelectPreviousTask, SelectRight, SubmitAddDownload, ToggleTheme,
+    PauseSelectedTask, RemoveSelectedTask, ResumeSelectedTask, RetrySelectedTask, SelectAll,
+    SelectLeft, SelectNextTask, SelectPreviousTask, SelectRight, SubmitAddDownload, ToggleTheme,
 };
 pub use model::{
     AddDownloadRequestView, AddDownloadResultView, CommandOutcomeView, ConnectionView,

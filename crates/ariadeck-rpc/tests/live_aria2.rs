@@ -244,6 +244,41 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
     })
     .await?;
 
+    let unavailable_port = reserve_loopback_port()?;
+    let failed = handle
+        .execute(
+            connected.session,
+            AppCommand::AddDownload(AddDownloadRequest {
+                uris: vec![format!(
+                    "http://127.0.0.1:{unavailable_port}/unreachable-test-file"
+                )],
+                destination: None,
+                options: vec![
+                    ("connect-timeout".into(), "1".into()),
+                    ("max-tries".into(), "1".into()),
+                ],
+            }),
+        )
+        .await;
+    let failed_identity = single_succeeded_task(failed)?;
+    handle.force_refresh().await;
+    wait_for_task_status(
+        &handle,
+        failed_identity,
+        Duration::from_secs(10),
+        |status| status == DownloadStatus::Error,
+    )
+    .await?;
+
+    let retried = handle
+        .execute(
+            connected.session,
+            AppCommand::RetryTasks(vec![failed_identity]),
+        )
+        .await;
+    let retried_identity = single_succeeded_task(retried)?;
+    assert_ne!(retried_identity.gid, failed_identity.gid);
+
     handle.stop().await;
     let _ = process.terminate()?;
     Ok(())

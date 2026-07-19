@@ -2,7 +2,7 @@
 
 **Status:** In progress
 
-**Current stage:** 7 - Local external aria2 process and persistent profile
+**Current stage:** 8 - MVP completion and hardening
 
 **Last updated:** 2026-07-19
 
@@ -17,7 +17,7 @@ change.
 - [x] Stage 3 - Implement typed aria2 WebSocket RPC transport and client.
 - [x] Stage 4 - Coordinate polling, notifications, generations, and reconnection.
 - [x] Stage 5 - Build the live, virtualized download workspace.
-- [ ] Stage 6 - Add interactive download commands and details (retry remains pending).
+- [x] Stage 6 - Add interactive download commands and details.
 - [x] Stage 7 - Manage a local external aria2 process and persistent profile.
 - [ ] Stage 8 - Complete and harden the MVP.
 - [ ] Post-MVP - Managed aria2 core installation, platform integration, and release work.
@@ -88,9 +88,9 @@ change.
 ### Stage 6 - Interactive download commands and task details
 
 The add-dialog, safe lifecycle commands, details drawer, and session-bound
-desktop composition are implemented. Retry remains deliberately outside this
-checkpoint because replaying a failed task requires preserving its original
-source/options rather than guessing from a stale row.
+desktop composition are implemented. Retry creates a new task only when the
+failed task exposes a replayable URI or info hash; the failed result remains
+visible until the user explicitly removes it.
 
 - [x] Bind command and details requests to the exact engine session and reject stale requests.
 - [x] Reject commands immediately while connecting, synchronizing, stale, or disconnected.
@@ -100,7 +100,7 @@ source/options rather than guessing from a stale row.
 - [x] Distinguish live-task removal from stopped download-result removal.
 - [x] Report mutating RPC timeouts and disconnects as unknown outcomes without auto-retry.
 - [x] Extend the typed aria2 adapter for add, pause, resume, and remove commands.
-- [ ] Extend the typed adapter and application contract for explicit failed-task retry.
+- [x] Extend the typed adapter and application contract for explicit failed-task retry.
 - [x] Execute commands through the application ports with structured outcomes.
 - [x] Add a focused add-download flow for URLs and magnet links.
 - [x] Add row actions and keyboard commands for the safe task lifecycle operations.
@@ -217,11 +217,14 @@ failures, and reset only after a configurable stable connection interval.
 | 2026-07-19 | Local desktop startup smoke without `ARIADECK_RPC_URL` | Pass - desktop stayed alive, aria2 child and profile metadata were created, and child was cleaned up |
 | 2026-07-19 | aria2 argument compatibility smoke | Pass - aria2 1.37.0 stayed alive with loopback RPC and DHT/LPD disabled |
 | 2026-07-19 | `cargo clippy -p ariadeck-engine -p ariadeck-desktop --all-targets -- -D warnings` | Pass - no issues |
+| 2026-07-19 | `cargo test -p ariadeck-application -p ariadeck-rpc -p ariadeck-ui -p ariadeck-desktop` | Pass - 73 tests, 3 ignored after failed-task retry |
+| 2026-07-19 | Failed-task live aria2 retry flow | Pass - terminal Error metadata produced a new task with a distinct GID |
+| 2026-07-19 | `cargo clippy -p ariadeck-application -p ariadeck-rpc -p ariadeck-ui -p ariadeck-desktop --all-targets -- -D warnings` | Pass - no issues |
 
 ## Known Gaps
 
-- Failed-task retry is pending until the source URI and replayable options are
-  stored as an explicit session-scoped contract; blind resume/re-add is unsafe.
+- Failed-task retry preserves the source URI/info hash and destination for the
+  URL/magnet MVP; arbitrary per-task aria2 options are not replayed.
 - Local process crash detection is exposed through `try_wait`, but automatic
   restart and crash-loop recovery are still pending.
 - Profile persistence is an atomic JSON MVP; SQLite-backed settings/history are
@@ -245,3 +248,4 @@ failures, and reset only after a configurable stable connection interval.
 - `feat: add session-bound task command foundation` - Stage 6 command and details backend checkpoint.
 - `feat: complete interactive command and details workspace` - Stage 6 UI, AccessKit input, command outcomes, and live aria2 verification (retry pending).
 - `feat: manage local external aria2 profiles` - Stage 7 process lifecycle, isolated runtime files, and atomic profile metadata.
+- `feat: retry failed downloads from known sources` - session-bound replay using discovery metadata and a new aria2 GID.

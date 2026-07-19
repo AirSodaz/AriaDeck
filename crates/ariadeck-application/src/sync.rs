@@ -17,8 +17,8 @@ use tokio::{
 
 use crate::{
     AppCommand, ApplicationError, ApplicationErrorCode, CommandOutcome, CommandService,
-    DownloadEngineGateway, DownloadStore, StoreError, StorePatch, TaskCounts, TaskDetailsGateway,
-    TaskListQuery, TaskListView,
+    DownloadEngineGateway, DownloadStore, StoreError, StorePatch, TaskCommandContext, TaskCounts,
+    TaskDetailsGateway, TaskListQuery, TaskListView,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -818,23 +818,32 @@ async fn run_connected(
                             continue;
                         };
                         let service = CommandService::new(config.profile_id, gateway.clone());
-                        let task_statuses = match &command {
-                            AppCommand::RemoveTasks(request) => request
-                                .tasks
+                        let task_contexts = match &command {
+                            AppCommand::RemoveTasks(request) => Some(request.tasks.as_slice()),
+                            AppCommand::RetryTasks(tasks) => Some(tasks.as_slice()),
+                            _ => None,
+                        }
+                        .map_or_else(HashMap::new, |tasks| {
+                            tasks
                                 .iter()
                                 .filter(|identity| identity.profile_id == config.profile_id)
                                 .filter_map(|identity| {
-                                    store
-                                        .task(identity.gid)
-                                        .map(|task| (*identity, task.status))
+                                    store.task(identity.gid).map(|task| {
+                                        (
+                                            *identity,
+                                            TaskCommandContext {
+                                                status: task.status,
+                                                metadata: task.metadata.clone(),
+                                            },
+                                        )
+                                    })
                                 })
-                                .collect::<HashMap<_, _>>(),
-                            _ => HashMap::new(),
-                        };
+                                .collect::<HashMap<_, _>>()
+                        });
                         let outcome = tokio::select! {
                             biased;
                             () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
-                            outcome = service.execute(command, &task_statuses) => outcome,
+                            outcome = service.execute(command, &task_contexts) => outcome,
                         };
                         if outcome.has_successes() {
                             pending_full = true;
