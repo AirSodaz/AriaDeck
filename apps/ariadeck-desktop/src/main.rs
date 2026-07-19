@@ -7,7 +7,10 @@ mod workspace;
 
 use std::sync::Arc;
 
-use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
+use gpui::{
+    App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowDecorations, WindowOptions,
+    px, size,
+};
 use gpui_platform::application;
 use tokio::runtime::Builder;
 
@@ -29,37 +32,74 @@ fn main() {
         }
     };
 
-    application().run(move |cx: &mut App| {
-        ariadeck_ui::init(cx);
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
+    application()
+        .with_assets(ariadeck_ui::Assets)
+        .run(move |cx: &mut App| {
+            ariadeck_ui::init(cx);
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+
+            let bounds = Bounds::centered(None, size(px(1180.0), px(760.0)), cx);
+            let open_result = cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(platform_titlebar()),
+                    window_decorations: platform_window_decorations(),
+                    window_min_size: Some(size(px(960.0), px(620.0))),
+                    ..WindowOptions::default()
+                },
+                {
+                    let runtime = runtime.clone();
+                    move |window, cx| cx.new(|cx| DesktopRoot::new(runtime.clone(), window, cx))
+                },
+            );
+
+            if let Err(error) = open_result {
+                tracing::error!(?error, "failed to open the AriaDeck window");
                 cx.quit();
+                return;
             }
-        })
-        .detach();
 
-        let bounds = Bounds::centered(None, size(px(1180.0), px(760.0)), cx);
-        let open_result = cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("AriaDeck".into()),
-                    ..TitlebarOptions::default()
-                }),
-                ..WindowOptions::default()
-            },
-            {
-                let runtime = runtime.clone();
-                move |window, cx| cx.new(|cx| DesktopRoot::new(runtime.clone(), window, cx))
-            },
-        );
+            cx.activate(true);
+        });
+}
 
-        if let Err(error) = open_result {
-            tracing::error!(?error, "failed to open the AriaDeck window");
-            cx.quit();
-            return;
-        }
+#[cfg(target_os = "windows")]
+fn platform_titlebar() -> TitlebarOptions {
+    TitlebarOptions {
+        title: Some("AriaDeck".into()),
+        appears_transparent: true,
+        ..TitlebarOptions::default()
+    }
+}
 
-        cx.activate(true);
-    });
+#[cfg(target_os = "macos")]
+fn platform_titlebar() -> TitlebarOptions {
+    TitlebarOptions {
+        title: Some("AriaDeck".into()),
+        appears_transparent: true,
+        traffic_light_position: Some(gpui::point(px(12.0), px(15.0))),
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn platform_titlebar() -> TitlebarOptions {
+    TitlebarOptions {
+        title: Some("AriaDeck".into()),
+        ..TitlebarOptions::default()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn platform_window_decorations() -> Option<WindowDecorations> {
+    Some(WindowDecorations::Server)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn platform_window_decorations() -> Option<WindowDecorations> {
+    None
 }

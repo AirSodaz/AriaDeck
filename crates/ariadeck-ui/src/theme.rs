@@ -17,6 +17,7 @@ pub enum ThemeMode {
 pub struct ThemeColors {
     pub background: Hsla,
     pub surface: Hsla,
+    pub toolbar_surface: Hsla,
     pub elevated_surface: Hsla,
     pub surface_hover: Hsla,
     pub surface_active: Hsla,
@@ -54,8 +55,9 @@ impl Theme {
             mode: ThemeMode::Dark,
             colors: ThemeColors {
                 background: color(0x151719),
-                surface: color(0x1d2023),
-                elevated_surface: color(0x25292d),
+                surface: color(0x1b1e21),
+                toolbar_surface: color(0x202429),
+                elevated_surface: color(0x292e33),
                 surface_hover: color(0x2c3136),
                 surface_active: color(0x343a40),
                 text_primary: color(0xf2f4f5),
@@ -86,7 +88,8 @@ impl Theme {
             mode: ThemeMode::Light,
             colors: ThemeColors {
                 background: color(0xf5f7f8),
-                surface: color(0xffffff),
+                surface: color(0xeef1f3),
+                toolbar_surface: color(0xfbfcfd),
                 elevated_surface: color(0xffffff),
                 surface_hover: color(0xedf2f4),
                 surface_active: color(0xe5eaed),
@@ -126,6 +129,15 @@ mod tests {
             assert_ne!(theme.colors.background, theme.colors.text_primary);
             assert_ne!(theme.colors.surface, theme.colors.text_secondary);
             assert_ne!(theme.colors.accent, theme.colors.text_primary);
+        }
+    }
+
+    #[test]
+    fn surface_roles_are_distinct_in_both_palettes() {
+        for theme in [Theme::dark(), Theme::light()] {
+            assert_ne!(theme.colors.background, theme.colors.surface);
+            assert_ne!(theme.colors.surface, theme.colors.toolbar_surface);
+            assert_ne!(theme.colors.toolbar_surface, theme.colors.elevated_surface);
         }
     }
 }

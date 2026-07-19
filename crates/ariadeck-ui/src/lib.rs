@@ -1,6 +1,8 @@
 //! AriaDeck-owned GPUI design system and application components.
 
 mod actions;
+mod assets;
+mod components;
 mod model;
 mod search_input;
 mod shell;
@@ -12,7 +14,12 @@ pub use actions::{
     FocusPrevious, FocusSearch, MoveEnd, MoveHome, MoveLeft, MoveRight, OpenAddDownload,
     OpenSettings, OpenTaskDetails, Paste, PauseSelectedTask, RemoveSelectedTask,
     ResumeSelectedTask, RetrySelectedTask, SaveSettings, SelectAll, SelectLeft, SelectNextTask,
-    SelectPreviousTask, SelectRight, SubmitAddDownload, ToggleTheme,
+    SelectPreviousTask, SelectRight, SubmitAddDownload,
+};
+pub use assets::Assets;
+pub use components::{
+    Button, ButtonStyle, ButtonVariant, Dialog, Icon, IconButton, IconName, IconSize,
+    LoadingIndicator, Segment, SegmentedControl, StatusIndicator, Toast, ToastKind, Tooltip,
 };
 pub use model::{
     AddDownloadRequestView, AddDownloadResultView, ColorSchemeView, CommandOutcomeView,

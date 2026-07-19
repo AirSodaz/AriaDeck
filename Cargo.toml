@@ -20,6 +20,7 @@ authors = ["AriaDeck contributors"]
 [workspace.dependencies]
 async-trait = "0.1.89"
 bitflags = { version = "2.10.0", features = ["serde"] }
+rust-embed = "8.11.0"
 futures = "0.3.31"
 futures-util = "0.3.31"
 gpui = { git = "https://github.com/zed-industries/zed.git", rev = "952d712dac48a4af2c54fb22c82d82a9d69b72d4" }

@@ -15,6 +15,7 @@ use gpui::{
 use crate::{
     Backspace, Copy, Cut, Delete, MoveEnd, MoveHome, MoveLeft, MoveRight, Paste, SelectAll,
     SelectLeft, SelectRight, Theme,
+    components::{Icon, IconButton, IconName, IconSize, Tooltip},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,6 +32,8 @@ pub struct TextFieldConfig {
     pub role: Role,
     pub accessibility_label: SharedString,
     pub placeholder: SharedString,
+    pub leading_icon: Option<IconName>,
+    pub clearable: bool,
 }
 
 impl TextFieldConfig {
@@ -42,6 +45,8 @@ impl TextFieldConfig {
             role: Role::SearchInput,
             accessibility_label: "Search downloads".into(),
             placeholder: placeholder.into(),
+            leading_icon: Some(IconName::Search),
+            clearable: true,
         }
     }
 }
@@ -54,6 +59,8 @@ pub struct TextField {
     role: Role,
     accessibility_label: SharedString,
     placeholder: SharedString,
+    leading_icon: Option<IconName>,
+    clearable: bool,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -83,6 +90,8 @@ impl TextField {
             role: config.role,
             accessibility_label: config.accessibility_label,
             placeholder: config.placeholder,
+            leading_icon: config.leading_icon,
+            clearable: config.clearable,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -660,7 +669,9 @@ impl gpui::Render for TextField {
             cx,
         );
         let weak_input = cx.entity().downgrade();
-        div()
+        let clear_input = weak_input.clone();
+        let is_focused = self.focus_handle.is_focused(window);
+        let input = div()
             .id(self.element_id.clone())
             .key_context(self.key_context.as_ref())
             .role(self.role)
@@ -694,21 +705,64 @@ impl gpui::Render for TextField {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .cursor(CursorStyle::IBeam)
+            .h_full()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .overflow_hidden()
+            .text_sm()
+            .child(TextFieldElement { input: cx.entity() });
+
+        div()
             .h(px(36.0))
             .w_full()
             .min_w(px(180.0))
             .max_w(px(460.0))
             .flex()
             .items_center()
+            .gap_2()
             .overflow_hidden()
-            .px_3()
+            .pl_3()
+            .pr_1()
             .rounded_md()
             .border_1()
-            .border_color(colors.border)
+            .border_color(if is_focused {
+                colors.focus_ring
+            } else {
+                colors.border
+            })
             .bg(colors.elevated_surface)
             .text_sm()
-            .focus_visible(|style| style.border_color(colors.focus_ring))
-            .child(TextFieldElement { input: cx.entity() })
+            .when_some(self.leading_icon, |field, icon| {
+                field.child(
+                    Icon::new(icon)
+                        .size(IconSize::Small)
+                        .color(colors.text_muted),
+                )
+            })
+            .child(input)
+            .when(self.clearable && !self.content.is_empty(), |field| {
+                let label = format!("Clear {}", self.accessibility_label);
+                field.child(
+                    IconButton::new(
+                        SharedString::from(format!("{}-clear", self.element_id)),
+                        IconName::X,
+                    )
+                    .aria_label(label)
+                    .tooltip(Tooltip::new("Clear"))
+                    .on_click(move |_, window, cx| {
+                        cx.stop_propagation();
+                        let Some(input) = clear_input.upgrade() else {
+                            return;
+                        };
+                        let focus = input.read(cx).focus_handle.clone();
+                        input.update(cx, |input, cx| input.set_text("", cx));
+                        window.focus(&focus, cx);
+                    })
+                    .render(colors),
+                )
+            })
     }
 }
 
@@ -883,6 +937,33 @@ mod tests {
         assert_eq!(config.role, Role::SearchInput);
         assert_eq!(config.accessibility_label.as_ref(), "Search downloads");
         assert_eq!(config.placeholder.as_ref(), "Search downloads or GID");
+        assert_eq!(config.leading_icon, Some(IconName::Search));
+        assert!(config.clearable);
+    }
+
+    #[gpui::test]
+    fn field_config_preserves_decorations(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "download-url".into(),
+                    key_context: "AddDownloadInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "Download URL".into(),
+                    placeholder: "https://example.com/file".into(),
+                    leading_icon: Some(IconName::Link),
+                    clearable: true,
+                },
+                Theme::dark(),
+                cx,
+            )
+        });
+
+        cx.read_entity(&input, |input, _| {
+            assert_eq!(input.leading_icon, Some(IconName::Link));
+            assert!(input.clearable);
+            assert_eq!(input.placeholder.as_ref(), "https://example.com/file");
+        });
     }
 
     #[test]
