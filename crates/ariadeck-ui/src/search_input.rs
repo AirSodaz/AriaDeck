@@ -127,6 +127,11 @@ impl TextField {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn text_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.last_bounds
+    }
+
     fn emit_change(&self, cx: &mut Context<Self>) {
         cx.emit(TextFieldEvent {
             text: self.content.to_string(),
@@ -672,6 +677,16 @@ impl gpui::Render for TextField {
         let clear_input = weak_input.clone();
         let is_focused = self.focus_handle.is_focused(window);
         let input = div()
+            .h_full()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .overflow_hidden()
+            .text_sm()
+            .child(TextFieldElement { input: cx.entity() });
+
+        div()
             .id(self.element_id.clone())
             .key_context(self.key_context.as_ref())
             .role(self.role)
@@ -705,16 +720,6 @@ impl gpui::Render for TextField {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .cursor(CursorStyle::IBeam)
-            .h_full()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .items_center()
-            .overflow_hidden()
-            .text_sm()
-            .child(TextFieldElement { input: cx.entity() });
-
-        div()
             .h(px(38.0))
             .w_full()
             .min_w(px(180.0))

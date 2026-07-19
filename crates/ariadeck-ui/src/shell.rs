@@ -3536,7 +3536,7 @@ fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
 
 #[cfg(test)]
 mod tests {
-    use gpui::TestAppContext;
+    use gpui::{TestAppContext, point, px};
 
     use super::*;
     use crate::{TaskCountsView, TaskStatusView};
@@ -3794,6 +3794,95 @@ mod tests {
             );
             assert_eq!(shell.next_request_id, first.get() + 1);
         });
+    }
+
+    #[gpui::test]
+    fn add_download_dialog_accepts_keyboard_input(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.open_add_download(&OpenAddDownload, window, cx);
+        });
+        cx.simulate_input("https://example.com/file");
+
+        view.read_with(cx, |shell, cx| {
+            assert_eq!(shell.add_input.read(cx).text(), "https://example.com/file");
+        });
+    }
+
+    #[gpui::test]
+    fn add_download_dialog_input_can_be_clicked_before_typing(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.open_add_download(&OpenAddDownload, window, cx);
+        });
+        let input_bounds = view.read_with(cx, |shell, cx| {
+            shell
+                .add_input
+                .read(cx)
+                .text_bounds()
+                .expect("add-download input must be painted")
+        });
+        view.update_in(cx, |shell, window, cx| {
+            window.focus(&shell.search_input.focus_handle(cx), cx);
+        });
+        cx.simulate_click(
+            point(input_bounds.left() - px(16.0), input_bounds.center().y),
+            Default::default(),
+        );
+        cx.simulate_input("https://example.com/file");
+
+        view.read_with(cx, |shell, cx| {
+            assert_eq!(shell.add_input.read(cx).text(), "https://example.com/file");
+        });
+    }
+
+    #[gpui::test]
+    fn add_download_dialog_supports_standard_clipboard_shortcuts(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.open_add_download(&OpenAddDownload, window, cx);
+            shell.add_input.update(cx, |input, cx| {
+                input.set_text("https://example.com/file", cx);
+            });
+        });
+        cx.simulate_keystrokes("secondary-a secondary-c");
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("https://example.com/file".to_owned())
+        );
+
+        cx.write_to_clipboard(ClipboardItem::new_string(
+            "magnet:?xt=urn:btih:test".to_owned(),
+        ));
+        cx.simulate_keystrokes("secondary-v");
+        view.read_with(cx, |shell, cx| {
+            assert_eq!(shell.add_input.read(cx).text(), "magnet:?xt=urn:btih:test");
+        });
+
+        cx.simulate_keystrokes("secondary-a secondary-x");
+        view.read_with(cx, |shell, cx| {
+            assert!(shell.add_input.read(cx).text().is_empty());
+        });
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("magnet:?xt=urn:btih:test".to_owned())
+        );
     }
 
     #[gpui::test]
