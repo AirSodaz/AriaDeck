@@ -1,6 +1,6 @@
 # AriaDeck Implementation Progress
 
-**Status:** In progress
+**Status:** MVP complete; post-MVP work remains
 
 **Current stage:** 8 - MVP completion and hardening
 
@@ -19,7 +19,7 @@ change.
 - [x] Stage 5 - Build the live, virtualized download workspace.
 - [x] Stage 6 - Add interactive download commands and details.
 - [x] Stage 7 - Manage a local external aria2 process and persistent profile.
-- [ ] Stage 8 - Complete and harden the MVP.
+- [x] Stage 8 - Complete and harden the MVP.
 - [ ] Post-MVP - Managed aria2 core installation, platform integration, and release work.
 
 ## Current Stage
@@ -136,9 +136,24 @@ visible until the user explicitly removes it.
   statistics and render a bounded one-minute chart.
 - [x] Surface local-engine running, restarting, and terminal failure states in
   the desktop workspace.
-- [ ] Complete workspace tests, Clippy, native build, real aria2 flows, and UI
+- [x] Complete workspace tests, Clippy, native build, real aria2 flows, and UI
   smoke verification on the merged MVP tree.
-- [ ] Record explicit MVP deferrals and mark the implementation complete.
+- [x] Record explicit MVP deferrals and mark the implementation complete.
+
+### MVP Completion Audit
+
+The initial MVP scope in `docs/design.md` is implemented and verified on the
+current tree: one active external local aria2 profile, authenticated WebSocket
+RPC, active/waiting/stopped/completed/failed views, URL/magnet add, pause,
+resume, retry, remove, virtualized lists, search/filtering, task details,
+global speed, bounded speed chart, configurable download directory, persisted
+light/dark theme, session-safe state, and local engine health monitoring.
+
+The explicit post-MVP deferrals are managed core installation and rollback,
+multiple simultaneous engines, peer/proxy/queue advanced controls, remote path
+mapping, auto-update and packaging, persistent historical analytics, custom
+tags/automation, SQLite-backed multi-profile metadata, and diagnostic bundle
+export. These remain outside the first usable MVP and are listed in Known Gaps.
 
 ## Architecture Decisions
 
@@ -258,6 +273,11 @@ records, and diagnostics; persistent speed analytics are explicitly post-MVP.
 | 2026-07-19 | `cargo test -p ariadeck-engine -p ariadeck-ui -p ariadeck-desktop` | Pass - 32 tests, 2 real-process tests ignored by default; includes health presentation and mapping |
 | 2026-07-19 | `cargo clippy -p ariadeck-engine -p ariadeck-ui -p ariadeck-desktop --all-targets -- -D warnings` | Pass - no issues after local-engine health integration |
 | 2026-07-19 | Ignored supervised double-crash test with Scoop `aria2c 1.37.0` | Pass - recovery count remained observable, terminal failure honored the budget, weak handle expired, and no process remained |
+| 2026-07-19 | `cargo test --workspace` | Pass - 95 tests, 5 real-process tests ignored by default across 16 suites |
+| 2026-07-19 | `cargo clippy --workspace --all-targets -- -D warnings` | Pass - no workspace issues |
+| 2026-07-19 | `cargo build -p ariadeck-desktop` | Pass - native desktop executable built successfully |
+| 2026-07-19 | All ignored live aria2 flows with Scoop `aria2c 1.37.0` | Pass - engine lifecycle and 3 RPC/coordinator/command flows; no residual current-tree desktop or aria2 process |
+| 2026-07-19 | Native GPUI MVP smoke | Pass - connected local engine, speed chart accessibility group, health status, settings dialog focus trap, light-theme save, status notice, and clean close verified at 1180 x 760 |
 
 ## Known Gaps
 
@@ -293,3 +313,9 @@ records, and diagnostics; persistent speed analytics are explicitly post-MVP.
 - `feat: integrate persistent desktop preferences` - accessible settings UI, ordered background saves, and configured add-task destinations.
 - `feat: chart bounded transfer speed history` - application-owned half-second samples and a stable one-minute download/upload chart.
 - `feat: surface local engine recovery health` - weak supervision observer, retained restart counts, and persistent failure presentation.
+
+## Final MVP Checkpoint
+
+- `2026-07-19` - Stage 8 completion audit passed on the merged current tree.
+- `2026-07-19` - Native smoke used the current `target/debug/ariadeck-desktop.exe`;
+  the unrelated legacy `D:\projects\ariadeck` window was not used as evidence.
