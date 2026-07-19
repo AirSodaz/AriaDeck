@@ -4,6 +4,7 @@ members = [
     "apps/ariadeck-desktop",
     "crates/ariadeck-application",
     "crates/ariadeck-domain",
+    "crates/ariadeck-rpc",
     "crates/ariadeck-telemetry",
     "crates/ariadeck-ui",
 ]
@@ -18,10 +19,16 @@ authors = ["AriaDeck contributors"]
 async-trait = "0.1.89"
 bitflags = { version = "2.10.0", features = ["serde"] }
 futures = "0.3.31"
+futures-util = "0.3.31"
 gpui = { git = "https://github.com/zed-industries/zed.git", rev = "952d712dac48a4af2c54fb22c82d82a9d69b72d4" }
 gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "952d712dac48a4af2c54fb22c82d82a9d69b72d4" }
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+secrecy = "0.8.0"
+tempfile = "3.23.0"
 thiserror = "2.0.17"
+tokio = { version = "1.48.0", features = ["macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = { version = "0.28.0", default-features = false, features = ["connect", "handshake", "rustls-tls-native-roots"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 url = { version = "2.5.7", features = ["serde"] }

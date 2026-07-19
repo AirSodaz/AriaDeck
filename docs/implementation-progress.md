@@ -2,7 +2,7 @@
 
 **Status:** In progress
 
-**Current stage:** 3 - Typed aria2 WebSocket RPC
+**Current stage:** 4 - Synchronization and reconnection coordinator
 
 **Last updated:** 2026-07-19
 
@@ -14,11 +14,12 @@ change.
 
 - [x] Stage 1 - Bootstrap workspace, pin GPUI, open a native window, enable tracing.
 - [x] Stage 2 - Add domain and application state core with incremental patches.
-- [ ] Stage 3 - Implement typed aria2 WebSocket RPC and synchronization.
-- [ ] Stage 4 - Build the live, virtualized download workspace.
-- [ ] Stage 5 - Add download commands and structured partial outcomes.
-- [ ] Stage 6 - Manage a local external aria2 process and persistent profile.
-- [ ] Stage 7 - Complete and harden the MVP.
+- [x] Stage 3 - Implement typed aria2 WebSocket RPC transport and client.
+- [ ] Stage 4 - Coordinate polling, notifications, generations, and reconnection.
+- [ ] Stage 5 - Build the live, virtualized download workspace.
+- [ ] Stage 6 - Add interactive download commands and details.
+- [ ] Stage 7 - Manage a local external aria2 process and persistent profile.
+- [ ] Stage 8 - Complete and harden the MVP.
 - [ ] Post-MVP - Managed aria2 core installation, platform integration, and release work.
 
 ## Current Stage
@@ -49,17 +50,28 @@ change.
 
 ### Stage 3 - Typed aria2 WebSocket RPC
 
-- [ ] Define JSON-RPC request, response, error, and notification envelopes.
-- [ ] Centralize secret token injection without exposing secrets to logs.
-- [ ] Add a concurrent WebSocket transport with unique request IDs and timeouts.
-- [ ] Match out-of-order responses to pending requests.
-- [ ] Add typed `getVersion`, `getGlobalStat`, `tellActive`, `tellWaiting`, and
+- [x] Define JSON-RPC request, response, error, and notification envelopes.
+- [x] Centralize secret token injection without exposing secrets to logs.
+- [x] Add a concurrent WebSocket transport with unique request IDs and timeouts.
+- [x] Match out-of-order responses to pending requests.
+- [x] Add typed `getVersion`, `getGlobalStat`, `tellActive`, `tellWaiting`, and
   `tellStopped` methods.
-- [ ] Convert aria2 decimal strings and optional fields into domain types safely.
-- [ ] Treat notifications as targeted refresh hints rather than complete state.
-- [ ] Add contract tests for malformed data, RPC errors, authentication, timeout,
+- [x] Convert aria2 decimal strings and optional fields into domain types safely.
+- [x] Treat notifications as targeted refresh hints rather than complete state.
+- [x] Add contract tests for malformed data, RPC errors, authentication, timeout,
   notification, and out-of-order responses.
-- [ ] Run a real `aria2c` WebSocket smoke test using the local Scoop installation.
+- [x] Run a real `aria2c` WebSocket smoke test using the local Scoop installation.
+
+### Stage 4 - Synchronization and reconnection coordinator
+
+- [ ] Add capability verification and an initial batched state snapshot.
+- [ ] Apply live and stopped responses only to the matching session generation.
+- [ ] Coordinate foreground/background polling intervals without overlapping cycles.
+- [ ] Convert WebSocket notifications into deduplicated targeted refresh requests.
+- [ ] Preserve the last-known store and mark it stale while disconnected.
+- [ ] Add exponential reconnect backoff with jitter and a maximum delay.
+- [ ] Discard late responses from superseded connection attempts.
+- [ ] Test reconnect, cancellation, notification storms, and stale-generation races.
 
 ## Architecture Decisions
 
@@ -91,6 +103,14 @@ An aria2 GID is not globally unique. Each download store will belong to an
 explicit profile and engine-session generation. Responses from stale generations
 will be discarded, and cross-engine references will use a stable task identity.
 
+### ADR-005 - Give one actor exclusive ownership of each WebSocket
+
+The WebSocket transport owns its socket in one background actor. Callers send
+commands through a bounded channel; request IDs route out-of-order responses to
+oneshot waiters, and a broadcast channel exposes notifications only as refresh
+hints. Authentication is a transport decorator, so typed methods never construct
+or log token parameters.
+
 ## Verification Log
 
 | Date | Command or check | Result |
@@ -105,6 +125,10 @@ will be discarded, and cross-engine references will use a stable task identity.
 | 2026-07-19 | `cargo test -p ariadeck-domain -p ariadeck-application` | Pass - 15 tests |
 | 2026-07-19 | `cargo test --workspace` | Pass - 16 tests across 9 suites |
 | 2026-07-19 | `cargo clippy --workspace --all-targets -- -D warnings` | Pass - no issues after Stage 2 |
+| 2026-07-19 | `cargo test -p ariadeck-rpc` | Pass - 14 tests, 1 live test ignored by default |
+| 2026-07-19 | Live `aria2c 1.37.0` RPC test | Pass - authenticated version/stat/list/shutdown in 4.41 seconds |
+| 2026-07-19 | `cargo test --workspace` | Pass - 30 tests, 1 ignored across 12 suites |
+| 2026-07-19 | `cargo clippy --workspace --all-targets -- -D warnings` | Pass - no issues after Stage 3 |
 
 ## Known Gaps
 
@@ -119,3 +143,4 @@ will be discarded, and cross-engine references will use a stable task identity.
 
 - `chore: bootstrap AriaDeck workspace` - Stage 1 foundation.
 - `feat: add domain and application state core` - Stage 2 state and command foundation.
+- `feat: implement typed aria2 websocket RPC` - Stage 3 transport and adapter.
