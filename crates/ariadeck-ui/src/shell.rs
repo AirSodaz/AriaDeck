@@ -1308,8 +1308,14 @@ impl AppShell {
                     .h_full()
                     .flex()
                     .items_center()
-                    .justify_center()
-                    .child(div().w(px(search_width)).child(self.search_input.clone())),
+                    .child(titlebar_drag_region())
+                    .child(
+                        div()
+                            .w(px(search_width))
+                            .flex_none()
+                            .child(self.search_input.clone()),
+                    )
+                    .child(titlebar_drag_region()),
             )
             .child(
                 div()
@@ -2970,6 +2976,18 @@ impl Render for AppShell {
             .when(self.status_notice.is_some(), |element| {
                 element.child(self.render_toast(cx))
             })
+    }
+}
+
+fn titlebar_drag_region() -> Div {
+    let region = div().flex_1().min_w_0().h_full();
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
+        region.window_control_area(WindowControlArea::Drag)
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        region
     }
 }
 
