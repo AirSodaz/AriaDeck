@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -578,9 +578,38 @@ impl Default for LocalRestartPolicy {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LocalEngineHealth {
-    Running,
+    Running { restarts: u32 },
     Restarting { attempt: u32 },
     Failed { restarts: u32, reason: String },
+}
+
+/// Read-only weak handle for observing a supervisor without extending its lifetime.
+#[derive(Clone, Default)]
+pub struct LocalEngineHealthHandle {
+    shared: Weak<SupervisorShared>,
+}
+
+impl fmt::Debug for LocalEngineHealthHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocalEngineHealthHandle")
+            .field("health", &self.health())
+            .finish_non_exhaustive()
+    }
+}
+
+impl LocalEngineHealthHandle {
+    #[must_use]
+    pub fn health(&self) -> Option<LocalEngineHealth> {
+        let shared = self.shared.upgrade()?;
+        Some(
+            shared
+                .health
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+        )
+    }
 }
 
 struct SupervisorShared {
@@ -626,7 +655,7 @@ impl LocalEngineSupervisor {
         let profile_id = process.config().profile_id;
         let shared = Arc::new(SupervisorShared {
             process: Mutex::new(process),
-            health: Mutex::new(LocalEngineHealth::Running),
+            health: Mutex::new(LocalEngineHealth::Running { restarts: 0 }),
             stop: AtomicBool::new(false),
             policy,
         });
@@ -669,6 +698,13 @@ impl LocalEngineSupervisor {
             .clone()
     }
 
+    #[must_use]
+    pub fn health_handle(&self) -> LocalEngineHealthHandle {
+        LocalEngineHealthHandle {
+            shared: Arc::downgrade(&self.shared),
+        }
+    }
+
     /// Stop crash monitoring before the composition root requests RPC shutdown.
     pub fn stop_monitoring(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
@@ -702,11 +738,28 @@ fn monitor_local_engine(shared: &SupervisorShared) {
         }
 
         let now = Instant::now();
+        let previous_restart_count = restarts.len();
         while restarts
             .front()
             .is_some_and(|restart| now.duration_since(*restart) > shared.policy.window)
         {
             restarts.pop_front();
+        }
+        let restart_count_changed = restarts.len() != previous_restart_count;
+        let is_running = restart_count_changed && {
+            let health = shared
+                .health
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            matches!(&*health, LocalEngineHealth::Running { .. })
+        };
+        if is_running {
+            set_supervisor_health(
+                shared,
+                LocalEngineHealth::Running {
+                    restarts: u32::try_from(restarts.len()).unwrap_or(u32::MAX),
+                },
+            );
         }
 
         let mut process = shared
@@ -746,7 +799,12 @@ fn monitor_local_engine(shared: &SupervisorShared) {
         match process.restart() {
             Ok(()) => {
                 restarts.push_back(now);
-                set_supervisor_health(shared, LocalEngineHealth::Running);
+                set_supervisor_health(
+                    shared,
+                    LocalEngineHealth::Running {
+                        restarts: u32::try_from(restarts.len()).unwrap_or(u32::MAX),
+                    },
+                );
             }
             Err(error) => {
                 restarts.push_back(now);
@@ -1005,6 +1063,7 @@ mod tests {
         let mut supervisor =
             LocalEngineSupervisor::spawn_with_policy(&profile.local_config(), policy)
                 .unwrap_or_else(|error| panic!("failed to spawn supervisor: {error}"));
+        let health_handle = supervisor.health_handle();
         let endpoint = supervisor.endpoint().clone();
         let secret = supervisor.secret().to_owned();
         let original_pid = kill_current_child(&supervisor);
@@ -1019,7 +1078,7 @@ mod tests {
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 process.child.as_ref().map(Child::id)
             };
-            if supervisor.health() == LocalEngineHealth::Running
+            if supervisor.health() == (LocalEngineHealth::Running { restarts: 1 })
                 && pid.is_some_and(|pid| pid != original_pid)
             {
                 break pid.expect("restarted child must exist");
@@ -1051,6 +1110,8 @@ mod tests {
         }
 
         assert!(supervisor.shutdown().is_ok());
+        drop(supervisor);
+        assert_eq!(health_handle.health(), None);
         let _ = fs::remove_dir_all(root);
     }
 

@@ -144,6 +144,34 @@ impl ConnectionView {
     }
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum EngineHealthView {
+    #[default]
+    External,
+    Running {
+        restarts: u32,
+    },
+    Restarting {
+        attempt: u32,
+    },
+    Failed {
+        summary: String,
+    },
+}
+
+impl EngineHealthView {
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::External => "External RPC",
+            Self::Running { restarts: 0 } => "Local engine running",
+            Self::Running { .. } => "Local engine recovered",
+            Self::Restarting { .. } => "Local engine restarting",
+            Self::Failed { .. } => "Local engine stopped",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceSnapshot {
     pub profile_id: String,

@@ -17,7 +17,8 @@ use ariadeck_domain::{
     TaskIdentity as DomainTaskIdentity, TaskProgress,
 };
 use ariadeck_engine::{
-    ExternalEngineProfile, JsonProfileStore, LocalEngineConfig, LocalEngineSupervisor,
+    ExternalEngineProfile, JsonProfileStore, LocalEngineConfig, LocalEngineHealth,
+    LocalEngineHealthHandle, LocalEngineSupervisor,
 };
 use ariadeck_rpc::{
     Aria2Client, AuthenticatedTransport, RpcSecret, RpcSyncConnector, WebSocketConfig,
@@ -26,9 +27,9 @@ use ariadeck_rpc::{
 use ariadeck_settings::{AppSettings, ColorScheme, JsonSettingsStore};
 use ariadeck_ui::{
     AddDownloadRequestView, AddDownloadResultView, AppShell, AppShellEvent, ColorSchemeView,
-    CommandOutcomeView, ConnectionView, DownloadRowView, EngineSessionView, OperationErrorView,
-    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    SpeedSampleView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    CommandOutcomeView, ConnectionView, DownloadRowView, EngineHealthView, EngineSessionView,
+    OperationErrorView, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
+    SettingsView, SpeedSampleView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
     TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
     TaskDetailsView, TaskFileView, TaskIdentity, TaskStatusView, WorkspaceFilter, WorkspaceQuery,
     WorkspaceSnapshot,
@@ -134,10 +135,19 @@ impl DesktopRoot {
                     (None, None, snapshot)
                 }
             };
+        let local_engine_health = local_engine
+            .as_ref()
+            .map(LocalEngineSupervisor::health_handle);
+        let initial_engine_health = local_engine_health
+            .as_ref()
+            .and_then(LocalEngineHealthHandle::health)
+            .map(map_local_engine_health)
+            .unwrap_or(EngineHealthView::External);
         let settings_view = map_settings(&settings);
         let workspace = cx.new(|cx| {
             let mut shell = AppShell::new_with_settings(settings_view, window, cx);
             shell.set_snapshot(initial_snapshot, cx);
+            shell.set_engine_health(initial_engine_health, cx);
             if let Some(message) = startup_notice {
                 shell.set_startup_notice(message, true, cx);
             }
@@ -178,6 +188,9 @@ impl DesktopRoot {
         }
         if let Some(results) = settings_results {
             spawn_settings_result_bridge(results, window, cx);
+        }
+        if let Some(health) = local_engine_health {
+            spawn_local_engine_health_bridge(health, cx);
         }
 
         Self {
@@ -824,6 +837,34 @@ fn spawn_settings_result_bridge(
     .detach();
 }
 
+fn spawn_local_engine_health_bridge(
+    health_handle: LocalEngineHealthHandle,
+    cx: &mut Context<DesktopRoot>,
+) {
+    let executor = cx.background_executor().clone();
+    cx.spawn(async move |this, cx| {
+        let mut previous = None;
+        while let Some(health) = health_handle.health() {
+            if previous.as_ref() != Some(&health) {
+                let view = map_local_engine_health(health.clone());
+                previous = Some(health);
+                if this
+                    .update(cx, |this, cx| {
+                        this.workspace.update(cx, |workspace, cx| {
+                            workspace.set_engine_health(view, cx);
+                        });
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            executor.timer(Duration::from_millis(250)).await;
+        }
+    })
+    .detach();
+}
+
 fn spawn_snapshot_bridge(
     handle: SyncHandle,
     mut query_receiver: watch::Receiver<TaskListQuery>,
@@ -929,6 +970,14 @@ fn map_connection(state: ConnectionState) -> ConnectionView {
             summary: reason.summary,
             retryable: reason.retryable,
         },
+    }
+}
+
+fn map_local_engine_health(health: LocalEngineHealth) -> EngineHealthView {
+    match health {
+        LocalEngineHealth::Running { restarts } => EngineHealthView::Running { restarts },
+        LocalEngineHealth::Restarting { attempt } => EngineHealthView::Restarting { attempt },
+        LocalEngineHealth::Failed { reason, .. } => EngineHealthView::Failed { summary: reason },
     }
 }
 
@@ -1127,5 +1176,22 @@ mod tests {
         assert!(first.download_directory.is_dir());
         assert!(second.download_directory.is_dir());
         assert_eq!(store.load().expect("load final settings"), second);
+    }
+
+    #[test]
+    fn local_engine_health_mapping_preserves_recovery_and_failure_context() {
+        assert_eq!(
+            map_local_engine_health(LocalEngineHealth::Running { restarts: 2 }),
+            EngineHealthView::Running { restarts: 2 }
+        );
+        assert_eq!(
+            map_local_engine_health(LocalEngineHealth::Failed {
+                restarts: 2,
+                reason: "restart budget exhausted".into(),
+            }),
+            EngineHealthView::Failed {
+                summary: "restart budget exhausted".into(),
+            }
+        );
     }
 }

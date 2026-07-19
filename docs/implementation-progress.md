@@ -134,7 +134,7 @@ visible until the user explicitly removes it.
   both local-engine startup and newly added tasks.
 - [x] Feed the application-layer fixed-capacity speed history from live global
   statistics and render a bounded one-minute chart.
-- [ ] Surface local-engine running, restarting, and terminal failure states in
+- [x] Surface local-engine running, restarting, and terminal failure states in
   the desktop workspace.
 - [ ] Complete workspace tests, Clippy, native build, real aria2 flows, and UI
   smoke verification on the merged MVP tree.
@@ -255,14 +255,16 @@ records, and diagnostics; persistent speed analytics are explicitly post-MVP.
 | 2026-07-19 | `cargo build -p ariadeck-desktop` | Pass - native desktop executable built with persisted settings integration |
 | 2026-07-19 | `cargo test -p ariadeck-application -p ariadeck-ui -p ariadeck-desktop` | Pass - 56 tests including bounded 500 ms sampling, unchanged-stat publication, latest-window clamping, and chart composition |
 | 2026-07-19 | `cargo clippy -p ariadeck-application -p ariadeck-ui -p ariadeck-desktop --all-targets -- -D warnings` | Pass - no issues after speed-history integration |
+| 2026-07-19 | `cargo test -p ariadeck-engine -p ariadeck-ui -p ariadeck-desktop` | Pass - 32 tests, 2 real-process tests ignored by default; includes health presentation and mapping |
+| 2026-07-19 | `cargo clippy -p ariadeck-engine -p ariadeck-ui -p ariadeck-desktop --all-targets -- -D warnings` | Pass - no issues after local-engine health integration |
+| 2026-07-19 | Ignored supervised double-crash test with Scoop `aria2c 1.37.0` | Pass - recovery count remained observable, terminal failure honored the budget, weak handle expired, and no process remained |
 
 ## Known Gaps
 
 - Failed-task retry preserves the source URI/info hash and destination for the
   URL/magnet MVP; arbitrary per-task aria2 options are not replayed.
-- Local process crashes are restarted within a bounded window and terminal
-  supervisor failure is exposed through the engine API; recovery status and
-  diagnostics are not yet presented in the desktop UI.
+- Local process recovery and terminal failure are visible in the desktop;
+  persistent engine-health history and exported diagnostic bundles are post-MVP.
 - Profile and typed settings persistence use atomic JSON documents for the
   single-profile MVP; SQLite remains planned for multi-profile metadata,
   history, installation records, and diagnostics.
@@ -290,3 +292,4 @@ records, and diagnostics; persistent speed analytics are explicitly post-MVP.
 - `feat: persist typed application settings` - versioned JSON settings with validation and corruption-preserving recovery.
 - `feat: integrate persistent desktop preferences` - accessible settings UI, ordered background saves, and configured add-task destinations.
 - `feat: chart bounded transfer speed history` - application-owned half-second samples and a stable one-minute download/upload chart.
+- `feat: surface local engine recovery health` - weak supervision observer, retained restart counts, and persistent failure presentation.

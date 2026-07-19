@@ -9,16 +9,16 @@ use gpui::{
 
 use crate::{
     AddDownloadRequestView, AddDownloadResultView, ClearSearch, CloseAddDownload, CloseSettings,
-    ColorSchemeView, CommandOutcomeView, ConnectionView, DownloadRowView, EngineSessionView,
-    FocusNext, FocusPrevious, FocusSearch, OpenAddDownload, OpenSettings, OpenTaskDetails,
-    OperationErrorView, PauseSelectedTask, RemoveSelectedTask, RequestId, ResumeSelectedTask,
-    RetrySelectedTask, SaveSettings, SearchInputEvent, SelectNextTask, SelectPreviousTask,
-    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    SpeedSampleView, SubmitAddDownload, TaskCommandRequestView, TaskCommandResultView,
-    TaskCommandView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
-    TaskDetailsView, TaskFileView, TaskIdentity, TaskStatusView, TextField, TextFieldConfig, Theme,
-    ThemeMode, ToggleTheme, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, format_bytes,
-    format_eta, format_percent, format_rate,
+    ColorSchemeView, CommandOutcomeView, ConnectionView, DownloadRowView, EngineHealthView,
+    EngineSessionView, FocusNext, FocusPrevious, FocusSearch, OpenAddDownload, OpenSettings,
+    OpenTaskDetails, OperationErrorView, PauseSelectedTask, RemoveSelectedTask, RequestId,
+    ResumeSelectedTask, RetrySelectedTask, SaveSettings, SearchInputEvent, SelectNextTask,
+    SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
+    SettingsView, SpeedSampleView, SubmitAddDownload, TaskCommandRequestView,
+    TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView, TaskDetailsRequestView,
+    TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity, TaskStatusView, TextField,
+    TextFieldConfig, Theme, ThemeMode, ToggleTheme, WorkspaceFilter, WorkspaceQuery,
+    WorkspaceSnapshot, format_bytes, format_eta, format_percent, format_rate,
 };
 
 const SPEED_CHART_SAMPLES: usize = 120;
@@ -104,6 +104,7 @@ struct PendingSettingsSave {
 pub struct AppShell {
     theme: Theme,
     settings: SettingsView,
+    engine_health: EngineHealthView,
     snapshot: WorkspaceSnapshot,
     query: WorkspaceQuery,
     selected: Option<TaskIdentity>,
@@ -235,6 +236,7 @@ impl AppShell {
         Self {
             theme,
             settings,
+            engine_health: EngineHealthView::External,
             snapshot: WorkspaceSnapshot::default(),
             query: WorkspaceQuery::default(),
             selected: None,
@@ -318,6 +320,34 @@ impl AppShell {
         if should_refresh_details {
             self.request_current_details(cx);
         }
+        cx.notify();
+    }
+
+    pub fn set_engine_health(&mut self, health: EngineHealthView, cx: &mut Context<Self>) {
+        if self.engine_health == health {
+            return;
+        }
+        self.engine_health = health;
+        self.status_notice = match &self.engine_health {
+            EngineHealthView::External | EngineHealthView::Running { restarts: 0 } => {
+                self.status_notice.take()
+            }
+            EngineHealthView::Running { restarts } => Some(StatusNotice {
+                message: format!(
+                    "Local aria2 recovered after {restarts} restart attempt{}.",
+                    if *restarts == 1 { "" } else { "s" }
+                ),
+                is_error: false,
+            }),
+            EngineHealthView::Restarting { attempt } => Some(StatusNotice {
+                message: format!("Local aria2 stopped; restart attempt {attempt} is in progress."),
+                is_error: false,
+            }),
+            EngineHealthView::Failed { summary } => Some(StatusNotice {
+                message: format!("Local aria2 could not be restarted: {summary}"),
+                is_error: true,
+            }),
+        };
         cx.notify();
     }
 
@@ -1357,9 +1387,21 @@ impl AppShell {
                             )
                             .child(
                                 div()
+                                    .id("local-engine-health")
+                                    .role(Role::Status)
+                                    .aria_label(self.engine_health.label())
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
                                     .text_xs()
                                     .text_color(colors.text_muted)
-                                    .child("External aria2 RPC"),
+                                    .child(
+                                        div()
+                                            .size(px(6.0))
+                                            .rounded_full()
+                                            .bg(engine_health_color(&self.engine_health, colors)),
+                                    )
+                                    .child(self.engine_health.label()),
                             ),
                     )
                     .child(
@@ -1477,6 +1519,10 @@ impl AppShell {
     fn render_main(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
         let task_count = self.snapshot.tasks.len();
+        let engine_failure = match &self.engine_health {
+            EngineHealthView::Failed { summary } => Some(summary.clone()),
+            _ => None,
+        };
         let content = if task_count == 0 {
             self.render_empty_state(cx)
         } else {
@@ -1516,6 +1562,32 @@ impl AppShell {
             .flex()
             .flex_col()
             .bg(colors.background)
+            .when_some(engine_failure, |element, summary| {
+                element.child(
+                    div()
+                        .id("local-engine-failure")
+                        .role(Role::Alert)
+                        .aria_label(format!("Local aria2 stopped: {summary}"))
+                        .h(px(38.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_4()
+                        .border_b_1()
+                        .border_color(with_alpha(colors.danger, 0.35))
+                        .bg(with_alpha(colors.danger, 0.1))
+                        .text_xs()
+                        .text_color(colors.danger)
+                        .child(
+                            div()
+                                .flex_none()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Local aria2 stopped"),
+                        )
+                        .child(div().min_w_0().truncate().child(summary)),
+                )
+            })
             .when(self.snapshot.stale, |element| {
                 element.child(
                     div()
@@ -2911,6 +2983,15 @@ fn connection_color(connection: &ConnectionView, colors: crate::ThemeColors) -> 
     }
 }
 
+fn engine_health_color(health: &EngineHealthView, colors: crate::ThemeColors) -> Hsla {
+    match health {
+        EngineHealthView::External => colors.information,
+        EngineHealthView::Running { restarts: 0 } => colors.success,
+        EngineHealthView::Running { .. } | EngineHealthView::Restarting { .. } => colors.warning,
+        EngineHealthView::Failed { .. } => colors.danger,
+    }
+}
+
 fn task_status_color(status: TaskStatusView, colors: crate::ThemeColors) -> Hsla {
     match status {
         TaskStatusView::Active => colors.accent,
@@ -3005,6 +3086,51 @@ mod tests {
             visible.last().map(|sample| sample.download_rate),
             Some(SPEED_CHART_SAMPLES as u64)
         );
+    }
+
+    #[gpui::test]
+    fn local_engine_health_surfaces_recovery_and_terminal_failure(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+
+        view.update(cx, |shell, cx| {
+            shell.set_engine_health(EngineHealthView::Running { restarts: 0 }, cx);
+            shell.set_engine_health(EngineHealthView::Restarting { attempt: 1 }, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert_eq!(
+                shell
+                    .status_notice
+                    .as_ref()
+                    .map(|notice| notice.message.as_str()),
+                Some("Local aria2 stopped; restart attempt 1 is in progress.")
+            );
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.set_engine_health(EngineHealthView::Running { restarts: 1 }, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            let notice = shell.status_notice.as_ref().expect("recovery notice");
+            assert!(!notice.is_error);
+            assert_eq!(
+                notice.message,
+                "Local aria2 recovered after 1 restart attempt."
+            );
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.set_engine_health(
+                EngineHealthView::Failed {
+                    summary: "restart budget exhausted".into(),
+                },
+                cx,
+            );
+        });
+        view.read_with(cx, |shell, _| {
+            let notice = shell.status_notice.as_ref().expect("failure notice");
+            assert!(notice.is_error);
+            assert_eq!(shell.engine_health.label(), "Local engine stopped");
+        });
     }
 
     #[gpui::test]

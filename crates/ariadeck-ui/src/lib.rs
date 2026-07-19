@@ -16,9 +16,9 @@ pub use actions::{
 };
 pub use model::{
     AddDownloadRequestView, AddDownloadResultView, ColorSchemeView, CommandOutcomeView,
-    ConnectionView, DownloadRowView, EngineSessionView, OperationErrorView, RequestId,
-    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    SpeedSampleView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    ConnectionView, DownloadRowView, EngineHealthView, EngineSessionView, OperationErrorView,
+    RequestId, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
+    SettingsView, SpeedSampleView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
     TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
     TaskDetailsView, TaskFileView, TaskIdentity, TaskStatusView, WorkspaceFilter, WorkspaceQuery,
     WorkspaceSnapshot, format_bytes, format_eta, format_percent, format_rate,
