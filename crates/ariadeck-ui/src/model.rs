@@ -88,6 +88,12 @@ pub struct TaskCountsView {
     pub failed: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SpeedSampleView {
+    pub download_rate: u64,
+    pub upload_rate: u64,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum ConnectionView {
     #[default]
@@ -148,6 +154,7 @@ pub struct WorkspaceSnapshot {
     pub stale: bool,
     pub download_rate: u64,
     pub upload_rate: u64,
+    pub speed_history: Vec<SpeedSampleView>,
     pub counts: TaskCountsView,
     pub tasks: Vec<DownloadRowView>,
 }
@@ -163,6 +170,7 @@ impl Default for WorkspaceSnapshot {
             stale: false,
             download_rate: 0,
             upload_rate: 0,
+            speed_history: Vec::new(),
             counts: TaskCountsView::default(),
             tasks: Vec::new(),
         }

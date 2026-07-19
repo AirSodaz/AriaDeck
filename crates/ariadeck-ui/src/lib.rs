@@ -18,10 +18,10 @@ pub use model::{
     AddDownloadRequestView, AddDownloadResultView, ColorSchemeView, CommandOutcomeView,
     ConnectionView, DownloadRowView, EngineSessionView, OperationErrorView, RequestId,
     SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    TaskCommandRequestView, TaskCommandResultView, TaskCommandView, TaskCountsView,
-    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
-    TaskFileView, TaskIdentity, TaskStatusView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
-    format_bytes, format_eta, format_percent, format_rate,
+    SpeedSampleView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
+    TaskDetailsView, TaskFileView, TaskIdentity, TaskStatusView, WorkspaceFilter, WorkspaceQuery,
+    WorkspaceSnapshot, format_bytes, format_eta, format_percent, format_rate,
 };
 pub use search_input::{SearchInput, SearchInputEvent, TextField, TextFieldConfig, TextFieldEvent};
 pub use shell::{AppShell, AppShellEvent};

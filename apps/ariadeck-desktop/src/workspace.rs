@@ -28,9 +28,10 @@ use ariadeck_ui::{
     AddDownloadRequestView, AddDownloadResultView, AppShell, AppShellEvent, ColorSchemeView,
     CommandOutcomeView, ConnectionView, DownloadRowView, EngineSessionView, OperationErrorView,
     SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    TaskCommandRequestView, TaskCommandResultView, TaskCommandView, TaskCountsView,
-    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
-    TaskFileView, TaskIdentity, TaskStatusView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
+    SpeedSampleView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
+    TaskDetailsView, TaskFileView, TaskIdentity, TaskStatusView, WorkspaceFilter, WorkspaceQuery,
+    WorkspaceSnapshot,
 };
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
 use tokio::{
@@ -891,6 +892,15 @@ fn map_snapshot(snapshot: StoreSnapshot) -> WorkspaceSnapshot {
         stale: snapshot.stale,
         download_rate: snapshot.global_stat.download_speed.get(),
         upload_rate: snapshot.global_stat.upload_speed.get(),
+        speed_history: snapshot
+            .speed_history
+            .samples()
+            .iter()
+            .map(|sample| SpeedSampleView {
+                download_rate: sample.download.get(),
+                upload_rate: sample.upload.get(),
+            })
+            .collect(),
         counts: TaskCountsView {
             all: snapshot.counts.all,
             active: snapshot.counts.active,

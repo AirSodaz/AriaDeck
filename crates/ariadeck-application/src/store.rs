@@ -1,10 +1,15 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    time::Instant,
+};
 
 use ariadeck_domain::{
     DownloadTask, EngineSession, Gid, GlobalStat, SessionGeneration, TaskFields, TaskSnapshot,
     TaskUpdateError,
 };
 use thiserror::Error;
+
+use crate::{SpeedHistory, SpeedSample};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TaskCollection {
@@ -86,6 +91,8 @@ pub struct DownloadStore {
     stopped_total: Option<usize>,
     pub(crate) search_index: HashMap<Gid, String>,
     global_stat: GlobalStat,
+    speed_history: SpeedHistory,
+    speed_history_started_at: Instant,
     stale: bool,
     revision: u64,
 }
@@ -103,6 +110,8 @@ impl DownloadStore {
             stopped_total: None,
             search_index: HashMap::new(),
             global_stat: GlobalStat::default(),
+            speed_history: SpeedHistory::default(),
+            speed_history_started_at: Instant::now(),
             stale: false,
             revision: 0,
         }
@@ -126,6 +135,25 @@ impl DownloadStore {
     #[must_use]
     pub const fn global_stat(&self) -> GlobalStat {
         self.global_stat
+    }
+
+    #[must_use]
+    pub fn speed_history(&self) -> &SpeedHistory {
+        &self.speed_history
+    }
+
+    pub fn record_speed_sample(
+        &mut self,
+        generation: SessionGeneration,
+        stat: GlobalStat,
+    ) -> Result<(), StoreError> {
+        self.ensure_generation(generation)?;
+        self.speed_history.push(SpeedSample {
+            elapsed: self.speed_history_started_at.elapsed(),
+            download: stat.download_speed,
+            upload: stat.upload_speed,
+        });
+        Ok(())
     }
 
     #[must_use]
@@ -457,7 +485,7 @@ pub enum StoreError {
 #[cfg(test)]
 mod tests {
     use ariadeck_domain::{
-        DownloadStatus, EngineSessionId, ProfileId, SessionGeneration, TaskSnapshot,
+        ByteRate, DownloadStatus, EngineSessionId, ProfileId, SessionGeneration, TaskSnapshot,
     };
 
     use super::*;
@@ -570,6 +598,53 @@ mod tests {
         );
         assert_eq!(store.revision(), 0);
         assert!(store.tasks.is_empty());
+    }
+
+    #[test]
+    fn speed_samples_are_bounded_without_changing_store_revision() {
+        let mut store = store();
+        for rate in 0..=crate::DEFAULT_SPEED_HISTORY_CAPACITY as u64 {
+            let stat = GlobalStat {
+                download_speed: ByteRate::new(rate),
+                upload_speed: ByteRate::new(rate / 2),
+                ..GlobalStat::default()
+            };
+            store
+                .record_speed_sample(generation(), stat)
+                .expect("record speed sample");
+        }
+
+        assert_eq!(
+            store.speed_history().samples().len(),
+            crate::DEFAULT_SPEED_HISTORY_CAPACITY
+        );
+        assert_eq!(
+            store
+                .speed_history()
+                .samples()
+                .front()
+                .map(|sample| sample.download),
+            Some(ByteRate::new(1))
+        );
+        assert_eq!(store.revision(), 0);
+        assert!(matches!(
+            store.record_speed_sample(
+                generation().next(),
+                GlobalStat {
+                    download_speed: ByteRate::new(999),
+                    ..GlobalStat::default()
+                }
+            ),
+            Err(StoreError::StaleGeneration { .. })
+        ));
+        assert_eq!(
+            store
+                .speed_history()
+                .samples()
+                .back()
+                .map(|sample| sample.download),
+            Some(ByteRate::new(crate::DEFAULT_SPEED_HISTORY_CAPACITY as u64))
+        );
     }
 
     #[test]

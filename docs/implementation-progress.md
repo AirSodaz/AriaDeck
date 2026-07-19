@@ -132,7 +132,7 @@ visible until the user explicitly removes it.
   the render path.
 - [x] Add an accessible settings flow and apply the configured destination to
   both local-engine startup and newly added tasks.
-- [ ] Feed the application-layer fixed-capacity speed history from live global
+- [x] Feed the application-layer fixed-capacity speed history from live global
   statistics and render a bounded one-minute chart.
 - [ ] Surface local-engine running, restarting, and terminal failure states in
   the desktop workspace.
@@ -253,6 +253,8 @@ records, and diagnostics; persistent speed analytics are explicitly post-MVP.
 | 2026-07-19 | `cargo test -p ariadeck-settings -p ariadeck-ui -p ariadeck-desktop` | Pass - 31 tests covering ordered background persistence, stale-result rejection, theme application, and destination mapping |
 | 2026-07-19 | `cargo clippy -p ariadeck-settings -p ariadeck-ui -p ariadeck-desktop --all-targets -- -D warnings` | Pass - no issues in settings integration |
 | 2026-07-19 | `cargo build -p ariadeck-desktop` | Pass - native desktop executable built with persisted settings integration |
+| 2026-07-19 | `cargo test -p ariadeck-application -p ariadeck-ui -p ariadeck-desktop` | Pass - 56 tests including bounded 500 ms sampling, unchanged-stat publication, latest-window clamping, and chart composition |
+| 2026-07-19 | `cargo clippy -p ariadeck-application -p ariadeck-ui -p ariadeck-desktop --all-targets -- -D warnings` | Pass - no issues after speed-history integration |
 
 ## Known Gaps
 
@@ -287,3 +289,4 @@ records, and diagnostics; persistent speed analytics are explicitly post-MVP.
 - `feat: supervise local aria2 crash recovery` - bounded same-endpoint restart and terminal health state.
 - `feat: persist typed application settings` - versioned JSON settings with validation and corruption-preserving recovery.
 - `feat: integrate persistent desktop preferences` - accessible settings UI, ordered background saves, and configured add-task destinations.
+- `feat: chart bounded transfer speed history` - application-owned half-second samples and a stable one-minute download/upload chart.

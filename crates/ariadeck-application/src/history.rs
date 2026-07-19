@@ -3,6 +3,8 @@ use std::{collections::VecDeque, num::NonZeroUsize, time::Duration};
 use ariadeck_domain::ByteRate;
 use thiserror::Error;
 
+pub const DEFAULT_SPEED_HISTORY_CAPACITY: usize = 120;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SpeedSample {
     pub elapsed: Duration,
@@ -15,6 +17,16 @@ pub struct SpeedSample {
 pub struct SpeedHistory {
     samples: VecDeque<SpeedSample>,
     capacity: NonZeroUsize,
+}
+
+impl Default for SpeedHistory {
+    fn default() -> Self {
+        Self {
+            samples: VecDeque::with_capacity(DEFAULT_SPEED_HISTORY_CAPACITY),
+            capacity: NonZeroUsize::new(DEFAULT_SPEED_HISTORY_CAPACITY)
+                .unwrap_or(NonZeroUsize::MIN),
+        }
+    }
 }
 
 impl SpeedHistory {
@@ -75,5 +87,12 @@ mod tests {
             history.samples().front().map(|sample| sample.elapsed),
             Some(Duration::from_secs(2))
         );
+    }
+
+    #[test]
+    fn default_history_covers_one_minute_at_half_second_intervals() {
+        let history = SpeedHistory::default();
+        assert_eq!(history.capacity(), DEFAULT_SPEED_HISTORY_CAPACITY);
+        assert_eq!(history.capacity(), 120);
     }
 }

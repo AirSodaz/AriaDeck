@@ -14,12 +14,14 @@ use crate::{
     OperationErrorView, PauseSelectedTask, RemoveSelectedTask, RequestId, ResumeSelectedTask,
     RetrySelectedTask, SaveSettings, SearchInputEvent, SelectNextTask, SelectPreviousTask,
     SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    SubmitAddDownload, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
-    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
-    TaskFileView, TaskIdentity, TaskStatusView, TextField, TextFieldConfig, Theme, ThemeMode,
-    ToggleTheme, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, format_bytes, format_eta,
-    format_percent, format_rate,
+    SpeedSampleView, SubmitAddDownload, TaskCommandRequestView, TaskCommandResultView,
+    TaskCommandView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
+    TaskDetailsView, TaskFileView, TaskIdentity, TaskStatusView, TextField, TextFieldConfig, Theme,
+    ThemeMode, ToggleTheme, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, format_bytes,
+    format_eta, format_percent, format_rate,
 };
+
+const SPEED_CHART_SAMPLES: usize = 120;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AppShellEvent {
@@ -1339,6 +1341,7 @@ impl AppShell {
                     .flex_col()
                     .gap_2()
                     .pb_1()
+                    .child(self.render_speed_chart())
                     .child(
                         div()
                             .px_2()
@@ -1385,6 +1388,89 @@ impl AppShell {
                             .child("Settings")
                             .child(self.settings.color_scheme.label()),
                     ),
+            )
+    }
+
+    fn render_speed_chart(&self) -> Stateful<Div> {
+        let colors = self.theme.colors;
+        let visible = speed_chart_window(&self.snapshot.speed_history);
+        let max_rate = visible
+            .iter()
+            .map(|sample| sample.download_rate.max(sample.upload_rate))
+            .max()
+            .unwrap_or(0);
+        let scale = max_rate.max(1) as f32;
+        let mut columns = Vec::with_capacity(SPEED_CHART_SAMPLES);
+        columns.extend(
+            (visible.len()..SPEED_CHART_SAMPLES).map(|_| speed_chart_column(0.0, 0.0, colors)),
+        );
+        columns.extend(visible.iter().map(|sample| {
+            speed_chart_column(
+                sample.download_rate as f32 / scale,
+                sample.upload_rate as f32 / scale,
+                colors,
+            )
+        }));
+
+        div()
+            .id("speed-history-chart")
+            .role(Role::Group)
+            .aria_label(format!(
+                "Transfer speed for the last minute, current download {}, current upload {}, peak {}",
+                format_rate(self.snapshot.download_rate),
+                format_rate(self.snapshot.upload_rate),
+                format_rate(max_rate)
+            ))
+            .h(px(112.0))
+            .w_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .px_2()
+            .pt_2()
+            .border_t_1()
+            .border_color(colors.border)
+            .child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(colors.text_secondary)
+                            .child("Last minute"),
+                    )
+                    .child(
+                        div()
+                            .font_features(tabular_numbers())
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(format_rate(max_rate)),
+                    ),
+            )
+            .child(
+                div()
+                    .h(px(58.0))
+                    .w_full()
+                    .flex_none()
+                    .flex()
+                    .items_end()
+                    .border_b_1()
+                    .border_color(colors.border_strong)
+                    .children(columns),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(speed_chart_legend("Down", colors.progress_download, colors))
+                    .child(speed_chart_legend("Up", colors.progress_upload, colors)),
             )
     }
 
@@ -2565,6 +2651,44 @@ fn theme_for_scheme(scheme: ColorSchemeView) -> Theme {
     }
 }
 
+fn speed_chart_column(download_height: f32, upload_height: f32, colors: crate::ThemeColors) -> Div {
+    div()
+        .h_full()
+        .flex_1()
+        .min_w(px(1.0))
+        .flex()
+        .items_end()
+        .child(
+            div()
+                .w(relative(0.5))
+                .h(relative(download_height.clamp(0.0, 1.0)))
+                .bg(colors.progress_download),
+        )
+        .child(
+            div()
+                .w(relative(0.5))
+                .h(relative(upload_height.clamp(0.0, 1.0)))
+                .bg(colors.progress_upload),
+        )
+}
+
+fn speed_chart_window(history: &[SpeedSampleView]) -> &[SpeedSampleView] {
+    if history.len() > SPEED_CHART_SAMPLES {
+        &history[history.len() - SPEED_CHART_SAMPLES..]
+    } else {
+        history
+    }
+}
+
+fn speed_chart_legend(label: &'static str, color: Hsla, colors: crate::ThemeColors) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .child(div().size(px(6.0)).rounded_sm().bg(color))
+        .child(div().text_color(colors.text_muted).child(label))
+}
+
 fn toolbar_button(
     id: &'static str,
     label: &'static str,
@@ -2837,6 +2961,7 @@ mod tests {
             stale: false,
             download_rate: 0,
             upload_rate: 0,
+            speed_history: Vec::new(),
             counts: TaskCountsView {
                 all: count,
                 completed: count,
@@ -2862,6 +2987,24 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn speed_chart_uses_only_the_latest_bounded_window() {
+        let history = (0..=SPEED_CHART_SAMPLES)
+            .map(|index| SpeedSampleView {
+                download_rate: index as u64,
+                upload_rate: 0,
+            })
+            .collect::<Vec<_>>();
+
+        let visible = speed_chart_window(&history);
+        assert_eq!(visible.len(), SPEED_CHART_SAMPLES);
+        assert_eq!(visible.first().map(|sample| sample.download_rate), Some(1));
+        assert_eq!(
+            visible.last().map(|sample| sample.download_rate),
+            Some(SPEED_CHART_SAMPLES as u64)
+        );
     }
 
     #[gpui::test]

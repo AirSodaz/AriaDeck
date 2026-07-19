@@ -12,7 +12,7 @@ pub use commands::{
     CommandOutcome, CommandService, ItemFailure, RemoveTasksRequest, TaskCommandContext,
     TaskRemovalScope,
 };
-pub use history::{SpeedHistory, SpeedHistoryError, SpeedSample};
+pub use history::{DEFAULT_SPEED_HISTORY_CAPACITY, SpeedHistory, SpeedHistoryError, SpeedSample};
 pub use ports::{
     DownloadEngineGateway, GatewayError, GatewayErrorKind, TaskDetailsGateway, TaskRemovalTarget,
 };

@@ -255,6 +255,7 @@ pub enum SyncEvent {
     ConnectionStateChanged(ConnectionState),
     CapabilitiesChanged(EngineCapabilities),
     StorePatched(StorePatch),
+    SpeedHistoryChanged,
     Error(SyncError),
 }
 
@@ -264,6 +265,7 @@ pub struct StoreSnapshot {
     pub connection_state: ConnectionState,
     pub stale: bool,
     pub global_stat: GlobalStat,
+    pub speed_history: crate::SpeedHistory,
     pub counts: TaskCounts,
     pub view: TaskListView,
     pub tasks: Vec<DownloadTask>,
@@ -927,10 +929,15 @@ async fn run_connected(
                     result = session.refresh_global_stat() => result,
                 };
                 match result {
-                    Ok(stat) => match store.update_global_stat(generation, stat) {
-                        Ok(patch) => emit_patch(events, patch),
-                        Err(error) => return ConnectedExit::Retry(SyncError::store(error)),
-                    },
+                    Ok(stat) => {
+                        if let Err(error) = store.record_speed_sample(generation, stat) {
+                            return ConnectedExit::Retry(SyncError::store(error));
+                        }
+                        match store.update_global_stat(generation, stat) {
+                            Ok(patch) => emit_global_update(events, patch),
+                            Err(error) => return ConnectedExit::Retry(SyncError::store(error)),
+                        }
+                    }
                     Err(error) => return ConnectedExit::Retry(error),
                 }
             }
@@ -1033,7 +1040,10 @@ fn apply_initial_snapshot(
 ) -> Result<(), SyncError> {
     validate_capabilities(&initial.capabilities)?;
     let _ = events.send(SyncEvent::CapabilitiesChanged(initial.capabilities));
-    emit_patch(
+    store
+        .record_speed_sample(generation, initial.global_stat)
+        .map_err(SyncError::store)?;
+    emit_global_update(
         events,
         store
             .update_global_stat(generation, initial.global_stat)
@@ -1188,6 +1198,7 @@ fn build_snapshot(
         connection_state: state.clone(),
         stale: store.is_stale(),
         global_stat: store.global_stat(),
+        speed_history: store.speed_history().clone(),
         counts: store.counts(),
         view,
         tasks,
@@ -1208,6 +1219,14 @@ fn set_state(
 fn emit_patch(events: &broadcast::Sender<SyncEvent>, patch: StorePatch) {
     if !patch.is_empty() {
         let _ = events.send(SyncEvent::StorePatched(patch));
+    }
+}
+
+fn emit_global_update(events: &broadcast::Sender<SyncEvent>, patch: StorePatch) {
+    if patch.is_empty() {
+        let _ = events.send(SyncEvent::SpeedHistoryChanged);
+    } else {
+        emit_patch(events, patch);
     }
 }
 
@@ -1731,6 +1750,39 @@ mod tests {
             assert!(delay >= Duration::from_millis(80));
             assert!(delay <= Duration::from_millis(100));
         }
+    }
+
+    #[test]
+    fn unchanged_global_stat_still_publishes_a_bounded_speed_sample() {
+        let profile_id = ProfileId::new();
+        let generation = SessionGeneration::initial();
+        let mut store = DownloadStore::new(EngineSession::new(
+            profile_id,
+            EngineSessionId::new(),
+            generation,
+        ));
+        let stat = GlobalStat::default();
+        store
+            .record_speed_sample(generation, stat)
+            .expect("record initial speed sample");
+        let patch = store
+            .update_global_stat(generation, stat)
+            .expect("update unchanged global stat");
+        assert!(patch.is_empty());
+        let (events, mut receiver) = broadcast::channel(4);
+
+        emit_global_update(&events, patch);
+
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(SyncEvent::SpeedHistoryChanged)
+        ));
+        let snapshot = build_snapshot(
+            &store,
+            &ConnectionState::Connected,
+            &TaskListQuery::default(),
+        );
+        assert_eq!(snapshot.speed_history.samples().len(), 1);
     }
 
     #[tokio::test]
