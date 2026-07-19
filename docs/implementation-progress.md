@@ -128,9 +128,9 @@ visible until the user explicitly removes it.
 
 - [x] Add versioned, validated typed settings with atomic persistence and
   corruption-preserving recovery.
-- [ ] Load and save the light/dark theme and default download directory outside
+- [x] Load and save the light/dark theme and default download directory outside
   the render path.
-- [ ] Add an accessible settings flow and apply the configured destination to
+- [x] Add an accessible settings flow and apply the configured destination to
   both local-engine startup and newly added tasks.
 - [ ] Feed the application-layer fixed-capacity speed history from live global
   statistics and render a bounded one-minute chart.
@@ -250,6 +250,9 @@ records, and diagnostics; persistent speed analytics are explicitly post-MVP.
 | 2026-07-19 | Ignored supervised-crash test with Scoop `aria2c 1.37.0` | Pass - first exit restarted with a new PID on the same endpoint and secret; the next in-window exit reached the crash budget and entered `Failed` |
 | 2026-07-19 | `cargo test -p ariadeck-settings` | Pass - 4 tests covering initialization, round-trip, corrupt recovery, and future-version rejection |
 | 2026-07-19 | `cargo clippy -p ariadeck-settings --all-targets -- -D warnings` | Pass - no issues in the typed settings boundary |
+| 2026-07-19 | `cargo test -p ariadeck-settings -p ariadeck-ui -p ariadeck-desktop` | Pass - 31 tests covering ordered background persistence, stale-result rejection, theme application, and destination mapping |
+| 2026-07-19 | `cargo clippy -p ariadeck-settings -p ariadeck-ui -p ariadeck-desktop --all-targets -- -D warnings` | Pass - no issues in settings integration |
+| 2026-07-19 | `cargo build -p ariadeck-desktop` | Pass - native desktop executable built with persisted settings integration |
 
 ## Known Gaps
 
@@ -258,11 +261,12 @@ records, and diagnostics; persistent speed analytics are explicitly post-MVP.
 - Local process crashes are restarted within a bounded window and terminal
   supervisor failure is exposed through the engine API; recovery status and
   diagnostics are not yet presented in the desktop UI.
-- Profile persistence is an atomic JSON MVP; SQLite-backed settings/history are
-  still planned for Stage 8.
+- Profile and typed settings persistence use atomic JSON documents for the
+  single-profile MVP; SQLite remains planned for multi-profile metadata,
+  history, installation records, and diagnostics.
 - Add-download, task lifecycle commands, and the details drawer are implemented
   for the external WebSocket engine path.
-- Theme choice and window state are session-only until settings persistence is added.
+- Theme and download-directory choices persist; window geometry remains session-only.
 - The optional Windows DXGI debug layer is absent; GPUI logs a development-only
   warning and continues with DirectX debugging disabled.
 - The repository license has not been selected; release metadata remains provisional.
@@ -282,3 +286,4 @@ records, and diagnostics; persistent speed analytics are explicitly post-MVP.
 - `feat: retry failed downloads from known sources` - session-bound replay using discovery metadata and a new aria2 GID.
 - `feat: supervise local aria2 crash recovery` - bounded same-endpoint restart and terminal health state.
 - `feat: persist typed application settings` - versioned JSON settings with validation and corruption-preserving recovery.
+- `feat: integrate persistent desktop preferences` - accessible settings UI, ordered background saves, and configured add-task destinations.

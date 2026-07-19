@@ -8,15 +8,17 @@ use gpui::{
 };
 
 use crate::{
-    AddDownloadRequestView, AddDownloadResultView, ClearSearch, CloseAddDownload,
-    CommandOutcomeView, ConnectionView, DownloadRowView, EngineSessionView, FocusNext,
-    FocusPrevious, FocusSearch, OpenAddDownload, OpenTaskDetails, OperationErrorView,
-    PauseSelectedTask, RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask,
-    SearchInputEvent, SelectNextTask, SelectPreviousTask, SubmitAddDownload,
-    TaskCommandRequestView, TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView,
-    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity,
-    TaskStatusView, TextField, TextFieldConfig, Theme, ThemeMode, ToggleTheme, WorkspaceFilter,
-    WorkspaceQuery, WorkspaceSnapshot, format_bytes, format_eta, format_percent, format_rate,
+    AddDownloadRequestView, AddDownloadResultView, ClearSearch, CloseAddDownload, CloseSettings,
+    ColorSchemeView, CommandOutcomeView, ConnectionView, DownloadRowView, EngineSessionView,
+    FocusNext, FocusPrevious, FocusSearch, OpenAddDownload, OpenSettings, OpenTaskDetails,
+    OperationErrorView, PauseSelectedTask, RemoveSelectedTask, RequestId, ResumeSelectedTask,
+    RetrySelectedTask, SaveSettings, SearchInputEvent, SelectNextTask, SelectPreviousTask,
+    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
+    SubmitAddDownload, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
+    TaskFileView, TaskIdentity, TaskStatusView, TextField, TextFieldConfig, Theme, ThemeMode,
+    ToggleTheme, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, format_bytes, format_eta,
+    format_percent, format_rate,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,6 +28,7 @@ pub enum AppShellEvent {
     AddDownloadRequested(AddDownloadRequestView),
     TaskCommandRequested(TaskCommandRequestView),
     TaskDetailsRequested(TaskDetailsRequestView),
+    SettingsSaveRequested(SettingsSaveRequestView),
 }
 
 struct PendingAddDownload {
@@ -82,17 +85,38 @@ struct StatusNotice {
     is_error: bool,
 }
 
+#[derive(Default)]
+struct SettingsDialog {
+    open: bool,
+    previous_focus: Option<WeakFocusHandle>,
+    draft_color_scheme: ColorSchemeView,
+    error: Option<OperationErrorView>,
+}
+
+struct PendingSettingsSave {
+    request_id: RequestId,
+    settings: SettingsView,
+    close_dialog_on_success: bool,
+}
+
 pub struct AppShell {
     theme: Theme,
+    settings: SettingsView,
     snapshot: WorkspaceSnapshot,
     query: WorkspaceQuery,
     selected: Option<TaskIdentity>,
     search_input: Entity<TextField>,
     add_input: Entity<TextField>,
+    settings_directory_input: Entity<TextField>,
     add_dialog: AddDownloadDialog,
     add_dialog_focus: FocusHandle,
     add_cancel_focus: FocusHandle,
     add_submit_focus: FocusHandle,
+    settings_dialog: SettingsDialog,
+    settings_dialog_focus: FocusHandle,
+    settings_cancel_focus: FocusHandle,
+    settings_save_focus: FocusHandle,
+    pending_settings_save: Option<PendingSettingsSave>,
     pending_task_command: Option<PendingTaskCommand>,
     details_drawer: Option<TaskDetailsDrawer>,
     confirmation_pending: bool,
@@ -103,6 +127,7 @@ pub struct AppShell {
     rendered_range: Range<usize>,
     _search_subscription: Subscription,
     _add_subscription: Subscription,
+    _settings_subscription: Subscription,
 }
 
 impl gpui::EventEmitter<AppShellEvent> for AppShell {}
@@ -110,6 +135,41 @@ impl gpui::EventEmitter<AppShellEvent> for AppShell {}
 impl AppShell {
     #[must_use]
     pub fn new(theme: Theme, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let color_scheme = match theme.mode {
+            ThemeMode::Light => ColorSchemeView::Light,
+            ThemeMode::Dark | ThemeMode::System => ColorSchemeView::Dark,
+        };
+        Self::new_inner(
+            theme,
+            SettingsView {
+                color_scheme,
+                download_directory: String::new(),
+            },
+            window,
+            cx,
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_settings(
+        settings: SettingsView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_inner(
+            theme_for_scheme(settings.color_scheme),
+            settings,
+            window,
+            cx,
+        )
+    }
+
+    fn new_inner(
+        theme: Theme,
+        settings: SettingsView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let search_input = cx.new(|cx| TextField::new("Search downloads or GID", theme, cx));
         let search_subscription = cx.subscribe(
             &search_input,
@@ -144,19 +204,50 @@ impl AppShell {
                 }
             },
         );
+        let settings_directory_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "settings-download-directory".into(),
+                    key_context: "SettingsDirectoryInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "Default download directory".into(),
+                    placeholder: "D:\\Downloads".into(),
+                },
+                theme,
+                cx,
+            )
+        });
+        let settings_subscription = cx.subscribe(
+            &settings_directory_input,
+            |this: &mut Self, _input, _event: &SearchInputEvent, cx| {
+                if this.settings_dialog.open
+                    && this.pending_settings_save.is_none()
+                    && this.settings_dialog.error.take().is_some()
+                {
+                    cx.notify();
+                }
+            },
+        );
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
         Self {
             theme,
+            settings,
             snapshot: WorkspaceSnapshot::default(),
             query: WorkspaceQuery::default(),
             selected: None,
             search_input,
             add_input,
+            settings_directory_input,
             add_dialog: AddDownloadDialog::default(),
             add_dialog_focus: cx.focus_handle(),
             add_cancel_focus: cx.focus_handle().tab_stop(true),
             add_submit_focus: cx.focus_handle().tab_stop(true),
+            settings_dialog: SettingsDialog::default(),
+            settings_dialog_focus: cx.focus_handle(),
+            settings_cancel_focus: cx.focus_handle().tab_stop(true),
+            settings_save_focus: cx.focus_handle().tab_stop(true),
+            pending_settings_save: None,
             pending_task_command: None,
             details_drawer: None,
             confirmation_pending: false,
@@ -167,6 +258,7 @@ impl AppShell {
             rendered_range: 0..0,
             _search_subscription: search_subscription,
             _add_subscription: add_subscription,
+            _settings_subscription: settings_subscription,
         }
     }
 
@@ -337,6 +429,59 @@ impl AppShell {
         cx.notify();
     }
 
+    pub fn set_settings_save_result(
+        &mut self,
+        result: SettingsSaveResultView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pending) = self.pending_settings_save.as_ref() else {
+            return;
+        };
+        if pending.request_id != result.request_id || pending.settings != result.settings {
+            return;
+        }
+        let close_dialog = pending.close_dialog_on_success;
+        self.pending_settings_save = None;
+
+        match result.outcome {
+            SettingsSaveOutcomeView::Success => {
+                self.apply_settings(result.settings, cx);
+                self.settings_dialog.error = None;
+                self.status_notice = Some(StatusNotice {
+                    message: "Settings saved.".into(),
+                    is_error: false,
+                });
+                if close_dialog {
+                    self.close_settings(window, cx);
+                } else {
+                    cx.notify();
+                }
+            }
+            SettingsSaveOutcomeView::Failure(error) => {
+                if self.settings_dialog.open {
+                    self.settings_dialog.error = Some(error);
+                } else {
+                    self.status_notice = Some(StatusNotice {
+                        message: error.summary,
+                        is_error: true,
+                    });
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    pub fn set_startup_notice(&mut self, message: String, is_error: bool, cx: &mut Context<Self>) {
+        self.status_notice = Some(StatusNotice { message, is_error });
+        cx.notify();
+    }
+
+    #[must_use]
+    pub fn settings(&self) -> &SettingsView {
+        &self.settings
+    }
+
     #[must_use]
     pub fn query(&self) -> WorkspaceQuery {
         self.query.clone()
@@ -439,21 +584,36 @@ impl AppShell {
     }
 
     fn toggle_theme(&mut self, _: &ToggleTheme, _window: &mut Window, cx: &mut Context<Self>) {
-        self.theme = match self.theme.mode {
-            ThemeMode::Dark => Theme::light(),
-            ThemeMode::Light | ThemeMode::System => Theme::dark(),
+        if self.pending_settings_save.is_some() {
+            return;
+        }
+        let mut settings = self.settings.clone();
+        settings.color_scheme = match settings.color_scheme {
+            ColorSchemeView::Light => ColorSchemeView::Dark,
+            ColorSchemeView::Dark => ColorSchemeView::Light,
         };
+        self.request_settings_save(settings, false, cx);
+    }
+
+    fn apply_settings(&mut self, settings: SettingsView, cx: &mut Context<Self>) {
+        self.theme = theme_for_scheme(settings.color_scheme);
+        self.settings = settings;
         self.search_input
             .update(cx, |input, cx| input.set_theme(self.theme, cx));
         self.add_input
             .update(cx, |input, cx| input.set_theme(self.theme, cx));
-        cx.notify();
+        self.settings_directory_input
+            .update(cx, |input, cx| input.set_theme(self.theme, cx));
     }
 
     fn focus_next(&mut self, _: &FocusNext, window: &mut Window, cx: &mut Context<Self>) {
         window.focus_next(cx);
         if self.add_dialog.open && !self.add_dialog_focus.contains_focused(window, cx) {
             window.focus(&self.add_input.focus_handle(cx), cx);
+        } else if self.settings_dialog.open
+            && !self.settings_dialog_focus.contains_focused(window, cx)
+        {
+            window.focus(&self.settings_directory_input.focus_handle(cx), cx);
         }
     }
 
@@ -461,7 +621,129 @@ impl AppShell {
         window.focus_prev(cx);
         if self.add_dialog.open && !self.add_dialog_focus.contains_focused(window, cx) {
             window.focus(&self.add_submit_focus, cx);
+        } else if self.settings_dialog.open
+            && !self.settings_dialog_focus.contains_focused(window, cx)
+        {
+            window.focus(&self.settings_save_focus, cx);
         }
+    }
+
+    fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_dialog.open {
+            window.focus(&self.settings_directory_input.focus_handle(cx), cx);
+            return;
+        }
+        if self.add_dialog.open || self.pending_settings_save.is_some() {
+            return;
+        }
+        let download_directory = self.settings.download_directory.clone();
+        self.settings_directory_input
+            .update(cx, |input, cx| input.set_text(download_directory, cx));
+        self.settings_dialog = SettingsDialog {
+            open: true,
+            previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
+            draft_color_scheme: self.settings.color_scheme,
+            error: None,
+        };
+        cx.notify();
+        cx.defer_in(window, |this, window, cx| {
+            if this.settings_dialog.open {
+                window.focus(&this.settings_directory_input.focus_handle(cx), cx);
+            }
+        });
+    }
+
+    fn close_settings_action(
+        &mut self,
+        _: &CloseSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_settings(window, cx);
+    }
+
+    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.settings_dialog.open || self.pending_settings_save.is_some() {
+            return;
+        }
+        let restore_focus = self.settings_dialog_focus.contains_focused(window, cx)
+            || self
+                .settings_directory_input
+                .focus_handle(cx)
+                .is_focused(window);
+        let previous_focus = self.settings_dialog.previous_focus.take();
+        self.settings_dialog = SettingsDialog::default();
+        if restore_focus {
+            if let Some(focus) = previous_focus.and_then(|focus| focus.upgrade()) {
+                window.focus(&focus, cx);
+            } else {
+                window.focus(&self.focus_handle, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn save_settings_action(
+        &mut self,
+        _: &SaveSettings,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.submit_settings(cx);
+    }
+
+    fn submit_settings(&mut self, cx: &mut Context<Self>) {
+        if !self.settings_dialog.open || self.pending_settings_save.is_some() {
+            return;
+        }
+        let download_directory = self
+            .settings_directory_input
+            .read(cx)
+            .text()
+            .trim()
+            .to_owned();
+        if download_directory.is_empty() {
+            self.settings_dialog.error = Some(OperationErrorView {
+                code: "settings.invalid_download_directory".into(),
+                summary: "Choose a non-empty download directory.".into(),
+                retryable: false,
+            });
+            cx.notify();
+            return;
+        }
+        self.request_settings_save(
+            SettingsView {
+                color_scheme: self.settings_dialog.draft_color_scheme,
+                download_directory,
+            },
+            true,
+            cx,
+        );
+    }
+
+    fn request_settings_save(
+        &mut self,
+        settings: SettingsView,
+        close_dialog_on_success: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_settings_save.is_some() {
+            return;
+        }
+        let request_id = self.allocate_request_id();
+        self.pending_settings_save = Some(PendingSettingsSave {
+            request_id,
+            settings: settings.clone(),
+            close_dialog_on_success,
+        });
+        self.settings_dialog.error = None;
+        cx.emit(AppShellEvent::SettingsSaveRequested(
+            SettingsSaveRequestView {
+                request_id,
+                settings,
+            },
+        ));
+        cx.notify();
     }
 
     fn request_retry(&mut self, cx: &mut Context<Self>) {
@@ -581,6 +863,8 @@ impl AppShell {
                 request_id,
                 session,
                 uri,
+                destination: (!self.settings.download_directory.is_empty())
+                    .then(|| self.settings.download_directory.clone()),
             },
         ));
         cx.notify();
@@ -1053,21 +1337,53 @@ impl AppShell {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_1()
-                    .px_2()
+                    .gap_2()
                     .pb_1()
                     .child(
                         div()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(colors.text_secondary)
-                            .child("Default profile"),
+                            .px_2()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(colors.text_secondary)
+                                    .child("Default profile"),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(colors.text_muted)
+                                    .child("External aria2 RPC"),
+                            ),
                     )
                     .child(
                         div()
+                            .id("open-settings")
+                            .focusable()
+                            .tab_stop(true)
+                            .role(Role::Button)
+                            .aria_label("Open application settings")
+                            .h(px(34.0))
+                            .w_full()
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .rounded_md()
                             .text_xs()
-                            .text_color(colors.text_muted)
-                            .child("External aria2 RPC"),
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(colors.text_secondary)
+                            .cursor_pointer()
+                            .hover(|style| style.bg(colors.surface_hover))
+                            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_settings(&OpenSettings, window, cx);
+                            }))
+                            .child("Settings")
+                            .child(self.settings.color_scheme.label()),
                     ),
             )
     }
@@ -1876,6 +2192,220 @@ impl AppShell {
             )
     }
 
+    fn render_settings_dialog(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let colors = self.theme.colors;
+        let pending = self.pending_settings_save.is_some();
+        let error = self.settings_dialog.error.clone();
+        let draft_scheme = self.settings_dialog.draft_color_scheme;
+        let scheme_buttons = [ColorSchemeView::Light, ColorSchemeView::Dark]
+            .into_iter()
+            .map(|scheme| {
+                let selected = draft_scheme == scheme;
+                div()
+                    .id(SharedString::from(format!(
+                        "settings-theme-{}",
+                        scheme.label().to_lowercase()
+                    )))
+                    .focusable()
+                    .tab_stop(!pending)
+                    .role(Role::Button)
+                    .aria_label(format!("Use {} theme", scheme.label().to_lowercase()))
+                    .h(px(34.0))
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .bg(if selected {
+                        colors.surface_active
+                    } else {
+                        colors.elevated_surface
+                    })
+                    .border_1()
+                    .border_color(if selected {
+                        colors.accent
+                    } else {
+                        colors.border
+                    })
+                    .text_sm()
+                    .font_weight(if selected {
+                        FontWeight::SEMIBOLD
+                    } else {
+                        FontWeight::NORMAL
+                    })
+                    .text_color(if selected {
+                        colors.text_primary
+                    } else {
+                        colors.text_secondary
+                    })
+                    .when(!pending, |button| {
+                        button
+                            .cursor_pointer()
+                            .hover(|style| style.bg(colors.surface_hover))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.settings_dialog.draft_color_scheme = scheme;
+                                this.settings_dialog.error = None;
+                                cx.notify();
+                            }))
+                    })
+                    .focus_visible(|style| style.border_color(colors.focus_ring))
+                    .child(scheme.label())
+            })
+            .collect::<Vec<_>>();
+
+        div()
+            .id("settings-overlay")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .flex()
+            .items_start()
+            .justify_center()
+            .pt(px(82.0))
+            .bg(with_alpha(colors.background, 0.78))
+            .child(
+                div()
+                    .id("settings-dialog")
+                    .key_context("SettingsDialog")
+                    .role(Role::Dialog)
+                    .aria_label("Application settings")
+                    .track_focus(&self.settings_dialog_focus)
+                    .w(px(560.0))
+                    .max_w_full()
+                    .flex()
+                    .flex_col()
+                    .gap_5()
+                    .p_5()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(colors.border_strong)
+                    .bg(colors.elevated_surface)
+                    .text_color(colors.text_primary)
+                    .child(
+                        div()
+                            .text_base()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Settings"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(colors.text_secondary)
+                                    .child("Appearance"),
+                            )
+                            .child(div().flex().gap_2().children(scheme_buttons)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(colors.text_secondary)
+                                    .child("Default download directory"),
+                            )
+                            .child(self.settings_directory_input.clone())
+                            .when_some(error, |element, error| {
+                                element.child(
+                                    div()
+                                        .id("settings-error")
+                                        .role(Role::Alert)
+                                        .aria_label(error.summary.clone())
+                                        .text_xs()
+                                        .text_color(colors.danger)
+                                        .child(error.summary),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("cancel-settings")
+                                    .track_focus(&self.settings_cancel_focus)
+                                    .role(Role::Button)
+                                    .aria_label("Cancel settings changes")
+                                    .h(px(34.0))
+                                    .px_3()
+                                    .flex()
+                                    .items_center()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(colors.border)
+                                    .text_sm()
+                                    .text_color(if pending {
+                                        colors.text_muted
+                                    } else {
+                                        colors.text_secondary
+                                    })
+                                    .when(!pending, |button| {
+                                        button
+                                            .cursor_pointer()
+                                            .hover(|style| style.bg(colors.surface_hover))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.close_settings(window, cx);
+                                            }))
+                                    })
+                                    .focus_visible(|style| style.border_color(colors.focus_ring))
+                                    .child("Cancel"),
+                            )
+                            .child(
+                                div()
+                                    .id("save-settings")
+                                    .track_focus(&self.settings_save_focus)
+                                    .role(Role::Button)
+                                    .aria_label(if pending {
+                                        "Saving application settings"
+                                    } else {
+                                        "Save application settings"
+                                    })
+                                    .h(px(34.0))
+                                    .px_3()
+                                    .flex()
+                                    .items_center()
+                                    .rounded_md()
+                                    .bg(if pending {
+                                        colors.surface_active
+                                    } else {
+                                        colors.accent
+                                    })
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(if pending {
+                                        colors.text_muted
+                                    } else {
+                                        colors.text_inverse
+                                    })
+                                    .when(!pending, |button| {
+                                        button
+                                            .cursor_pointer()
+                                            .hover(|style| style.bg(colors.accent_hover))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.submit_settings(cx);
+                                            }))
+                                    })
+                                    .focus_visible(|style| {
+                                        style.border_1().border_color(colors.focus_ring)
+                                    })
+                                    .child(if pending { "Saving..." } else { "Save" }),
+                            ),
+                    ),
+            )
+    }
+
     fn render_empty_state(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = self.theme.colors;
         let (title, detail) = match &self.snapshot.connection {
@@ -1993,6 +2523,9 @@ impl Render for AppShell {
             .on_action(cx.listener(Self::open_add_download))
             .on_action(cx.listener(Self::close_add_download_action))
             .on_action(cx.listener(Self::submit_add_download_action))
+            .on_action(cx.listener(Self::open_settings))
+            .on_action(cx.listener(Self::close_settings_action))
+            .on_action(cx.listener(Self::save_settings_action))
             .on_action(cx.listener(Self::open_task_details_action))
             .on_action(cx.listener(Self::pause_selected))
             .on_action(cx.listener(Self::resume_selected))
@@ -2019,6 +2552,16 @@ impl Render for AppShell {
             .when(self.add_dialog.open, |element| {
                 element.child(self.render_add_download_dialog(cx))
             })
+            .when(self.settings_dialog.open, |element| {
+                element.child(self.render_settings_dialog(cx))
+            })
+    }
+}
+
+fn theme_for_scheme(scheme: ColorSchemeView) -> Theme {
+    match scheme {
+        ColorSchemeView::Light => Theme::light(),
+        ColorSchemeView::Dark => Theme::dark(),
     }
 }
 
@@ -2462,6 +3005,64 @@ mod tests {
             assert_eq!(shell.selected.as_ref(), Some(&new_identity));
             assert!(shell.pending_task_command.is_none());
             assert!(shell.details_drawer.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn settings_apply_only_after_the_matching_save_succeeds(cx: &mut TestAppContext) {
+        let initial = SettingsView {
+            color_scheme: ColorSchemeView::Dark,
+            download_directory: "C:/Downloads".into(),
+        };
+        let expected_initial = initial.clone();
+        let (view, cx) =
+            cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
+        let (request_id, requested) = view.update(cx, |shell, cx| {
+            shell.settings_dialog.open = true;
+            shell.settings_dialog.draft_color_scheme = ColorSchemeView::Light;
+            shell.settings_directory_input.update(cx, |input, cx| {
+                input.set_text("D:/Transfers", cx);
+            });
+            shell.submit_settings(cx);
+            let pending = shell
+                .pending_settings_save
+                .as_ref()
+                .expect("settings save must become pending");
+            (pending.request_id, pending.settings.clone())
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.set_settings_save_result(
+                SettingsSaveResultView {
+                    request_id: RequestId::from_u64(request_id.get() + 1),
+                    settings: requested.clone(),
+                    outcome: SettingsSaveOutcomeView::Success,
+                },
+                window,
+                cx,
+            );
+        });
+        view.read_with(cx, |shell, _| {
+            assert_eq!(shell.settings, expected_initial);
+            assert!(shell.pending_settings_save.is_some());
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.set_settings_save_result(
+                SettingsSaveResultView {
+                    request_id,
+                    settings: requested.clone(),
+                    outcome: SettingsSaveOutcomeView::Success,
+                },
+                window,
+                cx,
+            );
+        });
+        view.read_with(cx, |shell, _| {
+            assert_eq!(shell.settings, requested);
+            assert_eq!(shell.theme.mode, ThemeMode::Light);
+            assert!(shell.pending_settings_save.is_none());
+            assert!(!shell.settings_dialog.open);
         });
     }
 

@@ -247,6 +247,7 @@ pub struct AddDownloadRequestView {
     pub request_id: RequestId,
     pub session: EngineSessionView,
     pub uri: String,
+    pub destination: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -330,6 +331,48 @@ pub struct TaskDetailsResultView {
     pub session: EngineSessionView,
     pub identity: TaskIdentity,
     pub outcome: TaskDetailsOutcomeView,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ColorSchemeView {
+    Light,
+    #[default]
+    Dark,
+}
+
+impl ColorSchemeView {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SettingsView {
+    pub color_scheme: ColorSchemeView,
+    pub download_directory: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SettingsSaveRequestView {
+    pub request_id: RequestId,
+    pub settings: SettingsView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SettingsSaveOutcomeView {
+    Success,
+    Failure(OperationErrorView),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SettingsSaveResultView {
+    pub request_id: RequestId,
+    pub settings: SettingsView,
+    pub outcome: SettingsSaveOutcomeView,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]

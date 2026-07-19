@@ -10,6 +10,7 @@ ariadeck-application = { path = "../../crates/ariadeck-application" }
 ariadeck-domain = { path = "../../crates/ariadeck-domain" }
 ariadeck-engine = { path = "../../crates/ariadeck-engine" }
 ariadeck-rpc = { path = "../../crates/ariadeck-rpc" }
+ariadeck-settings = { path = "../../crates/ariadeck-settings" }
 ariadeck-telemetry = { path = "../../crates/ariadeck-telemetry" }
 ariadeck-ui = { path = "../../crates/ariadeck-ui" }
 gpui.workspace = true
@@ -17,6 +18,9 @@ gpui_platform.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
