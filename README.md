@@ -38,6 +38,7 @@ Current package boundaries:
 
 - `ariadeck-domain`: strong identifiers, engine/task state, and transfer values.
 - `ariadeck-application`: incremental state, derived views, command services, and ports.
+- `ariadeck-engine`: external aria2 process lifecycle, runtime isolation, and profile metadata.
 - `ariadeck-rpc`: authenticated JSON-RPC transport and typed aria2 adapter.
 - `ariadeck-ui`: semantic design tokens and GPUI-owned components.
 - `ariadeck-telemetry`: structured diagnostics setup.

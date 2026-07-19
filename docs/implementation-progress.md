@@ -2,7 +2,7 @@
 
 **Status:** In progress
 
-**Current stage:** 6 - Interactive download commands and task details
+**Current stage:** 7 - Local external aria2 process and persistent profile
 
 **Last updated:** 2026-07-19
 
@@ -18,7 +18,7 @@ change.
 - [x] Stage 4 - Coordinate polling, notifications, generations, and reconnection.
 - [x] Stage 5 - Build the live, virtualized download workspace.
 - [ ] Stage 6 - Add interactive download commands and details (retry remains pending).
-- [ ] Stage 7 - Manage a local external aria2 process and persistent profile.
+- [x] Stage 7 - Manage a local external aria2 process and persistent profile.
 - [ ] Stage 8 - Complete and harden the MVP.
 - [ ] Post-MVP - Managed aria2 core installation, platform integration, and release work.
 
@@ -110,6 +110,20 @@ source/options rather than guessing from a stale row.
 - [x] Verify command success, RPC failure, stale-generation, and reconnect behavior.
 - [x] Exercise the complete command flow against the local aria2 process.
 
+### Stage 7 - Local external aria2 process and persistent profile
+
+- [x] Resolve an explicit executable path, PATH entry, or the local Scoop aria2 installation.
+- [x] Validate the executable with `--version` before spawning it.
+- [x] Create a profile-scoped data directory with separate config, session, log,
+  and download paths.
+- [x] Select an available loopback port and generate an ephemeral RPC secret.
+- [x] Start aria2 with isolated RPC, session, and peer-discovery arguments.
+- [x] Keep the process handle and secret out of debug output and profile metadata.
+- [x] Request `aria2.shutdown` during desktop teardown and retain a kill/wait fallback.
+- [x] Persist non-secret profile metadata through an atomic JSON replacement.
+- [x] Verify local process startup and desktop composition without a pre-existing RPC URL.
+- [ ] Add supervised crash restart and repeated-crash recovery policy.
+
 ## Architecture Decisions
 
 ### ADR-001 - Add an application crate
@@ -198,13 +212,20 @@ failures, and reset only after a configurable stable connection interval.
 | 2026-07-19 | `cargo build -p ariadeck-desktop` | Pass - native desktop executable built successfully |
 | 2026-07-19 | Ignored live command flow with local `aria2c 1.37.0` | Pass - add, pause, resume, live removal, and stopped-result removal |
 | 2026-07-19 | Post-command process check | Pass - zero residual `aria2c` or `ariadeck-desktop` processes |
+| 2026-07-19 | `cargo test -p ariadeck-engine -p ariadeck-desktop` | Pass - 7 tests, 1 ignored; profile, process paths, and desktop composition compile |
+| 2026-07-19 | Ignored `ariadeck-engine` process test with Scoop `aria2c 1.37.0` | Pass - dynamic endpoint, profile files, secret redaction, and cleanup |
+| 2026-07-19 | Local desktop startup smoke without `ARIADECK_RPC_URL` | Pass - desktop stayed alive, aria2 child and profile metadata were created, and child was cleaned up |
+| 2026-07-19 | aria2 argument compatibility smoke | Pass - aria2 1.37.0 stayed alive with loopback RPC and DHT/LPD disabled |
+| 2026-07-19 | `cargo clippy -p ariadeck-engine -p ariadeck-desktop --all-targets -- -D warnings` | Pass - no issues |
 
 ## Known Gaps
 
 - Failed-task retry is pending until the source URI and replayable options are
   stored as an explicit session-scoped contract; blind resume/re-add is unsafe.
-- Stage 7 still needs local process ownership, executable validation, and
-  persistent profile/configuration storage.
+- Local process crash detection is exposed through `try_wait`, but automatic
+  restart and crash-loop recovery are still pending.
+- Profile persistence is an atomic JSON MVP; SQLite-backed settings/history are
+  still planned for Stage 8.
 - Add-download, task lifecycle commands, and the details drawer are implemented
   for the external WebSocket engine path.
 - Theme choice and window state are session-only until settings persistence is added.
@@ -223,3 +244,4 @@ failures, and reset only after a configurable stable connection interval.
 - `feat: build live virtualized download workspace` - Stage 5 native presentation and composition.
 - `feat: add session-bound task command foundation` - Stage 6 command and details backend checkpoint.
 - `feat: complete interactive command and details workspace` - Stage 6 UI, AccessKit input, command outcomes, and live aria2 verification (retry pending).
+- `feat: manage local external aria2 profiles` - Stage 7 process lifecycle, isolated runtime files, and atomic profile metadata.

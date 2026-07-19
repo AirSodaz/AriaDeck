@@ -1,4 +1,4 @@
-use std::{env, sync::Arc, time::Duration};
+use std::{env, path::PathBuf, process::Command, sync::Arc, time::Duration};
 
 use ariadeck_application::{
     AddDownloadRequest, AppCommand, ApplicationError, ApplicationErrorCode, CommandItem,
@@ -10,7 +10,13 @@ use ariadeck_domain::{
     Gid, ProfileId, SessionGeneration, TaskDetails, TaskIdentity as DomainTaskIdentity,
     TaskProgress,
 };
-use ariadeck_rpc::{RpcSecret, RpcSyncConnector, WebSocketConfig};
+use ariadeck_engine::{
+    ExternalEngineProfile, JsonProfileStore, LocalEngineConfig, LocalEngineProcess,
+};
+use ariadeck_rpc::{
+    Aria2Client, AuthenticatedTransport, RpcSecret, RpcSyncConnector, WebSocketConfig,
+    WebSocketTransport,
+};
 use ariadeck_ui::{
     AddDownloadRequestView, AddDownloadResultView, AppShell, AppShellEvent, CommandOutcomeView,
     ConnectionView, DownloadRowView, EngineSessionView, OperationErrorView, TaskCommandRequestView,
@@ -25,6 +31,7 @@ use url::Url;
 pub struct DesktopRoot {
     workspace: Entity<AppShell>,
     sync: Option<SyncHandle>,
+    local_engine: Option<LocalEngineProcess>,
     runtime: Arc<Runtime>,
     query_sender: watch::Sender<TaskListQuery>,
     _workspace_subscription: Subscription,
@@ -33,13 +40,13 @@ pub struct DesktopRoot {
 impl DesktopRoot {
     #[must_use]
     pub fn new(runtime: Arc<Runtime>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (sync, initial_snapshot) = match create_sync_handle(&runtime) {
-            Ok(handle) => {
+        let (sync, local_engine, initial_snapshot) = match create_sync_handle(&runtime) {
+            Ok((handle, local_engine)) => {
                 let snapshot = WorkspaceSnapshot {
                     connection: ConnectionView::Connecting,
                     ..WorkspaceSnapshot::default()
                 };
-                (Some(handle), snapshot)
+                (Some(handle), local_engine, snapshot)
             }
             Err(error) => {
                 tracing::error!(%error, "failed to configure aria2 synchronization");
@@ -50,7 +57,7 @@ impl DesktopRoot {
                     },
                     ..WorkspaceSnapshot::default()
                 };
-                (None, snapshot)
+                (None, None, snapshot)
             }
         };
         let workspace = cx.new(|cx| {
@@ -92,6 +99,7 @@ impl DesktopRoot {
         Self {
             workspace,
             sync,
+            local_engine,
             runtime,
             query_sender,
             _workspace_subscription: workspace_subscription,
@@ -160,6 +168,17 @@ impl Drop for DesktopRoot {
     fn drop(&mut self) {
         if let Some(handle) = self.sync.take() {
             self.runtime.block_on(handle.stop());
+        }
+        if let Some(mut process) = self.local_engine.take() {
+            if let Err(error) = self
+                .runtime
+                .block_on(request_local_engine_shutdown(&process))
+            {
+                tracing::debug!(%error, "local aria2 graceful shutdown request was not completed");
+            }
+            if let Err(error) = process.shutdown() {
+                tracing::warn!(%error, "failed to stop the local aria2 process cleanly");
+            }
         }
     }
 }
@@ -411,19 +430,40 @@ fn map_task_details(details: TaskDetails) -> TaskDetailsView {
     }
 }
 
-fn create_sync_handle(runtime: &Runtime) -> Result<SyncHandle, String> {
-    let endpoint =
-        env::var("ARIADECK_RPC_URL").unwrap_or_else(|_| "ws://127.0.0.1:6800/jsonrpc".into());
-    let endpoint = Url::parse(&endpoint).map_err(|error| format!("Invalid RPC URL: {error}"))?;
-    let secret = env::var("ARIADECK_RPC_SECRET")
-        .ok()
-        .filter(|secret| !secret.is_empty())
-        .map(RpcSecret::new);
+fn create_sync_handle(
+    runtime: &Runtime,
+) -> Result<(SyncHandle, Option<LocalEngineProcess>), String> {
+    let (endpoint, secret, local_engine, profile_id) = if let Some(endpoint) =
+        env::var("ARIADECK_RPC_URL")
+            .ok()
+            .filter(|endpoint| !endpoint.trim().is_empty())
+    {
+        let endpoint =
+            Url::parse(&endpoint).map_err(|error| format!("Invalid RPC URL: {error}"))?;
+        let profile_id = env::var("ARIADECK_PROFILE_ID")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_default();
+        let secret = env::var("ARIADECK_RPC_SECRET")
+            .ok()
+            .filter(|secret| !secret.is_empty())
+            .map(RpcSecret::new);
+        (endpoint, secret, None, profile_id)
+    } else {
+        let config = resolve_local_engine_config()?;
+        let profile_id = config.profile_id;
+        let process = LocalEngineProcess::spawn(&config)
+            .map_err(|error| format!("Failed to start local aria2: {error}"))?;
+        let endpoint = process.endpoint().clone();
+        let secret = Some(RpcSecret::new(process.secret().to_owned()));
+        (endpoint, secret, Some(process), profile_id)
+    };
+
     let mut websocket = WebSocketConfig::new(endpoint.clone());
     websocket.connect_timeout = Duration::from_millis(750);
     websocket.request_timeout = Duration::from_secs(5);
     let connector = Arc::new(RpcSyncConnector::new(websocket, secret));
-    let coordinator = CoordinatorConfig::new(ProfileId::new());
+    let coordinator = CoordinatorConfig::new(profile_id);
     tracing::info!(
         scheme = endpoint.scheme(),
         host = endpoint.host_str().unwrap_or("unknown"),
@@ -431,7 +471,96 @@ fn create_sync_handle(runtime: &Runtime) -> Result<SyncHandle, String> {
         "configured external aria2 RPC profile"
     );
     let _runtime_guard = runtime.enter();
-    Ok(spawn_sync_coordinator(connector, coordinator))
+    Ok((spawn_sync_coordinator(connector, coordinator), local_engine))
+}
+
+fn resolve_local_engine_config() -> Result<LocalEngineConfig, String> {
+    let executable = env::var_os("ARIADECK_ARIA2C_PATH")
+        .map(PathBuf::from)
+        .or_else(discover_aria2_executable)
+        .ok_or_else(|| {
+            "No aria2 executable found. Set ARIADECK_ARIA2C_PATH or ARIADECK_RPC_URL.".to_owned()
+        })?;
+    let data_dir = env::var_os("ARIADECK_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_data_dir);
+    let download_dir = env::var_os("ARIADECK_DOWNLOAD_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_dir.join("downloads"));
+    let profile_store = JsonProfileStore::new(data_dir.join("profiles.json"));
+    let stored = if profile_store.path().is_file() {
+        Some(
+            profile_store
+                .load()
+                .map_err(|error| format!("Failed to load local aria2 profile: {error}"))?,
+        )
+    } else {
+        None
+    };
+    let profile = ExternalEngineProfile::new(
+        stored
+            .as_ref()
+            .map_or_else(ProfileId::new, |profile| profile.profile_id),
+        env::var("ARIADECK_PROFILE_NAME").unwrap_or_else(|_| "Local aria2".into()),
+        executable,
+        data_dir,
+        download_dir,
+    );
+    profile_store
+        .save(&profile)
+        .map_err(|error| format!("Failed to save local aria2 profile: {error}"))?;
+    Ok(profile.local_config())
+}
+
+async fn request_local_engine_shutdown(process: &LocalEngineProcess) -> Result<(), String> {
+    let mut websocket = WebSocketConfig::new(process.endpoint().clone());
+    websocket.connect_timeout = Duration::from_millis(500);
+    websocket.request_timeout = Duration::from_millis(750);
+    let transport = WebSocketTransport::connect(websocket)
+        .await
+        .map_err(|error| error.to_string())?;
+    let authenticated = AuthenticatedTransport::new(
+        transport.clone(),
+        Some(RpcSecret::new(process.secret().to_owned())),
+    );
+    let client = Aria2Client::new(authenticated);
+    let result = client.shutdown().await.map_err(|error| error.to_string());
+    transport.close().await;
+    result
+}
+
+fn discover_aria2_executable() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(user_profile) = env::var_os("USERPROFILE") {
+        candidates.push(PathBuf::from(user_profile).join("scoop/apps/aria2/current/aria2c.exe"));
+    }
+    if let Some(home) = env::var_os("HOME") {
+        candidates.push(PathBuf::from(home).join("scoop/apps/aria2/current/aria2c.exe"));
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .or_else(|| {
+            Command::new("aria2c")
+                .arg("--version")
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|_| PathBuf::from("aria2c"))
+        })
+}
+
+fn default_data_dir() -> PathBuf {
+    if let Some(path) = env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(path).join("AriaDeck");
+    }
+    if let Some(path) = env::var_os("XDG_DATA_HOME") {
+        return PathBuf::from(path).join("ariadeck");
+    }
+    if let Some(path) = env::var_os("HOME") {
+        return PathBuf::from(path).join(".local/share/ariadeck");
+    }
+    PathBuf::from(".ariadeck")
 }
 
 fn spawn_snapshot_bridge(

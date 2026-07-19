@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 ariadeck-application = { path = "../../crates/ariadeck-application" }
 ariadeck-domain = { path = "../../crates/ariadeck-domain" }
+ariadeck-engine = { path = "../../crates/ariadeck-engine" }
 ariadeck-rpc = { path = "../../crates/ariadeck-rpc" }
 ariadeck-telemetry = { path = "../../crates/ariadeck-telemetry" }
 ariadeck-ui = { path = "../../crates/ariadeck-ui" }

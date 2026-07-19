@@ -4,6 +4,7 @@ members = [
     "apps/ariadeck-desktop",
     "crates/ariadeck-application",
     "crates/ariadeck-domain",
+    "crates/ariadeck-engine",
     "crates/ariadeck-rpc",
     "crates/ariadeck-telemetry",
     "crates/ariadeck-ui",

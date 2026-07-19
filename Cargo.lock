@@ -220,6 +220,7 @@ version = "0.1.0"
 dependencies = [
  "ariadeck-application",
  "ariadeck-domain",
+ "ariadeck-engine",
  "ariadeck-rpc",
  "ariadeck-telemetry",
  "ariadeck-ui",
@@ -236,6 +237,19 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.13.1",
  "serde",
+ "thiserror 2.0.18",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "ariadeck-engine"
+version = "0.1.0"
+dependencies = [
+ "ariadeck-domain",
+ "secrecy",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "url",
  "uuid",
