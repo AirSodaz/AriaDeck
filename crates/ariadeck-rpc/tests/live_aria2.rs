@@ -9,10 +9,11 @@ use std::{
 };
 
 use ariadeck_application::{
-    CoordinatorConfig, PollIntervals, ReconnectPolicy, RefreshPolicy, StoreSnapshot, SyncHandle,
-    TaskListQuery, spawn_sync_coordinator,
+    AddDownloadRequest, AppCommand, CommandItem, CommandOutcome, CoordinatorConfig, PollIntervals,
+    ReconnectPolicy, RefreshPolicy, RemoveTasksRequest, StoreSnapshot, SyncHandle, TaskListQuery,
+    TaskRemovalScope, spawn_sync_coordinator,
 };
-use ariadeck_domain::{ConnectionState, ProfileId};
+use ariadeck_domain::{ConnectionState, DownloadStatus, ProfileId, TaskIdentity};
 use ariadeck_rpc::{
     Aria2Client, AuthenticatedTransport, RpcSecret, RpcSyncConnector, TaskKey, WebSocketConfig,
     WebSocketTransport,
@@ -130,33 +131,7 @@ async fn coordinator_recovers_after_live_aria2_restart() -> Result<(), TestError
     let secret = Uuid::new_v4().simple().to_string();
     let mut process = ChildGuard::spawn(executable, data_dir.path(), port, &secret)?;
     let endpoint = Url::parse(&format!("ws://127.0.0.1:{port}/jsonrpc"))?;
-    let mut websocket = WebSocketConfig::new(endpoint);
-    websocket.connect_timeout = Duration::from_millis(150);
-    websocket.request_timeout = Duration::from_millis(500);
-    let connector = Arc::new(RpcSyncConnector::new(
-        websocket,
-        Some(RpcSecret::new(secret.clone())),
-    ));
-    let intervals = PollIntervals {
-        global_stat: Duration::from_millis(100),
-        live_tasks: Duration::from_millis(100),
-        stopped_tasks: Duration::from_millis(250),
-    };
-    let mut coordinator = CoordinatorConfig::new(ProfileId::new());
-    coordinator.refresh = RefreshPolicy {
-        foreground: intervals,
-        background: intervals,
-        notification_debounce: Duration::from_millis(20),
-    };
-    coordinator.reconnect = ReconnectPolicy {
-        base_delay: Duration::from_millis(50),
-        max_delay: Duration::from_millis(200),
-        jitter_percent: 0,
-        max_attempts: Some(30),
-        reset_after: Duration::from_secs(2),
-    };
-    coordinator.stopped_page_size = 10;
-    let handle = spawn_sync_coordinator(connector, coordinator);
+    let handle = spawn_live_coordinator(endpoint, &secret);
 
     let initial = wait_for_snapshot(&handle, Duration::from_secs(5), |snapshot| {
         snapshot.connection_state == ConnectionState::Connected && !snapshot.stale
@@ -177,6 +152,157 @@ async fn coordinator_recovers_after_live_aria2_restart() -> Result<(), TestError
     handle.stop().await;
     let _ = process.terminate()?;
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires ARIA2C_PATH and launches a real local aria2 process"]
+async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(), TestError> {
+    let executable = env::var("ARIA2C_PATH")?;
+    let data_dir = TempDir::new()?;
+    let port = reserve_loopback_port()?;
+    let secret = Uuid::new_v4().simple().to_string();
+    let mut process = ChildGuard::spawn(Path::new(&executable), data_dir.path(), port, &secret)?;
+    let endpoint = Url::parse(&format!("ws://127.0.0.1:{port}/jsonrpc"))?;
+    let handle = spawn_live_coordinator(endpoint, &secret);
+    let connected = wait_for_snapshot(&handle, Duration::from_secs(5), |snapshot| {
+        snapshot.connection_state == ConnectionState::Connected && !snapshot.stale
+    })
+    .await?;
+
+    let added = handle
+        .execute(
+            connected.session,
+            AppCommand::AddDownload(AddDownloadRequest {
+                uris: vec!["magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".into()],
+                destination: None,
+                options: Vec::new(),
+            }),
+        )
+        .await;
+    let identity = single_succeeded_task(added)?;
+    handle.force_refresh().await;
+    wait_for_task_status(&handle, identity, Duration::from_secs(5), |status| {
+        !status.is_terminal()
+    })
+    .await?;
+
+    let paused = handle
+        .execute(connected.session, AppCommand::PauseTasks(vec![identity]))
+        .await;
+    assert!(paused.has_successes(), "pause failed: {paused:?}");
+    handle.force_refresh().await;
+    wait_for_task_status(&handle, identity, Duration::from_secs(5), |status| {
+        status == DownloadStatus::Paused
+    })
+    .await?;
+
+    let resumed = handle
+        .execute(connected.session, AppCommand::ResumeTasks(vec![identity]))
+        .await;
+    assert!(resumed.has_successes(), "resume failed: {resumed:?}");
+    handle.force_refresh().await;
+    wait_for_task_status(&handle, identity, Duration::from_secs(5), |status| {
+        status != DownloadStatus::Paused && !status.is_terminal()
+    })
+    .await?;
+
+    let removed_live = handle
+        .execute(
+            connected.session,
+            AppCommand::RemoveTasks(RemoveTasksRequest {
+                tasks: vec![identity],
+                scope: TaskRemovalScope::TaskOnly,
+            }),
+        )
+        .await;
+    assert!(
+        removed_live.has_successes(),
+        "live-task removal failed: {removed_live:?}"
+    );
+    handle.force_refresh().await;
+    wait_for_task_status(&handle, identity, Duration::from_secs(5), |status| {
+        status == DownloadStatus::Removed
+    })
+    .await?;
+
+    let removed_result = handle
+        .execute(
+            connected.session,
+            AppCommand::RemoveTasks(RemoveTasksRequest {
+                tasks: vec![identity],
+                scope: TaskRemovalScope::TaskOnly,
+            }),
+        )
+        .await;
+    assert!(
+        removed_result.has_successes(),
+        "stopped-result removal failed: {removed_result:?}"
+    );
+    handle.force_refresh().await;
+    wait_for_snapshot(&handle, Duration::from_secs(5), |snapshot| {
+        snapshot.tasks.iter().all(|task| task.gid != identity.gid)
+    })
+    .await?;
+
+    handle.stop().await;
+    let _ = process.terminate()?;
+    Ok(())
+}
+
+fn spawn_live_coordinator(endpoint: Url, secret: &str) -> SyncHandle {
+    let mut websocket = WebSocketConfig::new(endpoint);
+    websocket.connect_timeout = Duration::from_millis(150);
+    websocket.request_timeout = Duration::from_millis(500);
+    let connector = Arc::new(RpcSyncConnector::new(
+        websocket,
+        Some(RpcSecret::new(secret.to_owned())),
+    ));
+    let intervals = PollIntervals {
+        global_stat: Duration::from_millis(100),
+        live_tasks: Duration::from_millis(100),
+        stopped_tasks: Duration::from_millis(250),
+    };
+    let mut coordinator = CoordinatorConfig::new(ProfileId::new());
+    coordinator.refresh = RefreshPolicy {
+        foreground: intervals,
+        background: intervals,
+        notification_debounce: Duration::from_millis(20),
+    };
+    coordinator.reconnect = ReconnectPolicy {
+        base_delay: Duration::from_millis(50),
+        max_delay: Duration::from_millis(200),
+        jitter_percent: 0,
+        max_attempts: Some(30),
+        reset_after: Duration::from_secs(2),
+    };
+    coordinator.stopped_page_size = 10;
+    spawn_sync_coordinator(connector, coordinator)
+}
+
+fn single_succeeded_task(outcome: CommandOutcome) -> Result<TaskIdentity, TestError> {
+    let CommandOutcome::Success { succeeded } = outcome else {
+        return Err(std::io::Error::other(format!("add command failed: {outcome:?}")).into());
+    };
+    let Some(CommandItem::Task(identity)) = succeeded.into_iter().next() else {
+        return Err(std::io::Error::other("add command returned no task identity").into());
+    };
+    Ok(identity)
+}
+
+async fn wait_for_task_status(
+    handle: &SyncHandle,
+    identity: TaskIdentity,
+    timeout: Duration,
+    mut predicate: impl FnMut(DownloadStatus) -> bool,
+) -> Result<StoreSnapshot, TestError> {
+    wait_for_snapshot(handle, timeout, |snapshot| {
+        snapshot
+            .tasks
+            .iter()
+            .find(|task| task.gid == identity.gid)
+            .is_some_and(|task| predicate(task.status))
+    })
+    .await
 }
 
 fn reserve_loopback_port() -> Result<u16, TestError> {

@@ -32,6 +32,21 @@ impl TaskStatusView {
             Self::Unknown => "Unknown",
         }
     }
+
+    #[must_use]
+    pub const fn can_pause(self) -> bool {
+        matches!(self, Self::Active | Self::Waiting | Self::Verifying)
+    }
+
+    #[must_use]
+    pub const fn can_resume(self) -> bool {
+        matches!(self, Self::Paused)
+    }
+
+    #[must_use]
+    pub const fn can_remove(self) -> bool {
+        !matches!(self, Self::Removed)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -121,6 +136,7 @@ impl ConnectionView {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceSnapshot {
     pub profile_id: String,
+    pub session_id: String,
     pub generation: u64,
     pub source_revision: u64,
     pub connection: ConnectionView,
@@ -135,6 +151,7 @@ impl Default for WorkspaceSnapshot {
     fn default() -> Self {
         Self {
             profile_id: String::new(),
+            session_id: String::new(),
             generation: 0,
             source_revision: 0,
             connection: ConnectionView::Disconnected,
@@ -145,6 +162,166 @@ impl Default for WorkspaceSnapshot {
             tasks: Vec::new(),
         }
     }
+}
+
+impl WorkspaceSnapshot {
+    #[must_use]
+    pub fn engine_session(&self) -> Option<EngineSessionView> {
+        if self.profile_id.is_empty() || self.session_id.is_empty() || self.generation == 0 {
+            return None;
+        }
+        Some(EngineSessionView {
+            profile_id: self.profile_id.clone(),
+            session_id: self.session_id.clone(),
+            generation: self.generation,
+        })
+    }
+
+    #[must_use]
+    pub fn commands_available(&self) -> bool {
+        self.connection.is_connected() && !self.stale && self.engine_session().is_some()
+    }
+}
+
+/// Opaque UI representation of one exact engine connection session.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct EngineSessionView {
+    pub profile_id: String,
+    pub session_id: String,
+    pub generation: u64,
+}
+
+/// Monotonic identifier used to reject out-of-order asynchronous UI results.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct RequestId(u64);
+
+impl RequestId {
+    #[must_use]
+    pub const fn from_u64(value: u64) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum TaskCommandView {
+    Pause,
+    Resume,
+    RemoveTask,
+}
+
+impl TaskCommandView {
+    #[must_use]
+    pub const fn progress_label(self) -> &'static str {
+        match self {
+            Self::Pause => "Pausing task...",
+            Self::Resume => "Resuming task...",
+            Self::RemoveTask => "Removing task...",
+        }
+    }
+
+    #[must_use]
+    pub const fn success_label(self) -> &'static str {
+        match self {
+            Self::Pause => "Task paused.",
+            Self::Resume => "Task resumed.",
+            Self::RemoveTask => "Task removed from aria2.",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AddDownloadRequestView {
+    pub request_id: RequestId,
+    pub session: EngineSessionView,
+    pub uri: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskCommandRequestView {
+    pub request_id: RequestId,
+    pub session: EngineSessionView,
+    pub identity: TaskIdentity,
+    pub command: TaskCommandView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskDetailsRequestView {
+    pub request_id: RequestId,
+    pub session: EngineSessionView,
+    pub identity: TaskIdentity,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationErrorView {
+    pub code: String,
+    pub summary: String,
+    pub retryable: bool,
+}
+
+impl OperationErrorView {
+    #[must_use]
+    pub fn outcome_unknown(&self) -> bool {
+        self.code == "rpc.command_outcome_unknown"
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommandOutcomeView {
+    Success { task: Option<TaskIdentity> },
+    Failure(OperationErrorView),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AddDownloadResultView {
+    pub request_id: RequestId,
+    pub session: EngineSessionView,
+    pub outcome: CommandOutcomeView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskCommandResultView {
+    pub request_id: RequestId,
+    pub session: EngineSessionView,
+    pub identity: TaskIdentity,
+    pub command: TaskCommandView,
+    pub outcome: CommandOutcomeView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskFileView {
+    pub index: u32,
+    pub path: String,
+    pub length: u64,
+    pub completed_length: u64,
+    pub selected: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskDetailsView {
+    pub directory: Option<String>,
+    pub info_hash: Option<String>,
+    pub piece_length: Option<u64>,
+    pub piece_count: Option<u32>,
+    pub files: Vec<TaskFileView>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TaskDetailsOutcomeView {
+    Ready(TaskDetailsView),
+    Failed(OperationErrorView),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskDetailsResultView {
+    pub request_id: RequestId,
+    pub session: EngineSessionView,
+    pub identity: TaskIdentity,
+    pub outcome: TaskDetailsOutcomeView,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]

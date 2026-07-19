@@ -16,8 +16,8 @@ change.
 - [x] Stage 2 - Add domain and application state core with incremental patches.
 - [x] Stage 3 - Implement typed aria2 WebSocket RPC transport and client.
 - [x] Stage 4 - Coordinate polling, notifications, generations, and reconnection.
-- [ ] Stage 5 - Build the live, virtualized download workspace.
-- [ ] Stage 6 - Add interactive download commands and details.
+- [x] Stage 5 - Build the live, virtualized download workspace.
+- [ ] Stage 6 - Add interactive download commands and details (retry remains pending).
 - [ ] Stage 7 - Manage a local external aria2 process and persistent profile.
 - [ ] Stage 8 - Complete and harden the MVP.
 - [ ] Post-MVP - Managed aria2 core installation, platform integration, and release work.
@@ -87,6 +87,11 @@ change.
 
 ### Stage 6 - Interactive download commands and task details
 
+The add-dialog, safe lifecycle commands, details drawer, and session-bound
+desktop composition are implemented. Retry remains deliberately outside this
+checkpoint because replaying a failed task requires preserving its original
+source/options rather than guessing from a stale row.
+
 - [x] Bind command and details requests to the exact engine session and reject stale requests.
 - [x] Reject commands immediately while connecting, synchronizing, stale, or disconnected.
 - [x] Model remote engine paths without treating them as local filesystem paths.
@@ -94,15 +99,16 @@ change.
 - [x] Keep high-frequency live refreshes on a lightweight projection and cache static metadata.
 - [x] Distinguish live-task removal from stopped download-result removal.
 - [x] Report mutating RPC timeouts and disconnects as unknown outcomes without auto-retry.
-- [ ] Extend the typed aria2 adapter for add, pause, resume, retry, and remove commands.
+- [x] Extend the typed aria2 adapter for add, pause, resume, and remove commands.
+- [ ] Extend the typed adapter and application contract for explicit failed-task retry.
 - [x] Execute commands through the application ports with structured outcomes.
-- [ ] Add a focused add-download flow for URLs and magnet links.
-- [ ] Add row actions and keyboard commands for the safe task lifecycle operations.
-- [ ] Add a right-side details drawer that preserves list context and selection.
-- [ ] Load task overview and file details without blocking the GPUI render thread.
-- [ ] Require explicit confirmation before destructive removal or file deletion.
-- [ ] Verify command success, RPC failure, stale-generation, and reconnect behavior.
-- [ ] Exercise the complete command flow against the local aria2 process.
+- [x] Add a focused add-download flow for URLs and magnet links.
+- [x] Add row actions and keyboard commands for the safe task lifecycle operations.
+- [x] Add a right-side details drawer that preserves list context and selection.
+- [x] Load task overview and file details without blocking the GPUI render thread.
+- [x] Require explicit confirmation before destructive removal or file deletion.
+- [x] Verify command success, RPC failure, stale-generation, and reconnect behavior.
+- [x] Exercise the complete command flow against the local aria2 process.
 
 ## Architecture Decisions
 
@@ -186,10 +192,21 @@ failures, and reset only after a configurable stable connection interval.
 | 2026-07-19 | `cargo clippy --workspace --all-targets -- -D warnings` | Pass - no issues after Stage 5 |
 | 2026-07-19 | `cargo test -p ariadeck-domain -p ariadeck-application -p ariadeck-rpc` | Pass - 53 tests, 2 ignored for the reviewed Stage 6 session-bound command/details foundation |
 | 2026-07-19 | `cargo clippy -p ariadeck-domain -p ariadeck-application -p ariadeck-rpc --all-targets -- -D warnings` | Pass - no issues in the Stage 6 backend slice |
+| 2026-07-19 | `cargo test -p ariadeck-ui -p ariadeck-desktop` | Pass - 21 presentation/composition tests, including AccessKit text-field behavior |
+| 2026-07-19 | `cargo test -p ariadeck-rpc -p ariadeck-application` | Pass - 48 tests, 3 ignored |
+| 2026-07-19 | `cargo clippy -p ariadeck-ui -p ariadeck-desktop -p ariadeck-rpc -p ariadeck-application --all-targets -- -D warnings` | Pass - no issues |
+| 2026-07-19 | `cargo build -p ariadeck-desktop` | Pass - native desktop executable built successfully |
+| 2026-07-19 | Ignored live command flow with local `aria2c 1.37.0` | Pass - add, pause, resume, live removal, and stopped-result removal |
+| 2026-07-19 | Post-command process check | Pass - zero residual `aria2c` or `ariadeck-desktop` processes |
 
 ## Known Gaps
 
-- Add-download, task lifecycle commands, and the details drawer begin in Stage 6.
+- Failed-task retry is pending until the source URI and replayable options are
+  stored as an explicit session-scoped contract; blind resume/re-add is unsafe.
+- Stage 7 still needs local process ownership, executable validation, and
+  persistent profile/configuration storage.
+- Add-download, task lifecycle commands, and the details drawer are implemented
+  for the external WebSocket engine path.
 - Theme choice and window state are session-only until settings persistence is added.
 - The optional Windows DXGI debug layer is absent; GPUI logs a development-only
   warning and continues with DirectX debugging disabled.
@@ -205,3 +222,4 @@ failures, and reset only after a configurable stable connection interval.
 - `feat: coordinate aria2 synchronization and reconnects` - Stage 4 live-state coordinator.
 - `feat: build live virtualized download workspace` - Stage 5 native presentation and composition.
 - `feat: add session-bound task command foundation` - Stage 6 command and details backend checkpoint.
+- `feat: complete interactive command and details workspace` - Stage 6 UI, AccessKit input, command outcomes, and live aria2 verification (retry pending).

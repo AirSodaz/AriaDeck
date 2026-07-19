@@ -119,8 +119,8 @@ where
             .await
     }
 
-    pub async fn remove_download_result(&self, gid: Gid) -> Result<Gid, RpcError> {
-        self.call_gid("aria2.removeDownloadResult", vec![json!(gid.to_string())])
+    pub async fn remove_download_result(&self, gid: Gid) -> Result<(), RpcError> {
+        self.call_ok("aria2.removeDownloadResult", vec![json!(gid.to_string())])
             .await
     }
 
@@ -336,6 +336,18 @@ where
             message: error.to_string(),
         })
     }
+
+    async fn call_ok(&self, method: &str, params: Vec<Value>) -> Result<(), RpcError> {
+        let value = self.transport.call(method, params).await?;
+        if value.as_str() == Some("OK") {
+            return Ok(());
+        }
+        Err(RpcError::InvalidData {
+            method: method.into(),
+            field: "result".into(),
+            message: "expected the string OK".into(),
+        })
+    }
 }
 
 fn next_batch_result(
@@ -402,16 +414,17 @@ where
     }
 
     async fn remove(&self, gid: Gid, target: TaskRemovalTarget) -> Result<(), GatewayError> {
-        let result = match target {
+        match target {
             TaskRemovalTarget::LiveTask => match Aria2Client::remove(self, gid).await {
+                Ok(_) => Ok(()),
                 Err(error) if live_task_became_stopped(&error) => {
                     self.remove_download_result(gid).await
                 }
-                result => result,
+                Err(error) => Err(error),
             },
             TaskRemovalTarget::DownloadResult => self.remove_download_result(gid).await,
-        };
-        result.map(|_| ()).map_err(map_mutation_error)
+        }
+        .map_err(map_mutation_error)
     }
 }
 
@@ -632,7 +645,7 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_removal_uses_remove_download_result() {
-        let transport = ScriptedTransport::new([Ok(json!("0000000000000009"))]);
+        let transport = ScriptedTransport::new([Ok(json!("OK"))]);
         let client = Aria2Client::new(transport);
 
         let result = DownloadEngineGateway::remove(
@@ -659,7 +672,7 @@ mod tests {
                 message: "GID is not found in active downloads".into(),
                 data: None,
             }),
-            Ok(json!("0000000000000009")),
+            Ok(json!("OK")),
         ]);
         let client = Aria2Client::new(transport);
 
@@ -675,6 +688,23 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(calls[0].0, "aria2.remove");
         assert_eq!(calls[1].0, "aria2.removeDownloadResult");
+    }
+
+    #[tokio::test]
+    async fn malformed_remove_download_result_is_an_unknown_mutation_outcome() {
+        let transport = ScriptedTransport::new([Ok(json!("0000000000000009"))]);
+        let client = Aria2Client::new(transport);
+
+        let error = DownloadEngineGateway::remove(
+            &client,
+            Gid::from_u64(9),
+            TaskRemovalTarget::DownloadResult,
+        )
+        .await
+        .expect_err("unexpected response must not be reported as success");
+
+        assert_eq!(error.kind, GatewayErrorKind::OutcomeUnknown);
+        assert!(!error.retryable);
     }
 
     #[tokio::test]

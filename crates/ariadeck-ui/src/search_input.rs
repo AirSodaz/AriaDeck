@@ -1,11 +1,15 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
-    Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, IntoElement, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Role,
-    ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, div, fill,
-    point, prelude::*, px, relative, size,
+    A11ySubtreeBuilder, AccessibleAction, App, Bounds, ClipboardItem, Context, CursorStyle,
+    Element, ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
+    GlobalElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PaintQuad, Pixels, Point, Role, ShapedLine, SharedString, Style, TextRun,
+    UTF16Selection, UnderlineStyle, Window,
+    accesskit::{self, ActionData},
+    div, fill, point,
+    prelude::*,
+    px, relative, size,
 };
 
 use crate::{
@@ -14,13 +18,41 @@ use crate::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SearchInputEvent {
+pub struct TextFieldEvent {
     pub text: String,
 }
 
-pub struct SearchInput {
+pub type SearchInputEvent = TextFieldEvent;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TextFieldConfig {
+    pub element_id: SharedString,
+    pub key_context: SharedString,
+    pub role: Role,
+    pub accessibility_label: SharedString,
+    pub placeholder: SharedString,
+}
+
+impl TextFieldConfig {
+    #[must_use]
+    pub fn search(placeholder: impl Into<SharedString>) -> Self {
+        Self {
+            element_id: "download-search".into(),
+            key_context: "SearchInput".into(),
+            role: Role::SearchInput,
+            accessibility_label: "Search downloads".into(),
+            placeholder: placeholder.into(),
+        }
+    }
+}
+
+pub struct TextField {
     focus_handle: FocusHandle,
     content: SharedString,
+    element_id: SharedString,
+    key_context: SharedString,
+    role: Role,
+    accessibility_label: SharedString,
     placeholder: SharedString,
     selected_range: Range<usize>,
     selection_reversed: bool,
@@ -31,15 +63,26 @@ pub struct SearchInput {
     theme: Theme,
 }
 
-impl gpui::EventEmitter<SearchInputEvent> for SearchInput {}
+pub type SearchInput = TextField;
 
-impl SearchInput {
+impl gpui::EventEmitter<TextFieldEvent> for TextField {}
+
+impl TextField {
     #[must_use]
     pub fn new(placeholder: impl Into<SharedString>, theme: Theme, cx: &mut Context<Self>) -> Self {
+        Self::new_with_config(TextFieldConfig::search(placeholder), theme, cx)
+    }
+
+    #[must_use]
+    pub fn new_with_config(config: TextFieldConfig, theme: Theme, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle().tab_stop(true),
             content: SharedString::default(),
-            placeholder: placeholder.into(),
+            element_id: config.element_id,
+            key_context: config.key_context,
+            role: config.role,
+            accessibility_label: config.accessibility_label,
+            placeholder: config.placeholder,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -76,10 +119,17 @@ impl SearchInput {
     }
 
     fn emit_change(&self, cx: &mut Context<Self>) {
-        cx.emit(SearchInputEvent {
+        cx.emit(TextFieldEvent {
             text: self.content.to_string(),
         });
         cx.notify();
+    }
+
+    fn set_accessible_value(&mut self, data: Option<&ActionData>, cx: &mut Context<Self>) {
+        let Some(ActionData::Value(text)) = data else {
+            return;
+        };
+        self.set_text(text.to_string(), cx);
     }
 
     fn move_left(&mut self, _: &MoveLeft, _: &mut Window, cx: &mut Context<Self>) {
@@ -285,7 +335,7 @@ impl SearchInput {
     }
 }
 
-impl EntityInputHandler for SearchInput {
+impl EntityInputHandler for TextField {
     fn text_for_range(
         &mut self,
         range_utf16: Range<usize>,
@@ -412,17 +462,17 @@ impl EntityInputHandler for SearchInput {
     }
 }
 
-struct SearchTextElement {
-    input: Entity<SearchInput>,
+struct TextFieldElement {
+    input: Entity<TextField>,
 }
 
-struct SearchPrepaintState {
+struct TextFieldPrepaintState {
     line: Option<ShapedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
 }
 
-impl IntoElement for SearchTextElement {
+impl IntoElement for TextFieldElement {
     type Element = Self;
 
     fn into_element(self) -> Self::Element {
@@ -430,9 +480,9 @@ impl IntoElement for SearchTextElement {
     }
 }
 
-impl Element for SearchTextElement {
+impl Element for TextFieldElement {
     type RequestLayoutState = ();
-    type PrepaintState = SearchPrepaintState;
+    type PrepaintState = TextFieldPrepaintState;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -543,7 +593,7 @@ impl Element for SearchTextElement {
                 None,
             )
         };
-        SearchPrepaintState {
+        TextFieldPrepaintState {
             line: Some(line),
             cursor,
             selection,
@@ -592,16 +642,38 @@ impl Element for SearchTextElement {
     }
 }
 
-impl gpui::Render for SearchInput {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl gpui::Render for TextField {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = self.theme.colors;
+        let (selection_tail, selection_head) = if self.selection_reversed {
+            (self.selected_range.end, self.selected_range.start)
+        } else {
+            (self.selected_range.start, self.selected_range.end)
+        };
+        let (a11y_value, a11y_text_runs) = text_field_a11y_state(
+            self.element_id.clone(),
+            self.content.to_string(),
+            selection_tail,
+            selection_head,
+            self.focus_handle.is_focused(window),
+            window,
+            cx,
+        );
+        let weak_input = cx.entity().downgrade();
         div()
-            .id("download-search")
-            .key_context("SearchInput")
-            .role(Role::SearchInput)
-            .aria_label("Search downloads")
+            .id(self.element_id.clone())
+            .key_context(self.key_context.as_ref())
+            .role(self.role)
+            .aria_label(self.accessibility_label.clone())
             .aria_placeholder(self.placeholder.clone())
-            .aria_value(self.content.clone())
+            .aria_value(a11y_value)
+            .a11y_synthetic_children(a11y_text_runs)
+            .on_a11y_action(AccessibleAction::SetValue, move |data, _window, cx| {
+                let Some(input) = weak_input.upgrade() else {
+                    return;
+                };
+                input.update(cx, |input, cx| input.set_accessible_value(data, cx));
+            })
             .focusable()
             .tab_stop(true)
             .track_focus(&self.focus_handle)
@@ -636,11 +708,11 @@ impl gpui::Render for SearchInput {
             .bg(colors.elevated_surface)
             .text_sm()
             .focus_visible(|style| style.border_color(colors.focus_ring))
-            .child(SearchTextElement { input: cx.entity() })
+            .child(TextFieldElement { input: cx.entity() })
     }
 }
 
-impl Focusable for SearchInput {
+impl Focusable for TextField {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
@@ -649,4 +721,227 @@ impl Focusable for SearchInput {
 fn with_alpha(mut color: gpui::Hsla, alpha: f32) -> gpui::Hsla {
     color.a = alpha;
     color
+}
+
+fn text_field_a11y_state(
+    state_key: impl Into<ElementId>,
+    text: String,
+    selection_tail: usize,
+    selection_head: usize,
+    is_focused: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> (String, impl FnOnce(&mut A11ySubtreeBuilder) + 'static) {
+    let state = window.is_a11y_active().then(|| {
+        let a11y_value = window.use_keyed_state((state_key.into(), "a11y-value"), cx, {
+            let text = text.clone();
+            move |_, _| text
+        });
+        if !is_focused && *a11y_value.read(cx) != text {
+            *a11y_value.as_mut(cx) = text.clone();
+        }
+        let frozen_value = a11y_value.read(cx).clone();
+
+        (frozen_value, text, selection_tail, selection_head)
+    });
+
+    let (frozen_value, run_data) = match state {
+        Some((frozen_value, text, selection_tail, selection_head)) => {
+            (frozen_value, Some((text, selection_tail, selection_head)))
+        }
+        None => (String::new(), None),
+    };
+    let text_runs = move |builder: &mut A11ySubtreeBuilder| {
+        if let Some((text, selection_tail, selection_head)) = run_data {
+            push_a11y_text_runs(builder, &text, selection_tail, selection_head);
+        }
+    };
+
+    (frozen_value, text_runs)
+}
+
+const MAX_CHARS_PER_TEXT_RUN: usize = 255;
+
+fn is_word_char(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
+}
+
+fn char_index_for_byte(text: &str, byte_offset: usize) -> usize {
+    text.char_indices()
+        .take_while(|(byte_index, _)| *byte_index < byte_offset)
+        .count()
+}
+
+fn a11y_text_position(
+    char_index: usize,
+    synthetic_node_id: impl Fn(u64) -> accesskit::NodeId,
+) -> accesskit::TextPosition {
+    let chunk_index = if char_index > 0 && char_index.is_multiple_of(MAX_CHARS_PER_TEXT_RUN) {
+        char_index / MAX_CHARS_PER_TEXT_RUN - 1
+    } else {
+        char_index / MAX_CHARS_PER_TEXT_RUN
+    };
+    accesskit::TextPosition {
+        node: synthetic_node_id(chunk_index as u64),
+        character_index: char_index - chunk_index * MAX_CHARS_PER_TEXT_RUN,
+    }
+}
+
+fn build_a11y_text_runs(
+    text: &str,
+    selection_tail: usize,
+    selection_head: usize,
+    synthetic_node_id: impl Fn(u64) -> accesskit::NodeId,
+) -> (
+    Vec<(accesskit::NodeId, accesskit::Node)>,
+    accesskit::TextSelection,
+) {
+    let chars: Vec<char> = text.chars().collect();
+    let total_chars = chars.len();
+    let num_chunks = total_chars.div_ceil(MAX_CHARS_PER_TEXT_RUN).max(1);
+
+    let mut word_starts = Vec::new();
+    let mut was_word_char = false;
+    for (index, character) in chars.iter().enumerate() {
+        let is_word = is_word_char(*character);
+        if is_word && !was_word_char {
+            word_starts.push(index);
+        }
+        was_word_char = is_word;
+    }
+
+    let mut runs = Vec::with_capacity(num_chunks);
+    for chunk_index in 0..num_chunks {
+        let char_start = chunk_index * MAX_CHARS_PER_TEXT_RUN;
+        let char_end = (char_start + MAX_CHARS_PER_TEXT_RUN).min(total_chars);
+        let chunk_chars = &chars[char_start..char_end];
+
+        let mut node = accesskit::Node::new(accesskit::Role::TextRun);
+        node.set_text_direction(accesskit::TextDirection::LeftToRight);
+        node.set_value(chunk_chars.iter().collect::<String>());
+        node.set_character_lengths(
+            chunk_chars
+                .iter()
+                .map(|character| character.len_utf8() as u8)
+                .collect::<Vec<_>>(),
+        );
+        node.set_word_starts(
+            word_starts
+                .iter()
+                .filter(|&&word_start| word_start >= char_start && word_start < char_end)
+                .map(|&word_start| (word_start - char_start) as u8)
+                .collect::<Vec<_>>(),
+        );
+        if chunk_index > 0 {
+            node.set_previous_on_line(synthetic_node_id(chunk_index as u64 - 1));
+        }
+        if chunk_index + 1 < num_chunks {
+            node.set_next_on_line(synthetic_node_id(chunk_index as u64 + 1));
+        }
+
+        runs.push((synthetic_node_id(chunk_index as u64), node));
+    }
+
+    let anchor = a11y_text_position(
+        char_index_for_byte(text, selection_tail),
+        &synthetic_node_id,
+    );
+    let focus = a11y_text_position(
+        char_index_for_byte(text, selection_head),
+        &synthetic_node_id,
+    );
+    (runs, accesskit::TextSelection { anchor, focus })
+}
+
+fn push_a11y_text_runs(
+    builder: &mut A11ySubtreeBuilder,
+    text: &str,
+    selection_tail: usize,
+    selection_head: usize,
+) {
+    let (runs, selection) = build_a11y_text_runs(text, selection_tail, selection_head, |chunk| {
+        builder.synthetic_node_id(chunk)
+    });
+    for (id, node) in runs {
+        builder.push_child(id, node);
+    }
+    builder.parent_node().set_text_selection(selection);
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{AppContext as _, TestAppContext, accesskit::NodeId};
+
+    use super::*;
+
+    #[test]
+    fn search_config_preserves_legacy_metadata() {
+        let config = TextFieldConfig::search("Search downloads or GID");
+
+        assert_eq!(config.element_id.as_ref(), "download-search");
+        assert_eq!(config.key_context.as_ref(), "SearchInput");
+        assert_eq!(config.role, Role::SearchInput);
+        assert_eq!(config.accessibility_label.as_ref(), "Search downloads");
+        assert_eq!(config.placeholder.as_ref(), "Search downloads or GID");
+    }
+
+    #[test]
+    fn search_names_are_compatibility_aliases() {
+        let input: Option<SearchInput> = None;
+        let _: Option<TextField> = input;
+
+        let event = SearchInputEvent {
+            text: "example".to_owned(),
+        };
+        let _: TextFieldEvent = event;
+    }
+
+    #[test]
+    fn accessibility_text_runs_preserve_utf8_selection() {
+        let text = "aé中🙂";
+        let (runs, selection) = build_a11y_text_runs(text, 1, text.len(), NodeId);
+
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].0, NodeId(0));
+        assert_eq!(runs[0].1.role(), accesskit::Role::TextRun);
+        assert_eq!(selection.anchor.node, NodeId(0));
+        assert_eq!(selection.anchor.character_index, 1);
+        assert_eq!(selection.focus.node, NodeId(0));
+        assert_eq!(selection.focus.character_index, 4);
+    }
+
+    #[test]
+    fn accessibility_text_runs_split_long_values_at_valid_boundaries() {
+        let text = "a".repeat(MAX_CHARS_PER_TEXT_RUN + 1);
+        let (runs, selection) =
+            build_a11y_text_runs(&text, MAX_CHARS_PER_TEXT_RUN, text.len(), NodeId);
+
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].0, NodeId(0));
+        assert_eq!(runs[1].0, NodeId(1));
+        assert_eq!(selection.anchor.node, NodeId(0));
+        assert_eq!(selection.anchor.character_index, MAX_CHARS_PER_TEXT_RUN);
+        assert_eq!(selection.focus.node, NodeId(1));
+        assert_eq!(selection.focus.character_index, 1);
+    }
+
+    #[gpui::test]
+    fn accessible_set_value_uses_the_normal_text_update_path(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| TextField::new("URL", Theme::dark(), cx));
+        let action = ActionData::Value("https://example.com/file".into());
+
+        cx.update_entity(&input, |input, cx| {
+            input.set_accessible_value(Some(&action), cx);
+        });
+
+        cx.read_entity(&input, |input, _| {
+            assert_eq!(input.text(), "https://example.com/file");
+            assert_eq!(
+                input.selected_range,
+                input.content.len()..input.content.len()
+            );
+            assert!(!input.selection_reversed);
+            assert!(input.marked_range.is_none());
+        });
+    }
 }
