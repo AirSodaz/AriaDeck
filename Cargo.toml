@@ -2,6 +2,8 @@
 resolver = "3"
 members = [
     "apps/ariadeck-desktop",
+    "crates/ariadeck-application",
+    "crates/ariadeck-domain",
     "crates/ariadeck-telemetry",
     "crates/ariadeck-ui",
 ]
@@ -13,10 +15,17 @@ rust-version = "1.96"
 authors = ["AriaDeck contributors"]
 
 [workspace.dependencies]
+async-trait = "0.1.89"
+bitflags = { version = "2.10.0", features = ["serde"] }
+futures = "0.3.31"
 gpui = { git = "https://github.com/zed-industries/zed.git", rev = "952d712dac48a4af2c54fb22c82d82a9d69b72d4" }
 gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "952d712dac48a4af2c54fb22c82d82a9d69b72d4" }
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.17"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
+url = { version = "2.5.7", features = ["serde"] }
+uuid = { version = "1.18.1", features = ["serde", "v4"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

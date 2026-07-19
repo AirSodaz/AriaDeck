@@ -2,7 +2,7 @@
 
 **Status:** In progress
 
-**Current stage:** 2 - Domain and application state core
+**Current stage:** 3 - Typed aria2 WebSocket RPC
 
 **Last updated:** 2026-07-19
 
@@ -13,7 +13,7 @@ change.
 ## Delivery Plan
 
 - [x] Stage 1 - Bootstrap workspace, pin GPUI, open a native window, enable tracing.
-- [ ] Stage 2 - Add domain and application state core with incremental patches.
+- [x] Stage 2 - Add domain and application state core with incremental patches.
 - [ ] Stage 3 - Implement typed aria2 WebSocket RPC and synchronization.
 - [ ] Stage 4 - Build the live, virtualized download workspace.
 - [ ] Stage 5 - Add download commands and structured partial outcomes.
@@ -38,14 +38,28 @@ change.
 
 ### Stage 2 - Domain and application state core
 
-- [ ] Add strong profile, session, task, GID, byte, and rate types.
-- [ ] Add task status, metadata, errors, progress, and ETA behavior.
-- [ ] Add a session-scoped incremental download store.
-- [ ] Reconcile full active/waiting snapshots separately from stopped pages.
-- [ ] Add stable derived GID views with filtering and sorting.
-- [ ] Add fixed-capacity speed history.
-- [ ] Define application ports, typed commands, and structured outcomes.
-- [ ] Verify semantic no-op patches do not increase revisions.
+- [x] Add strong profile, session, task, GID, byte, and rate types.
+- [x] Add task status, metadata, errors, progress, and ETA behavior.
+- [x] Add a session-scoped incremental download store.
+- [x] Reconcile full active/waiting snapshots separately from stopped pages.
+- [x] Add stable derived GID views with filtering and sorting.
+- [x] Add fixed-capacity speed history.
+- [x] Define application ports, typed commands, and structured outcomes.
+- [x] Verify semantic no-op patches do not increase revisions.
+
+### Stage 3 - Typed aria2 WebSocket RPC
+
+- [ ] Define JSON-RPC request, response, error, and notification envelopes.
+- [ ] Centralize secret token injection without exposing secrets to logs.
+- [ ] Add a concurrent WebSocket transport with unique request IDs and timeouts.
+- [ ] Match out-of-order responses to pending requests.
+- [ ] Add typed `getVersion`, `getGlobalStat`, `tellActive`, `tellWaiting`, and
+  `tellStopped` methods.
+- [ ] Convert aria2 decimal strings and optional fields into domain types safely.
+- [ ] Treat notifications as targeted refresh hints rather than complete state.
+- [ ] Add contract tests for malformed data, RPC errors, authentication, timeout,
+  notification, and out-of-order responses.
+- [ ] Run a real `aria2c` WebSocket smoke test using the local Scoop installation.
 
 ## Architecture Decisions
 
@@ -88,6 +102,9 @@ will be discarded, and cross-engine references will use a stable task identity.
 | 2026-07-19 | `cargo clippy --workspace --all-targets -- -D warnings` | Pass - no issues |
 | 2026-07-19 | `cargo build -p ariadeck-desktop` | Pass |
 | 2026-07-19 | Desktop launch smoke (5 seconds) | Pass - process remained healthy and was cleaned up |
+| 2026-07-19 | `cargo test -p ariadeck-domain -p ariadeck-application` | Pass - 15 tests |
+| 2026-07-19 | `cargo test --workspace` | Pass - 16 tests across 9 suites |
+| 2026-07-19 | `cargo clippy --workspace --all-targets -- -D warnings` | Pass - no issues after Stage 2 |
 
 ## Known Gaps
 
@@ -101,3 +118,4 @@ will be discarded, and cross-engine references will use a stable task identity.
 ## Commit Log
 
 - `chore: bootstrap AriaDeck workspace` - Stage 1 foundation.
+- `feat: add domain and application state core` - Stage 2 state and command foundation.

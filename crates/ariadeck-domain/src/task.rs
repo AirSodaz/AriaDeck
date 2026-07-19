@@ -1,0 +1,324 @@
+use std::path::PathBuf;
+
+use bitflags::bitflags;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+use crate::{ByteCount, ByteRate, Gid, TaskProgress};
+
+/// aria2 task lifecycle state normalized for application use.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadStatus {
+    Active,
+    Waiting,
+    Paused,
+    Complete,
+    Error,
+    Removed,
+    Verifying,
+    #[default]
+    Unknown,
+}
+
+impl DownloadStatus {
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Complete | Self::Error | Self::Removed)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskError {
+    pub code: Option<u32>,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskMetadata {
+    pub directory: Option<PathBuf>,
+    pub primary_uri: Option<String>,
+    pub info_hash: Option<String>,
+    pub file_count: u32,
+}
+
+/// Adapter-produced task values without application revision metadata.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskSnapshot {
+    pub gid: Gid,
+    pub status: DownloadStatus,
+    pub display_name: String,
+    pub total_length: ByteCount,
+    pub completed_length: ByteCount,
+    pub upload_length: ByteCount,
+    pub download_speed: ByteRate,
+    pub upload_speed: ByteRate,
+    pub connections: u32,
+    pub error: Option<TaskError>,
+    pub metadata: TaskMetadata,
+}
+
+impl TaskSnapshot {
+    #[must_use]
+    pub fn new(gid: Gid, status: DownloadStatus, display_name: impl Into<String>) -> Self {
+        Self {
+            gid,
+            status,
+            display_name: display_name.into(),
+            total_length: ByteCount::default(),
+            completed_length: ByteCount::default(),
+            upload_length: ByteCount::default(),
+            download_speed: ByteRate::default(),
+            upload_speed: ByteRate::default(),
+            connections: 0,
+            error: None,
+            metadata: TaskMetadata::default(),
+        }
+    }
+}
+
+bitflags! {
+    /// Allocation-free description of fields changed by a task refresh.
+    #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+    pub struct TaskFields: u16 {
+        const STATUS = 1 << 0;
+        const DISPLAY_NAME = 1 << 1;
+        const TOTAL_LENGTH = 1 << 2;
+        const COMPLETED_LENGTH = 1 << 3;
+        const UPLOAD_LENGTH = 1 << 4;
+        const DOWNLOAD_SPEED = 1 << 5;
+        const UPLOAD_SPEED = 1 << 6;
+        const CONNECTIONS = 1 << 7;
+        const ERROR = 1 << 8;
+        const METADATA = 1 << 9;
+    }
+}
+
+/// Application-owned task state with a semantic revision.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DownloadTask {
+    pub gid: Gid,
+    pub status: DownloadStatus,
+    pub display_name: String,
+    pub total_length: ByteCount,
+    pub completed_length: ByteCount,
+    pub upload_length: ByteCount,
+    pub download_speed: ByteRate,
+    pub upload_speed: ByteRate,
+    pub connections: u32,
+    pub error: Option<TaskError>,
+    pub metadata: TaskMetadata,
+    pub revision: u64,
+}
+
+impl DownloadTask {
+    #[must_use]
+    pub fn from_snapshot(snapshot: TaskSnapshot) -> Self {
+        Self {
+            gid: snapshot.gid,
+            status: snapshot.status,
+            display_name: snapshot.display_name,
+            total_length: snapshot.total_length,
+            completed_length: snapshot.completed_length,
+            upload_length: snapshot.upload_length,
+            download_speed: snapshot.download_speed,
+            upload_speed: snapshot.upload_speed,
+            connections: snapshot.connections,
+            error: snapshot.error,
+            metadata: snapshot.metadata,
+            revision: 1,
+        }
+    }
+
+    pub fn apply_snapshot(
+        &mut self,
+        snapshot: TaskSnapshot,
+    ) -> Result<TaskFields, TaskUpdateError> {
+        if self.gid != snapshot.gid {
+            return Err(TaskUpdateError::GidMismatch {
+                expected: self.gid,
+                received: snapshot.gid,
+            });
+        }
+
+        let mut changed = TaskFields::empty();
+        update_field(
+            &mut self.status,
+            snapshot.status,
+            TaskFields::STATUS,
+            &mut changed,
+        );
+        update_field(
+            &mut self.display_name,
+            snapshot.display_name,
+            TaskFields::DISPLAY_NAME,
+            &mut changed,
+        );
+        update_field(
+            &mut self.total_length,
+            snapshot.total_length,
+            TaskFields::TOTAL_LENGTH,
+            &mut changed,
+        );
+        update_field(
+            &mut self.completed_length,
+            snapshot.completed_length,
+            TaskFields::COMPLETED_LENGTH,
+            &mut changed,
+        );
+        update_field(
+            &mut self.upload_length,
+            snapshot.upload_length,
+            TaskFields::UPLOAD_LENGTH,
+            &mut changed,
+        );
+        update_field(
+            &mut self.download_speed,
+            snapshot.download_speed,
+            TaskFields::DOWNLOAD_SPEED,
+            &mut changed,
+        );
+        update_field(
+            &mut self.upload_speed,
+            snapshot.upload_speed,
+            TaskFields::UPLOAD_SPEED,
+            &mut changed,
+        );
+        update_field(
+            &mut self.connections,
+            snapshot.connections,
+            TaskFields::CONNECTIONS,
+            &mut changed,
+        );
+        update_field(
+            &mut self.error,
+            snapshot.error,
+            TaskFields::ERROR,
+            &mut changed,
+        );
+        update_field(
+            &mut self.metadata,
+            snapshot.metadata,
+            TaskFields::METADATA,
+            &mut changed,
+        );
+
+        if !changed.is_empty() {
+            self.revision = self.revision.saturating_add(1);
+        }
+        Ok(changed)
+    }
+
+    #[must_use]
+    pub const fn progress(&self) -> TaskProgress {
+        TaskProgress::new(self.completed_length, self.total_length)
+    }
+}
+
+fn update_field<T: PartialEq>(
+    current: &mut T,
+    incoming: T,
+    field: TaskFields,
+    changed: &mut TaskFields,
+) {
+    if *current != incoming {
+        *current = incoming;
+        changed.insert(field);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum TaskUpdateError {
+    #[error("task update GID mismatch: expected {expected}, received {received}")]
+    GidMismatch { expected: Gid, received: Gid },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadFilter {
+    #[default]
+    All,
+    Active,
+    Waiting,
+    Paused,
+    Completed,
+    Failed,
+}
+
+impl DownloadFilter {
+    #[must_use]
+    pub const fn matches(self, status: DownloadStatus) -> bool {
+        match self {
+            Self::All => true,
+            Self::Active => matches!(status, DownloadStatus::Active | DownloadStatus::Verifying),
+            Self::Waiting => matches!(status, DownloadStatus::Waiting),
+            Self::Paused => matches!(status, DownloadStatus::Paused),
+            Self::Completed => matches!(status, DownloadStatus::Complete),
+            Self::Failed => matches!(status, DownloadStatus::Error),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortKey {
+    #[default]
+    Queue,
+    Name,
+    Status,
+    Progress,
+    DownloadSpeed,
+    Size,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortDirection {
+    #[default]
+    Ascending,
+    Descending,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub struct DownloadSort {
+    pub key: SortKey,
+    pub direction: SortDirection,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identical_snapshot_does_not_increment_revision() {
+        let snapshot = TaskSnapshot::new(Gid::from_u64(1), DownloadStatus::Active, "archive.iso");
+        let mut task = DownloadTask::from_snapshot(snapshot.clone());
+
+        let changed = match task.apply_snapshot(snapshot) {
+            Ok(changed) => changed,
+            Err(error) => panic!("matching snapshot rejected: {error}"),
+        };
+
+        assert!(changed.is_empty());
+        assert_eq!(task.revision, 1);
+    }
+
+    #[test]
+    fn snapshot_reports_only_semantically_changed_fields() {
+        let mut initial = TaskSnapshot::new(Gid::from_u64(2), DownloadStatus::Waiting, "video.mkv");
+        initial.total_length = ByteCount::new(100);
+        let mut task = DownloadTask::from_snapshot(initial.clone());
+
+        initial.status = DownloadStatus::Active;
+        initial.completed_length = ByteCount::new(25);
+        let changed = match task.apply_snapshot(initial) {
+            Ok(changed) => changed,
+            Err(error) => panic!("matching snapshot rejected: {error}"),
+        };
+
+        assert_eq!(changed, TaskFields::STATUS | TaskFields::COMPLETED_LENGTH);
+        assert_eq!(task.revision, 2);
+    }
+}

@@ -1,0 +1,17 @@
+[package]
+name = "ariadeck-application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+ariadeck-domain = { path = "../ariadeck-domain" }
+thiserror.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+
+[lints]
+workspace = true

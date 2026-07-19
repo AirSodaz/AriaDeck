@@ -203,6 +203,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ariadeck-application"
+version = "0.1.0"
+dependencies = [
+ "ariadeck-domain",
+ "async-trait",
+ "futures",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "ariadeck-desktop"
 version = "0.1.0"
 dependencies = [
@@ -211,6 +221,17 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "tracing",
+]
+
+[[package]]
+name = "ariadeck-domain"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "serde",
+ "thiserror 2.0.18",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -607,6 +628,9 @@ name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "bitstream-io"
@@ -5456,6 +5480,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]
