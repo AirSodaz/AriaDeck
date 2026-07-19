@@ -9,6 +9,7 @@ authors.workspace = true
 async-trait.workspace = true
 ariadeck-domain = { path = "../ariadeck-domain" }
 thiserror.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 futures.workspace = true

@@ -35,6 +35,7 @@ pub struct StorePatch {
     pub order_changes: Vec<OrderPatch>,
     pub global_stat_changed: bool,
     pub stale_changed: bool,
+    pub session_changed: bool,
 }
 
 impl StorePatch {
@@ -48,6 +49,7 @@ impl StorePatch {
             order_changes: Vec::new(),
             global_stat_changed: false,
             stale_changed: false,
+            session_changed: false,
         }
     }
 
@@ -59,6 +61,7 @@ impl StorePatch {
             && self.order_changes.is_empty()
             && !self.global_stat_changed
             && !self.stale_changed
+            && !self.session_changed
     }
 
     fn record_order(&mut self, collection: TaskCollection) {
@@ -133,6 +136,27 @@ impl DownloadStore {
     #[must_use]
     pub fn stopped_total(&self) -> Option<usize> {
         self.stopped_total
+    }
+
+    /// Starts a new connection generation while preserving last-known tasks.
+    pub fn begin_session(&mut self, session: EngineSession) -> Result<StorePatch, StoreError> {
+        if session.profile_id != self.session.profile_id {
+            return Err(StoreError::WrongProfile {
+                expected: self.session.profile_id,
+                received: session.profile_id,
+            });
+        }
+
+        let mut patch = StorePatch::new(session.generation, self.revision);
+        if self.session != session {
+            self.session = session;
+            patch.session_changed = true;
+        }
+        if !self.stale {
+            self.stale = true;
+            patch.stale_changed = true;
+        }
+        Ok(self.finish_patch(patch))
     }
 
     /// Reconciles the two authoritative live collections as one atomic snapshot.
@@ -254,6 +278,33 @@ impl DownloadStore {
         if self.global_stat != stat {
             self.global_stat = stat;
             patch.global_stat_changed = true;
+        }
+        Ok(self.finish_patch(patch))
+    }
+
+    /// Applies a targeted `tellStatus` result without guessing queue position.
+    /// Periodic authoritative collection refreshes repair ordering separately.
+    pub fn apply_task_snapshot(
+        &mut self,
+        generation: SessionGeneration,
+        gid: Gid,
+        snapshot: Option<TaskSnapshot>,
+    ) -> Result<StorePatch, StoreError> {
+        self.ensure_generation(generation)?;
+        let mut patch = StorePatch::new(generation, self.revision);
+        match snapshot {
+            Some(snapshot) => {
+                if snapshot.gid != gid {
+                    return Err(StoreError::TargetedGidMismatch {
+                        expected: gid,
+                        received: snapshot.gid,
+                    });
+                }
+                self.upsert(snapshot, &mut patch)?;
+            }
+            None => {
+                return self.remove_tasks(generation, &[gid]);
+            }
         }
         Ok(self.finish_patch(patch))
     }
@@ -392,6 +443,13 @@ pub enum StoreError {
     DuplicateGid(Gid),
     #[error("stopped page offset {offset} exceeds total {total}")]
     InvalidStoppedPage { offset: usize, total: usize },
+    #[error("new engine session belongs to profile {received}, expected {expected}")]
+    WrongProfile {
+        expected: ariadeck_domain::ProfileId,
+        received: ariadeck_domain::ProfileId,
+    },
+    #[error("targeted task response GID mismatch: expected {expected}, received {received}")]
+    TargetedGidMismatch { expected: Gid, received: Gid },
     #[error(transparent)]
     TaskUpdate(#[from] TaskUpdateError),
 }
@@ -512,5 +570,34 @@ mod tests {
         );
         assert_eq!(store.revision(), 0);
         assert!(store.tasks.is_empty());
+    }
+
+    #[test]
+    fn new_session_preserves_tasks_and_rejects_old_generation() {
+        let mut store = store();
+        if let Err(error) = store.reconcile_live(
+            generation(),
+            vec![task(1, DownloadStatus::Active, "one")],
+            Vec::new(),
+        ) {
+            panic!("initial snapshot failed: {error}");
+        }
+        let next = EngineSession::new(
+            store.session().profile_id,
+            EngineSessionId::new(),
+            generation().next(),
+        );
+        let patch = match store.begin_session(next) {
+            Ok(patch) => patch,
+            Err(error) => panic!("session transition failed: {error}"),
+        };
+
+        assert!(patch.session_changed);
+        assert!(patch.stale_changed);
+        assert!(store.task(Gid::from_u64(1)).is_some());
+        assert!(matches!(
+            store.update_global_stat(generation(), GlobalStat::default()),
+            Err(StoreError::StaleGeneration { .. })
+        ));
     }
 }

@@ -2,7 +2,7 @@
 
 **Status:** In progress
 
-**Current stage:** 4 - Synchronization and reconnection coordinator
+**Current stage:** 5 - Live virtualized download workspace
 
 **Last updated:** 2026-07-19
 
@@ -15,7 +15,7 @@ change.
 - [x] Stage 1 - Bootstrap workspace, pin GPUI, open a native window, enable tracing.
 - [x] Stage 2 - Add domain and application state core with incremental patches.
 - [x] Stage 3 - Implement typed aria2 WebSocket RPC transport and client.
-- [ ] Stage 4 - Coordinate polling, notifications, generations, and reconnection.
+- [x] Stage 4 - Coordinate polling, notifications, generations, and reconnection.
 - [ ] Stage 5 - Build the live, virtualized download workspace.
 - [ ] Stage 6 - Add interactive download commands and details.
 - [ ] Stage 7 - Manage a local external aria2 process and persistent profile.
@@ -64,14 +64,26 @@ change.
 
 ### Stage 4 - Synchronization and reconnection coordinator
 
-- [ ] Add capability verification and an initial batched state snapshot.
-- [ ] Apply live and stopped responses only to the matching session generation.
-- [ ] Coordinate foreground/background polling intervals without overlapping cycles.
-- [ ] Convert WebSocket notifications into deduplicated targeted refresh requests.
-- [ ] Preserve the last-known store and mark it stale while disconnected.
-- [ ] Add exponential reconnect backoff with jitter and a maximum delay.
-- [ ] Discard late responses from superseded connection attempts.
-- [ ] Test reconnect, cancellation, notification storms, and stale-generation races.
+- [x] Add capability verification and an initial batched state snapshot.
+- [x] Apply live and stopped responses only to the matching session generation.
+- [x] Coordinate foreground/background polling intervals without overlapping cycles.
+- [x] Convert WebSocket notifications into deduplicated targeted refresh requests.
+- [x] Preserve the last-known store and mark it stale while disconnected.
+- [x] Add exponential reconnect backoff with jitter and a maximum delay.
+- [x] Discard late responses from superseded connection attempts.
+- [x] Test reconnect, cancellation, notification storms, and stale-generation races.
+
+### Stage 5 - Live virtualized download workspace
+
+- [ ] Compose the RPC connector and sync coordinator in the desktop application.
+- [ ] Bridge coordinator events and snapshots into a GPUI-owned workspace model.
+- [ ] Build the sidebar, header, search, filters, status summary, and task rows.
+- [ ] Virtualize task rendering so off-screen rows do not create GPUI elements.
+- [ ] Preserve selection by stable task identity across filtering and updates.
+- [ ] Represent connecting, stale, disconnected, empty, and error states explicitly.
+- [ ] Verify light/dark themes, keyboard focus, and accessible control names.
+- [ ] Exercise a 10,000-task fixture and confirm only visible rows are rendered.
+- [ ] Launch the desktop application against the local aria2 process as a smoke test.
 
 ## Architecture Decisions
 
@@ -111,6 +123,16 @@ oneshot waiters, and a broadcast channel exposes notifications only as refresh
 hints. Authentication is a transport decorator, so typed methods never construct
 or log token parameters.
 
+### ADR-006 - Keep synchronization serialized and cancellation-aware
+
+One application actor owns the mutable store and serializes polling, notification
+refreshes, generation transitions, and reconnect attempts. Terminal notifications
+refresh live and stopped collections together; waiting snapshots are fully paged
+before authoritative reconciliation. A separate cancellation signal interrupts
+in-flight RPC work, and `stop()` waits for both the coordinator and WebSocket actor
+to finish. Retry budgets span connect, initial-sync, and short-lived session
+failures, and reset only after a configurable stable connection interval.
+
 ## Verification Log
 
 | Date | Command or check | Result |
@@ -129,10 +151,15 @@ or log token parameters.
 | 2026-07-19 | Live `aria2c 1.37.0` RPC test | Pass - authenticated version/stat/list/shutdown in 4.41 seconds |
 | 2026-07-19 | `cargo test --workspace` | Pass - 30 tests, 1 ignored across 12 suites |
 | 2026-07-19 | `cargo clippy --workspace --all-targets -- -D warnings` | Pass - no issues after Stage 3 |
+| 2026-07-19 | `cargo test -p ariadeck-application -p ariadeck-rpc` | Pass - 38 tests, 2 live tests ignored by default |
+| 2026-07-19 | Live coordinator and RPC tests against `aria2c 1.37.0` | Pass - initial sync, forced exit, stale state, higher-generation reconnect, and shutdown in 4.42 seconds |
+| 2026-07-19 | Post-test `aria2c` process check | Pass - zero residual processes |
+| 2026-07-19 | `cargo test --workspace` | Pass - 45 tests, 2 ignored across 12 suites |
+| 2026-07-19 | `cargo clippy --workspace --all-targets -- -D warnings` | Pass - no issues after Stage 4 |
 
 ## Known Gaps
 
-- The bootstrap shell is static until the application and RPC layers exist.
+- The bootstrap shell remains static until Stage 5 composes the application and RPC layers.
 - The optional Windows DXGI debug layer is absent; GPUI logs a development-only
   warning and continues with DirectX debugging disabled.
 - The repository license has not been selected; release metadata remains provisional.
@@ -144,3 +171,4 @@ or log token parameters.
 - `chore: bootstrap AriaDeck workspace` - Stage 1 foundation.
 - `feat: add domain and application state core` - Stage 2 state and command foundation.
 - `feat: implement typed aria2 websocket RPC` - Stage 3 transport and adapter.
+- `feat: coordinate aria2 synchronization and reconnects` - Stage 4 live-state coordinator.

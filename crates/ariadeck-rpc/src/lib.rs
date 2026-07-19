@@ -6,6 +6,7 @@ mod error;
 mod models;
 mod notification;
 mod protocol;
+mod sync;
 mod transport;
 
 pub use auth::{AuthenticatedTransport, RpcSecret};
@@ -14,4 +15,5 @@ pub use error::RpcError;
 pub use models::{TaskKey, VersionInfo};
 pub use notification::{Aria2Notification, Aria2NotificationKind};
 pub use protocol::RpcCall;
+pub use sync::RpcSyncConnector;
 pub use transport::{RpcTransport, WebSocketConfig, WebSocketTransport};

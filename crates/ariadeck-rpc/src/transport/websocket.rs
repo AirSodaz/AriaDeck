@@ -8,7 +8,7 @@ use std::{
 use async_trait::async_trait;
 use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::Value;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
 
@@ -40,6 +40,7 @@ impl WebSocketConfig {
 pub struct WebSocketTransport {
     commands: mpsc::Sender<Command>,
     notifications: broadcast::Sender<Aria2Notification>,
+    closed: watch::Receiver<Option<RpcError>>,
     next_id: Arc<AtomicU64>,
     request_timeout: Duration,
 }
@@ -61,11 +62,17 @@ impl WebSocketTransport {
             .map_err(|error| RpcError::Transport(error.to_string()))?;
         let (commands, command_rx) = mpsc::channel(128);
         let (notifications, _) = broadcast::channel(128);
-        tokio::spawn(run_connection(stream, command_rx, notifications.clone()));
+        let (closed_tx, closed) = watch::channel(None);
+        let actor_notifications = notifications.clone();
+        tokio::spawn(async move {
+            let reason = run_connection(stream, command_rx, actor_notifications).await;
+            let _ = closed_tx.send(Some(reason));
+        });
 
         Ok(Self {
             commands,
             notifications,
+            closed,
             next_id: Arc::new(AtomicU64::new(1)),
             request_timeout: config.request_timeout,
         })
@@ -76,8 +83,24 @@ impl WebSocketTransport {
         self.notifications.subscribe()
     }
 
+    #[must_use]
+    pub fn subscribe_closed(&self) -> watch::Receiver<Option<RpcError>> {
+        self.closed.clone()
+    }
+
     pub async fn close(&self) {
-        let _ = self.commands.send(Command::Shutdown).await;
+        let mut closed = self.closed.clone();
+        if closed.borrow().is_some() {
+            return;
+        }
+        if self.commands.send(Command::Shutdown).await.is_err() {
+            return;
+        }
+        while closed.borrow().is_none() {
+            if closed.changed().await.is_err() {
+                break;
+            }
+        }
     }
 
     async fn dispatch(
@@ -176,7 +199,8 @@ async fn run_connection<S>(
     stream: tokio_tungstenite::WebSocketStream<S>,
     mut commands: mpsc::Receiver<Command>,
     notifications: broadcast::Sender<Aria2Notification>,
-) where
+) -> RpcError
+where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let (mut sink, mut stream) = stream.split();
@@ -187,11 +211,11 @@ async fn run_connection<S>(
             command = commands.recv() => {
                 match command {
                     Some(Command::Send { payload, pending: new_pending }) => {
-                        let ids = new_pending.iter().map(|(id, _)| *id).collect::<Vec<_>>();
                         pending.extend(new_pending);
                         if let Err(error) = sink.send(Message::Text(payload.into())).await {
                             let error = RpcError::Transport(error.to_string());
-                            fail_ids(&mut pending, &ids, &error);
+                            fail_all(&mut pending, &error);
+                            return error;
                         }
                     }
                     Some(Command::Cancel(ids)) => {
@@ -202,7 +226,7 @@ async fn run_connection<S>(
                     Some(Command::Shutdown) | None => {
                         let _ = sink.close().await;
                         fail_all(&mut pending, &RpcError::Closed);
-                        break;
+                        return RpcError::Closed;
                     }
                 }
             }
@@ -215,19 +239,21 @@ async fn run_connection<S>(
                         handle_payload(bytes.as_ref(), &mut pending, &notifications);
                     }
                     Some(Ok(Message::Ping(payload))) => {
-                        if sink.send(Message::Pong(payload)).await.is_err() {
-                            fail_all(&mut pending, &RpcError::Closed);
-                            break;
+                        if let Err(error) = sink.send(Message::Pong(payload)).await {
+                            let error = RpcError::Transport(error.to_string());
+                            fail_all(&mut pending, &error);
+                            return error;
                         }
                     }
                     Some(Ok(Message::Pong(_) | Message::Frame(_))) => {}
                     Some(Ok(Message::Close(_))) | None => {
                         fail_all(&mut pending, &RpcError::Closed);
-                        break;
+                        return RpcError::Closed;
                     }
                     Some(Err(error)) => {
-                        fail_all(&mut pending, &RpcError::Transport(error.to_string()));
-                        break;
+                        let error = RpcError::Transport(error.to_string());
+                        fail_all(&mut pending, &error);
+                        return error;
                     }
                 }
             }
@@ -263,14 +289,6 @@ fn handle_payload(
         Err(error) => {
             tracing::warn!(%error, "discarding malformed JSON-RPC payload");
             fail_all(pending, &error);
-        }
-    }
-}
-
-fn fail_ids(pending: &mut HashMap<RpcId, ResponseSender>, ids: &[RpcId], error: &RpcError) {
-    for id in ids {
-        if let Some(sender) = pending.remove(id) {
-            let _ = sender.send(Err(error.clone()));
         }
     }
 }
@@ -447,6 +465,31 @@ mod tests {
                 method: "never.responds".into(),
             })
         );
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn close_waits_until_socket_actor_has_finished() -> Result<(), TestError> {
+        let (listener, endpoint) = test_endpoint().await?;
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await?;
+            let mut socket = accept_async(socket).await?;
+            match socket.next().await {
+                Some(Ok(Message::Close(_))) | None => Ok::<_, TestError>(()),
+                Some(Ok(message)) => Err(std::io::Error::other(format!(
+                    "expected close frame, received {message:?}"
+                ))
+                .into()),
+                Some(Err(error)) => Err(error.into()),
+            }
+        });
+
+        let transport = WebSocketTransport::connect(WebSocketConfig::new(endpoint)).await?;
+        let closed = transport.subscribe_closed();
+        transport.close().await;
+
+        assert!(closed.borrow().is_some());
         server.await??;
         Ok(())
     }

@@ -4,11 +4,18 @@ use std::{
     net::TcpListener,
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
+use ariadeck_application::{
+    CoordinatorConfig, PollIntervals, ReconnectPolicy, RefreshPolicy, StoreSnapshot, SyncHandle,
+    TaskListQuery, spawn_sync_coordinator,
+};
+use ariadeck_domain::{ConnectionState, ProfileId};
 use ariadeck_rpc::{
-    Aria2Client, AuthenticatedTransport, RpcSecret, TaskKey, WebSocketConfig, WebSocketTransport,
+    Aria2Client, AuthenticatedTransport, RpcSecret, RpcSyncConnector, TaskKey, WebSocketConfig,
+    WebSocketTransport,
 };
 use tempfile::TempDir;
 use url::Url;
@@ -62,6 +69,14 @@ impl ChildGuard {
             std::thread::sleep(Duration::from_millis(25));
         }
     }
+
+    fn terminate(&mut self) -> Result<ExitStatus, TestError> {
+        if let Some(status) = self.child.try_wait()? {
+            return Ok(status);
+        }
+        self.child.kill()?;
+        self.wait_for_exit(Duration::from_secs(5))
+    }
 }
 
 impl Drop for ChildGuard {
@@ -105,6 +120,65 @@ async fn authenticates_and_reads_live_aria2_state() -> Result<(), TestError> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires ARIA2C_PATH and launches and restarts a real local aria2 process"]
+async fn coordinator_recovers_after_live_aria2_restart() -> Result<(), TestError> {
+    let executable = env::var("ARIA2C_PATH")?;
+    let executable = Path::new(&executable);
+    let data_dir = TempDir::new()?;
+    let port = reserve_loopback_port()?;
+    let secret = Uuid::new_v4().simple().to_string();
+    let mut process = ChildGuard::spawn(executable, data_dir.path(), port, &secret)?;
+    let endpoint = Url::parse(&format!("ws://127.0.0.1:{port}/jsonrpc"))?;
+    let mut websocket = WebSocketConfig::new(endpoint);
+    websocket.connect_timeout = Duration::from_millis(150);
+    websocket.request_timeout = Duration::from_millis(500);
+    let connector = Arc::new(RpcSyncConnector::new(
+        websocket,
+        Some(RpcSecret::new(secret.clone())),
+    ));
+    let intervals = PollIntervals {
+        global_stat: Duration::from_millis(100),
+        live_tasks: Duration::from_millis(100),
+        stopped_tasks: Duration::from_millis(250),
+    };
+    let mut coordinator = CoordinatorConfig::new(ProfileId::new());
+    coordinator.refresh = RefreshPolicy {
+        foreground: intervals,
+        background: intervals,
+        notification_debounce: Duration::from_millis(20),
+    };
+    coordinator.reconnect = ReconnectPolicy {
+        base_delay: Duration::from_millis(50),
+        max_delay: Duration::from_millis(200),
+        jitter_percent: 0,
+        max_attempts: Some(30),
+        reset_after: Duration::from_secs(2),
+    };
+    coordinator.stopped_page_size = 10;
+    let handle = spawn_sync_coordinator(connector, coordinator);
+
+    let initial = wait_for_snapshot(&handle, Duration::from_secs(5), |snapshot| {
+        snapshot.connection_state == ConnectionState::Connected && !snapshot.stale
+    })
+    .await?;
+    let _ = process.terminate()?;
+    let stale =
+        wait_for_snapshot(&handle, Duration::from_secs(5), |snapshot| snapshot.stale).await?;
+    assert_ne!(stale.connection_state, ConnectionState::Connected);
+
+    process = ChildGuard::spawn(executable, data_dir.path(), port, &secret)?;
+    let reconnected = wait_for_snapshot(&handle, Duration::from_secs(5), |snapshot| {
+        snapshot.connection_state == ConnectionState::Connected && !snapshot.stale
+    })
+    .await?;
+
+    assert!(reconnected.session.generation > initial.session.generation);
+    handle.stop().await;
+    let _ = process.terminate()?;
+    Ok(())
+}
+
 fn reserve_loopback_port() -> Result<u16, TestError> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     Ok(listener.local_addr()?.port())
@@ -126,5 +200,33 @@ async fn connect_with_retry(
             }
             Err(error) => return Err(error.into()),
         }
+    }
+}
+
+async fn wait_for_snapshot(
+    handle: &SyncHandle,
+    timeout: Duration,
+    mut predicate: impl FnMut(&StoreSnapshot) -> bool,
+) -> Result<StoreSnapshot, TestError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "coordinator did not reach the expected state",
+            )
+            .into());
+        }
+        if let Ok(Some(snapshot)) = tokio::time::timeout(
+            remaining.min(Duration::from_millis(500)),
+            handle.snapshot(TaskListQuery::default()),
+        )
+        .await
+            && predicate(&snapshot)
+        {
+            return Ok(snapshot);
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }

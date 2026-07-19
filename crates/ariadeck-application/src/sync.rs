@@ -1,0 +1,1593 @@
+use std::{
+    collections::HashSet,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use ariadeck_domain::{
+    ConnectionState, DownloadTask, EngineSession, EngineSessionId, Gid, GlobalStat, ProfileId,
+    SessionGeneration, TaskSnapshot,
+};
+use async_trait::async_trait;
+use thiserror::Error;
+use tokio::{
+    sync::{broadcast, mpsc, oneshot, watch},
+    time::{Instant, Interval, MissedTickBehavior},
+};
+
+use crate::{DownloadStore, StoreError, StorePatch, TaskCounts, TaskListQuery, TaskListView};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EngineCapabilities {
+    pub version: String,
+    pub enabled_features: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiveSyncSnapshot {
+    pub active: Vec<TaskSnapshot>,
+    pub waiting: Vec<TaskSnapshot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoppedPage {
+    pub offset: usize,
+    pub total: usize,
+    pub tasks: Vec<TaskSnapshot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InitialSyncSnapshot {
+    pub capabilities: EngineCapabilities,
+    pub global_stat: GlobalStat,
+    pub live: LiveSyncSnapshot,
+    pub stopped: StoppedPage,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum RefreshHint {
+    Task(Gid),
+    Full,
+}
+
+#[async_trait]
+pub trait DownloadSyncSession: Send + Sync {
+    async fn initial_snapshot(&self, stopped_count: u32) -> Result<InitialSyncSnapshot, SyncError>;
+    async fn refresh_global_stat(&self) -> Result<GlobalStat, SyncError>;
+    async fn refresh_live(&self) -> Result<LiveSyncSnapshot, SyncError>;
+    async fn refresh_stopped_page(
+        &self,
+        offset: usize,
+        count: u32,
+    ) -> Result<StoppedPage, SyncError>;
+    async fn refresh_tasks(
+        &self,
+        gids: &[Gid],
+    ) -> Result<Vec<(Gid, Option<TaskSnapshot>)>, SyncError>;
+    async fn close(&self);
+}
+
+pub struct ConnectedSyncSession {
+    session: Box<dyn DownloadSyncSession>,
+    notifications: mpsc::Receiver<RefreshHint>,
+}
+
+impl ConnectedSyncSession {
+    #[must_use]
+    pub fn new(
+        session: Box<dyn DownloadSyncSession>,
+        notifications: mpsc::Receiver<RefreshHint>,
+    ) -> Self {
+        Self {
+            session,
+            notifications,
+        }
+    }
+
+    fn into_parts(self) -> (Box<dyn DownloadSyncSession>, mpsc::Receiver<RefreshHint>) {
+        (self.session, self.notifications)
+    }
+}
+
+#[async_trait]
+pub trait DownloadSyncConnector: Send + Sync {
+    async fn connect(&self) -> Result<ConnectedSyncSession, SyncError>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SyncErrorKind {
+    Disconnected,
+    Authentication,
+    Timeout,
+    Protocol,
+    Internal,
+}
+
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+#[error("{message}")]
+pub struct SyncError {
+    pub kind: SyncErrorKind,
+    pub message: String,
+    pub retryable: bool,
+}
+
+impl SyncError {
+    #[must_use]
+    pub fn new(kind: SyncErrorKind, message: impl Into<String>, retryable: bool) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            retryable,
+        }
+    }
+
+    fn store(error: StoreError) -> Self {
+        Self::new(SyncErrorKind::Internal, error.to_string(), false)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ActivityMode {
+    #[default]
+    Foreground,
+    Background,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PollIntervals {
+    pub global_stat: Duration,
+    pub live_tasks: Duration,
+    pub stopped_tasks: Duration,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RefreshPolicy {
+    pub foreground: PollIntervals,
+    pub background: PollIntervals,
+    pub notification_debounce: Duration,
+}
+
+impl Default for RefreshPolicy {
+    fn default() -> Self {
+        Self {
+            foreground: PollIntervals {
+                global_stat: Duration::from_millis(500),
+                live_tasks: Duration::from_millis(500),
+                stopped_tasks: Duration::from_secs(5),
+            },
+            background: PollIntervals {
+                global_stat: Duration::from_secs(3),
+                live_tasks: Duration::from_secs(3),
+                stopped_tasks: Duration::from_secs(10),
+            },
+            notification_debounce: Duration::from_millis(100),
+        }
+    }
+}
+
+impl RefreshPolicy {
+    const fn intervals(self, mode: ActivityMode) -> PollIntervals {
+        match mode {
+            ActivityMode::Foreground => self.foreground,
+            ActivityMode::Background => self.background,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReconnectPolicy {
+    pub base_delay: Duration,
+    pub max_delay: Duration,
+    pub jitter_percent: u8,
+    pub max_attempts: Option<u32>,
+    pub reset_after: Duration,
+}
+
+impl Default for ReconnectPolicy {
+    fn default() -> Self {
+        Self {
+            base_delay: Duration::from_millis(250),
+            max_delay: Duration::from_secs(30),
+            jitter_percent: 20,
+            max_attempts: None,
+            reset_after: Duration::from_secs(10),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CoordinatorConfig {
+    pub profile_id: ProfileId,
+    pub refresh: RefreshPolicy,
+    pub reconnect: ReconnectPolicy,
+    pub stopped_page_size: u32,
+}
+
+impl CoordinatorConfig {
+    #[must_use]
+    pub fn new(profile_id: ProfileId) -> Self {
+        Self {
+            profile_id,
+            refresh: RefreshPolicy::default(),
+            reconnect: ReconnectPolicy::default(),
+            stopped_page_size: 100,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SyncEvent {
+    ConnectionStateChanged(ConnectionState),
+    CapabilitiesChanged(EngineCapabilities),
+    StorePatched(StorePatch),
+    Error(SyncError),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoreSnapshot {
+    pub session: EngineSession,
+    pub connection_state: ConnectionState,
+    pub stale: bool,
+    pub global_stat: GlobalStat,
+    pub counts: TaskCounts,
+    pub view: TaskListView,
+    pub tasks: Vec<DownloadTask>,
+}
+
+#[derive(Clone)]
+pub struct SyncHandle {
+    commands: mpsc::Sender<Control>,
+    events: broadcast::Sender<SyncEvent>,
+    cancellation: watch::Sender<bool>,
+    completion: watch::Receiver<bool>,
+}
+
+impl SyncHandle {
+    #[must_use]
+    pub fn subscribe(&self) -> broadcast::Receiver<SyncEvent> {
+        self.events.subscribe()
+    }
+
+    pub async fn set_activity(&self, mode: ActivityMode) {
+        let _ = self.commands.send(Control::SetActivity(mode)).await;
+    }
+
+    pub async fn force_refresh(&self) {
+        let _ = self.commands.send(Control::ForceRefresh).await;
+    }
+
+    pub async fn snapshot(&self, query: TaskListQuery) -> Option<StoreSnapshot> {
+        let (sender, receiver) = oneshot::channel();
+        self.commands
+            .send(Control::Snapshot { query, sender })
+            .await
+            .ok()?;
+        receiver.await.ok()
+    }
+
+    pub async fn stop(&self) {
+        let _ = self.cancellation.send(true);
+        let mut completion = self.completion.clone();
+        if *completion.borrow() {
+            return;
+        }
+        let _ = completion.changed().await;
+    }
+}
+
+enum Control {
+    SetActivity(ActivityMode),
+    ForceRefresh,
+    Snapshot {
+        query: TaskListQuery,
+        sender: oneshot::Sender<StoreSnapshot>,
+    },
+}
+
+pub fn spawn_sync_coordinator(
+    connector: Arc<dyn DownloadSyncConnector>,
+    config: CoordinatorConfig,
+) -> SyncHandle {
+    let (commands, command_rx) = mpsc::channel(64);
+    let (events, _) = broadcast::channel(256);
+    let (cancellation, cancellation_rx) = watch::channel(false);
+    let (completion_tx, completion) = watch::channel(false);
+    tokio::spawn({
+        let events = events.clone();
+        async move {
+            run_coordinator(connector, config, command_rx, events, cancellation_rx).await;
+            let _ = completion_tx.send(true);
+        }
+    });
+    SyncHandle {
+        commands,
+        events,
+        cancellation,
+        completion,
+    }
+}
+
+async fn run_coordinator(
+    connector: Arc<dyn DownloadSyncConnector>,
+    config: CoordinatorConfig,
+    mut commands: mpsc::Receiver<Control>,
+    events: broadcast::Sender<SyncEvent>,
+    mut cancellation: watch::Receiver<bool>,
+) {
+    let mut generation = SessionGeneration::initial();
+    let mut store = DownloadStore::new(EngineSession::new(
+        config.profile_id,
+        EngineSessionId::new(),
+        generation,
+    ));
+    let mut state = ConnectionState::Disconnected;
+    let mut activity = ActivityMode::Foreground;
+    let mut backoff = ReconnectBackoff::new(config.reconnect, backoff_seed());
+    let mut first_attempt = true;
+
+    loop {
+        if cancellation_requested(&cancellation) {
+            return;
+        }
+        if !first_attempt {
+            generation = generation.next();
+            let session = EngineSession::new(config.profile_id, EngineSessionId::new(), generation);
+            match store.begin_session(session) {
+                Ok(patch) => emit_patch(&events, patch),
+                Err(error) => {
+                    emit_error(&events, SyncError::store(error));
+                    return;
+                }
+            }
+        }
+        let initial_attempt = first_attempt;
+        first_attempt = false;
+
+        let failure_attempt = backoff.attempt().saturating_add(1);
+        set_state(
+            &events,
+            &mut state,
+            if initial_attempt {
+                ConnectionState::Connecting
+            } else {
+                ConnectionState::Reconnecting {
+                    attempt: backoff.attempt().max(1),
+                }
+            },
+        );
+
+        let connect_result = tokio::select! {
+            biased;
+            () = wait_for_cancellation(&mut cancellation) => return,
+            result = connector.connect() => result,
+        };
+        let connected = match connect_result {
+            Ok(connected) => connected,
+            Err(error) => {
+                if !handle_connection_failure(&events, &mut state, &mut store, generation, &error) {
+                    if wait_for_manual_retry(
+                        &mut commands,
+                        &store,
+                        &state,
+                        &mut activity,
+                        &mut cancellation,
+                    )
+                    .await
+                    {
+                        backoff.reset();
+                        continue;
+                    }
+                    return;
+                }
+                if reconnect_limit_reached(config.reconnect, failure_attempt) {
+                    set_state(
+                        &events,
+                        &mut state,
+                        ConnectionState::Failed {
+                            reason: connection_failure(&error),
+                        },
+                    );
+                    if wait_for_manual_retry(
+                        &mut commands,
+                        &store,
+                        &state,
+                        &mut activity,
+                        &mut cancellation,
+                    )
+                    .await
+                    {
+                        backoff.reset();
+                        continue;
+                    }
+                    return;
+                }
+                let delay = backoff.next_delay();
+                if !wait_for_retry_delay(
+                    delay,
+                    &mut commands,
+                    &store,
+                    &state,
+                    &mut activity,
+                    &mut cancellation,
+                )
+                .await
+                {
+                    return;
+                }
+                continue;
+            }
+        };
+
+        let (session, notifications) = connected.into_parts();
+        set_state(&events, &mut state, ConnectionState::Authenticating);
+        let initial_result = tokio::select! {
+            biased;
+            () = wait_for_cancellation(&mut cancellation) => {
+                session.close().await;
+                return;
+            }
+            result = session.initial_snapshot(config.stopped_page_size) => result,
+        };
+        let initial = match initial_result {
+            Ok(initial) => initial,
+            Err(error) => {
+                session.close().await;
+                if !handle_connection_failure(&events, &mut state, &mut store, generation, &error) {
+                    if wait_for_manual_retry(
+                        &mut commands,
+                        &store,
+                        &state,
+                        &mut activity,
+                        &mut cancellation,
+                    )
+                    .await
+                    {
+                        backoff.reset();
+                        continue;
+                    }
+                    return;
+                }
+                if reconnect_limit_reached(config.reconnect, failure_attempt) {
+                    set_state(
+                        &events,
+                        &mut state,
+                        ConnectionState::Failed {
+                            reason: connection_failure(&error),
+                        },
+                    );
+                    if wait_for_manual_retry(
+                        &mut commands,
+                        &store,
+                        &state,
+                        &mut activity,
+                        &mut cancellation,
+                    )
+                    .await
+                    {
+                        backoff.reset();
+                        continue;
+                    }
+                    return;
+                }
+                let delay = backoff.next_delay();
+                if !wait_for_retry_delay(
+                    delay,
+                    &mut commands,
+                    &store,
+                    &state,
+                    &mut activity,
+                    &mut cancellation,
+                )
+                .await
+                {
+                    return;
+                }
+                continue;
+            }
+        };
+
+        set_state(&events, &mut state, ConnectionState::Synchronizing);
+        if let Err(error) = apply_initial_snapshot(&mut store, generation, initial, &events) {
+            session.close().await;
+            let _ = handle_connection_failure(&events, &mut state, &mut store, generation, &error);
+            if wait_for_manual_retry(
+                &mut commands,
+                &store,
+                &state,
+                &mut activity,
+                &mut cancellation,
+            )
+            .await
+            {
+                backoff.reset();
+                continue;
+            }
+            return;
+        }
+        set_state(&events, &mut state, ConnectionState::Connected);
+        let connected_at = Instant::now();
+
+        match run_connected(
+            session.as_ref(),
+            notifications,
+            &mut commands,
+            &mut store,
+            generation,
+            &mut state,
+            &mut activity,
+            &config,
+            &events,
+            &mut cancellation,
+        )
+        .await
+        {
+            ConnectedExit::Stop => {
+                session.close().await;
+                set_state(&events, &mut state, ConnectionState::Disconnected);
+                return;
+            }
+            ConnectedExit::Retry(error) => {
+                session.close().await;
+                if connected_at.elapsed() >= config.reconnect.reset_after {
+                    backoff.reset();
+                }
+                let retryable =
+                    handle_connection_failure(&events, &mut state, &mut store, generation, &error);
+                if !retryable {
+                    if wait_for_manual_retry(
+                        &mut commands,
+                        &store,
+                        &state,
+                        &mut activity,
+                        &mut cancellation,
+                    )
+                    .await
+                    {
+                        backoff.reset();
+                        continue;
+                    }
+                    return;
+                }
+                let failure_attempt = backoff.attempt().saturating_add(1);
+                if reconnect_limit_reached(config.reconnect, failure_attempt) {
+                    set_state(
+                        &events,
+                        &mut state,
+                        ConnectionState::Failed {
+                            reason: connection_failure(&error),
+                        },
+                    );
+                    if wait_for_manual_retry(
+                        &mut commands,
+                        &store,
+                        &state,
+                        &mut activity,
+                        &mut cancellation,
+                    )
+                    .await
+                    {
+                        backoff.reset();
+                        continue;
+                    }
+                    return;
+                }
+                let delay = backoff.next_delay();
+                if !wait_for_retry_delay(
+                    delay,
+                    &mut commands,
+                    &store,
+                    &state,
+                    &mut activity,
+                    &mut cancellation,
+                )
+                .await
+                {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_connected(
+    session: &dyn DownloadSyncSession,
+    mut notifications: mpsc::Receiver<RefreshHint>,
+    commands: &mut mpsc::Receiver<Control>,
+    store: &mut DownloadStore,
+    generation: SessionGeneration,
+    state: &mut ConnectionState,
+    activity: &mut ActivityMode,
+    config: &CoordinatorConfig,
+    events: &broadcast::Sender<SyncEvent>,
+    cancellation: &mut watch::Receiver<bool>,
+) -> ConnectedExit {
+    let mut timers = PollTimers::new(config.refresh, *activity);
+    let mut pending_tasks = HashSet::new();
+    let mut pending_full = false;
+
+    loop {
+        tokio::select! {
+            biased;
+            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
+            command = commands.recv() => {
+                match command {
+                    Some(Control::SetActivity(mode)) => {
+                        *activity = mode;
+                        timers = PollTimers::new(config.refresh, mode);
+                    }
+                    Some(Control::ForceRefresh) => {
+                        let result = tokio::select! {
+                            biased;
+                            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
+                            result = refresh_all(
+                                session,
+                                store,
+                                generation,
+                                config.stopped_page_size,
+                                events,
+                            ) => result,
+                        };
+                        if let Err(error) = result {
+                            return ConnectedExit::Retry(error);
+                        }
+                    }
+                    Some(Control::Snapshot { query, sender }) => {
+                        let _ = sender.send(build_snapshot(store, state, &query));
+                    }
+                    None => return ConnectedExit::Stop,
+                }
+            }
+            hint = notifications.recv() => {
+                match hint {
+                    Some(RefreshHint::Task(gid)) => { pending_tasks.insert(gid); }
+                    Some(RefreshHint::Full) => pending_full = true,
+                    None => {
+                        return ConnectedExit::Retry(SyncError::new(
+                            SyncErrorKind::Disconnected,
+                            "RPC notification stream closed",
+                            true,
+                        ));
+                    }
+                }
+            }
+            _ = timers.notification.tick() => {
+                if pending_full || !pending_tasks.is_empty() {
+                    let refresh = async {
+                        if pending_full {
+                            pending_full = false;
+                            pending_tasks.clear();
+                            refresh_all(
+                                session,
+                                store,
+                                generation,
+                                config.stopped_page_size,
+                                events,
+                            ).await
+                        } else {
+                            let gids = pending_tasks.drain().collect::<Vec<_>>();
+                            refresh_targeted(session, store, generation, &gids, events).await
+                        }
+                    };
+                    let result = tokio::select! {
+                        biased;
+                        () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
+                        result = refresh => result,
+                    };
+                    if let Err(error) = result {
+                        return ConnectedExit::Retry(error);
+                    }
+                }
+            }
+            _ = timers.global.tick() => {
+                let result = tokio::select! {
+                    biased;
+                    () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
+                    result = session.refresh_global_stat() => result,
+                };
+                match result {
+                    Ok(stat) => match store.update_global_stat(generation, stat) {
+                        Ok(patch) => emit_patch(events, patch),
+                        Err(error) => return ConnectedExit::Retry(SyncError::store(error)),
+                    },
+                    Err(error) => return ConnectedExit::Retry(error),
+                }
+            }
+            _ = timers.live.tick() => {
+                let result = tokio::select! {
+                    biased;
+                    () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
+                    result = session.refresh_live() => result,
+                };
+                match result {
+                    Ok(live) => match store.reconcile_live(generation, live.active, live.waiting) {
+                        Ok(patch) => emit_patch(events, patch),
+                        Err(error) => return ConnectedExit::Retry(SyncError::store(error)),
+                    },
+                    Err(error) => return ConnectedExit::Retry(error),
+                }
+            }
+            _ = timers.stopped.tick() => {
+                let result = tokio::select! {
+                    biased;
+                    () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
+                    result = session.refresh_stopped_page(0, config.stopped_page_size) => result,
+                };
+                match result {
+                    Ok(page) => match store.apply_stopped_page(
+                        generation,
+                        page.offset,
+                        Some(page.total),
+                        page.tasks,
+                    ) {
+                        Ok(patch) => emit_patch(events, patch),
+                        Err(error) => return ConnectedExit::Retry(SyncError::store(error)),
+                    },
+                    Err(error) => return ConnectedExit::Retry(error),
+                }
+            }
+        }
+    }
+}
+
+async fn refresh_all(
+    session: &dyn DownloadSyncSession,
+    store: &mut DownloadStore,
+    generation: SessionGeneration,
+    stopped_page_size: u32,
+    events: &broadcast::Sender<SyncEvent>,
+) -> Result<(), SyncError> {
+    let global = session.refresh_global_stat().await?;
+    let live = session.refresh_live().await?;
+    let stopped = session.refresh_stopped_page(0, stopped_page_size).await?;
+    emit_patch(
+        events,
+        store
+            .update_global_stat(generation, global)
+            .map_err(SyncError::store)?,
+    );
+    emit_patch(
+        events,
+        store
+            .apply_stopped_page(
+                generation,
+                stopped.offset,
+                Some(stopped.total),
+                stopped.tasks,
+            )
+            .map_err(SyncError::store)?,
+    );
+    emit_patch(
+        events,
+        store
+            .reconcile_live(generation, live.active, live.waiting)
+            .map_err(SyncError::store)?,
+    );
+    Ok(())
+}
+
+async fn refresh_targeted(
+    session: &dyn DownloadSyncSession,
+    store: &mut DownloadStore,
+    generation: SessionGeneration,
+    gids: &[Gid],
+    events: &broadcast::Sender<SyncEvent>,
+) -> Result<(), SyncError> {
+    for (gid, snapshot) in session.refresh_tasks(gids).await? {
+        emit_patch(
+            events,
+            store
+                .apply_task_snapshot(generation, gid, snapshot)
+                .map_err(SyncError::store)?,
+        );
+    }
+    Ok(())
+}
+
+fn apply_initial_snapshot(
+    store: &mut DownloadStore,
+    generation: SessionGeneration,
+    initial: InitialSyncSnapshot,
+    events: &broadcast::Sender<SyncEvent>,
+) -> Result<(), SyncError> {
+    validate_capabilities(&initial.capabilities)?;
+    let _ = events.send(SyncEvent::CapabilitiesChanged(initial.capabilities));
+    emit_patch(
+        events,
+        store
+            .update_global_stat(generation, initial.global_stat)
+            .map_err(SyncError::store)?,
+    );
+    emit_patch(
+        events,
+        store
+            .apply_stopped_page(
+                generation,
+                initial.stopped.offset,
+                Some(initial.stopped.total),
+                initial.stopped.tasks,
+            )
+            .map_err(SyncError::store)?,
+    );
+    emit_patch(
+        events,
+        store
+            .reconcile_live(generation, initial.live.active, initial.live.waiting)
+            .map_err(SyncError::store)?,
+    );
+    emit_patch(
+        events,
+        store
+            .set_stale(generation, false)
+            .map_err(SyncError::store)?,
+    );
+    Ok(())
+}
+
+fn validate_capabilities(capabilities: &EngineCapabilities) -> Result<(), SyncError> {
+    if capabilities.version.trim().is_empty() {
+        return Err(SyncError::new(
+            SyncErrorKind::Protocol,
+            "aria2 returned an empty version during capability verification",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn handle_connection_failure(
+    events: &broadcast::Sender<SyncEvent>,
+    state: &mut ConnectionState,
+    store: &mut DownloadStore,
+    generation: SessionGeneration,
+    error: &SyncError,
+) -> bool {
+    emit_error(events, error.clone());
+    if let Ok(patch) = store.set_stale(generation, true) {
+        emit_patch(events, patch);
+    }
+    if !error.retryable {
+        set_state(
+            events,
+            state,
+            ConnectionState::Failed {
+                reason: connection_failure(error),
+            },
+        );
+    } else {
+        set_state(events, state, ConnectionState::Disconnected);
+    }
+    error.retryable
+}
+
+async fn wait_for_retry_delay(
+    delay: Duration,
+    commands: &mut mpsc::Receiver<Control>,
+    store: &DownloadStore,
+    state: &ConnectionState,
+    activity: &mut ActivityMode,
+    cancellation: &mut watch::Receiver<bool>,
+) -> bool {
+    let sleep = tokio::time::sleep(delay);
+    tokio::pin!(sleep);
+    loop {
+        tokio::select! {
+            biased;
+            () = wait_for_cancellation(cancellation) => return false,
+            () = &mut sleep => return true,
+            command = commands.recv() => match command {
+                Some(Control::SetActivity(mode)) => *activity = mode,
+                Some(Control::ForceRefresh) => return true,
+                Some(Control::Snapshot { query, sender }) => {
+                    let _ = sender.send(build_snapshot(store, state, &query));
+                }
+                None => return false,
+            }
+        }
+    }
+}
+
+async fn wait_for_manual_retry(
+    commands: &mut mpsc::Receiver<Control>,
+    store: &DownloadStore,
+    state: &ConnectionState,
+    activity: &mut ActivityMode,
+    cancellation: &mut watch::Receiver<bool>,
+) -> bool {
+    loop {
+        tokio::select! {
+            biased;
+            () = wait_for_cancellation(cancellation) => return false,
+            command = commands.recv() => match command {
+                Some(Control::SetActivity(mode)) => *activity = mode,
+                Some(Control::ForceRefresh) => return true,
+                Some(Control::Snapshot { query, sender }) => {
+                    let _ = sender.send(build_snapshot(store, state, &query));
+                }
+                None => return false,
+            }
+        }
+    }
+}
+
+fn cancellation_requested(cancellation: &watch::Receiver<bool>) -> bool {
+    *cancellation.borrow()
+}
+
+async fn wait_for_cancellation(cancellation: &mut watch::Receiver<bool>) {
+    loop {
+        if cancellation_requested(cancellation) {
+            return;
+        }
+        if cancellation.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+fn build_snapshot(
+    store: &DownloadStore,
+    state: &ConnectionState,
+    query: &TaskListQuery,
+) -> StoreSnapshot {
+    let view = store.view(query);
+    let tasks = view
+        .visible_gids
+        .iter()
+        .filter_map(|gid| store.task(*gid).cloned())
+        .collect();
+    StoreSnapshot {
+        session: store.session(),
+        connection_state: state.clone(),
+        stale: store.is_stale(),
+        global_stat: store.global_stat(),
+        counts: store.counts(),
+        view,
+        tasks,
+    }
+}
+
+fn set_state(
+    events: &broadcast::Sender<SyncEvent>,
+    state: &mut ConnectionState,
+    next: ConnectionState,
+) {
+    if *state != next {
+        *state = next.clone();
+        let _ = events.send(SyncEvent::ConnectionStateChanged(next));
+    }
+}
+
+fn emit_patch(events: &broadcast::Sender<SyncEvent>, patch: StorePatch) {
+    if !patch.is_empty() {
+        let _ = events.send(SyncEvent::StorePatched(patch));
+    }
+}
+
+fn emit_error(events: &broadcast::Sender<SyncEvent>, error: SyncError) {
+    let _ = events.send(SyncEvent::Error(error));
+}
+
+fn connection_failure(error: &SyncError) -> ariadeck_domain::ConnectionFailure {
+    ariadeck_domain::ConnectionFailure {
+        code: format!("sync.{:?}", error.kind).to_ascii_lowercase(),
+        summary: error.message.clone(),
+        retryable: error.retryable,
+    }
+}
+
+const fn reconnect_limit_reached(policy: ReconnectPolicy, attempt: u32) -> bool {
+    match policy.max_attempts {
+        Some(max_attempts) => attempt >= max_attempts,
+        None => false,
+    }
+}
+
+enum ConnectedExit {
+    Retry(SyncError),
+    Stop,
+}
+
+struct PollTimers {
+    global: Interval,
+    live: Interval,
+    stopped: Interval,
+    notification: Interval,
+}
+
+impl PollTimers {
+    fn new(policy: RefreshPolicy, mode: ActivityMode) -> Self {
+        let intervals = policy.intervals(mode);
+        Self {
+            global: interval_after(intervals.global_stat),
+            live: interval_after(intervals.live_tasks),
+            stopped: interval_after(intervals.stopped_tasks),
+            notification: interval_after(policy.notification_debounce),
+        }
+    }
+}
+
+fn interval_after(duration: Duration) -> Interval {
+    let duration = duration.max(Duration::from_millis(1));
+    let mut interval = tokio::time::interval_at(Instant::now() + duration, duration);
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    interval
+}
+
+struct ReconnectBackoff {
+    policy: ReconnectPolicy,
+    attempt: u32,
+    random_state: u64,
+}
+
+impl ReconnectBackoff {
+    const fn new(policy: ReconnectPolicy, seed: u64) -> Self {
+        Self {
+            policy,
+            attempt: 0,
+            random_state: seed,
+        }
+    }
+
+    const fn attempt(&self) -> u32 {
+        self.attempt
+    }
+
+    fn reset(&mut self) {
+        self.attempt = 0;
+    }
+
+    fn next_delay(&mut self) -> Duration {
+        let exponent = self.attempt.min(31);
+        self.attempt = self.attempt.saturating_add(1);
+        let multiplier = 1_u32 << exponent;
+        let base = self
+            .policy
+            .base_delay
+            .saturating_mul(multiplier)
+            .min(self.policy.max_delay);
+        let jitter_percent = self.policy.jitter_percent.min(100);
+        if jitter_percent == 0 {
+            return base;
+        }
+
+        self.random_state ^= self.random_state << 13;
+        self.random_state ^= self.random_state >> 7;
+        self.random_state ^= self.random_state << 17;
+        let base_millis = u64::try_from(base.as_millis()).unwrap_or(u64::MAX);
+        let span = base_millis.saturating_mul(u64::from(jitter_percent)) / 100;
+        if span == 0 {
+            return base;
+        }
+        let width = span.saturating_mul(2).saturating_add(1);
+        let offset = self.random_state % width;
+        Duration::from_millis(base_millis.saturating_sub(span).saturating_add(offset))
+            .min(self.policy.max_delay)
+    }
+}
+
+fn backoff_seed() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0x9e37_79b9_7f4a_7c15, |duration| {
+            u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::VecDeque,
+        sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
+    use ariadeck_domain::{DownloadStatus, TaskSnapshot};
+
+    use super::*;
+
+    struct FakeSession {
+        initial: InitialSyncSnapshot,
+        targeted_calls: Arc<Mutex<Vec<Vec<Gid>>>>,
+    }
+
+    #[async_trait]
+    impl DownloadSyncSession for FakeSession {
+        async fn initial_snapshot(
+            &self,
+            _stopped_count: u32,
+        ) -> Result<InitialSyncSnapshot, SyncError> {
+            Ok(self.initial.clone())
+        }
+
+        async fn refresh_global_stat(&self) -> Result<GlobalStat, SyncError> {
+            Ok(self.initial.global_stat)
+        }
+
+        async fn refresh_live(&self) -> Result<LiveSyncSnapshot, SyncError> {
+            Ok(self.initial.live.clone())
+        }
+
+        async fn refresh_stopped_page(
+            &self,
+            _offset: usize,
+            _count: u32,
+        ) -> Result<StoppedPage, SyncError> {
+            Ok(self.initial.stopped.clone())
+        }
+
+        async fn refresh_tasks(
+            &self,
+            gids: &[Gid],
+        ) -> Result<Vec<(Gid, Option<TaskSnapshot>)>, SyncError> {
+            self.targeted_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(gids.to_vec());
+            Ok(gids
+                .iter()
+                .copied()
+                .map(|gid| {
+                    (
+                        gid,
+                        Some(TaskSnapshot::new(gid, DownloadStatus::Active, "refreshed")),
+                    )
+                })
+                .collect())
+        }
+
+        async fn close(&self) {}
+    }
+
+    struct FailingInitialSession {
+        error: SyncError,
+    }
+
+    #[async_trait]
+    impl DownloadSyncSession for FailingInitialSession {
+        async fn initial_snapshot(
+            &self,
+            _stopped_count: u32,
+        ) -> Result<InitialSyncSnapshot, SyncError> {
+            Err(self.error.clone())
+        }
+
+        async fn refresh_global_stat(&self) -> Result<GlobalStat, SyncError> {
+            Err(self.error.clone())
+        }
+
+        async fn refresh_live(&self) -> Result<LiveSyncSnapshot, SyncError> {
+            Err(self.error.clone())
+        }
+
+        async fn refresh_stopped_page(
+            &self,
+            _offset: usize,
+            _count: u32,
+        ) -> Result<StoppedPage, SyncError> {
+            Err(self.error.clone())
+        }
+
+        async fn refresh_tasks(
+            &self,
+            _gids: &[Gid],
+        ) -> Result<Vec<(Gid, Option<TaskSnapshot>)>, SyncError> {
+            Err(self.error.clone())
+        }
+
+        async fn close(&self) {}
+    }
+
+    struct HangingRefreshSession {
+        initial: InitialSyncSnapshot,
+        refresh_calls: Arc<AtomicUsize>,
+        close_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl DownloadSyncSession for HangingRefreshSession {
+        async fn initial_snapshot(
+            &self,
+            _stopped_count: u32,
+        ) -> Result<InitialSyncSnapshot, SyncError> {
+            Ok(self.initial.clone())
+        }
+
+        async fn refresh_global_stat(&self) -> Result<GlobalStat, SyncError> {
+            self.refresh_calls.fetch_add(1, Ordering::Relaxed);
+            std::future::pending().await
+        }
+
+        async fn refresh_live(&self) -> Result<LiveSyncSnapshot, SyncError> {
+            Ok(self.initial.live.clone())
+        }
+
+        async fn refresh_stopped_page(
+            &self,
+            _offset: usize,
+            _count: u32,
+        ) -> Result<StoppedPage, SyncError> {
+            Ok(self.initial.stopped.clone())
+        }
+
+        async fn refresh_tasks(
+            &self,
+            _gids: &[Gid],
+        ) -> Result<Vec<(Gid, Option<TaskSnapshot>)>, SyncError> {
+            Ok(Vec::new())
+        }
+
+        async fn close(&self) {
+            self.close_calls.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct ScriptedConnector {
+        steps: Mutex<VecDeque<Result<ConnectedSyncSession, SyncError>>>,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl DownloadSyncConnector for ScriptedConnector {
+        async fn connect(&self) -> Result<ConnectedSyncSession, SyncError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.steps
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pop_front()
+                .unwrap_or_else(|| {
+                    Err(SyncError::new(
+                        SyncErrorKind::Internal,
+                        "connector script exhausted",
+                        false,
+                    ))
+                })
+        }
+    }
+
+    fn initial_snapshot(gid: Gid) -> InitialSyncSnapshot {
+        InitialSyncSnapshot {
+            capabilities: EngineCapabilities {
+                version: "1.37.0".into(),
+                enabled_features: vec!["BitTorrent".into()],
+            },
+            global_stat: GlobalStat::default(),
+            live: LiveSyncSnapshot {
+                active: vec![TaskSnapshot::new(gid, DownloadStatus::Active, "initial")],
+                waiting: Vec::new(),
+            },
+            stopped: StoppedPage {
+                offset: 0,
+                total: 0,
+                tasks: Vec::new(),
+            },
+        }
+    }
+
+    fn test_config(profile_id: ProfileId) -> CoordinatorConfig {
+        CoordinatorConfig {
+            profile_id,
+            refresh: RefreshPolicy {
+                foreground: PollIntervals {
+                    global_stat: Duration::from_secs(60),
+                    live_tasks: Duration::from_secs(60),
+                    stopped_tasks: Duration::from_secs(60),
+                },
+                background: PollIntervals {
+                    global_stat: Duration::from_secs(60),
+                    live_tasks: Duration::from_secs(60),
+                    stopped_tasks: Duration::from_secs(60),
+                },
+                notification_debounce: Duration::from_millis(40),
+            },
+            reconnect: ReconnectPolicy {
+                base_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(1),
+                jitter_percent: 0,
+                max_attempts: Some(3),
+                reset_after: Duration::from_secs(60),
+            },
+            stopped_page_size: 10,
+        }
+    }
+
+    async fn wait_until_connected(handle: &SyncHandle) -> StoreSnapshot {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(snapshot) = handle.snapshot(TaskListQuery::default()).await
+                && snapshot.connection_state == ConnectionState::Connected
+            {
+                return snapshot;
+            }
+            assert!(Instant::now() < deadline, "coordinator did not connect");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    async fn wait_until_failed(handle: &SyncHandle) -> StoreSnapshot {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(snapshot) = handle.snapshot(TaskListQuery::default()).await
+                && matches!(snapshot.connection_state, ConnectionState::Failed { .. })
+            {
+                return snapshot;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "coordinator did not enter failed state"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    #[test]
+    fn capability_verification_rejects_missing_engine_version() {
+        let error = validate_capabilities(&EngineCapabilities {
+            version: "  ".into(),
+            enabled_features: Vec::new(),
+        });
+
+        assert!(matches!(
+            error,
+            Err(SyncError {
+                kind: SyncErrorKind::Protocol,
+                retryable: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn reconnect_backoff_is_bounded_and_resettable() {
+        let policy = ReconnectPolicy {
+            base_delay: Duration::from_millis(100),
+            max_delay: Duration::from_millis(400),
+            jitter_percent: 0,
+            max_attempts: Some(5),
+            reset_after: Duration::from_secs(10),
+        };
+        let mut backoff = ReconnectBackoff::new(policy, 1);
+
+        assert_eq!(backoff.next_delay(), Duration::from_millis(100));
+        assert_eq!(backoff.next_delay(), Duration::from_millis(200));
+        assert_eq!(backoff.next_delay(), Duration::from_millis(400));
+        assert_eq!(backoff.next_delay(), Duration::from_millis(400));
+        backoff.reset();
+        assert_eq!(backoff.next_delay(), Duration::from_millis(100));
+    }
+
+    #[test]
+    fn jitter_never_exceeds_configured_max_delay() {
+        let policy = ReconnectPolicy {
+            base_delay: Duration::from_millis(100),
+            max_delay: Duration::from_millis(100),
+            jitter_percent: 20,
+            max_attempts: None,
+            reset_after: Duration::from_secs(10),
+        };
+        let mut backoff = ReconnectBackoff::new(policy, 7);
+
+        for _ in 0..20 {
+            let delay = backoff.next_delay();
+            assert!(delay >= Duration::from_millis(80));
+            assert!(delay <= Duration::from_millis(100));
+        }
+    }
+
+    #[tokio::test]
+    async fn coordinator_reconnects_after_retryable_connect_failure() {
+        let profile_id = ProfileId::new();
+        let gid = Gid::from_u64(1);
+        let targeted_calls = Arc::new(Mutex::new(Vec::new()));
+        let (notification_tx, notification_rx) = mpsc::channel(16);
+        let connector = Arc::new(ScriptedConnector {
+            steps: Mutex::new(VecDeque::from([
+                Err(SyncError::new(
+                    SyncErrorKind::Disconnected,
+                    "first connection failed",
+                    true,
+                )),
+                Ok(ConnectedSyncSession::new(
+                    Box::new(FakeSession {
+                        initial: initial_snapshot(gid),
+                        targeted_calls,
+                    }),
+                    notification_rx,
+                )),
+            ])),
+            calls: AtomicUsize::new(0),
+        });
+        let handle = spawn_sync_coordinator(connector.clone(), test_config(profile_id));
+
+        let snapshot = wait_until_connected(&handle).await;
+
+        assert!(!snapshot.stale);
+        assert_eq!(snapshot.tasks.len(), 1);
+        assert_eq!(connector.calls.load(Ordering::Relaxed), 2);
+        handle.stop().await;
+        drop(notification_tx);
+    }
+
+    #[tokio::test]
+    async fn notification_storm_is_deduplicated_into_one_targeted_batch() {
+        let profile_id = ProfileId::new();
+        let gid = Gid::from_u64(2);
+        let targeted_calls = Arc::new(Mutex::new(Vec::new()));
+        let (notification_tx, notification_rx) = mpsc::channel(32);
+        let connector = Arc::new(ScriptedConnector {
+            steps: Mutex::new(VecDeque::from([Ok(ConnectedSyncSession::new(
+                Box::new(FakeSession {
+                    initial: initial_snapshot(gid),
+                    targeted_calls: targeted_calls.clone(),
+                }),
+                notification_rx,
+            ))])),
+            calls: AtomicUsize::new(0),
+        });
+        let handle = spawn_sync_coordinator(connector, test_config(profile_id));
+        let _ = wait_until_connected(&handle).await;
+
+        for _ in 0..10 {
+            if notification_tx.send(RefreshHint::Task(gid)).await.is_err() {
+                panic!("notification channel closed unexpectedly");
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(90)).await;
+
+        {
+            let calls = targeted_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert_eq!(calls.as_slice(), &[vec![gid]]);
+        }
+        handle.stop().await;
+        drop(notification_tx);
+    }
+
+    #[tokio::test]
+    async fn retry_limit_applies_to_initial_snapshot_failures() {
+        let profile_id = ProfileId::new();
+        let error = SyncError::new(SyncErrorKind::Timeout, "initial snapshot timed out", true);
+        let mut steps = VecDeque::new();
+        let mut notification_senders = Vec::new();
+        for _ in 0..3 {
+            let (sender, receiver) = mpsc::channel(1);
+            notification_senders.push(sender);
+            steps.push_back(Ok(ConnectedSyncSession::new(
+                Box::new(FailingInitialSession {
+                    error: error.clone(),
+                }),
+                receiver,
+            )));
+        }
+        let connector = Arc::new(ScriptedConnector {
+            steps: Mutex::new(steps),
+            calls: AtomicUsize::new(0),
+        });
+        let handle = spawn_sync_coordinator(connector.clone(), test_config(profile_id));
+
+        let snapshot = wait_until_failed(&handle).await;
+
+        assert!(snapshot.stale);
+        assert_eq!(connector.calls.load(Ordering::Relaxed), 3);
+        handle.stop().await;
+        drop(notification_senders);
+    }
+
+    #[tokio::test]
+    async fn short_lived_connections_do_not_reset_retry_budget() {
+        let profile_id = ProfileId::new();
+        let gid = Gid::from_u64(3);
+        let targeted_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut steps = VecDeque::new();
+        for _ in 0..3 {
+            let (sender, receiver) = mpsc::channel(1);
+            drop(sender);
+            steps.push_back(Ok(ConnectedSyncSession::new(
+                Box::new(FakeSession {
+                    initial: initial_snapshot(gid),
+                    targeted_calls: targeted_calls.clone(),
+                }),
+                receiver,
+            )));
+        }
+        let connector = Arc::new(ScriptedConnector {
+            steps: Mutex::new(steps),
+            calls: AtomicUsize::new(0),
+        });
+        let handle = spawn_sync_coordinator(connector.clone(), test_config(profile_id));
+
+        let snapshot = wait_until_failed(&handle).await;
+
+        assert!(snapshot.stale);
+        assert_eq!(connector.calls.load(Ordering::Relaxed), 3);
+        handle.stop().await;
+    }
+
+    #[tokio::test]
+    async fn stop_cancels_in_flight_refresh_and_waits_for_session_close() {
+        let profile_id = ProfileId::new();
+        let gid = Gid::from_u64(4);
+        let refresh_calls = Arc::new(AtomicUsize::new(0));
+        let close_calls = Arc::new(AtomicUsize::new(0));
+        let (notification_tx, notification_rx) = mpsc::channel(1);
+        let connector = Arc::new(ScriptedConnector {
+            steps: Mutex::new(VecDeque::from([Ok(ConnectedSyncSession::new(
+                Box::new(HangingRefreshSession {
+                    initial: initial_snapshot(gid),
+                    refresh_calls: refresh_calls.clone(),
+                    close_calls: close_calls.clone(),
+                }),
+                notification_rx,
+            ))])),
+            calls: AtomicUsize::new(0),
+        });
+        let handle = spawn_sync_coordinator(connector, test_config(profile_id));
+        let _ = wait_until_connected(&handle).await;
+        handle.force_refresh().await;
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while refresh_calls.load(Ordering::Relaxed) == 0 {
+            assert!(Instant::now() < deadline, "refresh did not start");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        let stopped = tokio::time::timeout(Duration::from_millis(250), handle.stop()).await;
+        assert!(stopped.is_ok(), "stop did not cancel the in-flight refresh");
+        assert_eq!(close_calls.load(Ordering::Relaxed), 1);
+        drop(notification_tx);
+    }
+
+    #[tokio::test]
+    async fn full_refresh_moves_terminal_task_without_removal_patch() {
+        let profile_id = ProfileId::new();
+        let generation = SessionGeneration::initial();
+        let session_id = EngineSessionId::new();
+        let gid = Gid::from_u64(5);
+        let mut store = DownloadStore::new(EngineSession::new(profile_id, session_id, generation));
+        if let Err(error) = store.reconcile_live(
+            generation,
+            vec![TaskSnapshot::new(gid, DownloadStatus::Active, "active")],
+            Vec::new(),
+        ) {
+            panic!("failed to seed live task: {error}");
+        }
+        let session = FakeSession {
+            initial: InitialSyncSnapshot {
+                capabilities: EngineCapabilities {
+                    version: "1.37.0".into(),
+                    enabled_features: Vec::new(),
+                },
+                global_stat: GlobalStat::default(),
+                live: LiveSyncSnapshot {
+                    active: Vec::new(),
+                    waiting: Vec::new(),
+                },
+                stopped: StoppedPage {
+                    offset: 0,
+                    total: 1,
+                    tasks: vec![TaskSnapshot::new(gid, DownloadStatus::Complete, "done")],
+                },
+            },
+            targeted_calls: Arc::new(Mutex::new(Vec::new())),
+        };
+        let (events, mut receiver) = broadcast::channel(16);
+
+        if let Err(error) = refresh_all(&session, &mut store, generation, 10, &events).await {
+            panic!("full refresh failed: {error}");
+        }
+
+        while let Ok(event) = receiver.try_recv() {
+            if let SyncEvent::StorePatched(patch) = event {
+                assert!(!patch.removed.contains(&gid));
+            }
+        }
+        assert_eq!(
+            store.task(gid).map(|task| task.status),
+            Some(DownloadStatus::Complete)
+        );
+        assert_eq!(store.counts().completed, 1);
+    }
+}

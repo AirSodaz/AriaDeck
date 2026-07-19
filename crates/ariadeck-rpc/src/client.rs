@@ -11,9 +11,24 @@ use crate::{
     models::{GlobalStatWire, TaskKey, TaskWire, VersionInfo, VersionWire},
 };
 
+const WAITING_PAGE_SIZE: u32 = 1_000;
+
 #[derive(Clone)]
 pub struct Aria2Client<T> {
     transport: T,
+}
+
+pub(crate) struct InitialRpcSnapshot {
+    pub version: VersionInfo,
+    pub global_stat: GlobalStat,
+    pub active: Vec<TaskSnapshot>,
+    pub waiting: Vec<TaskSnapshot>,
+    pub stopped: Vec<TaskSnapshot>,
+}
+
+pub(crate) struct LiveRpcSnapshot {
+    pub active: Vec<TaskSnapshot>,
+    pub waiting: Vec<TaskSnapshot>,
 }
 
 impl<T> Aria2Client<T> {
@@ -118,16 +133,171 @@ where
         }
     }
 
+    pub(crate) async fn initial_sync_snapshot(
+        &self,
+        stopped_count: u32,
+    ) -> Result<InitialRpcSnapshot, RpcError> {
+        let keys = task_keys(TaskKey::LIST_PROJECTION);
+        let results = self
+            .transport
+            .batch(vec![
+                crate::RpcCall::new("aria2.getVersion", Vec::new()),
+                crate::RpcCall::new("aria2.getGlobalStat", Vec::new()),
+                crate::RpcCall::new("aria2.tellActive", vec![keys.clone()]),
+                crate::RpcCall::new(
+                    "aria2.tellWaiting",
+                    vec![json!(0), json!(WAITING_PAGE_SIZE), keys.clone()],
+                ),
+                crate::RpcCall::new(
+                    "aria2.tellStopped",
+                    vec![json!(0), json!(stopped_count), keys],
+                ),
+            ])
+            .await?;
+        let mut results = results.into_iter();
+        let version = decode::<VersionWire>(
+            "aria2.getVersion",
+            next_batch_result(&mut results, "aria2.getVersion")?,
+        )?
+        .into();
+        let global_stat = decode::<GlobalStatWire>(
+            "aria2.getGlobalStat",
+            next_batch_result(&mut results, "aria2.getGlobalStat")?,
+        )?
+        .into_domain("aria2.getGlobalStat")?;
+        let active = decode_tasks(
+            "aria2.tellActive",
+            next_batch_result(&mut results, "aria2.tellActive")?,
+        )?;
+        let waiting = decode_tasks(
+            "aria2.tellWaiting",
+            next_batch_result(&mut results, "aria2.tellWaiting")?,
+        )?;
+        let waiting = self
+            .complete_waiting_snapshot(waiting, global_stat.waiting_tasks)
+            .await?;
+        let stopped = decode_tasks(
+            "aria2.tellStopped",
+            next_batch_result(&mut results, "aria2.tellStopped")?,
+        )?;
+        Ok(InitialRpcSnapshot {
+            version,
+            global_stat,
+            active,
+            waiting,
+            stopped,
+        })
+    }
+
+    pub(crate) async fn refresh_live_snapshot(&self) -> Result<LiveRpcSnapshot, RpcError> {
+        let keys = task_keys(TaskKey::LIST_PROJECTION);
+        let results = self
+            .transport
+            .batch(vec![
+                crate::RpcCall::new("aria2.getGlobalStat", Vec::new()),
+                crate::RpcCall::new("aria2.tellActive", vec![keys.clone()]),
+                crate::RpcCall::new(
+                    "aria2.tellWaiting",
+                    vec![json!(0), json!(WAITING_PAGE_SIZE), keys],
+                ),
+            ])
+            .await?;
+        let mut results = results.into_iter();
+        let global_stat = decode::<GlobalStatWire>(
+            "aria2.getGlobalStat",
+            next_batch_result(&mut results, "aria2.getGlobalStat")?,
+        )?
+        .into_domain("aria2.getGlobalStat")?;
+        let active = decode_tasks(
+            "aria2.tellActive",
+            next_batch_result(&mut results, "aria2.tellActive")?,
+        )?;
+        let waiting = decode_tasks(
+            "aria2.tellWaiting",
+            next_batch_result(&mut results, "aria2.tellWaiting")?,
+        )?;
+        let waiting = self
+            .complete_waiting_snapshot(waiting, global_stat.waiting_tasks)
+            .await?;
+        Ok(LiveRpcSnapshot { active, waiting })
+    }
+
+    async fn complete_waiting_snapshot(
+        &self,
+        mut waiting: Vec<TaskSnapshot>,
+        expected_total: u32,
+    ) -> Result<Vec<TaskSnapshot>, RpcError> {
+        let loaded = u32::try_from(waiting.len()).map_err(|error| RpcError::InvalidData {
+            method: "aria2.tellWaiting".into(),
+            field: "result".into(),
+            message: error.to_string(),
+        })?;
+        if loaded >= expected_total {
+            return Ok(waiting);
+        }
+
+        let keys = task_keys(TaskKey::LIST_PROJECTION);
+        let mut offset = loaded;
+        let mut calls = Vec::new();
+        while offset < expected_total {
+            let count = expected_total.saturating_sub(offset).min(WAITING_PAGE_SIZE);
+            calls.push(crate::RpcCall::new(
+                "aria2.tellWaiting",
+                vec![json!(i64::from(offset)), json!(count), keys.clone()],
+            ));
+            offset = offset.saturating_add(count);
+        }
+
+        for result in self.transport.batch(calls).await? {
+            waiting.extend(decode_tasks("aria2.tellWaiting", result?)?);
+        }
+        Ok(waiting)
+    }
+
+    pub(crate) async fn refresh_tasks(
+        &self,
+        gids: &[Gid],
+    ) -> Result<Vec<(Gid, Option<TaskSnapshot>)>, RpcError> {
+        if gids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let keys = task_keys(TaskKey::LIST_PROJECTION);
+        let results = self
+            .transport
+            .batch(
+                gids.iter()
+                    .map(|gid| {
+                        crate::RpcCall::new(
+                            "aria2.tellStatus",
+                            vec![json!(gid.to_string()), keys.clone()],
+                        )
+                    })
+                    .collect(),
+            )
+            .await?;
+
+        gids.iter()
+            .copied()
+            .zip(results)
+            .map(|(gid, result)| match result {
+                Ok(value) => decode::<TaskWire>("aria2.tellStatus", value)
+                    .and_then(|task| task.into_domain("aria2.tellStatus"))
+                    .map(|task| (gid, Some(task))),
+                Err(RpcError::Remote { message, .. }) if is_gid_not_found(&message) => {
+                    Ok((gid, None))
+                }
+                Err(error) => Err(error),
+            })
+            .collect()
+    }
+
     async fn fetch_tasks(
         &self,
         method: &str,
         params: Vec<Value>,
     ) -> Result<Vec<TaskSnapshot>, RpcError> {
         let value = self.transport.call(method, params).await?;
-        decode::<Vec<TaskWire>>(method, value)?
-            .into_iter()
-            .map(|task| task.into_domain(method))
-            .collect()
+        decode_tasks(method, value)
     }
 
     async fn call_gid(&self, method: &str, params: Vec<Value>) -> Result<Gid, RpcError> {
@@ -143,6 +313,27 @@ where
             message: error.to_string(),
         })
     }
+}
+
+fn next_batch_result(
+    results: &mut impl Iterator<Item = Result<Value, RpcError>>,
+    method: &str,
+) -> Result<Value, RpcError> {
+    results.next().ok_or_else(|| {
+        RpcError::Protocol(format!("batch response is missing result for {method}"))
+    })?
+}
+
+fn decode_tasks(method: &str, value: Value) -> Result<Vec<TaskSnapshot>, RpcError> {
+    decode::<Vec<TaskWire>>(method, value)?
+        .into_iter()
+        .map(|task| task.into_domain(method))
+        .collect()
+}
+
+fn is_gid_not_found(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("gid") && message.contains("not found")
 }
 
 fn task_keys(keys: &[TaskKey]) -> Value {
@@ -313,6 +504,50 @@ mod tests {
             calls[0].1[1]["max-download-limit"],
             Value::String("1M".into())
         );
+    }
+
+    #[tokio::test]
+    async fn live_snapshot_fetches_every_waiting_page_before_reconcile() {
+        let first_page = (1_u64..=1_000)
+            .map(|value| {
+                json!({
+                    "gid": format!("{value:016x}"),
+                    "status": "waiting",
+                    "files": [{"path": format!("/tmp/{value}.bin")}]
+                })
+            })
+            .collect::<Vec<_>>();
+        let transport = ScriptedTransport::new([
+            Ok(json!({
+                "numActive": "0",
+                "numWaiting": "1001",
+                "numStoppedTotal": "0"
+            })),
+            Ok(json!([])),
+            Ok(Value::Array(first_page)),
+            Ok(json!([{
+                "gid": "00000000000003e9",
+                "status": "waiting",
+                "files": [{"path": "/tmp/1001.bin"}]
+            }])),
+        ]);
+        let client = Aria2Client::new(transport);
+
+        let snapshot = match client.refresh_live_snapshot().await {
+            Ok(snapshot) => snapshot,
+            Err(error) => panic!("live snapshot failed: {error}"),
+        };
+
+        assert_eq!(snapshot.waiting.len(), 1_001);
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(calls.len(), 4);
+        assert_eq!(calls[3].0, "aria2.tellWaiting");
+        assert_eq!(calls[3].1[0], json!(1_000));
+        assert_eq!(calls[3].1[1], json!(1));
     }
 
     #[test]
