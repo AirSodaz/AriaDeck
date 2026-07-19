@@ -2,7 +2,7 @@
 
 **Status:** In progress
 
-**Current stage:** 5 - Live virtualized download workspace
+**Current stage:** 6 - Interactive download commands and task details
 
 **Last updated:** 2026-07-19
 
@@ -75,15 +75,27 @@ change.
 
 ### Stage 5 - Live virtualized download workspace
 
-- [ ] Compose the RPC connector and sync coordinator in the desktop application.
-- [ ] Bridge coordinator events and snapshots into a GPUI-owned workspace model.
-- [ ] Build the sidebar, header, search, filters, status summary, and task rows.
-- [ ] Virtualize task rendering so off-screen rows do not create GPUI elements.
-- [ ] Preserve selection by stable task identity across filtering and updates.
-- [ ] Represent connecting, stale, disconnected, empty, and error states explicitly.
-- [ ] Verify light/dark themes, keyboard focus, and accessible control names.
-- [ ] Exercise a 10,000-task fixture and confirm only visible rows are rendered.
-- [ ] Launch the desktop application against the local aria2 process as a smoke test.
+- [x] Compose the RPC connector and sync coordinator in the desktop application.
+- [x] Bridge coordinator events and snapshots into a GPUI-owned workspace model.
+- [x] Build the sidebar, header, search, filters, status summary, and task rows.
+- [x] Virtualize task rendering so off-screen rows do not create GPUI elements.
+- [x] Preserve selection by stable task identity across filtering and updates.
+- [x] Represent connecting, stale, disconnected, empty, and error states explicitly.
+- [x] Verify light/dark themes, keyboard focus, and accessible control names.
+- [x] Exercise a 10,000-task fixture and confirm only visible rows are rendered.
+- [x] Launch the desktop application against the local aria2 process as a smoke test.
+
+### Stage 6 - Interactive download commands and task details
+
+- [ ] Extend the typed aria2 adapter for add, pause, resume, retry, and remove commands.
+- [ ] Execute commands through the application ports with structured outcomes.
+- [ ] Add a focused add-download flow for URLs and magnet links.
+- [ ] Add row actions and keyboard commands for the safe task lifecycle operations.
+- [ ] Add a right-side details drawer that preserves list context and selection.
+- [ ] Load task overview and file details without blocking the GPUI render thread.
+- [ ] Require explicit confirmation before destructive removal or file deletion.
+- [ ] Verify command success, RPC failure, stale-generation, and reconnect behavior.
+- [ ] Exercise the complete command flow against the local aria2 process.
 
 ## Architecture Decisions
 
@@ -156,10 +168,20 @@ failures, and reset only after a configurable stable connection interval.
 | 2026-07-19 | Post-test `aria2c` process check | Pass - zero residual processes |
 | 2026-07-19 | `cargo test --workspace` | Pass - 45 tests, 2 ignored across 12 suites |
 | 2026-07-19 | `cargo clippy --workspace --all-targets -- -D warnings` | Pass - no issues after Stage 4 |
+| 2026-07-19 | `cargo test -p ariadeck-desktop -p ariadeck-ui` | Pass - 7 focused presentation and composition tests |
+| 2026-07-19 | `cargo clippy -p ariadeck-desktop -p ariadeck-ui --all-targets -- -D warnings` | Pass - no issues in the Stage 5 crates |
+| 2026-07-19 | `cargo build -p ariadeck-desktop` | Pass - native desktop executable built successfully |
+| 2026-07-19 | 10,000-task GPUI fixture | Pass - fewer than 64 task rows rendered for one viewport |
+| 2026-07-19 | Native offline UI and accessibility smoke | Pass - 1180 x 760 content layout, search focus/IME path, filters, and both themes verified |
+| 2026-07-19 | Authenticated live aria2 desktop smoke | Pass - connected state, paused task projection, selection, filtering, stale data, and higher-generation reconnect verified |
+| 2026-07-19 | Post-Stage 5 smoke process check | Pass - zero residual `aria2c` or `ariadeck-desktop` processes |
+| 2026-07-19 | `cargo test --workspace` | Pass - 51 tests, 2 ignored across 12 suites after Stage 5 |
+| 2026-07-19 | `cargo clippy --workspace --all-targets -- -D warnings` | Pass - no issues after Stage 5 |
 
 ## Known Gaps
 
-- The bootstrap shell remains static until Stage 5 composes the application and RPC layers.
+- Add-download, task lifecycle commands, and the details drawer begin in Stage 6.
+- Theme choice and window state are session-only until settings persistence is added.
 - The optional Windows DXGI debug layer is absent; GPUI logs a development-only
   warning and continues with DirectX debugging disabled.
 - The repository license has not been selected; release metadata remains provisional.
@@ -172,3 +194,4 @@ failures, and reset only after a configurable stable connection interval.
 - `feat: add domain and application state core` - Stage 2 state and command foundation.
 - `feat: implement typed aria2 websocket RPC` - Stage 3 transport and adapter.
 - `feat: coordinate aria2 synchronization and reconnects` - Stage 4 live-state coordinator.
+- `feat: build live virtualized download workspace` - Stage 5 native presentation and composition.
