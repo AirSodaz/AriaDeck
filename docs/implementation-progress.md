@@ -122,7 +122,7 @@ visible until the user explicitly removes it.
 - [x] Request `aria2.shutdown` during desktop teardown and retain a kill/wait fallback.
 - [x] Persist non-secret profile metadata through an atomic JSON replacement.
 - [x] Verify local process startup and desktop composition without a pre-existing RPC URL.
-- [ ] Add supervised crash restart and repeated-crash recovery policy.
+- [x] Add supervised crash restart and repeated-crash recovery policy.
 
 ## Architecture Decisions
 
@@ -220,13 +220,17 @@ failures, and reset only after a configurable stable connection interval.
 | 2026-07-19 | `cargo test -p ariadeck-application -p ariadeck-rpc -p ariadeck-ui -p ariadeck-desktop` | Pass - 73 tests, 3 ignored after failed-task retry |
 | 2026-07-19 | Failed-task live aria2 retry flow | Pass - terminal Error metadata produced a new task with a distinct GID |
 | 2026-07-19 | `cargo clippy -p ariadeck-application -p ariadeck-rpc -p ariadeck-ui -p ariadeck-desktop --all-targets -- -D warnings` | Pass - no issues |
+| 2026-07-19 | `cargo test -p ariadeck-engine -p ariadeck-desktop` | Pass - 7 tests, 2 real-process tests ignored by default |
+| 2026-07-19 | `cargo clippy -p ariadeck-engine -p ariadeck-desktop --all-targets -- -D warnings` | Pass - no issues after local-engine supervision |
+| 2026-07-19 | Ignored supervised-crash test with Scoop `aria2c 1.37.0` | Pass - first exit restarted with a new PID on the same endpoint and secret; the next in-window exit reached the crash budget and entered `Failed` |
 
 ## Known Gaps
 
 - Failed-task retry preserves the source URI/info hash and destination for the
   URL/magnet MVP; arbitrary per-task aria2 options are not replayed.
-- Local process crash detection is exposed through `try_wait`, but automatic
-  restart and crash-loop recovery are still pending.
+- Local process crashes are restarted within a bounded window and terminal
+  supervisor failure is exposed through the engine API; recovery status and
+  diagnostics are not yet presented in the desktop UI.
 - Profile persistence is an atomic JSON MVP; SQLite-backed settings/history are
   still planned for Stage 8.
 - Add-download, task lifecycle commands, and the details drawer are implemented
@@ -249,3 +253,4 @@ failures, and reset only after a configurable stable connection interval.
 - `feat: complete interactive command and details workspace` - Stage 6 UI, AccessKit input, command outcomes, and live aria2 verification (retry pending).
 - `feat: manage local external aria2 profiles` - Stage 7 process lifecycle, isolated runtime files, and atomic profile metadata.
 - `feat: retry failed downloads from known sources` - session-bound replay using discovery metadata and a new aria2 GID.
+- `feat: supervise local aria2 crash recovery` - bounded same-endpoint restart and terminal health state.

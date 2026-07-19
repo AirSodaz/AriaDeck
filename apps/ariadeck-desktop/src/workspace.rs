@@ -11,7 +11,7 @@ use ariadeck_domain::{
     TaskProgress,
 };
 use ariadeck_engine::{
-    ExternalEngineProfile, JsonProfileStore, LocalEngineConfig, LocalEngineProcess,
+    ExternalEngineProfile, JsonProfileStore, LocalEngineConfig, LocalEngineSupervisor,
 };
 use ariadeck_rpc::{
     Aria2Client, AuthenticatedTransport, RpcSecret, RpcSyncConnector, WebSocketConfig,
@@ -31,7 +31,7 @@ use url::Url;
 pub struct DesktopRoot {
     workspace: Entity<AppShell>,
     sync: Option<SyncHandle>,
-    local_engine: Option<LocalEngineProcess>,
+    local_engine: Option<LocalEngineSupervisor>,
     runtime: Arc<Runtime>,
     query_sender: watch::Sender<TaskListQuery>,
     _workspace_subscription: Subscription,
@@ -170,6 +170,7 @@ impl Drop for DesktopRoot {
             self.runtime.block_on(handle.stop());
         }
         if let Some(mut process) = self.local_engine.take() {
+            process.stop_monitoring();
             if let Err(error) = self
                 .runtime
                 .block_on(request_local_engine_shutdown(&process))
@@ -433,7 +434,7 @@ fn map_task_details(details: TaskDetails) -> TaskDetailsView {
 
 fn create_sync_handle(
     runtime: &Runtime,
-) -> Result<(SyncHandle, Option<LocalEngineProcess>), String> {
+) -> Result<(SyncHandle, Option<LocalEngineSupervisor>), String> {
     let (endpoint, secret, local_engine, profile_id) = if let Some(endpoint) =
         env::var("ARIADECK_RPC_URL")
             .ok()
@@ -453,7 +454,7 @@ fn create_sync_handle(
     } else {
         let config = resolve_local_engine_config()?;
         let profile_id = config.profile_id;
-        let process = LocalEngineProcess::spawn(&config)
+        let process = LocalEngineSupervisor::spawn(&config)
             .map_err(|error| format!("Failed to start local aria2: {error}"))?;
         let endpoint = process.endpoint().clone();
         let secret = Some(RpcSecret::new(process.secret().to_owned()));
@@ -513,7 +514,7 @@ fn resolve_local_engine_config() -> Result<LocalEngineConfig, String> {
     Ok(profile.local_config())
 }
 
-async fn request_local_engine_shutdown(process: &LocalEngineProcess) -> Result<(), String> {
+async fn request_local_engine_shutdown(process: &LocalEngineSupervisor) -> Result<(), String> {
     let mut websocket = WebSocketConfig::new(process.endpoint().clone());
     websocket.connect_timeout = Duration::from_millis(500);
     websocket.request_timeout = Duration::from_millis(750);

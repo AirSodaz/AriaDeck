@@ -5,13 +5,19 @@
 //! through `ariadeck-domain`.
 
 use std::{
+    collections::VecDeque,
     fmt,
     fs::{self, OpenOptions},
     io::{self, Write},
     net::{Ipv4Addr, TcpListener},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
+    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
@@ -49,6 +55,8 @@ pub enum EngineError {
         #[source]
         source: io::Error,
     },
+    #[error("failed to start the local engine supervisor: {0}")]
+    SpawnSupervisor(io::Error),
     #[error("I/O error while {operation} at {path}: {source}")]
     Io {
         operation: &'static str,
@@ -345,36 +353,14 @@ impl LocalEngineProcess {
             }
         })?;
 
-        let arguments = vec![
-            "--no-conf=true".to_owned(),
-            "--enable-rpc=true".to_owned(),
-            "--rpc-listen-all=false".to_owned(),
-            format!("--rpc-listen-port={port}"),
-            format!("--rpc-secret={secret}"),
-            format!("--conf-path={}", config_path.to_string_lossy()),
-            format!("--dir={}", config.download_dir.to_string_lossy()),
-            format!("--input-file={}", session_path.to_string_lossy()),
-            format!("--save-session={}", session_path.to_string_lossy()),
-            "--save-session-interval=60".to_owned(),
-            format!("--log={}", log_path.to_string_lossy()),
-            // Keep the default local profile loopback-only. These optional
-            // peer-discovery listeners can otherwise trigger a firewall
-            // prompt before the user has configured a network profile.
-            "--enable-dht=false".to_owned(),
-            "--enable-dht6=false".to_owned(),
-            "--bt-enable-lpd=false".to_owned(),
-        ];
-
-        let child = Command::new(&config.executable)
-            .args(arguments)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|source| EngineError::Spawn {
-                path: config.executable.clone(),
-                source,
-            })?;
+        let child = spawn_child(
+            config,
+            port,
+            &secret,
+            &config_path,
+            &session_path,
+            &log_path,
+        )?;
 
         Ok(Self {
             child: Some(child),
@@ -445,7 +431,27 @@ impl LocalEngineProcess {
     }
 
     pub fn is_running(&mut self) -> Result<bool, EngineError> {
+        if self.child.is_none() {
+            return Ok(false);
+        }
         Ok(self.try_wait()?.is_none())
+    }
+
+    /// Restart an unexpectedly exited process without changing its RPC endpoint.
+    pub fn restart(&mut self) -> Result<(), EngineError> {
+        if self.is_running()? {
+            return Ok(());
+        }
+        let child = spawn_child(
+            &self.config,
+            self.port,
+            self.secret.expose_secret(),
+            &self.config_path,
+            &self.session_path,
+            &self.log_path,
+        )?;
+        self.child = Some(child);
+        Ok(())
     }
 
     pub fn try_wait(&mut self) -> Result<Option<ExitStatus>, EngineError> {
@@ -511,6 +517,259 @@ impl Drop for LocalEngineProcess {
     fn drop(&mut self) {
         let _ = self.shutdown();
     }
+}
+
+fn spawn_child(
+    config: &LocalEngineConfig,
+    port: u16,
+    secret: &str,
+    config_path: &Path,
+    session_path: &Path,
+    log_path: &Path,
+) -> Result<Child, EngineError> {
+    let arguments = vec![
+        "--no-conf=true".to_owned(),
+        "--enable-rpc=true".to_owned(),
+        "--rpc-listen-all=false".to_owned(),
+        format!("--rpc-listen-port={port}"),
+        format!("--rpc-secret={secret}"),
+        format!("--conf-path={}", config_path.to_string_lossy()),
+        format!("--dir={}", config.download_dir.to_string_lossy()),
+        format!("--input-file={}", session_path.to_string_lossy()),
+        format!("--save-session={}", session_path.to_string_lossy()),
+        "--save-session-interval=60".to_owned(),
+        format!("--log={}", log_path.to_string_lossy()),
+        // Keep the default local profile loopback-only. These optional
+        // peer-discovery listeners can otherwise trigger a firewall prompt
+        // before the user has configured a network profile.
+        "--enable-dht=false".to_owned(),
+        "--enable-dht6=false".to_owned(),
+        "--bt-enable-lpd=false".to_owned(),
+    ];
+
+    Command::new(&config.executable)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|source| EngineError::Spawn {
+            path: config.executable.clone(),
+            source,
+        })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LocalRestartPolicy {
+    pub max_restarts: u32,
+    pub window: Duration,
+    pub poll_interval: Duration,
+}
+
+impl Default for LocalRestartPolicy {
+    fn default() -> Self {
+        Self {
+            max_restarts: 2,
+            window: Duration::from_secs(30),
+            poll_interval: Duration::from_millis(250),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LocalEngineHealth {
+    Running,
+    Restarting { attempt: u32 },
+    Failed { restarts: u32, reason: String },
+}
+
+struct SupervisorShared {
+    process: Mutex<LocalEngineProcess>,
+    health: Mutex<LocalEngineHealth>,
+    stop: AtomicBool,
+    policy: LocalRestartPolicy,
+}
+
+/// Monitors a local aria2 child and restarts short-lived crashes in place.
+pub struct LocalEngineSupervisor {
+    shared: Arc<SupervisorShared>,
+    monitor: Option<JoinHandle<()>>,
+    endpoint: Url,
+    secret: SecretString,
+    profile_id: ProfileId,
+}
+
+impl fmt::Debug for LocalEngineSupervisor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocalEngineSupervisor")
+            .field("endpoint", &self.endpoint)
+            .field("secret", &"[REDACTED]")
+            .field("profile_id", &self.profile_id)
+            .field("health", &self.health())
+            .finish_non_exhaustive()
+    }
+}
+
+impl LocalEngineSupervisor {
+    pub fn spawn(config: &LocalEngineConfig) -> Result<Self, EngineError> {
+        Self::spawn_with_policy(config, LocalRestartPolicy::default())
+    }
+
+    pub fn spawn_with_policy(
+        config: &LocalEngineConfig,
+        policy: LocalRestartPolicy,
+    ) -> Result<Self, EngineError> {
+        let process = LocalEngineProcess::spawn(config)?;
+        let endpoint = process.endpoint().clone();
+        let secret = SecretString::new(process.secret().to_owned());
+        let profile_id = process.config().profile_id;
+        let shared = Arc::new(SupervisorShared {
+            process: Mutex::new(process),
+            health: Mutex::new(LocalEngineHealth::Running),
+            stop: AtomicBool::new(false),
+            policy,
+        });
+        let monitor_shared = shared.clone();
+        let monitor = thread::Builder::new()
+            .name("ariadeck-engine-supervisor".into())
+            .spawn(move || monitor_local_engine(&monitor_shared))
+            .map_err(EngineError::SpawnSupervisor)?;
+
+        Ok(Self {
+            shared,
+            monitor: Some(monitor),
+            endpoint,
+            secret,
+            profile_id,
+        })
+    }
+
+    #[must_use]
+    pub fn endpoint(&self) -> &Url {
+        &self.endpoint
+    }
+
+    #[must_use]
+    pub fn secret(&self) -> &str {
+        self.secret.expose_secret()
+    }
+
+    #[must_use]
+    pub fn profile_id(&self) -> ProfileId {
+        self.profile_id
+    }
+
+    #[must_use]
+    pub fn health(&self) -> LocalEngineHealth {
+        self.shared
+            .health
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Stop crash monitoring before the composition root requests RPC shutdown.
+    pub fn stop_monitoring(&mut self) {
+        self.shared.stop.store(true, Ordering::Release);
+        if let Some(monitor) = self.monitor.take() {
+            let _ = monitor.join();
+        }
+    }
+
+    pub fn shutdown(&mut self) -> Result<(), EngineError> {
+        self.stop_monitoring();
+        self.shared
+            .process
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .shutdown()
+    }
+}
+
+impl Drop for LocalEngineSupervisor {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
+
+fn monitor_local_engine(shared: &SupervisorShared) {
+    let mut restarts = VecDeque::new();
+    loop {
+        thread::sleep(shared.policy.poll_interval);
+        if shared.stop.load(Ordering::Acquire) {
+            break;
+        }
+
+        let now = Instant::now();
+        while restarts
+            .front()
+            .is_some_and(|restart| now.duration_since(*restart) > shared.policy.window)
+        {
+            restarts.pop_front();
+        }
+
+        let mut process = shared
+            .process
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let exit = match process.try_wait() {
+            Ok(exit) => exit,
+            Err(error) => {
+                set_supervisor_health(
+                    shared,
+                    LocalEngineHealth::Failed {
+                        restarts: u32::try_from(restarts.len()).unwrap_or(u32::MAX),
+                        reason: error.to_string(),
+                    },
+                );
+                break;
+            }
+        };
+        let Some(status) = exit else {
+            continue;
+        };
+        let restart_count = u32::try_from(restarts.len()).unwrap_or(u32::MAX);
+        if restart_count >= shared.policy.max_restarts {
+            set_supervisor_health(
+                shared,
+                LocalEngineHealth::Failed {
+                    restarts: restart_count,
+                    reason: format!("aria2 exited unexpectedly with {status}"),
+                },
+            );
+            break;
+        }
+
+        let attempt = restart_count.saturating_add(1);
+        set_supervisor_health(shared, LocalEngineHealth::Restarting { attempt });
+        match process.restart() {
+            Ok(()) => {
+                restarts.push_back(now);
+                set_supervisor_health(shared, LocalEngineHealth::Running);
+            }
+            Err(error) => {
+                restarts.push_back(now);
+                if attempt >= shared.policy.max_restarts {
+                    set_supervisor_health(
+                        shared,
+                        LocalEngineHealth::Failed {
+                            restarts: attempt,
+                            reason: error.to_string(),
+                        },
+                    );
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn set_supervisor_health(shared: &SupervisorShared, health: LocalEngineHealth) {
+    *shared
+        .health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = health;
 }
 
 fn create_runtime_file(path: &Path) -> Result<(), EngineError> {
@@ -697,6 +956,101 @@ mod tests {
         let debug = format!("{process:?}");
         assert!(!debug.contains(process.secret()));
         assert!(process.shutdown().is_ok());
+        let endpoint = process.endpoint().clone();
+        let secret = process.secret().to_owned();
+        assert!(process.restart().is_ok());
+        assert_eq!(process.endpoint(), &endpoint);
+        assert_eq!(process.secret(), secret);
+        assert!(process.is_running().unwrap_or(false));
+        assert!(process.shutdown().is_ok());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[ignore = "requires ARIA2C_PATH and launches a real local aria2 process"]
+    fn supervisor_restarts_once_then_stops_at_the_crash_budget() {
+        fn kill_current_child(supervisor: &LocalEngineSupervisor) -> u32 {
+            let mut process = supervisor
+                .shared
+                .process
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let child = process.child.as_mut().expect("supervised child must exist");
+            let pid = child.id();
+            child
+                .kill()
+                .unwrap_or_else(|error| panic!("failed to terminate supervised child: {error}"));
+            child
+                .wait()
+                .unwrap_or_else(|error| panic!("failed to reap supervised child: {error}"));
+            pid
+        }
+
+        let root = temporary_directory();
+        let sample = sample_profile(&root);
+        let profile = ExternalEngineProfile::new(
+            sample.profile_id,
+            sample.name,
+            std::env::var_os("ARIA2C_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| panic!("ARIA2C_PATH is required for this test")),
+            sample.data_dir,
+            sample.download_dir,
+        );
+        let policy = LocalRestartPolicy {
+            max_restarts: 1,
+            window: Duration::from_secs(10),
+            poll_interval: Duration::from_millis(25),
+        };
+        let mut supervisor =
+            LocalEngineSupervisor::spawn_with_policy(&profile.local_config(), policy)
+                .unwrap_or_else(|error| panic!("failed to spawn supervisor: {error}"));
+        let endpoint = supervisor.endpoint().clone();
+        let secret = supervisor.secret().to_owned();
+        let original_pid = kill_current_child(&supervisor);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let restarted_pid = loop {
+            let pid = {
+                let process = supervisor
+                    .shared
+                    .process
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                process.child.as_ref().map(Child::id)
+            };
+            if supervisor.health() == LocalEngineHealth::Running
+                && pid.is_some_and(|pid| pid != original_pid)
+            {
+                break pid.expect("restarted child must exist");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "supervisor did not restart aria2"
+            );
+            thread::sleep(Duration::from_millis(25));
+        };
+
+        assert_ne!(restarted_pid, original_pid);
+        assert_eq!(supervisor.endpoint(), &endpoint);
+        assert_eq!(supervisor.secret(), secret);
+
+        assert_eq!(kill_current_child(&supervisor), restarted_pid);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let LocalEngineHealth::Failed { restarts, reason } = supervisor.health() {
+                assert_eq!(restarts, 1);
+                assert!(!reason.is_empty());
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "supervisor did not stop at its restart budget"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+
+        assert!(supervisor.shutdown().is_ok());
         let _ = fs::remove_dir_all(root);
     }
 
