@@ -124,6 +124,22 @@ visible until the user explicitly removes it.
 - [x] Verify local process startup and desktop composition without a pre-existing RPC URL.
 - [x] Add supervised crash restart and repeated-crash recovery policy.
 
+### Stage 8 - MVP completion and hardening
+
+- [x] Add versioned, validated typed settings with atomic persistence and
+  corruption-preserving recovery.
+- [ ] Load and save the light/dark theme and default download directory outside
+  the render path.
+- [ ] Add an accessible settings flow and apply the configured destination to
+  both local-engine startup and newly added tasks.
+- [ ] Feed the application-layer fixed-capacity speed history from live global
+  statistics and render a bounded one-minute chart.
+- [ ] Surface local-engine running, restarting, and terminal failure states in
+  the desktop workspace.
+- [ ] Complete workspace tests, Clippy, native build, real aria2 flows, and UI
+  smoke verification on the merged MVP tree.
+- [ ] Record explicit MVP deferrals and mark the implementation complete.
+
 ## Architecture Decisions
 
 ### ADR-001 - Add an application crate
@@ -171,6 +187,15 @@ before authoritative reconciliation. A separate cancellation signal interrupts
 in-flight RPC work, and `stop()` waits for both the coordinator and WebSocket actor
 to finish. Retry budgets span connect, initial-sync, and short-lived session
 failures, and reset only after a configurable stable connection interval.
+
+### ADR-007 - Use a typed JSON settings document for the single-profile MVP
+
+The MVP stores its small, user-edited settings document through a dedicated
+`ariadeck-settings` boundary with a schema version, validation, atomic
+replacement, and corruption-preserving recovery. This keeps settings logic out
+of GPUI and makes a later SQLite adapter possible without changing UI contracts.
+SQLite remains the target for multi-profile metadata, history, installation
+records, and diagnostics; persistent speed analytics are explicitly post-MVP.
 
 ## Verification Log
 
@@ -223,6 +248,8 @@ failures, and reset only after a configurable stable connection interval.
 | 2026-07-19 | `cargo test -p ariadeck-engine -p ariadeck-desktop` | Pass - 7 tests, 2 real-process tests ignored by default |
 | 2026-07-19 | `cargo clippy -p ariadeck-engine -p ariadeck-desktop --all-targets -- -D warnings` | Pass - no issues after local-engine supervision |
 | 2026-07-19 | Ignored supervised-crash test with Scoop `aria2c 1.37.0` | Pass - first exit restarted with a new PID on the same endpoint and secret; the next in-window exit reached the crash budget and entered `Failed` |
+| 2026-07-19 | `cargo test -p ariadeck-settings` | Pass - 4 tests covering initialization, round-trip, corrupt recovery, and future-version rejection |
+| 2026-07-19 | `cargo clippy -p ariadeck-settings --all-targets -- -D warnings` | Pass - no issues in the typed settings boundary |
 
 ## Known Gaps
 
@@ -254,3 +281,4 @@ failures, and reset only after a configurable stable connection interval.
 - `feat: manage local external aria2 profiles` - Stage 7 process lifecycle, isolated runtime files, and atomic profile metadata.
 - `feat: retry failed downloads from known sources` - session-bound replay using discovery metadata and a new aria2 GID.
 - `feat: supervise local aria2 crash recovery` - bounded same-endpoint restart and terminal health state.
+- `feat: persist typed application settings` - versioned JSON settings with validation and corruption-preserving recovery.
