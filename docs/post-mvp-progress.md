@@ -242,6 +242,35 @@ outside deletion capability.
   and continuously publishes free space, without a separate client-side
   auto-pause policy in its checker.
 
+### D-010 - Mutation outcomes are reconciled, never guessed or replayed
+
+**Decision:** Keep task mutation submission single-flight in the UI. A success
+or outcome-unknown result schedules an authoritative refresh, while a known
+rejection leaves the existing snapshot unchanged. Never replay an unknown
+mutation automatically: the engine may already have accepted it. Output-name
+changes use a targeted task refresh; other task commands use a full refresh.
+
+**Session rule:** Command responses are accepted only for the exact request and
+engine session that produced them. A stale response cannot mutate the current
+selection, notice, details drawer, or task store.
+
+**Identity rule:** When aria2 replaces a Magnet metadata parent with a child
+GID, migrate every selected identity, the focused row, range anchor, and open
+details drawer together. Remove the obsolete parent identity rather than
+leaving a hidden duplicate selection.
+
+**Evidence:**
+
+- Motrix task store at commit
+  `7012040fec926e16fe8f6c403cf038527f5c18b9` refreshes task state in the
+  `finally` path of pause, resume, and remove mutations:
+  https://github.com/agalwood/Motrix/blob/7012040fec926e16fe8f6c403cf038527f5c18b9/src/renderer/store/modules/task.js
+- qBittorrent WebUI at commit
+  `bc42af9fd8fb9f39df04ed6747e82f912aff4cc0` serializes `sync/maindata`,
+  schedules the next poll after errors, and restores selected rows after a
+  full update:
+  https://github.com/qbittorrent/qBittorrent/blob/bc42af9fd8fb9f39df04ed6747e82f912aff4cc0/src/webui/www/private/scripts/client.js
+
 ## Task Matrix
 
 Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
@@ -310,9 +339,11 @@ Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
 
 ## Current Implementation Slice
 
-The filename, selection, add-outcome, retry, removal, and proxy slices (`FNM-001`
+The filename, selection, add-outcome, retry, removal, proxy, and command-state
+slices (`FNM-001`
 through `FNM-003`, `SEL-001`, `SEL-002`, `ADD-001`, `ADD-002`, `ADD-004`,
-`RETRY-001`, `RETRY-002`, `REMOVE-001`, `NET-001`, and `NET-002`) are complete.
+`RETRY-001`, `RETRY-002`, `REMOVE-001`, `NET-001`, `NET-002`, and `STATE-001`)
+are complete.
 The proxy slice includes schema migration, validated endpoint/bypass fields,
 masked password input, system credential storage, session-bound runtime apply,
 new-session reapply, and explicit clearing. `FILE-002` now has
@@ -320,7 +351,7 @@ safe deletion, accumulated authorized roots, local writable-directory/space and
 known-size preflight, remote path isolation, direct-task conflict policy, and
 specific runtime disk-full errors. Its remaining Torrent/Metalink per-file
 containment/conflict slice depends on `ADD-003` and `FILE-001`. The remaining
-independent P0 work is tracked under `STATE-001` and `NET-003`.
+independent P0 work is tracked under `NET-003`.
 
 ## Audit Additions
 
@@ -346,7 +377,7 @@ several can be shared by more than one feature.
   disk-full error presentation, and local-versus-remote capability handling are
   complete. Torrent/Metalink per-file containment/conflicts remain and depend
   on their import and file-selection flows.
-- [ ] `STATE-001` Specify command race behavior: disable or coalesce duplicate
+- [x] `STATE-001` Specify command race behavior: disable or coalesce duplicate
   actions, reject stale session responses, refresh after outcome-unknown
   mutations, and preserve details/selection when a Magnet parent is replaced by
   a metadata child or when a task changes GID.
@@ -431,5 +462,9 @@ acceptance outcomes overlap.
 | 2026-07-20 | `NET-001`, `NET-002` and the completed checkpoint | `cargo test --workspace` | Pass - 178 passed, 6 ignored; covers schema v1-to-v2 migration, proxy validation/recovery, redacted UI/application debug values, masked UTF-8 input, credential mutation rollback, exact-session application, global-option mappings, and settings UI drafts |
 | 2026-07-20 | `NET-001`, `NET-002` and the completed checkpoint | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo build -p ariadeck-desktop`; `cargo fmt --all -- --check` | Pass - no warnings, native desktop build succeeds, formatting clean |
 | 2026-07-20 | `NET-001`, `NET-002` | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored --nocapture` | Pass - all 4 real aria2 flows; the proxy flow answered a Basic 407 challenge from credential options, routed traffic through the proxy, bypassed loopback through `no-proxy`, cleared proxy state when Disabled, and left no process behind |
+| 2026-07-20 | `STATE-001` | `cargo test -p ariadeck-application -p ariadeck-ui` | Pass - 94 tests cover unknown-outcome refresh without replay, single-flight task submission, and focused/non-focused Magnet identity migration |
+| 2026-07-20 | Desktop Tokio runtime regression | `cargo test -p ariadeck-desktop`; isolated native startup with a real local aria2 | Pass - 30 tests; proxy settings loading is dispatched through the explicit Tokio runtime from a non-Tokio context, and the connected desktop remained healthy for the six-second observation with no reactor panic |
+| 2026-07-20 | `STATE-001` and desktop runtime checkpoint | `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop` | Pass - 183 tests, 6 ignored; no warnings, formatting clean, native desktop build succeeds |
+| 2026-07-20 | `STATE-001` live regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored --nocapture` | Pass - all 4 real aria2 flows; authenticated reads, restart/reconnect, command/removal behavior, proxy routing/bypass/disable, and cleanup remain intact |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.

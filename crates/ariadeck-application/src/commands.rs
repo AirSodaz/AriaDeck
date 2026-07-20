@@ -234,6 +234,17 @@ impl CommandOutcome {
             Self::Failure { .. } => false,
         }
     }
+
+    #[must_use]
+    pub fn has_unknown_outcome(&self) -> bool {
+        let failures = match self {
+            Self::Success { .. } => return false,
+            Self::PartialSuccess { failed, .. } | Self::Failure { failed } => failed,
+        };
+        failures
+            .iter()
+            .any(|failure| failure.error.code == ApplicationErrorCode::OutcomeUnknown)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -714,6 +725,47 @@ mod tests {
         let debug = format!("{config:?}");
         assert!(debug.contains("[REDACTED]"));
         assert!(!debug.contains("never-log-this"));
+    }
+
+    #[test]
+    fn command_outcome_detects_unknown_failures_in_full_and_partial_results() {
+        let unknown = ItemFailure {
+            item: None,
+            error: ApplicationError::new(
+                ApplicationErrorCode::OutcomeUnknown,
+                "response lost",
+                false,
+            ),
+        };
+        assert!(
+            CommandOutcome::Failure {
+                failed: vec![unknown.clone()]
+            }
+            .has_unknown_outcome()
+        );
+        assert!(
+            CommandOutcome::PartialSuccess {
+                succeeded: vec![CommandItem::Task(TaskIdentity::new(
+                    ProfileId::new(),
+                    Gid::from_u64(1),
+                ))],
+                failed: vec![unknown],
+            }
+            .has_unknown_outcome()
+        );
+        assert!(
+            !CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: None,
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Rejected,
+                        "rejected",
+                        false,
+                    ),
+                }],
+            }
+            .has_unknown_outcome()
+        );
     }
 
     type ChangedOptionCall = (Gid, Vec<(String, String)>);

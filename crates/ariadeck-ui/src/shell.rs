@@ -589,15 +589,36 @@ impl AppShell {
             .as_ref()
             .is_some_and(|selected| selected.profile_id != snapshot.profile_id);
         let selected_before = self.selected.clone();
-        let selected_set_had_previous = selected_before
-            .as_ref()
-            .is_some_and(|identity| self.selected_tasks.contains(identity));
-        let anchor_was_previous = selected_before.as_ref() == self.range_anchor.as_ref();
-        let successor = (!profile_changed)
+        let selected_successor = (!profile_changed)
             .then(|| {
                 selected_before
                     .as_ref()
                     .and_then(|selected| successor_task(&self.snapshot, &snapshot, selected))
+            })
+            .flatten();
+        let selection_migrations = if profile_changed {
+            Vec::new()
+        } else {
+            self.selected_tasks
+                .iter()
+                .filter_map(|identity| {
+                    successor_task(&self.snapshot, &snapshot, identity)
+                        .map(|successor| (identity.clone(), successor.identity))
+                })
+                .collect::<Vec<_>>()
+        };
+        let anchor_successor = (!profile_changed)
+            .then(|| {
+                self.range_anchor
+                    .as_ref()
+                    .and_then(|anchor| successor_task(&self.snapshot, &snapshot, anchor))
+            })
+            .flatten();
+        let drawer_successor = (!profile_changed)
+            .then(|| {
+                self.details_drawer
+                    .as_ref()
+                    .and_then(|drawer| successor_task(&self.snapshot, &snapshot, &drawer.identity))
             })
             .flatten();
 
@@ -640,23 +661,23 @@ impl AppShell {
         }
 
         self.snapshot = snapshot;
-        let followed_task = successor.is_some();
+        let followed_task = selected_successor.is_some() || drawer_successor.is_some();
 
-        if let (Some(selected_before), Some(successor)) = (selected_before, successor) {
+        for (previous, successor) in selection_migrations {
+            self.selected_tasks.remove(&previous);
+            self.selected_tasks.insert(successor);
+        }
+
+        if let Some(successor) = selected_successor {
             self.selected = Some(successor.identity.clone());
-            if selected_set_had_previous {
-                self.selected_tasks.insert(successor.identity.clone());
-            }
-            if anchor_was_previous {
-                self.range_anchor = Some(successor.identity.clone());
-            }
-            if let Some(drawer) = &mut self.details_drawer
-                && drawer.identity == selected_before
-            {
-                drawer.identity = successor.identity.clone();
-                drawer.overview = successor;
-                drawer.state = TaskDetailsLoadState::Stale;
-            }
+        }
+        if let Some(successor) = anchor_successor {
+            self.range_anchor = Some(successor.identity);
+        }
+        if let (Some(drawer), Some(successor)) = (&mut self.details_drawer, drawer_successor) {
+            drawer.identity = successor.identity.clone();
+            drawer.overview = successor;
+            drawer.state = TaskDetailsLoadState::Stale;
         }
 
         if self.selected.as_ref().is_none_or(|selected| {
@@ -6293,6 +6314,46 @@ mod tests {
     }
 
     #[gpui::test]
+    fn magnet_successor_migrates_nonfocused_selection_anchor_and_details(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            let mut previous = snapshot(3);
+            previous.tasks[0].followed_by = vec![format!("{:016x}", 3)];
+            let parent = previous.tasks[0].clone();
+            let focused = previous.tasks[1].identity.clone();
+            shell.snapshot = previous;
+            shell.selected = Some(focused.clone());
+            shell.selected_tasks = HashSet::from([parent.identity.clone(), focused]);
+            shell.range_anchor = Some(parent.identity.clone());
+            shell.open_details_for(parent, cx);
+            shell
+        });
+
+        view.update_in(cx, |shell, _window, cx| {
+            let mut next = snapshot(3);
+            next.tasks[0] = task(3);
+            next.tasks[0].belongs_to = Some(format!("{:016x}", 0));
+            shell.set_snapshot(next, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            let parent = task(0).identity;
+            let successor = task(3).identity;
+            assert_eq!(shell.selected, Some(task(1).identity));
+            assert_eq!(shell.selected_tasks.len(), 2);
+            assert!(!shell.selected_tasks.contains(&parent));
+            assert!(shell.selected_tasks.contains(&successor));
+            assert_eq!(shell.range_anchor, Some(successor.clone()));
+            assert_eq!(
+                shell
+                    .details_drawer
+                    .as_ref()
+                    .map(|drawer| drawer.identity.clone()),
+                Some(successor)
+            );
+        });
+    }
+
+    #[gpui::test]
     fn add_download_submission_is_single_flight(cx: &mut TestAppContext) {
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut shell = AppShell::new(Theme::dark(), window, cx);
@@ -6319,6 +6380,36 @@ mod tests {
                     .pending
                     .as_ref()
                     .expect("second submit must retain pending request")
+                    .request_id,
+                first
+            );
+            assert_eq!(shell.next_request_id, first.get() + 1);
+        });
+    }
+
+    #[gpui::test]
+    fn task_command_submission_is_single_flight(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell.snapshot.tasks[0].status = TaskStatusView::Active;
+            shell.selected = Some(shell.snapshot.tasks[0].identity.clone());
+            shell
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.begin_task_command(TaskCommandView::Pause, cx);
+            let first = shell
+                .pending_task_command
+                .as_ref()
+                .expect("first command must become pending")
+                .request_id;
+            shell.begin_task_command(TaskCommandView::Pause, cx);
+            assert_eq!(
+                shell
+                    .pending_task_command
+                    .as_ref()
+                    .expect("duplicate command must retain the first request")
                     .request_id,
                 first
             );

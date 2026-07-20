@@ -238,7 +238,13 @@ impl DesktopRoot {
             spawn_settings_result_bridge(results, window, cx);
         }
         if let (Some(handle), Some(store)) = (sync.clone(), proxy_reapply_store) {
-            spawn_proxy_reapply_bridge(handle, store, credential_store, cx);
+            spawn_proxy_reapply_bridge(
+                runtime.handle().clone(),
+                handle,
+                store,
+                credential_store,
+                cx,
+            );
         }
         if let Some(health) = local_engine_health {
             spawn_local_engine_health_bridge(health, cx);
@@ -336,10 +342,12 @@ impl DesktopRoot {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
+        let runtime = self.runtime.handle().clone();
         let sync = self.sync.clone();
         let download_destination_gateway = self.download_destination_gateway.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let result = execute_add_download(sync, download_destination_gateway, request).await;
+            let result =
+                execute_add_download(runtime, sync, download_destination_gateway, request).await;
             this.update_in(cx, |this, window, cx| {
                 this.workspace.update(cx, |workspace, cx| {
                     workspace.set_add_download_result(result, window, cx);
@@ -443,6 +451,7 @@ impl Render for DesktopRoot {
 }
 
 async fn execute_add_download(
+    runtime: tokio::runtime::Handle,
     sync: Option<SyncHandle>,
     destination_gateway: Option<Arc<dyn DownloadDestinationGateway>>,
     request: AddDownloadRequestView,
@@ -463,7 +472,10 @@ async fn execute_add_download(
                 directory: EnginePath::new(directory),
                 required_bytes,
             };
-            match tokio::task::spawn_blocking(move || gateway.preflight(&request)).await {
+            match runtime
+                .spawn_blocking(move || gateway.preflight(&request))
+                .await
+            {
                 Ok(Ok(_)) => None,
                 Ok(Err(error)) => Some(map_application_error(error.into())),
                 Err(error) => Some(map_application_error(ApplicationError::new(
@@ -2016,6 +2028,7 @@ fn spawn_settings_result_bridge(
 }
 
 fn spawn_proxy_reapply_bridge(
+    runtime: tokio::runtime::Handle,
     handle: SyncHandle,
     store: JsonSettingsStore,
     credential_store: Arc<dyn ProxyCredentialStore>,
@@ -2034,20 +2047,10 @@ fn spawn_proxy_reapply_bridge(
                 attempted_session = Some(snapshot.session);
                 let settings_store = store.clone();
                 let credentials = credential_store.clone();
-                let loaded = tokio::task::spawn_blocking(move || {
-                    let settings = settings_store.load().map_err(|error| error.to_string())?;
-                    let password = load_proxy_password(credentials.as_ref(), &settings)?;
-                    if settings.download_proxy.credential.is_some() && password.is_none() {
-                        return Err(
-                            "The saved proxy password is missing from the system credential store. Enter it again or clear the saved password."
-                                .into(),
-                        );
-                    }
-                    Ok::<_, String>((settings, password))
-                })
-                .await
-                .map_err(|error| format!("proxy configuration task failed: {error}"))
-                .and_then(|result| result);
+                let loaded = spawn_proxy_settings_load(&runtime, settings_store, credentials)
+                    .await
+                    .map_err(|error| format!("proxy configuration task failed: {error}"))
+                    .and_then(|result| result);
                 let result = match loaded {
                     Ok((settings, password)) => {
                         let config = map_download_proxy_config(&settings, password);
@@ -2082,6 +2085,24 @@ fn spawn_proxy_reapply_bridge(
         }
     })
     .detach();
+}
+
+fn spawn_proxy_settings_load(
+    runtime: &tokio::runtime::Handle,
+    store: JsonSettingsStore,
+    credential_store: Arc<dyn ProxyCredentialStore>,
+) -> JoinHandle<Result<(AppSettings, Option<SecretString>), String>> {
+    runtime.spawn_blocking(move || {
+        let settings = store.load().map_err(|error| error.to_string())?;
+        let password = load_proxy_password(credential_store.as_ref(), &settings)?;
+        if settings.download_proxy.credential.is_some() && password.is_none() {
+            return Err(
+                "The saved proxy password is missing from the system credential store. Enter it again or clear the saved password."
+                    .into(),
+            );
+        }
+        Ok((settings, password))
+    })
 }
 
 fn spawn_local_engine_health_bridge(
@@ -3176,6 +3197,7 @@ mod tests {
             SessionGeneration::initial(),
         );
         let result = execute_add_download(
+            tokio::runtime::Handle::current(),
             None,
             Some(Arc::new(LocalDownloadDestinationGateway::new())),
             AddDownloadRequestView {
@@ -3213,6 +3235,7 @@ mod tests {
             SessionGeneration::initial(),
         );
         let result = execute_add_download(
+            tokio::runtime::Handle::current(),
             None,
             Some(Arc::new(LocalDownloadDestinationGateway::new())),
             AddDownloadRequestView {
@@ -3321,6 +3344,7 @@ mod tests {
         ];
 
         let separate = execute_add_download(
+            tokio::runtime::Handle::current(),
             None,
             None,
             AddDownloadRequestView {
@@ -3342,6 +3366,7 @@ mod tests {
         ));
 
         let mirrors = execute_add_download(
+            tokio::runtime::Handle::current(),
             None,
             None,
             AddDownloadRequestView {
@@ -3394,6 +3419,7 @@ mod tests {
         };
 
         let result = execute_add_download(
+            tokio::runtime::Handle::current(),
             Some(handle.clone()),
             None,
             AddDownloadRequestView {
@@ -3779,6 +3805,31 @@ mod tests {
             .expect("load restored credential")
             .expect("restored password");
         assert_eq!(restored.expose_secret(), "old-secret");
+    }
+
+    #[test]
+    fn proxy_settings_load_uses_the_explicit_runtime_outside_a_tokio_context() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        let expected = AppSettings::new(root.path().join("downloads"));
+        store.save(&expected).expect("save settings");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+
+        let load = spawn_proxy_settings_load(
+            runtime.handle(),
+            store,
+            Arc::new(FakeProxyCredentialStore::default()),
+        );
+        let (loaded, password) = runtime
+            .block_on(load)
+            .expect("settings task completes")
+            .expect("settings load succeeds");
+
+        assert_eq!(loaded, expected);
+        assert!(password.is_none());
     }
 
     #[test]

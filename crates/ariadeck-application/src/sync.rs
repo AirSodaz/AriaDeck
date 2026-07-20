@@ -895,15 +895,19 @@ async fn run_connected(
                             () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
                             outcome = service.execute(command, &task_contexts) => outcome,
                         };
-                        if outcome.has_successes() {
-                            if let Some((gid, output_name)) = custom_output_name {
-                                match store.set_custom_output_name(generation, gid, output_name) {
-                                    Ok(patch) => emit_patch(events, patch),
-                                    Err(error) => {
-                                        return ConnectedExit::Retry(SyncError::store(error));
-                                    }
+                        let refresh_authoritative_state = outcome.has_successes()
+                            || outcome.has_unknown_outcome();
+                        if outcome.has_successes()
+                            && let Some((gid, output_name)) = custom_output_name
+                        {
+                            match store.set_custom_output_name(generation, gid, output_name) {
+                                Ok(patch) => emit_patch(events, patch),
+                                Err(error) => {
+                                    return ConnectedExit::Retry(SyncError::store(error));
                                 }
                             }
+                        }
+                        if refresh_authoritative_state {
                             match refresh_after_success {
                                 RefreshHint::Task(gid) => {
                                     pending_tasks.insert(gid);
@@ -1614,6 +1618,8 @@ mod tests {
         command_calls: Mutex<Vec<(&'static str, Gid)>>,
         details_calls: Mutex<Vec<Gid>>,
         proxy_calls: Mutex<Vec<DownloadProxyConfig>>,
+        change_options_error: Mutex<Option<crate::GatewayError>>,
+        change_options_attempts: AtomicUsize,
     }
 
     #[async_trait]
@@ -1654,6 +1660,15 @@ mod tests {
             gid: Gid,
             _options: &[(String, String)],
         ) -> Result<(), crate::GatewayError> {
+            self.change_options_attempts.fetch_add(1, Ordering::Relaxed);
+            if let Some(error) = self
+                .change_options_error
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+            {
+                return Err(error);
+            }
             self.record_command("change_options", gid);
             Ok(())
         }
@@ -2041,6 +2056,73 @@ mod tests {
                 .as_slice(),
             &[proxy]
         );
+        handle.stop().await;
+        drop(notification_tx);
+    }
+
+    #[tokio::test]
+    async fn unknown_output_name_outcome_triggers_a_targeted_refresh_without_replay() {
+        let profile_id = ProfileId::new();
+        let gid = Gid::from_u64(12);
+        let targeted_calls = Arc::new(Mutex::new(Vec::new()));
+        let gateway = Arc::new(FakeInteractiveGateway::default());
+        *gateway
+            .change_options_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(crate::GatewayError::new(
+            crate::GatewayErrorKind::OutcomeUnknown,
+            "response lost after mutation",
+            false,
+        ));
+        let (notification_tx, notification_rx) = mpsc::channel(16);
+        let mut initial = initial_snapshot(gid);
+        initial.live.active[0].metadata.source_kind = TaskSourceKind::DirectUri;
+        let connector = Arc::new(ScriptedConnector {
+            steps: Mutex::new(VecDeque::from([Ok(
+                ConnectedSyncSession::new_with_gateways(
+                    Box::new(FakeSession {
+                        initial,
+                        targeted_calls: targeted_calls.clone(),
+                    }),
+                    gateway.clone(),
+                    gateway.clone(),
+                    notification_rx,
+                ),
+            )])),
+            calls: AtomicUsize::new(0),
+        });
+        let handle = spawn_sync_coordinator(connector, test_config(profile_id));
+        let snapshot = wait_until_connected(&handle).await;
+        let identity = TaskIdentity::new(profile_id, gid);
+
+        let outcome = handle
+            .execute(
+                snapshot.session,
+                AppCommand::SetTaskOutputName(crate::SetTaskOutputNameRequest {
+                    task: identity,
+                    output_name: "renamed.bin".into(),
+                }),
+            )
+            .await;
+        assert!(outcome.has_unknown_outcome());
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if targeted_calls
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .iter()
+                    .any(|call| call == &[gid])
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("unknown mutation must trigger a targeted refresh");
+        assert_eq!(gateway.change_options_attempts.load(Ordering::Relaxed), 1);
+
         handle.stop().await;
         drop(notification_tx);
     }

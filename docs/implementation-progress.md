@@ -249,6 +249,17 @@ are bound to the exact engine session and are not replayed after an unknown
 outcome in that session, while a newly connected session receives the latest
 persisted configuration once.
 
+### ADR-009 - Reconcile uncertain mutations from authoritative engine state
+
+Task mutations remain single-flight in the desktop. Successful and
+outcome-unknown commands schedule an authoritative refresh, but uncertain
+mutations are never replayed automatically. Exact request/session matching
+rejects stale results, and Magnet parent-to-child transitions migrate focused
+and non-focused selections, the range anchor, and the details drawer together.
+Blocking filesystem, settings, and credential work launched from GPUI tasks is
+always dispatched through the desktop-owned Tokio runtime rather than assuming
+the UI executor has entered a Tokio reactor.
+
 ## Verification Log
 
 | Date | Command or check | Result |
@@ -333,6 +344,10 @@ persisted configuration once.
 | 2026-07-20 | `cargo test --workspace` after download-proxy and credential-store integration | Pass - 178 tests, 6 ignored; includes settings migration/recovery, proxy validation, secret redaction, credential rollback, exact-session apply, aria2 option mapping, and GPUI proxy drafts |
 | 2026-07-20 | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop` | Pass - no warnings, formatting clean, native desktop executable built |
 | 2026-07-20 | All ignored live RPC tests with Scoop `aria2c 1.37.0` | Pass - 4 flows; authenticated proxy 407 retry, routed request, `no-proxy` bypass, Disabled direct traffic, connection restart, command/removal contracts, and clean shutdown |
+| 2026-07-20 | `cargo test -p ariadeck-application -p ariadeck-ui` after command-state reconciliation | Pass - 94 tests; unknown outcomes refresh once without replay, duplicate submissions remain single-flight, and Magnet successor state migrates completely |
+| 2026-07-20 | `cargo test -p ariadeck-desktop`; isolated connected desktop startup | Pass - 30 tests plus six-second native observation; explicit runtime dispatch prevents the GPUI-thread `no reactor running` panic |
+| 2026-07-20 | `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop` | Pass - 183 tests, 6 ignored; no warnings, formatting clean, native desktop executable built |
+| 2026-07-20 | All ignored live RPC tests with real `aria2c 1.37.0` after command-state reconciliation | Pass - 4 flows; authenticated reads, restart/reconnect, command/removal contracts, proxy routing/bypass/disable, and clean shutdown |
 
 ## Known Gaps
 
