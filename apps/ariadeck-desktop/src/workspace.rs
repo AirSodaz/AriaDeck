@@ -10,11 +10,11 @@ use std::{
 
 use ariadeck_application::{
     AddDownloadRequest, AddDownloadSource, AppCommand, ApplicationError, ApplicationErrorCode,
-    CommandItem, CommandOutcome, CoordinatorConfig, DownloadDestinationGateway,
-    DownloadDestinationRequest, DownloadProxyConfig, DownloadProxyMode as ApplicationProxyMode,
-    FileConflictPolicy, ItemFailure, ReconnectPolicy, RemoveTasksRequest, SetTaskOutputNameRequest,
-    StoreSnapshot, SyncHandle, TaskFileGateway, TaskFileRemovalRequest, TaskListQuery,
-    TaskRemovalScope, spawn_sync_coordinator,
+    CommandItem, CommandOutcome, CoordinatorConfig, DownloadDestinationFile,
+    DownloadDestinationGateway, DownloadDestinationRequest, DownloadProxyConfig,
+    DownloadProxyMode as ApplicationProxyMode, FileConflictPolicy, ItemFailure, ReconnectPolicy,
+    RemoveTasksRequest, SetTaskOutputNameRequest, StoreSnapshot, SyncHandle, TaskFileGateway,
+    TaskFileRemovalRequest, TaskListQuery, TaskRemovalScope, spawn_sync_coordinator,
 };
 use ariadeck_domain::{
     ConnectionState, DownloadFilter, DownloadStatus, DownloadTask, EnginePath, EngineSession,
@@ -35,18 +35,20 @@ use ariadeck_settings::{
     ProxyCredentialRef, ProxyCredentialStore, SystemProxyCredentialStore,
 };
 use ariadeck_ui::{
-    AddDownloadItemResultView, AddDownloadMetadataKindView, AddDownloadModeView,
-    AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView, AppShell, AppShellEvent,
-    BatchCommandOutcomeView, BatchTaskCommandRequestView, BatchTaskCommandResultView,
-    BatchTaskCommandView, BatchTaskFailureView, ColorSchemeView, CommandOutcomeView,
-    ConnectionView, DownloadProxySettingsView, DownloadRowView, EngineHealthView,
-    EngineSessionView, FileConflictPolicyView, OperationErrorView, ProxyModeView,
-    ProxyPasswordUpdateView, SettingsSaveOutcomeView, SettingsSaveRequestView,
-    SettingsSaveResultView, SettingsView, SpeedSampleView, TaskCommandRequestView,
-    TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
-    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
-    TaskIdentity, TaskNameStateView, TaskSourceKindView, TaskStatusView, WorkspaceFilter,
-    WorkspaceQuery, WorkspaceSnapshot,
+    AddDownloadItemResultView, AddDownloadMetadataFileView, AddDownloadMetadataKindView,
+    AddDownloadMetadataPreviewItemView, AddDownloadMetadataPreviewOutcomeView,
+    AddDownloadMetadataPreviewRequestView, AddDownloadMetadataPreviewResultView,
+    AddDownloadMetadataPreviewView, AddDownloadModeView, AddDownloadRequestView,
+    AddDownloadResultView, AddDownloadSourceView, AppShell, AppShellEvent, BatchCommandOutcomeView,
+    BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
+    BatchTaskFailureView, ColorSchemeView, CommandOutcomeView, ConnectionView,
+    DownloadProxySettingsView, DownloadRowView, EngineHealthView, EngineSessionView,
+    FileConflictPolicyView, OperationErrorView, ProxyModeView, ProxyPasswordUpdateView,
+    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
+    SpeedSampleView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
+    TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
+    TaskSourceKindView, TaskStatusView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
 };
 use data_encoding::BASE32_NOPAD;
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
@@ -57,6 +59,8 @@ use tokio::{
     task::JoinHandle,
 };
 use url::Url;
+
+use crate::metadata::parse_metadata;
 
 pub struct DesktopRoot {
     workspace: Entity<AppShell>,
@@ -218,6 +222,9 @@ impl DesktopRoot {
                 AppShellEvent::AddDownloadRequested(request) => {
                     this.spawn_add_download(request.clone(), window, cx);
                 }
+                AppShellEvent::AddDownloadMetadataPreviewRequested(request) => {
+                    this.spawn_add_download_metadata_preview(request.clone(), window, cx);
+                }
                 AppShellEvent::TaskCommandRequested(request) => {
                     this.spawn_task_command(request.clone(), window, cx);
                 }
@@ -360,6 +367,29 @@ impl DesktopRoot {
         .detach();
     }
 
+    fn spawn_add_download_metadata_preview(
+        &self,
+        request: AddDownloadMetadataPreviewRequestView,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let runtime = self.runtime.handle().clone();
+        let fallback_request = request.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = runtime
+                .spawn_blocking(move || preview_metadata_files(request))
+                .await
+                .unwrap_or_else(|error| metadata_preview_worker_failure(fallback_request, error));
+            this.update_in(cx, |this, _window, cx| {
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.set_add_download_metadata_preview_result(result, cx);
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn spawn_task_command(
         &self,
         request: TaskCommandRequestView,
@@ -468,11 +498,12 @@ async fn execute_add_download(
         file_conflict,
     } = request;
     let mapped_session = map_engine_session(&session);
-    let destination_error = match (destination_gateway, destination.as_deref()) {
+    let destination_error = match (destination_gateway.clone(), destination.as_deref()) {
         (Some(gateway), Some(directory)) => {
             let request = DownloadDestinationRequest {
                 directory: EnginePath::new(directory),
                 required_bytes,
+                files: Vec::new(),
             };
             match runtime
                 .spawn_blocking(move || gateway.preflight(&request))
@@ -540,31 +571,71 @@ async fn execute_add_download(
                     )
                     .await;
                     match request {
-                        Ok(request) => {
-                            let outcome = handle
-                                .execute(*engine_session, AppCommand::AddDownload(request))
-                                .await;
-                            if command_outcome_is_unknown(&outcome) && add_sources_are_uris(&group)
-                            {
-                                reconcile_unknown_add(
-                                    handle,
-                                    &group,
-                                    &mut known_gids,
-                                    map_command_outcome(outcome),
-                                )
-                                .await
-                            } else {
-                                let mapped = map_command_outcome(outcome);
-                                if let CommandOutcomeView::Success { tasks } = &mapped
-                                    && let Some(known) = &mut known_gids
-                                {
-                                    for task in tasks {
-                                        if let Ok(identity) = map_task_identity(task) {
-                                            known.insert(identity.gid);
+                        Ok(prepared) => {
+                            let PreparedAddDownloadRequest {
+                                request,
+                                destination_files,
+                                required_bytes,
+                            } = prepared;
+                            let metadata_destination_error = match (
+                                destination_gateway.clone(),
+                                destination.as_deref(),
+                                destination_files.is_empty(),
+                            ) {
+                                (Some(gateway), Some(directory), false) => {
+                                    let request = DownloadDestinationRequest {
+                                        directory: EnginePath::new(directory),
+                                        required_bytes,
+                                        files: destination_files,
+                                    };
+                                    match runtime
+                                        .spawn_blocking(move || gateway.preflight(&request))
+                                        .await
+                                    {
+                                        Ok(Ok(_)) => None,
+                                        Ok(Err(error)) => Some(map_application_error(error.into())),
+                                        Err(error) => {
+                                            Some(map_application_error(ApplicationError::new(
+                                                ApplicationErrorCode::Internal,
+                                                format!(
+                                                    "Metadata destination preflight worker stopped: {error}"
+                                                ),
+                                                true,
+                                            )))
                                         }
                                     }
                                 }
-                                mapped
+                                _ => None,
+                            };
+                            if let Some(error) = metadata_destination_error {
+                                CommandOutcomeView::Failure(error)
+                            } else {
+                                let outcome = handle
+                                    .execute(*engine_session, AppCommand::AddDownload(request))
+                                    .await;
+                                if command_outcome_is_unknown(&outcome)
+                                    && add_sources_are_uris(&group)
+                                {
+                                    reconcile_unknown_add(
+                                        handle,
+                                        &group,
+                                        &mut known_gids,
+                                        map_command_outcome(outcome),
+                                    )
+                                    .await
+                                } else {
+                                    let mapped = map_command_outcome(outcome);
+                                    if let CommandOutcomeView::Success { tasks } = &mapped
+                                        && let Some(known) = &mut known_gids
+                                    {
+                                        for task in tasks {
+                                            if let Ok(identity) = map_task_identity(task) {
+                                                known.insert(identity.gid);
+                                            }
+                                        }
+                                    }
+                                    mapped
+                                }
                             }
                         }
                         Err(error) => CommandOutcomeView::Failure(map_application_error(error)),
@@ -594,18 +665,110 @@ async fn execute_add_download(
 
 const MAX_METADATA_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
+fn preview_metadata_files(
+    request: AddDownloadMetadataPreviewRequestView,
+) -> AddDownloadMetadataPreviewResultView {
+    AddDownloadMetadataPreviewResultView {
+        request_id: request.request_id,
+        items: request
+            .paths
+            .into_iter()
+            .map(preview_metadata_file)
+            .collect(),
+    }
+}
+
+fn preview_metadata_file(path: PathBuf) -> AddDownloadMetadataPreviewItemView {
+    let outcome = metadata_kind_from_path(&path)
+        .ok_or_else(|| {
+            ApplicationError::new(
+                ApplicationErrorCode::Validation,
+                format!("Unsupported metadata file extension: {}", path.display()),
+                false,
+            )
+        })
+        .and_then(|kind| {
+            let content = read_metadata_content(&path, kind)?;
+            let preview = parse_metadata(kind, &content).map_err(|error| {
+                ApplicationError::new(ApplicationErrorCode::Validation, error, false)
+            })?;
+            let selected_file_indices = preview.files.iter().map(|file| file.index).collect();
+            Ok(AddDownloadMetadataPreviewView {
+                path: path.clone(),
+                kind,
+                content_sha256: preview.content_sha256,
+                files: preview
+                    .files
+                    .into_iter()
+                    .map(|file| AddDownloadMetadataFileView {
+                        index: file.index,
+                        path: file.path,
+                        length: file.length,
+                    })
+                    .collect(),
+                selected_file_indices,
+            })
+        });
+    AddDownloadMetadataPreviewItemView {
+        path,
+        outcome: match outcome {
+            Ok(preview) => AddDownloadMetadataPreviewOutcomeView::Ready(preview),
+            Err(error) => {
+                AddDownloadMetadataPreviewOutcomeView::Failed(map_application_error(error))
+            }
+        },
+    }
+}
+
+fn metadata_preview_worker_failure(
+    request: AddDownloadMetadataPreviewRequestView,
+    error: tokio::task::JoinError,
+) -> AddDownloadMetadataPreviewResultView {
+    AddDownloadMetadataPreviewResultView {
+        request_id: request.request_id,
+        items: request
+            .paths
+            .into_iter()
+            .map(|path| AddDownloadMetadataPreviewItemView {
+                path,
+                outcome: AddDownloadMetadataPreviewOutcomeView::Failed(OperationErrorView {
+                    code: ApplicationErrorCode::Internal.as_str().into(),
+                    summary: format!("Metadata preview worker stopped unexpectedly: {error}"),
+                    retryable: true,
+                }),
+            })
+            .collect(),
+    }
+}
+
 async fn prepare_add_download_request(
     runtime: &tokio::runtime::Handle,
     sources: &[AddDownloadSourceView],
     destination: Option<String>,
     file_conflict: FileConflictPolicyView,
-) -> Result<AddDownloadRequest, ApplicationError> {
+) -> Result<PreparedAddDownloadRequest, ApplicationError> {
     let source = match sources {
-        [AddDownloadSourceView::MetadataFile { path, kind }] => {
+        [
+            AddDownloadSourceView::MetadataFile {
+                path,
+                kind,
+                content_sha256,
+                selected_file_indices,
+            },
+        ] => {
             let path = path.clone();
             let kind = *kind;
+            let content_sha256 = content_sha256.clone();
+            let selected_file_indices = selected_file_indices.clone();
             runtime
-                .spawn_blocking(move || read_metadata_source(&path, kind))
+                .spawn_blocking(move || {
+                    read_metadata_source_with_selection(
+                        &path,
+                        kind,
+                        &content_sha256,
+                        &selected_file_indices,
+                    )
+                })
                 .await
                 .map_err(|error| {
                     ApplicationError::new(
@@ -627,15 +790,20 @@ async fn prepare_add_download_request(
                 .iter()
                 .all(|source| matches!(source, AddDownloadSourceView::Uri { .. })) =>
         {
-            AddDownloadSource::Uris(
-                sources
-                    .iter()
-                    .filter_map(|source| match source {
-                        AddDownloadSourceView::Uri { uri, .. } => Some(uri.clone()),
-                        AddDownloadSourceView::MetadataFile { .. } => None,
-                    })
-                    .collect(),
-            )
+            PreparedMetadataSource {
+                source: AddDownloadSource::Uris(
+                    sources
+                        .iter()
+                        .filter_map(|source| match source {
+                            AddDownloadSourceView::Uri { uri, .. } => Some(uri.clone()),
+                            AddDownloadSourceView::MetadataFile { .. } => None,
+                        })
+                        .collect(),
+                ),
+                selected_file_indices: None,
+                destination_files: Vec::new(),
+                required_bytes: None,
+            }
         }
         _ => {
             return Err(ApplicationError::new(
@@ -645,7 +813,7 @@ async fn prepare_add_download_request(
             ));
         }
     };
-    let file_conflict = if matches!(source, AddDownloadSource::Uris(_)) {
+    let file_conflict = if matches!(source.source, AddDownloadSource::Uris(_)) {
         match file_conflict {
             FileConflictPolicyView::AutoRename => FileConflictPolicy::AutoRename,
             FileConflictPolicyView::Reject => FileConflictPolicy::Reject,
@@ -654,18 +822,125 @@ async fn prepare_add_download_request(
     } else {
         FileConflictPolicy::Reject
     };
-    Ok(AddDownloadRequest {
-        source,
-        destination: destination.map(EnginePath::new),
-        file_conflict,
-        options: Vec::new(),
+    Ok(PreparedAddDownloadRequest {
+        request: AddDownloadRequest {
+            source: source.source,
+            destination: destination.map(EnginePath::new),
+            file_conflict,
+            selected_file_indices: source.selected_file_indices,
+            options: Vec::new(),
+        },
+        destination_files: source.destination_files,
+        required_bytes: source.required_bytes,
     })
 }
 
-fn read_metadata_source(
+#[derive(Debug)]
+struct PreparedAddDownloadRequest {
+    request: AddDownloadRequest,
+    destination_files: Vec<DownloadDestinationFile>,
+    required_bytes: Option<u64>,
+}
+
+#[derive(Debug)]
+struct PreparedMetadataSource {
+    source: AddDownloadSource,
+    selected_file_indices: Option<Vec<u32>>,
+    destination_files: Vec<DownloadDestinationFile>,
+    required_bytes: Option<u64>,
+}
+
+fn read_metadata_source_with_selection(
     path: &Path,
     requested_kind: AddDownloadMetadataKindView,
-) -> Result<AddDownloadSource, ApplicationError> {
+    expected_sha256: &str,
+    selected_file_indices: &[u32],
+) -> Result<PreparedMetadataSource, ApplicationError> {
+    let content = read_metadata_content(path, requested_kind)?;
+    let preview = parse_metadata(requested_kind, &content)
+        .map_err(|error| ApplicationError::new(ApplicationErrorCode::Validation, error, false))?;
+    if !expected_sha256.is_empty() && preview.content_sha256 != expected_sha256 {
+        return Err(ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            format!(
+                "Metadata file changed after preview; review it again before adding: {}",
+                path.display()
+            ),
+            false,
+        ));
+    }
+    let requested_indices = selected_file_indices;
+    let selected_file_indices = if requested_indices.is_empty() {
+        if expected_sha256.is_empty() {
+            None
+        } else {
+            return Err(ApplicationError::new(
+                ApplicationErrorCode::Validation,
+                format!("Select at least one file from {}.", path.display()),
+                false,
+            ));
+        }
+    } else {
+        let all_indexes = preview
+            .files
+            .iter()
+            .map(|file| file.index)
+            .collect::<HashSet<_>>();
+        if requested_indices.first() == Some(&0)
+            || requested_indices.windows(2).any(|pair| pair[0] >= pair[1])
+            || requested_indices
+                .iter()
+                .any(|index| !all_indexes.contains(index))
+        {
+            return Err(ApplicationError::new(
+                ApplicationErrorCode::Validation,
+                format!(
+                    "Metadata file selection is stale or invalid: {}",
+                    path.display()
+                ),
+                false,
+            ));
+        }
+        (requested_indices.len() != preview.files.len()).then(|| requested_indices.to_vec())
+    };
+    let mut required_bytes = 0_u64;
+    let mut destination_files = Vec::with_capacity(requested_indices.len());
+    for file in &preview.files {
+        if requested_indices.is_empty() || requested_indices.binary_search(&file.index).is_ok() {
+            if let Some(length) = file.length {
+                required_bytes = required_bytes.checked_add(length).ok_or_else(|| {
+                    ApplicationError::new(
+                        ApplicationErrorCode::Validation,
+                        format!(
+                            "Selected metadata file sizes exceed the supported range: {}",
+                            path.display()
+                        ),
+                        false,
+                    )
+                })?;
+            }
+            destination_files.push(DownloadDestinationFile {
+                relative_path: EnginePath::new(&file.path),
+                reject_existing: true,
+            });
+        }
+    }
+    let source = match requested_kind {
+        AddDownloadMetadataKindView::Torrent => AddDownloadSource::Torrent(content),
+        AddDownloadMetadataKindView::Metalink => AddDownloadSource::Metalink(content),
+    };
+    Ok(PreparedMetadataSource {
+        source,
+        selected_file_indices,
+        destination_files,
+        required_bytes: Some(required_bytes),
+    })
+}
+
+fn read_metadata_content(
+    path: &Path,
+    requested_kind: AddDownloadMetadataKindView,
+) -> Result<Arc<[u8]>, ApplicationError> {
     let detected_kind = metadata_kind_from_path(path).ok_or_else(|| {
         ApplicationError::new(
             ApplicationErrorCode::Validation,
@@ -720,11 +995,7 @@ fn read_metadata_source(
     if content.len() as u64 > MAX_METADATA_FILE_BYTES {
         return Err(metadata_file_too_large(path));
     }
-    let content = Arc::<[u8]>::from(content);
-    Ok(match detected_kind {
-        AddDownloadMetadataKindView::Torrent => AddDownloadSource::Torrent(content),
-        AddDownloadMetadataKindView::Metalink => AddDownloadSource::Metalink(content),
-    })
+    Ok(Arc::<[u8]>::from(content))
 }
 
 fn metadata_kind_from_path(path: &Path) -> Option<AddDownloadMetadataKindView> {
@@ -2301,6 +2572,7 @@ fn preflight_settings(
             .preflight(&DownloadDestinationRequest {
                 directory: EnginePath::new(settings.download_directory.to_string_lossy()),
                 required_bytes: None,
+                files: Vec::new(),
             })
             .map_err(|error| error.message)?;
     }
@@ -3520,21 +3792,25 @@ mod tests {
         .expect("URI request maps");
 
         assert!(matches!(
-            request.source,
+            request.request.source,
             AddDownloadSource::Uris(uris) if uris == vec!["https://example.test/archive.iso"]
         ));
         assert_eq!(
-            request.destination.as_ref().map(EnginePath::as_str),
+            request.request.destination.as_ref().map(EnginePath::as_str),
             Some("D:/Transfers")
         );
-        assert_eq!(request.file_conflict, FileConflictPolicy::Reject);
+        assert_eq!(request.request.file_conflict, FileConflictPolicy::Reject);
+        assert!(request.destination_files.is_empty());
     }
 
     #[test]
     fn metadata_upload_reads_files_with_an_explicit_runtime_outside_tokio_context() {
         let root = tempfile::tempdir().expect("temporary metadata directory");
-        let path = root.path().join("sample.torrent");
-        fs::write(&path, b"torrent-content").expect("write metadata fixture");
+        let path = root.path().join("sample.metalink");
+        let content = br#"<metalink><file name="one.bin"><size>12</size></file></metalink>"#;
+        fs::write(&path, content).expect("write metadata fixture");
+        let preview = parse_metadata(AddDownloadMetadataKindView::Metalink, content)
+            .expect("metadata fixture parses");
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -3544,22 +3820,33 @@ mod tests {
             runtime.handle(),
             &[AddDownloadSourceView::MetadataFile {
                 path,
-                kind: AddDownloadMetadataKindView::Torrent,
+                kind: AddDownloadMetadataKindView::Metalink,
+                content_sha256: preview.content_sha256,
+                selected_file_indices: vec![1],
             }],
             Some("D:/Transfers".into()),
             FileConflictPolicyView::Overwrite,
         ))
         .expect("metadata request maps");
 
-        assert_eq!(request.file_conflict, FileConflictPolicy::Reject);
+        assert_eq!(request.request.file_conflict, FileConflictPolicy::Reject);
         assert_eq!(
-            request.destination.as_ref().map(EnginePath::as_str),
+            request.request.destination.as_ref().map(EnginePath::as_str),
             Some("D:/Transfers")
         );
         assert!(matches!(
-            request.source,
-            AddDownloadSource::Torrent(content) if content.as_ref() == b"torrent-content"
+            request.request.source,
+            AddDownloadSource::Metalink(uploaded) if uploaded.as_ref() == content
         ));
+        assert_eq!(request.request.selected_file_indices, None);
+        assert_eq!(request.required_bytes, Some(12));
+        assert_eq!(
+            request.destination_files,
+            vec![DownloadDestinationFile {
+                relative_path: EnginePath::new("one.bin"),
+                reject_existing: true,
+            }]
+        );
     }
 
     #[test]
@@ -3586,7 +3873,12 @@ mod tests {
             fs::write(&path, content).expect("write metadata fixture");
             let result = futures::executor::block_on(prepare_add_download_request(
                 runtime.handle(),
-                &[AddDownloadSourceView::MetadataFile { path, kind }],
+                &[AddDownloadSourceView::MetadataFile {
+                    path,
+                    kind,
+                    content_sha256: String::new(),
+                    selected_file_indices: Vec::new(),
+                }],
                 None,
                 FileConflictPolicyView::AutoRename,
             ));
@@ -3601,11 +3893,61 @@ mod tests {
             &[AddDownloadSourceView::MetadataFile {
                 path: oversized,
                 kind: AddDownloadMetadataKindView::Metalink,
+                content_sha256: String::new(),
+                selected_file_indices: Vec::new(),
             }],
             None,
             FileConflictPolicyView::AutoRename,
         ));
         assert!(result.is_err(), "oversized metadata file must be rejected");
+    }
+
+    #[test]
+    fn metadata_upload_binds_selection_to_the_preview_digest_and_file_indexes() {
+        let root = tempfile::tempdir().expect("temporary metadata directory");
+        let path = root.path().join("sample.meta4");
+        let content = br#"<metalink>
+            <file name="one.bin"><size>10</size></file>
+            <file name="two.bin"><size>20</size></file>
+        </metalink>"#;
+        fs::write(&path, content).expect("write metadata fixture");
+        let preview = parse_metadata(AddDownloadMetadataKindView::Metalink, content)
+            .expect("metadata fixture parses");
+
+        let partial = read_metadata_source_with_selection(
+            &path,
+            AddDownloadMetadataKindView::Metalink,
+            &preview.content_sha256,
+            &[2],
+        )
+        .expect("partial selection maps");
+        assert_eq!(partial.selected_file_indices, Some(vec![2]));
+
+        for invalid in [&[][..], &[0][..], &[1, 1][..], &[2, 1][..], &[3][..]] {
+            let error = read_metadata_source_with_selection(
+                &path,
+                AddDownloadMetadataKindView::Metalink,
+                &preview.content_sha256,
+                invalid,
+            )
+            .expect_err("invalid selection must fail");
+            assert_eq!(error.code, ApplicationErrorCode::Validation);
+        }
+
+        fs::write(
+            &path,
+            br#"<metalink><file name="replacement.bin"><size>1</size></file></metalink>"#,
+        )
+        .expect("replace metadata fixture");
+        let changed = read_metadata_source_with_selection(
+            &path,
+            AddDownloadMetadataKindView::Metalink,
+            &preview.content_sha256,
+            &[1],
+        )
+        .expect_err("changed metadata must require a new preview");
+        assert_eq!(changed.code, ApplicationErrorCode::Validation);
+        assert!(changed.summary.contains("changed after preview"));
     }
 
     #[tokio::test]

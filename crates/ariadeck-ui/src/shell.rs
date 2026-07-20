@@ -15,23 +15,25 @@ use gpui::{
 
 use crate::{
     AddDownloadInputModeView, AddDownloadItemResultView, AddDownloadMetadataKindView,
-    AddDownloadModeView, AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView,
-    BatchCommandOutcomeView, BatchTaskCommandRequestView, BatchTaskCommandResultView,
-    BatchTaskCommandView, BatchTaskFailureView, Button, ButtonStyle, ClearSearch, CloseAddDownload,
-    CloseBatchFailures, CloseSettings, CloseTaskOutputName, ColorSchemeView, CommandOutcomeView,
-    ConnectionView, Dialog, DownloadProxySettingsView, DownloadRowView, EngineHealthView,
-    EngineSessionView, FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch, Icon,
-    IconButton, IconName, IconSize, OpenAddDownload, OpenSettings, OpenTaskDetails,
-    OpenTaskOutputName, OperationErrorView, PauseSelectedTask, ProxyModeView,
-    ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask,
-    SaveSettings, SearchInputEvent, SecretStringView, Segment, SegmentedControl, SelectAllTasks,
-    SelectNextTask, SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView,
-    SettingsSaveResultView, SettingsView, SpeedSampleView, StatusIndicator, SubmitAddDownload,
-    SubmitTaskOutputName, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
-    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
-    TaskFileView, TaskIdentity, TaskStatusView, TextField, TextFieldConfig, Theme, ThemeMode,
-    Toast, ToastKind, Tooltip, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, format_bytes,
-    format_eta, format_percent, format_rate,
+    AddDownloadMetadataPreviewOutcomeView, AddDownloadMetadataPreviewRequestView,
+    AddDownloadMetadataPreviewResultView, AddDownloadMetadataPreviewView, AddDownloadModeView,
+    AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView, BatchCommandOutcomeView,
+    BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
+    BatchTaskFailureView, Button, ButtonStyle, ClearSearch, CloseAddDownload, CloseBatchFailures,
+    CloseSettings, CloseTaskOutputName, ColorSchemeView, CommandOutcomeView, ConnectionView,
+    Dialog, DownloadProxySettingsView, DownloadRowView, EngineHealthView, EngineSessionView,
+    FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch, Icon, IconButton, IconName,
+    IconSize, OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName,
+    OperationErrorView, PauseSelectedTask, ProxyModeView, ProxyPasswordUpdateView,
+    RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask, SaveSettings,
+    SearchInputEvent, SecretStringView, Segment, SegmentedControl, SelectAllTasks, SelectNextTask,
+    SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
+    SettingsView, SpeedSampleView, StatusIndicator, SubmitAddDownload, SubmitTaskOutputName,
+    TaskCommandRequestView, TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView,
+    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity,
+    TaskStatusView, TextField, TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Tooltip,
+    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, format_bytes, format_eta, format_percent,
+    format_rate,
 };
 
 const SPEED_CHART_SAMPLES: usize = 120;
@@ -82,6 +84,7 @@ pub enum AppShellEvent {
     QueryChanged(WorkspaceQuery),
     RetryRequested,
     AddDownloadRequested(AddDownloadRequestView),
+    AddDownloadMetadataPreviewRequested(AddDownloadMetadataPreviewRequestView),
     TaskCommandRequested(TaskCommandRequestView),
     BatchTaskCommandRequested(BatchTaskCommandRequestView),
     TaskDetailsRequested(TaskDetailsRequestView),
@@ -93,13 +96,20 @@ struct PendingAddDownload {
     session: EngineSessionView,
 }
 
+struct PendingMetadataPreview {
+    request_id: RequestId,
+    paths: Vec<PathBuf>,
+}
+
 #[derive(Default)]
 struct AddDownloadDialog {
     open: bool,
     input_mode: AddDownloadInputModeView,
     mode: AddDownloadModeView,
     file_conflict: FileConflictPolicyView,
-    metadata_files: Vec<AddDownloadSourceView>,
+    metadata_files: Vec<AddDownloadMetadataPreviewView>,
+    active_metadata_file: Option<usize>,
+    preview_pending: Option<PendingMetadataPreview>,
     previous_focus: Option<WeakFocusHandle>,
     pending: Option<PendingAddDownload>,
     error: Option<OperationErrorView>,
@@ -122,10 +132,15 @@ struct PendingBatchTaskCommand {
 }
 
 enum TaskDetailsLoadState {
-    Loading { request_id: RequestId },
+    Loading,
     Ready { details: TaskDetailsView },
     Failed { error: OperationErrorView },
     Stale,
+}
+
+struct PendingTaskDetails {
+    request_id: RequestId,
+    source_revision: u64,
 }
 
 enum TaskDetailsPresentation {
@@ -146,6 +161,7 @@ struct TaskDetailsDrawer {
     overview: DownloadRowView,
     session: EngineSessionView,
     state: TaskDetailsLoadState,
+    pending: Option<PendingTaskDetails>,
     file_scroll: UniformListScrollHandle,
     rendered_file_range: Range<usize>,
 }
@@ -256,6 +272,7 @@ pub struct AppShell {
     next_notice_id: u64,
     next_request_id: u64,
     list_scroll: UniformListScrollHandle,
+    metadata_file_scroll: UniformListScrollHandle,
     focus_handle: FocusHandle,
     rendered_range: Range<usize>,
     _search_subscription: Subscription,
@@ -578,6 +595,7 @@ impl AppShell {
             next_notice_id: 1,
             next_request_id: 1,
             list_scroll: UniformListScrollHandle::new(),
+            metadata_file_scroll: UniformListScrollHandle::new(),
             focus_handle,
             rendered_range: 0..0,
             _search_subscription: search_subscription,
@@ -630,6 +648,13 @@ impl AppShell {
                     .and_then(|drawer| successor_task(&self.snapshot, &snapshot, &drawer.identity))
             })
             .flatten();
+        let details_revision_advanced = self.details_drawer.as_ref().is_some_and(|drawer| {
+            snapshot
+                .tasks
+                .iter()
+                .find(|task| task.identity == drawer.identity)
+                .is_some_and(|task| task.revision > drawer.overview.revision)
+        });
 
         if profile_changed {
             self.selected = None;
@@ -666,6 +691,7 @@ impl AppShell {
             if let (Some(drawer), Some(session)) = (&mut self.details_drawer, &next_session) {
                 drawer.session = session.clone();
                 drawer.state = TaskDetailsLoadState::Stale;
+                drawer.pending = None;
             }
         }
 
@@ -687,6 +713,7 @@ impl AppShell {
             drawer.identity = successor.identity.clone();
             drawer.overview = successor;
             drawer.state = TaskDetailsLoadState::Stale;
+            drawer.pending = None;
         }
 
         if self.selected.as_ref().is_none_or(|selected| {
@@ -715,12 +742,16 @@ impl AppShell {
             }
             if !self.snapshot.commands_available() {
                 drawer.state = TaskDetailsLoadState::Stale;
+                drawer.pending = None;
             }
         }
 
         let should_refresh_details = self.details_drawer.is_some()
             && self.snapshot.commands_available()
-            && (followed_task || session_changed || !previous_commands_available);
+            && (followed_task
+                || session_changed
+                || !previous_commands_available
+                || details_revision_advanced);
         if should_refresh_details {
             self.request_current_details(cx);
         }
@@ -798,6 +829,7 @@ impl AppShell {
             self.add_input
                 .update(cx, |input, cx| input.set_text("", cx));
             self.add_dialog.metadata_files.clear();
+            self.add_dialog.active_metadata_file = None;
             self.show_notice(
                 format!(
                     "{} download{} accepted by aria2.",
@@ -832,10 +864,18 @@ impl AppShell {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        self.add_dialog.metadata_files = retryable_sources
-            .into_iter()
-            .filter(|source| matches!(source, AddDownloadSourceView::MetadataFile { .. }))
-            .collect();
+        let retryable_metadata_paths = retryable_sources
+            .iter()
+            .filter_map(|source| match source {
+                AddDownloadSourceView::MetadataFile { path, .. } => Some(metadata_path_key(path)),
+                AddDownloadSourceView::Uri { .. } => None,
+            })
+            .collect::<HashSet<_>>();
+        self.add_dialog
+            .metadata_files
+            .retain(|preview| retryable_metadata_paths.contains(&metadata_path_key(&preview.path)));
+        self.add_dialog.active_metadata_file =
+            (!self.add_dialog.metadata_files.is_empty()).then_some(0);
         self.add_dialog.updating_input_from_result =
             self.add_input.read(cx).text() != retryable_uris;
         self.add_input
@@ -849,6 +889,67 @@ impl AppShell {
             true,
             cx,
         );
+        cx.notify();
+    }
+
+    pub fn set_add_download_metadata_preview_result(
+        &mut self,
+        result: AddDownloadMetadataPreviewResultView,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pending) = self.add_dialog.preview_pending.as_ref() else {
+            return;
+        };
+        if pending.request_id != result.request_id
+            || pending.paths.len() != result.items.len()
+            || !pending
+                .paths
+                .iter()
+                .zip(&result.items)
+                .all(|(path, item)| path == &item.path)
+        {
+            return;
+        }
+
+        self.add_dialog.preview_pending = None;
+        let previous_error = self.add_dialog.error.take();
+        let mut failures = Vec::new();
+        for item in result.items {
+            match item.outcome {
+                AddDownloadMetadataPreviewOutcomeView::Ready(preview) => {
+                    let key = metadata_path_key(&preview.path);
+                    if self
+                        .add_dialog
+                        .metadata_files
+                        .iter()
+                        .all(|known| metadata_path_key(&known.path) != key)
+                    {
+                        self.add_dialog.metadata_files.push(preview);
+                    }
+                }
+                AddDownloadMetadataPreviewOutcomeView::Failed(error) => {
+                    failures.push(format!("{}: {}", item.path.display(), error.summary));
+                }
+            }
+        }
+        if self.add_dialog.active_metadata_file.is_none()
+            && !self.add_dialog.metadata_files.is_empty()
+        {
+            self.add_dialog.active_metadata_file = Some(0);
+        }
+        self.add_dialog.error = match (previous_error, failures.is_empty()) {
+            (None, true) => None,
+            (Some(error), true) => Some(error),
+            (previous, false) => Some(OperationErrorView {
+                code: "validation.invalid_metadata".into(),
+                summary: previous.map_or_else(
+                    || failures.join(" "),
+                    |error| format!("{} {}", error.summary, failures.join(" ")),
+                ),
+                retryable: false,
+            }),
+        };
+        self.add_dialog.results.clear();
         cx.notify();
     }
 
@@ -1092,25 +1193,52 @@ impl AppShell {
         result: TaskDetailsResultView,
         cx: &mut Context<Self>,
     ) {
-        let Some(drawer) = &mut self.details_drawer else {
-            return;
-        };
-        let request_matches = matches!(
-            drawer.state,
-            TaskDetailsLoadState::Loading { request_id } if request_id == result.request_id
-        );
-        if !request_matches
-            || drawer.session != result.session
-            || drawer.identity != result.identity
-        {
-            return;
-        }
+        let commands_available = self.snapshot.commands_available();
+        let mut refresh_failure = None;
+        let request_again = {
+            let Some(drawer) = &mut self.details_drawer else {
+                return;
+            };
+            let Some(pending) = drawer.pending.as_ref() else {
+                return;
+            };
+            if pending.request_id != result.request_id
+                || drawer.session != result.session
+                || drawer.identity != result.identity
+            {
+                return;
+            }
 
-        drawer.state = match result.outcome {
-            TaskDetailsOutcomeView::Ready(details) => TaskDetailsLoadState::Ready { details },
-            TaskDetailsOutcomeView::Failed(error) => TaskDetailsLoadState::Failed { error },
+            let pending = drawer
+                .pending
+                .take()
+                .expect("matched pending details request");
+            let background_refresh = matches!(drawer.state, TaskDetailsLoadState::Ready { .. });
+            match result.outcome {
+                TaskDetailsOutcomeView::Ready(details) => {
+                    drawer.state = TaskDetailsLoadState::Ready { details };
+                }
+                TaskDetailsOutcomeView::Failed(error) if background_refresh => {
+                    refresh_failure = Some(error.summary);
+                }
+                TaskDetailsOutcomeView::Failed(error) => {
+                    drawer.state = TaskDetailsLoadState::Failed { error };
+                }
+            }
+            commands_available && drawer.overview.revision > pending.source_revision
         };
-        cx.notify();
+
+        if request_again {
+            self.request_current_details(cx);
+        } else if let Some(summary) = refresh_failure {
+            self.show_notice(
+                format!("Could not refresh task details: {summary}"),
+                true,
+                cx,
+            );
+        } else {
+            cx.notify();
+        }
     }
 
     pub fn set_settings_save_result(
@@ -1788,6 +1916,8 @@ impl AppShell {
             mode: AddDownloadModeView::SeparateTasks,
             file_conflict: FileConflictPolicyView::AutoRename,
             metadata_files: Vec::new(),
+            active_metadata_file: None,
+            preview_pending: None,
             previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
             pending: None,
             error: None,
@@ -1813,7 +1943,10 @@ impl AppShell {
     }
 
     fn close_add_download(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.add_dialog.open || self.add_dialog.pending.is_some() {
+        if !self.add_dialog.open
+            || self.add_dialog.pending.is_some()
+            || self.add_dialog.preview_pending.is_some()
+        {
             return;
         }
         let restore_focus = self.add_dialog_focus.contains_focused(window, cx)
@@ -1840,14 +1973,27 @@ impl AppShell {
     }
 
     fn submit_add_download(&mut self, cx: &mut Context<Self>) {
-        if !self.add_dialog.open || self.add_dialog.pending.is_some() {
+        if !self.add_dialog.open
+            || self.add_dialog.pending.is_some()
+            || self.add_dialog.preview_pending.is_some()
+        {
             return;
         }
         let sources = match self.add_dialog.input_mode {
             AddDownloadInputModeView::Links => {
                 parse_add_download_sources(self.add_input.read(cx).text())
             }
-            AddDownloadInputModeView::MetadataFiles => self.add_dialog.metadata_files.clone(),
+            AddDownloadInputModeView::MetadataFiles => self
+                .add_dialog
+                .metadata_files
+                .iter()
+                .map(|preview| AddDownloadSourceView::MetadataFile {
+                    path: preview.path.clone(),
+                    kind: preview.kind,
+                    content_sha256: preview.content_sha256.clone(),
+                    selected_file_indices: preview.selected_file_indices.clone(),
+                })
+                .collect(),
         };
         if sources.is_empty() {
             self.add_dialog.error = Some(OperationErrorView {
@@ -1865,6 +2011,38 @@ impl AppShell {
             cx.notify();
             return;
         }
+        if let Some(preview) = self
+            .add_dialog
+            .metadata_files
+            .iter()
+            .find(|preview| preview.selected_file_indices.is_empty())
+        {
+            self.add_dialog.error = Some(OperationErrorView {
+                code: "validation.invalid_request".into(),
+                summary: format!("Select at least one file from {}.", preview.path.display()),
+                retryable: false,
+            });
+            cx.notify();
+            return;
+        }
+        let required_bytes = if self.add_dialog.input_mode
+            == AddDownloadInputModeView::MetadataFiles
+        {
+            match selected_metadata_known_bytes(&self.add_dialog.metadata_files) {
+                Some(bytes) => Some(bytes),
+                None => {
+                    self.add_dialog.error = Some(OperationErrorView {
+                        code: "validation.invalid_request".into(),
+                        summary: "Selected metadata file sizes exceed the supported range.".into(),
+                        retryable: false,
+                    });
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         let Some(session) = self
             .snapshot
             .commands_available()
@@ -1894,7 +2072,7 @@ impl AppShell {
                 },
                 destination: (!self.settings.download_directory.is_empty())
                     .then(|| self.settings.download_directory.clone()),
-                required_bytes: None,
+                required_bytes,
                 file_conflict: if self.add_dialog.input_mode == AddDownloadInputModeView::Links {
                     self.add_dialog.file_conflict
                 } else {
@@ -1906,7 +2084,10 @@ impl AppShell {
     }
 
     fn set_add_download_mode(&mut self, mode: AddDownloadModeView, cx: &mut Context<Self>) {
-        if self.add_dialog.pending.is_some() || self.add_dialog.mode == mode {
+        if self.add_dialog.pending.is_some()
+            || self.add_dialog.preview_pending.is_some()
+            || self.add_dialog.mode == mode
+        {
             return;
         }
         self.add_dialog.mode = mode;
@@ -1916,7 +2097,10 @@ impl AppShell {
     }
 
     fn set_add_input_mode(&mut self, mode: AddDownloadInputModeView, cx: &mut Context<Self>) {
-        if self.add_dialog.pending.is_some() || self.add_dialog.input_mode == mode {
+        if self.add_dialog.pending.is_some()
+            || self.add_dialog.preview_pending.is_some()
+            || self.add_dialog.input_mode == mode
+        {
             return;
         }
         self.add_dialog.input_mode = mode;
@@ -1926,7 +2110,10 @@ impl AppShell {
     }
 
     fn choose_metadata_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.add_dialog.open || self.add_dialog.pending.is_some() {
+        if !self.add_dialog.open
+            || self.add_dialog.pending.is_some()
+            || self.add_dialog.preview_pending.is_some()
+        {
             return;
         }
         let selected = cx.prompt_for_paths(PathPromptOptions {
@@ -1963,7 +2150,10 @@ impl AppShell {
         if !self.add_dialog.open {
             self.open_add_download(&OpenAddDownload, window, cx);
         }
-        if !self.add_dialog.open || self.add_dialog.pending.is_some() {
+        if !self.add_dialog.open
+            || self.add_dialog.pending.is_some()
+            || self.add_dialog.preview_pending.is_some()
+        {
             return;
         }
 
@@ -1971,21 +2161,17 @@ impl AppShell {
             .add_dialog
             .metadata_files
             .iter()
-            .filter_map(|source| match source {
-                AddDownloadSourceView::MetadataFile { path, .. } => Some(metadata_path_key(path)),
-                AddDownloadSourceView::Uri { .. } => None,
-            })
+            .map(|preview| metadata_path_key(&preview.path))
             .collect::<HashSet<_>>();
         let mut invalid = Vec::new();
+        let mut accepted = Vec::new();
         for path in paths {
-            let Some(kind) = metadata_kind_from_path(&path) else {
+            if metadata_kind_from_path(&path).is_none() {
                 invalid.push(path);
                 continue;
-            };
+            }
             if known.insert(metadata_path_key(&path)) {
-                self.add_dialog
-                    .metadata_files
-                    .push(AddDownloadSourceView::MetadataFile { path, kind });
+                accepted.push(path);
             }
         }
         self.add_dialog.input_mode = AddDownloadInputModeView::MetadataFiles;
@@ -2005,14 +2191,94 @@ impl AppShell {
                 retryable: false,
             })
         };
+        if !accepted.is_empty() {
+            let request_id = self.allocate_request_id();
+            self.add_dialog.preview_pending = Some(PendingMetadataPreview {
+                request_id,
+                paths: accepted.clone(),
+            });
+            cx.emit(AppShellEvent::AddDownloadMetadataPreviewRequested(
+                AddDownloadMetadataPreviewRequestView {
+                    request_id,
+                    paths: accepted,
+                },
+            ));
+        }
         cx.notify();
     }
 
     fn remove_metadata_file(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.add_dialog.pending.is_some() || index >= self.add_dialog.metadata_files.len() {
+        if self.add_dialog.pending.is_some()
+            || self.add_dialog.preview_pending.is_some()
+            || index >= self.add_dialog.metadata_files.len()
+        {
             return;
         }
         self.add_dialog.metadata_files.remove(index);
+        self.add_dialog.active_metadata_file = if self.add_dialog.metadata_files.is_empty() {
+            None
+        } else {
+            Some(
+                self.add_dialog
+                    .active_metadata_file
+                    .unwrap_or_default()
+                    .min(self.add_dialog.metadata_files.len() - 1),
+            )
+        };
+        self.add_dialog.error = None;
+        self.add_dialog.results.clear();
+        cx.notify();
+    }
+
+    fn select_metadata_file(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.add_dialog.pending.is_none()
+            && self.add_dialog.preview_pending.is_none()
+            && index < self.add_dialog.metadata_files.len()
+            && self.add_dialog.active_metadata_file != Some(index)
+        {
+            self.add_dialog.active_metadata_file = Some(index);
+            cx.notify();
+        }
+    }
+
+    fn toggle_metadata_file_entry(
+        &mut self,
+        preview_index: usize,
+        file_index: u32,
+        cx: &mut Context<Self>,
+    ) {
+        if self.add_dialog.pending.is_some() || self.add_dialog.preview_pending.is_some() {
+            return;
+        }
+        let Some(preview) = self.add_dialog.metadata_files.get_mut(preview_index) else {
+            return;
+        };
+        match preview.selected_file_indices.binary_search(&file_index) {
+            Ok(position) => {
+                preview.selected_file_indices.remove(position);
+            }
+            Err(position) if preview.files.iter().any(|file| file.index == file_index) => {
+                preview.selected_file_indices.insert(position, file_index);
+            }
+            Err(_) => return,
+        }
+        self.add_dialog.error = None;
+        self.add_dialog.results.clear();
+        cx.notify();
+    }
+
+    fn toggle_all_metadata_file_entries(&mut self, preview_index: usize, cx: &mut Context<Self>) {
+        if self.add_dialog.pending.is_some() || self.add_dialog.preview_pending.is_some() {
+            return;
+        }
+        let Some(preview) = self.add_dialog.metadata_files.get_mut(preview_index) else {
+            return;
+        };
+        if preview.selected_file_indices.len() == preview.files.len() {
+            preview.selected_file_indices.clear();
+        } else {
+            preview.selected_file_indices = preview.files.iter().map(|file| file.index).collect();
+        }
         self.add_dialog.error = None;
         self.add_dialog.results.clear();
         cx.notify();
@@ -2066,6 +2332,7 @@ impl AppShell {
             overview: task,
             session,
             state: TaskDetailsLoadState::Stale,
+            pending: None,
             file_scroll: UniformListScrollHandle::new(),
             rendered_file_range: 0..0,
         });
@@ -2079,11 +2346,12 @@ impl AppShell {
         let Some(session) = self.snapshot.engine_session() else {
             return;
         };
-        let Some(identity) = self
-            .details_drawer
-            .as_ref()
-            .map(|drawer| drawer.identity.clone())
-        else {
+        let Some((identity, source_revision)) = self.details_drawer.as_ref().and_then(|drawer| {
+            drawer
+                .pending
+                .is_none()
+                .then(|| (drawer.identity.clone(), drawer.overview.revision))
+        }) else {
             return;
         };
         if identity.profile_id != session.profile_id || !self.snapshot.commands_available() {
@@ -2093,7 +2361,13 @@ impl AppShell {
         let request_id = self.allocate_request_id();
         if let Some(drawer) = &mut self.details_drawer {
             drawer.session = session.clone();
-            drawer.state = TaskDetailsLoadState::Loading { request_id };
+            if !matches!(drawer.state, TaskDetailsLoadState::Ready { .. }) {
+                drawer.state = TaskDetailsLoadState::Loading;
+            }
+            drawer.pending = Some(PendingTaskDetails {
+                request_id,
+                source_revision,
+            });
         }
         cx.emit(AppShellEvent::TaskDetailsRequested(
             TaskDetailsRequestView {
@@ -3594,7 +3868,7 @@ impl AppShell {
         let display_name = task_display_name(&overview);
         let overview_progress = overview.progress_basis_points();
         let presentation = match &drawer.state {
-            TaskDetailsLoadState::Loading { .. } => TaskDetailsPresentation::Loading,
+            TaskDetailsLoadState::Loading => TaskDetailsPresentation::Loading,
             TaskDetailsLoadState::Ready { details } => TaskDetailsPresentation::Ready {
                 directory: details.directory.clone(),
                 info_hash: details.info_hash.clone(),
@@ -4203,7 +4477,9 @@ impl AppShell {
 
     fn render_add_download_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = self.theme.colors;
-        let pending = self.add_dialog.pending.is_some();
+        let add_pending = self.add_dialog.pending.is_some();
+        let preview_pending = self.add_dialog.preview_pending.is_some();
+        let pending = add_pending || preview_pending;
         let error = self.add_dialog.error.clone();
         let sources = parse_add_download_sources(self.add_input.read(cx).text());
         let input_mode = self.add_dialog.input_mode;
@@ -4346,7 +4622,7 @@ impl AppShell {
                     )
                     .into_any_element(),
                 AddDownloadInputModeView::MetadataFiles => {
-                    self.render_metadata_file_picker(pending, cx)
+                    self.render_metadata_file_picker(pending, preview_pending, cx)
                 }
             })
             .when(!self.add_dialog.results.is_empty(), |element| {
@@ -4367,7 +4643,11 @@ impl AppShell {
         Dialog::new("add-download-dialog", "Add download", self.theme)
             .key_context("AddDownloadDialog")
             .track_focus(self.add_dialog_focus.clone())
-            .width(560.0)
+            .width(if input_mode == AddDownloadInputModeView::MetadataFiles {
+                720.0
+            } else {
+                560.0
+            })
             .child(content)
             .action(
                 Button::new("cancel-add-download", "Cancel")
@@ -4382,13 +4662,14 @@ impl AppShell {
             )
             .action(
                 Button::new("submit-add-download", "Add")
-                    .aria_label(if pending {
+                    .aria_label(if add_pending {
                         "Adding download"
                     } else {
                         "Add download"
                     })
                     .style(ButtonStyle::Primary)
-                    .loading(pending)
+                    .disabled(preview_pending)
+                    .loading(add_pending)
                     .track_focus(self.add_submit_focus.clone())
                     .on_click(cx.listener(|this, _, _window, cx| {
                         this.submit_add_download(cx);
@@ -4398,69 +4679,237 @@ impl AppShell {
             .into_any_element()
     }
 
-    fn render_metadata_file_picker(&self, pending: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn render_metadata_file_picker(
+        &mut self,
+        pending: bool,
+        preview_pending: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = self.theme.colors;
-        let rows = self
-            .add_dialog
-            .metadata_files
-            .iter()
-            .enumerate()
-            .map(|(index, source)| {
-                let AddDownloadSourceView::MetadataFile { path, kind } = source else {
-                    return div().into_any_element();
-                };
-                let name = path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |name| name.to_string_lossy().into(),
-                );
-                let full_path = path.display().to_string();
-                div()
-                    .id(SharedString::from(format!("metadata-file-{index}")))
-                    .h(px(42.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .border_b_1()
-                    .border_color(colors.border)
-                    .child(
-                        Icon::new(IconName::Download)
-                            .size(IconSize::Small)
-                            .color(colors.accent),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().truncate().text_sm().child(name))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_xs()
-                                    .text_color(colors.text_muted)
-                                    .child(format!("{} · {full_path}", kind.label())),
-                            ),
-                    )
-                    .child(
-                        IconButton::new(
-                            SharedString::from(format!("remove-metadata-file-{index}")),
-                            IconName::X,
-                        )
-                        .aria_label(format!("Remove {} file", kind.label()))
-                        .disabled(pending)
-                        .tooltip(Tooltip::new("Remove file"))
+        let rows =
+            self.add_dialog
+                .metadata_files
+                .iter()
+                .enumerate()
+                .map(|(index, preview)| {
+                    let active = self.add_dialog.active_metadata_file == Some(index);
+                    let name = preview.path.file_name().map_or_else(
+                        || preview.path.display().to_string(),
+                        |name| name.to_string_lossy().into(),
+                    );
+                    let full_path = preview.path.display().to_string();
+                    let kind = preview.kind;
+                    let selected = preview.selected_file_indices.len();
+                    let total = preview.files.len();
+                    div()
+                        .id(SharedString::from(format!("metadata-file-{index}")))
+                        .role(Role::ListItem)
+                        .aria_label(format!(
+                            "{} {}, {selected} of {total} files selected",
+                            kind.label(),
+                            name
+                        ))
+                        .h(px(48.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .border_b_1()
+                        .border_color(if active { colors.accent } else { colors.border })
+                        .bg(if active {
+                            colors.surface_active
+                        } else {
+                            colors.surface
+                        })
+                        .cursor_pointer()
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.remove_metadata_file(index, cx);
+                            this.select_metadata_file(index, cx);
                         }))
-                        .render(colors),
-                    )
-                    .into_any_element()
-            })
-            .collect::<Vec<_>>();
+                        .child(Icon::new(IconName::Download).size(IconSize::Small).color(
+                            if active {
+                                colors.accent
+                            } else {
+                                colors.text_muted
+                            },
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(div().truncate().text_sm().child(name))
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_xs()
+                                        .text_color(colors.text_muted)
+                                        .child(format!(
+                                            "{} · {selected}/{total} files · {full_path}",
+                                            kind.label()
+                                        )),
+                                ),
+                        )
+                        .child(
+                            IconButton::new(
+                                SharedString::from(format!("remove-metadata-file-{index}")),
+                                IconName::X,
+                            )
+                            .aria_label(format!("Remove {} file", kind.label()))
+                            .disabled(pending)
+                            .tooltip(Tooltip::new("Remove file"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.remove_metadata_file(index, cx);
+                            }))
+                            .render(colors),
+                        )
+                        .into_any_element()
+                })
+                .collect::<Vec<_>>();
         let count = self.add_dialog.metadata_files.len();
+        let active_index = self.add_dialog.active_metadata_file;
+        let active_summary = active_index
+            .and_then(|index| self.add_dialog.metadata_files.get(index))
+            .map(metadata_selection_summary);
+        let active_file_count = active_index
+            .and_then(|index| self.add_dialog.metadata_files.get(index))
+            .map_or(0, |preview| preview.files.len());
+        let active_selection_state = active_index
+            .and_then(|index| self.add_dialog.metadata_files.get(index))
+            .map_or(Toggled::False, |preview| {
+                if preview.selected_file_indices.is_empty() {
+                    Toggled::False
+                } else if preview.selected_file_indices.len() == preview.files.len() {
+                    Toggled::True
+                } else {
+                    Toggled::Mixed
+                }
+            });
+        let active_selection_icon = match active_selection_state {
+            Toggled::False => IconName::Square,
+            Toggled::True => IconName::SquareCheckBig,
+            Toggled::Mixed => IconName::SquareMinus,
+        };
+        let file_list = active_index.map(|preview_index| {
+            let list_id = SharedString::from(format!("metadata-preview-files-{preview_index}"));
+            div()
+                .h(px(220.0))
+                .min_h_0()
+                .child(
+                    uniform_list(
+                        list_id.clone(),
+                        active_file_count,
+                        cx.processor(move |this, range: Range<usize>, _window, cx| {
+                            let colors = this.theme.colors;
+                            let Some(preview) = this.add_dialog.metadata_files.get(preview_index)
+                            else {
+                                return Vec::new();
+                            };
+                            range
+                                .filter_map(|position| {
+                                    let file = preview.files.get(position)?.clone();
+                                    let selected = preview
+                                        .selected_file_indices
+                                        .binary_search(&file.index)
+                                        .is_ok();
+                                    let file_index = file.index;
+                                    Some(
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "metadata-preview-file:{preview_index}:{file_index}"
+                                            )))
+                                            .role(Role::CheckBox)
+                                            .aria_position_in_set(position + 1)
+                                            .aria_size_of_set(active_file_count)
+                                            .aria_toggled(if selected {
+                                                Toggled::True
+                                            } else {
+                                                Toggled::False
+                                            })
+                                            .aria_label(format!(
+                                                "File {file_index}, {}, {}",
+                                                file.path,
+                                                file.length.map_or_else(
+                                                    || "unknown size".into(),
+                                                    format_bytes
+                                                )
+                                            ))
+                                            .h(px(40.0))
+                                            .w_full()
+                                            .flex_none()
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .px_3()
+                                            .border_b_1()
+                                            .border_color(colors.border)
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.toggle_metadata_file_entry(
+                                                    preview_index,
+                                                    file_index,
+                                                    cx,
+                                                );
+                                            }))
+                                            .child(
+                                                Icon::new(if selected {
+                                                    IconName::SquareCheckBig
+                                                } else {
+                                                    IconName::Square
+                                                })
+                                                .size(IconSize::Small)
+                                                .color(if selected {
+                                                    colors.accent
+                                                } else {
+                                                    colors.text_muted
+                                                }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(px(34.0))
+                                                    .flex_none()
+                                                    .font_features(tabular_numbers())
+                                                    .text_xs()
+                                                    .text_color(colors.text_muted)
+                                                    .child(file_index.to_string()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .text_xs()
+                                                    .text_color(colors.text_secondary)
+                                                    .child(file.path),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(px(84.0))
+                                                    .flex_none()
+                                                    .text_right()
+                                                    .font_features(tabular_numbers())
+                                                    .text_xs()
+                                                    .text_color(colors.text_muted)
+                                                    .child(file.length.map_or_else(
+                                                        || "Unknown".into(),
+                                                        format_bytes,
+                                                    )),
+                                            )
+                                            .into_any_element(),
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                        }),
+                    )
+                    .track_scroll(&self.metadata_file_scroll)
+                    .size_full(),
+                )
+                .border_1()
+                .border_color(colors.border)
+                .rounded_md()
+                .into_any_element()
+        });
         div()
             .flex()
             .flex_col()
@@ -4495,10 +4944,14 @@ impl AppShell {
                                     .flex_col()
                                     .child("Torrent / Metalink files")
                                     .child(div().text_xs().text_color(colors.text_muted).child(
-                                        format!(
-                                            "{count} file{} selected",
-                                            if count == 1 { "" } else { "s" }
-                                        ),
+                                        if preview_pending {
+                                            "Reading metadata...".to_owned()
+                                        } else {
+                                            format!(
+                                                "{count} source{} ready",
+                                                if count == 1 { "" } else { "s" }
+                                            )
+                                        },
                                     )),
                             ),
                     )
@@ -4508,6 +4961,7 @@ impl AppShell {
                             .aria_label("Choose Torrent or Metalink files")
                             .style(ButtonStyle::Secondary)
                             .disabled(pending)
+                            .loading(preview_pending)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.choose_metadata_files(window, cx);
                             }))
@@ -4520,13 +4974,64 @@ impl AppShell {
                         .id("metadata-file-list")
                         .role(Role::List)
                         .aria_label("Selected Torrent and Metalink files")
-                        .max_h(px(180.0))
+                        .max_h(px(112.0))
                         .overflow_y_scroll()
                         .border_1()
                         .border_color(colors.border)
                         .rounded_md()
                         .children(rows),
                 )
+            })
+            .when_some(active_summary, |element, summary| {
+                element
+                    .child(
+                        div()
+                            .h(px(36.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .id("toggle-all-metadata-files")
+                                    .role(Role::CheckBox)
+                                    .aria_toggled(active_selection_state)
+                                    .aria_label(match active_selection_state {
+                                        Toggled::True => "Clear file selection",
+                                        Toggled::False | Toggled::Mixed => "Select all files",
+                                    })
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(index) = active_index {
+                                            this.toggle_all_metadata_file_entries(index, cx);
+                                        }
+                                    }))
+                                    .child(
+                                        Icon::new(active_selection_icon)
+                                            .size(IconSize::Small)
+                                            .color(colors.accent),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(colors.text_secondary)
+                                            .child("Files"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .font_features(tabular_numbers())
+                                    .text_xs()
+                                    .text_color(colors.text_muted)
+                                    .child(summary),
+                            ),
+                    )
+                    .when_some(file_list, |element, list| element.child(list))
             })
             .into_any_element()
     }
@@ -5452,7 +5957,8 @@ impl Focusable for AppShell {
 impl Render for AppShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = self.theme.colors;
-        let metadata_drop_enabled = self.add_dialog.pending.is_none();
+        let metadata_drop_enabled =
+            self.add_dialog.pending.is_none() && self.add_dialog.preview_pending.is_none();
         let task_layout = task_layout_mode(
             f32::from(window.viewport_size().width),
             self.details_drawer.is_some(),
@@ -5847,6 +6353,54 @@ fn metadata_path_key(path: &Path) -> String {
     } else {
         key
     }
+}
+
+fn metadata_selection_summary(preview: &AddDownloadMetadataPreviewView) -> String {
+    let mut known_bytes = 0_u64;
+    let mut unknown_sizes = 0_usize;
+    for file in &preview.files {
+        if preview
+            .selected_file_indices
+            .binary_search(&file.index)
+            .is_ok()
+        {
+            if let Some(length) = file.length {
+                known_bytes = known_bytes.saturating_add(length);
+            } else {
+                unknown_sizes = unknown_sizes.saturating_add(1);
+            }
+        }
+    }
+    let count = preview.selected_file_indices.len();
+    let total = preview.files.len();
+    if unknown_sizes == 0 {
+        format!(
+            "{count} of {total} selected · {}",
+            format_bytes(known_bytes)
+        )
+    } else {
+        format!(
+            "{count} of {total} selected · {} + {unknown_sizes} unknown",
+            format_bytes(known_bytes)
+        )
+    }
+}
+
+fn selected_metadata_known_bytes(previews: &[AddDownloadMetadataPreviewView]) -> Option<u64> {
+    previews.iter().try_fold(0_u64, |total, preview| {
+        preview.files.iter().try_fold(total, |total, file| {
+            if preview
+                .selected_file_indices
+                .binary_search(&file.index)
+                .is_ok()
+            {
+                file.length
+                    .map_or(Some(total), |length| total.checked_add(length))
+            } else {
+                Some(total)
+            }
+        })
+    })
 }
 
 fn successor_task(
@@ -6252,7 +6806,10 @@ mod tests {
     use gpui::{TestAppContext, point, px};
 
     use super::*;
-    use crate::{TaskCountsView, TaskNameStateView, TaskSourceKindView, TaskStatusView};
+    use crate::{
+        AddDownloadMetadataFileView, AddDownloadMetadataPreviewItemView, TaskCountsView,
+        TaskNameStateView, TaskSourceKindView, TaskStatusView,
+    };
 
     fn task(index: usize) -> DownloadRowView {
         DownloadRowView {
@@ -6311,6 +6868,26 @@ mod tests {
                     selected: true,
                 })
                 .collect(),
+        }
+    }
+
+    fn metadata_preview(
+        path: &str,
+        kind: AddDownloadMetadataKindView,
+        file_count: u32,
+    ) -> AddDownloadMetadataPreviewView {
+        AddDownloadMetadataPreviewView {
+            path: PathBuf::from(path),
+            kind,
+            content_sha256: "digest".into(),
+            files: (1..=file_count)
+                .map(|index| AddDownloadMetadataFileView {
+                    index,
+                    path: format!("file-{index}.bin"),
+                    length: Some(u64::from(index) * 100),
+                })
+                .collect(),
+            selected_file_indices: (1..=file_count).collect(),
         }
     }
 
@@ -6831,25 +7408,220 @@ mod tests {
                 shell.add_dialog.file_conflict,
                 FileConflictPolicyView::Reject
             );
+            assert!(shell.add_dialog.metadata_files.is_empty());
+            let pending = shell
+                .add_dialog
+                .preview_pending
+                .as_ref()
+                .expect("metadata preview must be pending");
             assert_eq!(
-                shell.add_dialog.metadata_files,
+                pending.paths,
                 vec![
-                    AddDownloadSourceView::MetadataFile {
-                        path: PathBuf::from("sample.TORRENT"),
-                        kind: AddDownloadMetadataKindView::Torrent,
-                    },
-                    AddDownloadSourceView::MetadataFile {
-                        path: PathBuf::from("bundle.meta4"),
-                        kind: AddDownloadMetadataKindView::Metalink,
-                    },
+                    PathBuf::from("sample.TORRENT"),
+                    PathBuf::from("bundle.meta4")
                 ]
             );
+            let request_id = pending.request_id;
             assert!(shell.add_dialog.error.is_some());
+
+            shell.set_add_download_metadata_preview_result(
+                AddDownloadMetadataPreviewResultView {
+                    request_id,
+                    items: vec![
+                        AddDownloadMetadataPreviewItemView {
+                            path: PathBuf::from("sample.TORRENT"),
+                            outcome: AddDownloadMetadataPreviewOutcomeView::Ready(
+                                metadata_preview(
+                                    "sample.TORRENT",
+                                    AddDownloadMetadataKindView::Torrent,
+                                    2,
+                                ),
+                            ),
+                        },
+                        AddDownloadMetadataPreviewItemView {
+                            path: PathBuf::from("bundle.meta4"),
+                            outcome: AddDownloadMetadataPreviewOutcomeView::Ready(
+                                metadata_preview(
+                                    "bundle.meta4",
+                                    AddDownloadMetadataKindView::Metalink,
+                                    1,
+                                ),
+                            ),
+                        },
+                    ],
+                },
+                cx,
+            );
+            assert_eq!(shell.add_dialog.metadata_files.len(), 2);
+            assert_eq!(
+                shell.add_dialog.metadata_files[0].selected_file_indices,
+                vec![1, 2]
+            );
+            shell.toggle_metadata_file_entry(0, 2, cx);
+            assert_eq!(
+                shell.add_dialog.metadata_files[0].selected_file_indices,
+                vec![1]
+            );
+            shell.toggle_all_metadata_file_entries(0, cx);
+            assert_eq!(
+                shell.add_dialog.metadata_files[0].selected_file_indices,
+                vec![1, 2]
+            );
 
             shell.set_add_input_mode(AddDownloadInputModeView::Links, cx);
             assert_eq!(shell.add_dialog.input_mode, AddDownloadInputModeView::Links);
             shell.remove_metadata_file(0, cx);
             assert_eq!(shell.add_dialog.metadata_files.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn metadata_preview_keeps_successes_reports_failures_and_ignores_stale_results(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell
+        });
+        let request_id = view.update_in(cx, |shell, window, cx| {
+            shell.add_metadata_paths(
+                vec![PathBuf::from("one.torrent"), PathBuf::from("two.meta4")],
+                window,
+                cx,
+            );
+            shell
+                .add_dialog
+                .preview_pending
+                .as_ref()
+                .expect("metadata preview must be pending")
+                .request_id
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.set_add_download_metadata_preview_result(
+                AddDownloadMetadataPreviewResultView {
+                    request_id: RequestId::from_u64(request_id.get() + 1),
+                    items: vec![
+                        AddDownloadMetadataPreviewItemView {
+                            path: PathBuf::from("one.torrent"),
+                            outcome: AddDownloadMetadataPreviewOutcomeView::Ready(
+                                metadata_preview(
+                                    "one.torrent",
+                                    AddDownloadMetadataKindView::Torrent,
+                                    2,
+                                ),
+                            ),
+                        },
+                        AddDownloadMetadataPreviewItemView {
+                            path: PathBuf::from("two.meta4"),
+                            outcome: AddDownloadMetadataPreviewOutcomeView::Failed(
+                                OperationErrorView {
+                                    code: "validation.invalid_request".into(),
+                                    summary: "bad metadata".into(),
+                                    retryable: false,
+                                },
+                            ),
+                        },
+                    ],
+                },
+                cx,
+            );
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(shell.add_dialog.metadata_files.is_empty());
+            assert_eq!(
+                shell
+                    .add_dialog
+                    .preview_pending
+                    .as_ref()
+                    .map(|pending| pending.request_id),
+                Some(request_id)
+            );
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.set_add_download_metadata_preview_result(
+                AddDownloadMetadataPreviewResultView {
+                    request_id,
+                    items: vec![
+                        AddDownloadMetadataPreviewItemView {
+                            path: PathBuf::from("one.torrent"),
+                            outcome: AddDownloadMetadataPreviewOutcomeView::Ready(
+                                metadata_preview(
+                                    "one.torrent",
+                                    AddDownloadMetadataKindView::Torrent,
+                                    2,
+                                ),
+                            ),
+                        },
+                        AddDownloadMetadataPreviewItemView {
+                            path: PathBuf::from("two.meta4"),
+                            outcome: AddDownloadMetadataPreviewOutcomeView::Failed(
+                                OperationErrorView {
+                                    code: "validation.invalid_request".into(),
+                                    summary: "bad metadata".into(),
+                                    retryable: false,
+                                },
+                            ),
+                        },
+                    ],
+                },
+                cx,
+            );
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(shell.add_dialog.preview_pending.is_none());
+            assert_eq!(shell.add_dialog.metadata_files.len(), 1);
+            assert_eq!(
+                shell.add_dialog.metadata_files[0].selected_file_indices,
+                vec![1, 2]
+            );
+            assert!(
+                shell
+                    .add_dialog
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.summary.contains("bad metadata"))
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn metadata_submit_rejects_zero_selection_and_sums_selected_known_sizes(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell.add_dialog.open = true;
+            shell.add_dialog.input_mode = AddDownloadInputModeView::MetadataFiles;
+            shell.add_dialog.metadata_files = vec![metadata_preview(
+                "one.torrent",
+                AddDownloadMetadataKindView::Torrent,
+                3,
+            )];
+            shell.add_dialog.metadata_files[0].files[2].length = None;
+            shell
+        });
+
+        view.update(cx, |shell, cx| {
+            assert_eq!(
+                selected_metadata_known_bytes(&shell.add_dialog.metadata_files),
+                Some(300)
+            );
+            shell.toggle_all_metadata_file_entries(0, cx);
+            shell.submit_add_download(cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(shell.add_dialog.pending.is_none());
+            assert!(
+                shell
+                    .add_dialog
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.summary.contains("Select at least one file"))
+            );
         });
     }
 
@@ -7378,10 +8150,16 @@ mod tests {
         });
         let (request_id, session, identity) = view.read_with(cx, |shell, _| {
             let drawer = shell.details_drawer.as_ref().expect("drawer must exist");
-            let TaskDetailsLoadState::Loading { request_id } = drawer.state else {
-                panic!("drawer must be loading")
-            };
-            (request_id, drawer.session.clone(), drawer.identity.clone())
+            assert!(matches!(drawer.state, TaskDetailsLoadState::Loading));
+            (
+                drawer
+                    .pending
+                    .as_ref()
+                    .expect("details request must be pending")
+                    .request_id,
+                drawer.session.clone(),
+                drawer.identity.clone(),
+            )
         });
 
         view.update(cx, |shell, cx| {
@@ -7396,10 +8174,12 @@ mod tests {
             );
         });
         view.read_with(cx, |shell, _| {
-            assert!(matches!(
-                shell.details_drawer.as_ref().map(|drawer| &drawer.state),
-                Some(TaskDetailsLoadState::Loading { request_id: current }) if *current == request_id
-            ));
+            let drawer = shell.details_drawer.as_ref().expect("drawer must exist");
+            assert!(matches!(drawer.state, TaskDetailsLoadState::Loading));
+            assert_eq!(
+                drawer.pending.as_ref().map(|pending| pending.request_id),
+                Some(request_id)
+            );
         });
 
         view.update(cx, |shell, cx| {
@@ -7414,10 +8194,125 @@ mod tests {
             );
         });
         view.read_with(cx, |shell, _| {
-            assert!(matches!(
-                shell.details_drawer.as_ref().map(|drawer| &drawer.state),
-                Some(TaskDetailsLoadState::Ready { .. })
-            ));
+            let drawer = shell.details_drawer.as_ref().expect("drawer must exist");
+            assert!(matches!(drawer.state, TaskDetailsLoadState::Ready { .. }));
+            assert!(drawer.pending.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn task_revision_refreshes_visible_file_details_without_loading_flicker(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell.open_details_for(task(0), cx);
+            shell
+        });
+        let (initial_request, session, identity) = view.read_with(cx, |shell, _| {
+            let drawer = shell.details_drawer.as_ref().expect("drawer must exist");
+            (
+                drawer.pending.as_ref().expect("initial request").request_id,
+                drawer.session.clone(),
+                drawer.identity.clone(),
+            )
+        });
+        let mut first_details = details(1);
+        first_details.files[0].completed_length = 100;
+        view.update(cx, |shell, cx| {
+            shell.set_task_details_result(
+                TaskDetailsResultView {
+                    request_id: initial_request,
+                    session: session.clone(),
+                    identity: identity.clone(),
+                    outcome: TaskDetailsOutcomeView::Ready(first_details),
+                },
+                cx,
+            );
+        });
+
+        view.update(cx, |shell, cx| {
+            let mut revision_two = snapshot(1);
+            revision_two.tasks[0].revision = 2;
+            shell.set_snapshot(revision_two, cx);
+        });
+        let refresh_request = view.read_with(cx, |shell, _| {
+            let drawer = shell.details_drawer.as_ref().expect("drawer must exist");
+            let TaskDetailsLoadState::Ready { details } = &drawer.state else {
+                panic!("existing details must remain visible while refreshing")
+            };
+            assert_eq!(details.files[0].completed_length, 100);
+            let pending = drawer.pending.as_ref().expect("refresh request");
+            assert_eq!(pending.source_revision, 2);
+            pending.request_id
+        });
+
+        view.update(cx, |shell, cx| {
+            let mut revision_three = snapshot(1);
+            revision_three.tasks[0].revision = 3;
+            shell.set_snapshot(revision_three, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert_eq!(
+                shell
+                    .details_drawer
+                    .as_ref()
+                    .and_then(|drawer| drawer.pending.as_ref())
+                    .map(|pending| pending.request_id),
+                Some(refresh_request),
+                "a second refresh must not be started while one is pending"
+            );
+        });
+
+        let mut second_details = details(1);
+        second_details.files[0].completed_length = 200;
+        view.update(cx, |shell, cx| {
+            shell.set_task_details_result(
+                TaskDetailsResultView {
+                    request_id: refresh_request,
+                    session: session.clone(),
+                    identity: identity.clone(),
+                    outcome: TaskDetailsOutcomeView::Ready(second_details),
+                },
+                cx,
+            );
+        });
+        let catch_up_request = view.read_with(cx, |shell, _| {
+            let drawer = shell.details_drawer.as_ref().expect("drawer must exist");
+            let TaskDetailsLoadState::Ready { details } = &drawer.state else {
+                panic!("refreshed details must stay visible")
+            };
+            assert_eq!(details.files[0].completed_length, 200);
+            let pending = drawer.pending.as_ref().expect("catch-up request");
+            assert_eq!(pending.source_revision, 3);
+            assert_ne!(pending.request_id, refresh_request);
+            pending.request_id
+        });
+
+        let mut stale_details = details(1);
+        stale_details.files[0].completed_length = 50;
+        view.update(cx, |shell, cx| {
+            shell.set_task_details_result(
+                TaskDetailsResultView {
+                    request_id: refresh_request,
+                    session: session.clone(),
+                    identity: identity.clone(),
+                    outcome: TaskDetailsOutcomeView::Ready(stale_details),
+                },
+                cx,
+            );
+        });
+        view.read_with(cx, |shell, _| {
+            let drawer = shell.details_drawer.as_ref().expect("drawer must exist");
+            let TaskDetailsLoadState::Ready { details } = &drawer.state else {
+                panic!("details must remain ready")
+            };
+            assert_eq!(details.files[0].completed_length, 200);
+            assert_eq!(
+                drawer.pending.as_ref().map(|pending| pending.request_id),
+                Some(catch_up_request)
+            );
         });
     }
 
@@ -7460,6 +8355,7 @@ mod tests {
                 state: TaskDetailsLoadState::Ready {
                     details: details(10_000),
                 },
+                pending: None,
                 file_scroll: UniformListScrollHandle::new(),
                 rendered_file_range: 0..0,
             });

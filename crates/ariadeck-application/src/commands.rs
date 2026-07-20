@@ -46,6 +46,7 @@ pub struct AddDownloadRequest {
     pub source: AddDownloadSource,
     pub destination: Option<EnginePath>,
     pub file_conflict: FileConflictPolicy,
+    pub selected_file_indices: Option<Vec<u32>>,
     pub options: Vec<(String, String)>,
 }
 
@@ -164,8 +165,26 @@ impl AddDownloadRequest {
                     false,
                 ));
             }
+            if let Some(indices) = &self.selected_file_indices
+                && (indices.is_empty()
+                    || indices.first() == Some(&0)
+                    || indices.windows(2).any(|pair| pair[0] >= pair[1]))
+            {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::Validation,
+                    "Selected metadata file indexes must be non-empty, 1-based, unique, and sorted.",
+                    false,
+                ));
+            }
             return Ok(());
         };
+        if self.selected_file_indices.is_some() {
+            return Err(ApplicationError::new(
+                ApplicationErrorCode::Validation,
+                "File selection is supported only for Torrent or Metalink metadata.",
+                false,
+            ));
+        }
         if uris.is_empty() || uris.iter().any(|uri| uri.trim().is_empty()) {
             return Err(ApplicationError::new(
                 ApplicationErrorCode::Validation,
@@ -716,6 +735,7 @@ impl CommandService {
                 source: AddDownloadSource::Uris(vec![source]),
                 destination: context.metadata.directory.clone(),
                 file_conflict: FileConflictPolicy::default(),
+                selected_file_indices: None,
                 options: Vec::new(),
             };
             match self.gateway.retry_download(identity.gid, &request).await {
@@ -1051,6 +1071,7 @@ mod tests {
                     source: AddDownloadSource::Uris(vec![uri.into()]),
                     destination: None,
                     file_conflict: FileConflictPolicy::default(),
+                    selected_file_indices: None,
                     options: Vec::new(),
                 }),
                 &HashMap::new(),
@@ -1076,6 +1097,7 @@ mod tests {
                 ]),
                 destination: None,
                 file_conflict: FileConflictPolicy::default(),
+                selected_file_indices: None,
                 options: Vec::new(),
             }),
             &HashMap::new(),
@@ -1105,6 +1127,7 @@ mod tests {
                 source: AddDownloadSource::Metalink(Arc::<[u8]>::from(&b""[..])),
                 destination: None,
                 file_conflict: FileConflictPolicy::Reject,
+                selected_file_indices: None,
                 options: Vec::new(),
             }),
             &HashMap::new(),
@@ -1112,6 +1135,57 @@ mod tests {
 
         let CommandOutcome::Failure { failed } = outcome else {
             panic!("expected empty metadata validation failure");
+        };
+        assert_eq!(failed[0].error.code, ApplicationErrorCode::Validation);
+        assert!(
+            gateway
+                .adds
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn add_download_rejects_invalid_or_non_metadata_file_selection() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+
+        for selected_file_indices in [
+            Some(Vec::new()),
+            Some(vec![0]),
+            Some(vec![1, 1]),
+            Some(vec![2, 1]),
+        ] {
+            let outcome = block_on(service.execute(
+                AppCommand::AddDownload(AddDownloadRequest {
+                    source: AddDownloadSource::Torrent(Arc::<[u8]>::from(&b"metadata"[..])),
+                    destination: None,
+                    file_conflict: FileConflictPolicy::Reject,
+                    selected_file_indices,
+                    options: Vec::new(),
+                }),
+                &HashMap::new(),
+            ));
+            let CommandOutcome::Failure { failed } = outcome else {
+                panic!("expected metadata selection validation failure");
+            };
+            assert_eq!(failed[0].error.code, ApplicationErrorCode::Validation);
+        }
+
+        let uri_outcome = block_on(service.execute(
+            AppCommand::AddDownload(AddDownloadRequest {
+                source: AddDownloadSource::Uris(vec!["https://example.test/archive.bin".into()]),
+                destination: None,
+                file_conflict: FileConflictPolicy::Reject,
+                selected_file_indices: Some(vec![1]),
+                options: Vec::new(),
+            }),
+            &HashMap::new(),
+        ));
+        let CommandOutcome::Failure { failed } = uri_outcome else {
+            panic!("expected URI file selection validation failure");
         };
         assert_eq!(failed[0].error.code, ApplicationErrorCode::Validation);
         assert!(
@@ -1139,6 +1213,7 @@ mod tests {
                 source: AddDownloadSource::Metalink(Arc::<[u8]>::from(&b"metadata"[..])),
                 destination: None,
                 file_conflict: FileConflictPolicy::Reject,
+                selected_file_indices: None,
                 options: Vec::new(),
             }),
             &HashMap::new(),
@@ -1171,6 +1246,7 @@ mod tests {
                 source: AddDownloadSource::Metalink(Arc::<[u8]>::from(&b"metadata"[..])),
                 destination: None,
                 file_conflict: FileConflictPolicy::Reject,
+                selected_file_indices: None,
                 options: Vec::new(),
             }),
             &HashMap::new(),
@@ -1280,6 +1356,7 @@ mod tests {
                     ]),
                     destination: Some(EnginePath::new("/downloads")),
                     file_conflict: FileConflictPolicy::default(),
+                    selected_file_indices: None,
                     options: Vec::new(),
                 }
             )]

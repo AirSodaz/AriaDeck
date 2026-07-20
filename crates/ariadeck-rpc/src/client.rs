@@ -541,7 +541,41 @@ fn request_options(request: &AddDownloadRequest) -> Map<String, Value> {
     if let Some(destination) = &request.destination {
         options.insert("dir".into(), Value::String(destination.as_str().to_owned()));
     }
+    if let Some(indices) = &request.selected_file_indices {
+        options.insert(
+            "select-file".into(),
+            Value::String(format_selected_file_indices(indices)),
+        );
+    }
     options
+}
+
+fn format_selected_file_indices(indices: &[u32]) -> String {
+    let mut ranges = Vec::new();
+    let Some(&first) = indices.first() else {
+        return String::new();
+    };
+    let mut start = first;
+    let mut end = first;
+    for &index in &indices[1..] {
+        if index == end.saturating_add(1) {
+            end = index;
+        } else {
+            push_file_index_range(&mut ranges, start, end);
+            start = index;
+            end = index;
+        }
+    }
+    push_file_index_range(&mut ranges, start, end);
+    ranges.join(",")
+}
+
+fn push_file_index_range(ranges: &mut Vec<String>, start: u32, end: u32) {
+    if start == end {
+        ranges.push(start.to_string());
+    } else {
+        ranges.push(format!("{start}-{end}"));
+    }
 }
 
 fn next_batch_result(
@@ -867,6 +901,7 @@ mod tests {
             ]),
             destination: Some("D:/Downloads".into()),
             file_conflict: FileConflictPolicy::AutoRename,
+            selected_file_indices: None,
             options: vec![("max-download-limit".into(), "1M".into())],
         };
 
@@ -908,6 +943,7 @@ mod tests {
             source: AddDownloadSource::Torrent(Arc::<[u8]>::from(&b"torrent-bytes"[..])),
             destination: Some("/downloads".into()),
             file_conflict: FileConflictPolicy::Reject,
+            selected_file_indices: Some(vec![1, 2, 3, 5]),
             options: vec![("max-connection-per-server".into(), "4".into())],
         };
 
@@ -929,6 +965,7 @@ mod tests {
         assert_eq!(calls[0].1[2]["allow-overwrite"], json!("false"));
         assert_eq!(calls[0].1[2]["auto-file-renaming"], json!("false"));
         assert_eq!(calls[0].1[2]["max-connection-per-server"], json!("4"));
+        assert_eq!(calls[0].1[2]["select-file"], json!("1-3,5"));
     }
 
     #[tokio::test]
@@ -940,6 +977,7 @@ mod tests {
             source: AddDownloadSource::Metalink(Arc::<[u8]>::from(&b"<metalink />"[..])),
             destination: None,
             file_conflict: FileConflictPolicy::Reject,
+            selected_file_indices: None,
             options: Vec::new(),
         };
 
@@ -967,6 +1005,7 @@ mod tests {
                 source: AddDownloadSource::Metalink(Arc::<[u8]>::from(&b"metadata"[..])),
                 destination: None,
                 file_conflict: FileConflictPolicy::Reject,
+                selected_file_indices: None,
                 options: Vec::new(),
             };
 
@@ -1029,6 +1068,7 @@ mod tests {
             source: AddDownloadSource::Uris(vec!["https://fallback.test/archive.iso".into()]),
             destination: Some("/fallback".into()),
             file_conflict: FileConflictPolicy::default(),
+            selected_file_indices: None,
             options: Vec::new(),
         };
 
@@ -1081,6 +1121,7 @@ mod tests {
             source: AddDownloadSource::Uris(vec!["https://example.test/archive.iso".into()]),
             destination: None,
             file_conflict: FileConflictPolicy::default(),
+            selected_file_indices: None,
             options: Vec::new(),
         };
         let query_error =

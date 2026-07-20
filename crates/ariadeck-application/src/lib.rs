@@ -15,9 +15,10 @@ pub use commands::{
 };
 pub use history::{DEFAULT_SPEED_HISTORY_CAPACITY, SpeedHistory, SpeedHistoryError, SpeedSample};
 pub use ports::{
-    DownloadDestinationGateway, DownloadDestinationReport, DownloadDestinationRequest,
-    DownloadEngineGateway, GatewayError, GatewayErrorKind, TaskDetailsGateway, TaskFileGateway,
-    TaskFileRemovalPreview, TaskFileRemovalReport, TaskFileRemovalRequest, TaskRemovalTarget,
+    DownloadDestinationFile, DownloadDestinationGateway, DownloadDestinationReport,
+    DownloadDestinationRequest, DownloadEngineGateway, GatewayError, GatewayErrorKind,
+    TaskDetailsGateway, TaskFileGateway, TaskFileRemovalPreview, TaskFileRemovalReport,
+    TaskFileRemovalRequest, TaskRemovalTarget,
 };
 pub use store::{
     DownloadStore, OrderPatch, StoreError, StorePatch, TaskCollection, TaskFieldPatch,

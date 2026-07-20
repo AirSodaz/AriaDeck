@@ -144,25 +144,50 @@ async fn uploads_torrent_and_metalink_metadata_to_live_aria2() -> Result<(), Tes
         Some(RpcSecret::new(secret)),
     ));
 
-    let torrent = b"d4:infod4:name11:fixture.bin6:lengthi1e12:piece lengthi16384e6:pieces20:00000000000000000000eee";
+    let torrent = lava_torrent::torrent::v1::Torrent {
+        announce: None,
+        announce_list: None,
+        length: 2,
+        files: Some(vec![
+            lava_torrent::torrent::v1::File {
+                length: 1,
+                path: "one.bin".into(),
+                extra_fields: None,
+            },
+            lava_torrent::torrent::v1::File {
+                length: 1,
+                path: "two.bin".into(),
+                extra_fields: None,
+            },
+        ]),
+        name: "fixture".into(),
+        piece_length: 16_384,
+        pieces: vec![vec![0; 20]],
+        extra_fields: None,
+        extra_info_fields: None,
+    }
+    .encode()?;
     let torrent_gid = client
         .add_torrent(&AddDownloadRequest {
-            source: AddDownloadSource::Torrent(Arc::<[u8]>::from(&torrent[..])),
+            source: AddDownloadSource::Torrent(Arc::<[u8]>::from(torrent)),
             destination: None,
             file_conflict: ariadeck_application::FileConflictPolicy::Reject,
+            selected_file_indices: Some(vec![2]),
             options: Vec::new(),
         })
         .await?;
 
-    let fixture_url = "http://127.0.0.1:9/fixture.bin";
+    let first_url = "http://127.0.0.1:9/one.bin";
+    let second_url = "http://127.0.0.1:9/two.bin";
     let metalink = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><metalink xmlns=\"urn:ietf:params:xml:ns:metalink\" version=\"4.0\"><file name=\"fixture.bin\"><resources><url>{fixture_url}</url></resources></file></metalink>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><metalink xmlns=\"urn:ietf:params:xml:ns:metalink\" version=\"4.0\"><file name=\"one.bin\"><resources><url>{first_url}</url></resources></file><file name=\"two.bin\"><resources><url>{second_url}</url></resources></file></metalink>"
     );
     let metalink_gids = client
         .add_metalink(&AddDownloadRequest {
             source: AddDownloadSource::Metalink(Arc::<[u8]>::from(metalink.into_bytes())),
             destination: None,
             file_conflict: ariadeck_application::FileConflictPolicy::Reject,
+            selected_file_indices: Some(vec![2]),
             options: Vec::new(),
         })
         .await?;
@@ -197,6 +222,36 @@ async fn uploads_torrent_and_metalink_metadata_to_live_aria2() -> Result<(), Tes
     }
     assert!(torrent_seen, "uploaded torrent task was not observed");
     assert!(metalink_seen, "uploaded metalink task was not observed");
+    let torrent_details = client.task_details(torrent_gid).await?;
+    assert_eq!(torrent_details.files.len(), 2);
+    assert!(!torrent_details.files[0].selected);
+    assert!(torrent_details.files[1].selected);
+    assert_eq!(
+        torrent_details.files[1]
+            .path
+            .as_str()
+            .replace('\\', "/")
+            .rsplit('/')
+            .next(),
+        Some("two.bin")
+    );
+    assert_eq!(
+        metalink_gids.len(),
+        1,
+        "partial Metalink selection should return only the selected file GID"
+    );
+    let metalink_details = client.task_details(metalink_gids[0]).await?;
+    assert_eq!(metalink_details.files.len(), 1);
+    assert!(metalink_details.files[0].selected);
+    assert_eq!(
+        metalink_details.files[0]
+            .path
+            .as_str()
+            .replace('\\', "/")
+            .rsplit('/')
+            .next(),
+        Some("two.bin")
+    );
 
     client.shutdown().await?;
     transport.close().await;
@@ -303,6 +358,7 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
                 source: AddDownloadSource::Uris(vec![fixture_url]),
                 destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
                 file_conflict: ariadeck_application::FileConflictPolicy::default(),
+                selected_file_indices: None,
                 options: vec![
                     ("out".into(), kept_name.into()),
                     ("split".into(), "1".into()),
@@ -333,6 +389,7 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
                 source: AddDownloadSource::Uris(vec![conflict_url]),
                 destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
                 file_conflict: ariadeck_application::FileConflictPolicy::AutoRename,
+                selected_file_indices: None,
                 options: vec![
                     ("out".into(), kept_name.into()),
                     ("split".into(), "1".into()),
@@ -396,6 +453,7 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
                 ]),
                 destination: None,
                 file_conflict: ariadeck_application::FileConflictPolicy::default(),
+                selected_file_indices: None,
                 options: vec![("pause".into(), "true".into())],
             }),
         )
@@ -457,6 +515,7 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
                 ]),
                 destination: None,
                 file_conflict: ariadeck_application::FileConflictPolicy::default(),
+                selected_file_indices: None,
                 options: vec![("pause".into(), "true".into())],
             }),
         )
@@ -495,6 +554,7 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
                 ]),
                 destination: None,
                 file_conflict: ariadeck_application::FileConflictPolicy::default(),
+                selected_file_indices: None,
                 options: Vec::new(),
             }),
         )
@@ -575,6 +635,7 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
                 )]),
                 destination: None,
                 file_conflict: ariadeck_application::FileConflictPolicy::default(),
+                selected_file_indices: None,
                 options: vec![
                     ("connect-timeout".into(), "1".into()),
                     ("max-tries".into(), "1".into()),

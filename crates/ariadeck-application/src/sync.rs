@@ -2151,6 +2151,7 @@ mod tests {
                     ]),
                     destination: None,
                     file_conflict: crate::FileConflictPolicy::default(),
+                    selected_file_indices: None,
                     options: Vec::new(),
                 }),
             ),

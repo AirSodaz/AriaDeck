@@ -22,9 +22,9 @@ use std::{
 };
 
 use ariadeck_application::{
-    DownloadDestinationGateway, DownloadDestinationReport, DownloadDestinationRequest,
-    GatewayError, GatewayErrorKind, TaskFileGateway, TaskFileRemovalPreview, TaskFileRemovalReport,
-    TaskFileRemovalRequest,
+    DownloadDestinationFile, DownloadDestinationGateway, DownloadDestinationReport,
+    DownloadDestinationRequest, GatewayError, GatewayErrorKind, TaskFileGateway,
+    TaskFileRemovalPreview, TaskFileRemovalReport, TaskFileRemovalRequest,
 };
 use ariadeck_domain::ProfileId;
 use async_trait::async_trait;
@@ -181,6 +181,8 @@ impl DownloadDestinationGateway for LocalDownloadDestinationGateway {
             ));
         }
 
+        validate_destination_files(&directory, &request.files)?;
+
         verify_directory_writable(&directory)?;
         let available_bytes = available_space(&directory)?;
         if available_bytes == 0 {
@@ -208,6 +210,121 @@ impl DownloadDestinationGateway for LocalDownloadDestinationGateway {
 
         Ok(DownloadDestinationReport { available_bytes })
     }
+}
+
+fn validate_destination_files(
+    directory: &Path,
+    files: &[DownloadDestinationFile],
+) -> Result<(), GatewayError> {
+    let mut unique_paths = HashSet::with_capacity(files.len());
+    for file in files {
+        let relative = PathBuf::from(file.relative_path.as_str());
+        if relative.as_os_str().is_empty()
+            || relative.is_absolute()
+            || relative.components().any(|component| {
+                !matches!(component, std::path::Component::Normal(part) if !part.is_empty())
+            })
+        {
+            return Err(unsafe_path_error(format!(
+                "download file path must be a safe relative path: {}",
+                relative.display()
+            )));
+        }
+        if !unique_paths.insert(destination_path_key(&relative)) {
+            return Err(unsafe_path_error(format!(
+                "download file path appears more than once: {}",
+                relative.display()
+            )));
+        }
+
+        let target = directory.join(&relative);
+        if !target.starts_with(directory) {
+            return Err(unsafe_path_error(format!(
+                "download file escapes its destination: {}",
+                relative.display()
+            )));
+        }
+        validate_existing_destination_path(directory, &target, file.reject_existing)?;
+    }
+    Ok(())
+}
+
+fn destination_path_key(path: &Path) -> String {
+    let key = path.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) {
+        key.to_ascii_lowercase()
+    } else {
+        key
+    }
+}
+
+fn validate_existing_destination_path(
+    directory: &Path,
+    target: &Path,
+    reject_existing: bool,
+) -> Result<(), GatewayError> {
+    let relative = target.strip_prefix(directory).map_err(|_| {
+        unsafe_path_error(format!(
+            "download file escapes its destination: {}",
+            target.display()
+        ))
+    })?;
+    let component_count = relative.components().count();
+    let mut current = directory.to_path_buf();
+    for (offset, component) in relative.components().enumerate() {
+        current.push(component.as_os_str());
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(filesystem_error(
+                    "inspect download file path",
+                    &current,
+                    error,
+                    true,
+                ));
+            }
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(unsafe_path_error(format!(
+                "download file path cannot traverse a symlink or reparse point: {}",
+                current.display()
+            )));
+        }
+        let canonical = fs::canonicalize(&current).map_err(|error| {
+            filesystem_error("canonicalize download file path", &current, error, true)
+        })?;
+        if !canonical.starts_with(directory) {
+            return Err(unsafe_path_error(format!(
+                "download file path resolves outside its destination: {}",
+                current.display()
+            )));
+        }
+
+        let is_target = offset + 1 == component_count;
+        if !is_target && !metadata.is_dir() {
+            return Err(unsafe_path_error(format!(
+                "download file parent is not a directory: {}",
+                current.display()
+            )));
+        }
+        if is_target {
+            if reject_existing {
+                return Err(GatewayError::new(
+                    GatewayErrorKind::Rejected,
+                    format!("download file already exists: {}", current.display()),
+                    false,
+                ));
+            }
+            if !metadata.is_file() {
+                return Err(unsafe_path_error(format!(
+                    "download file target is not a regular file: {}",
+                    current.display()
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn verify_directory_writable(directory: &Path) -> Result<(), GatewayError> {
@@ -1506,6 +1623,7 @@ mod tests {
         let request = DownloadDestinationRequest {
             directory: ariadeck_domain::EnginePath::new(downloads.to_string_lossy()),
             required_bytes: None,
+            files: Vec::new(),
         };
 
         let report = gateway.preflight(&request).expect("destination preflight");
@@ -1528,6 +1646,7 @@ mod tests {
             .preflight(&DownloadDestinationRequest {
                 directory: ariadeck_domain::EnginePath::new("downloads"),
                 required_bytes: None,
+                files: Vec::new(),
             })
             .expect_err("relative local path must fail");
         assert_eq!(relative.kind, GatewayErrorKind::UnsafePath);
@@ -1537,9 +1656,55 @@ mod tests {
             .preflight(&DownloadDestinationRequest {
                 directory: ariadeck_domain::EnginePath::new(root.to_string_lossy()),
                 required_bytes: Some(u64::MAX),
+                files: Vec::new(),
             })
             .expect_err("oversized download must fail");
         assert_eq!(insufficient.kind, GatewayErrorKind::Filesystem);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_download_destination_validates_metadata_paths_and_reject_conflicts() {
+        let root = temporary_directory();
+        let gateway = LocalDownloadDestinationGateway::new();
+        let request = |relative_path: ariadeck_domain::EnginePath| DownloadDestinationRequest {
+            directory: ariadeck_domain::EnginePath::new(root.to_string_lossy()),
+            required_bytes: Some(30),
+            files: vec![DownloadDestinationFile {
+                relative_path,
+                reject_existing: true,
+            }],
+        };
+
+        gateway
+            .preflight(&request(ariadeck_domain::EnginePath::new("nested/new.bin")))
+            .expect("safe relative metadata path");
+
+        let existing = root.join("existing.bin");
+        fs::write(&existing, b"content").expect("create conflicting destination");
+        let conflict = gateway
+            .preflight(&request(ariadeck_domain::EnginePath::new("existing.bin")))
+            .expect_err("Reject policy must catch an existing destination");
+        assert_eq!(conflict.kind, GatewayErrorKind::Rejected);
+
+        for unsafe_path in [
+            ariadeck_domain::EnginePath::new("../escape.bin"),
+            ariadeck_domain::EnginePath::new(existing.to_string_lossy()),
+        ] {
+            let error = gateway
+                .preflight(&request(unsafe_path))
+                .expect_err("unsafe metadata path must fail");
+            assert_eq!(error.kind, GatewayErrorKind::UnsafePath);
+        }
+
+        let parent_file = root.join("not-a-directory");
+        fs::write(&parent_file, b"content").expect("create non-directory parent");
+        let error = gateway
+            .preflight(&request(ariadeck_domain::EnginePath::new(
+                "not-a-directory/child.bin",
+            )))
+            .expect_err("file parent must fail containment validation");
+        assert_eq!(error.kind, GatewayErrorKind::UnsafePath);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1560,6 +1725,7 @@ mod tests {
             .preflight(&DownloadDestinationRequest {
                 directory: ariadeck_domain::EnginePath::new(second.to_string_lossy()),
                 required_bytes: None,
+                files: Vec::new(),
             })
             .expect("authorize second root");
         let removal = |directory: &Path| TaskFileRemovalRequest {

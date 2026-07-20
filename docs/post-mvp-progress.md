@@ -357,6 +357,48 @@ automatically.
   priority controls before acceptance:
   https://github.com/qbittorrent/qBittorrent/blob/bc42af9fd8fb9f39df04ed6747e82f912aff4cc0/src/gui/addnewtorrentdialog.cpp
 
+### D-013 - File selection is preview-bound and add-time first
+
+**Decision:** Parse Torrent and Metalink metadata on the desktop before
+submission and show one flat, indexed file list for the active metadata source.
+Every file starts selected. Provide tri-state select-all and per-file toggles,
+show selected count and size, and reject submission when a source has no files
+selected. For a partial selection, send a canonical 1-based `select-file`
+range; omit the option when every file is selected so aria2 keeps its native
+default.
+
+**Safety rule:** Bind every preview to the SHA-256 digest of the raw metadata.
+Submission rereads the bounded desktop file and rejects it if the digest has
+changed, so previously selected indexes can never be applied to replacement
+content. Parser output must contain at least one uniquely indexed regular file;
+paths are display data until the engine reports its own destination paths.
+
+**Refresh rule:** The task details drawer keeps aria2's `files[].selected`,
+`length`, and `completedLength` as the authority and refreshes those details
+when the visible task revision advances. The existing rows therefore become
+live per-file progress rather than a one-time snapshot. Changing selection on
+an already-added task is deferred to the task-option editor in `RPC-001`, where
+`aria2.changeOption` race and refresh semantics can be handled consistently.
+
+**Evidence:**
+
+- aria2 documents `--select-file` for both BitTorrent and Metalink, with
+  1-based comma/range syntax; omitting it selects every file. The RPC details
+  projection exposes each file's `selected`, `length`, and `completedLength`,
+  and `select-file` is also one of the dynamically changeable options:
+  https://aria2.github.io/manual/en/html/aria2c.html#cmdoption-select-file
+  https://aria2.github.io/manual/en/html/aria2c.html#aria2.changeOption
+- Motrix at commit `7012040fec926e16fe8f6c403cf038527f5c18b9`
+  parses Torrent metadata before submission, initially selects every file,
+  exposes per-row/all selection, summarizes selected count and size, and shows
+  per-file percentage/completed bytes in task details:
+  https://github.com/agalwood/Motrix/blob/7012040fec926e16fe8f6c403cf038527f5c18b9/src/renderer/components/Task/SelectTorrent.vue
+  https://github.com/agalwood/Motrix/blob/7012040fec926e16fe8f6c403cf038527f5c18b9/src/renderer/components/TaskDetail/TaskFiles.vue
+- AriaNg at commit `d6a765377e1eecfbcc387dcb824124df114decfb`
+  derives file/directory selection state and per-file progress from aria2's
+  task projection, then applies later edits through `select-file`:
+  https://github.com/mayswind/AriaNg/blob/d6a765377e1eecfbcc387dcb824124df114decfb/src/scripts/services/aria2TaskService.js
+
 ## Task Matrix
 
 Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
@@ -398,7 +440,7 @@ Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
 - [x] `ADD-003` Add local/remote Torrent and Metalink files, drag/drop, and
   native multi-file picker flows. Desktop paths are read and bounded locally;
   only Base64 content reaches aria2, and every Metalink GID is preserved.
-- [ ] `FILE-001` Add Torrent/Metalink file selection and per-file progress.
+- [x] `FILE-001` Add Torrent/Metalink file selection and per-file progress.
 - [ ] `QUEUE-001` Add sorting controls, queue reordering, task priority, and
   pause-all/resume-all.
 - [ ] `RATE-001` Add global/per-task download and upload limits, with aria2
@@ -436,12 +478,13 @@ masked password input, system credential storage, session-bound runtime apply,
 new-session reapply, and explicit clearing. `FILE-002` now has
 safe deletion, accumulated authorized roots, local writable-directory/space and
 known-size preflight, remote path isolation, direct-task conflict policy, and
-specific runtime disk-full errors. Torrent/Metalink import now includes native
-multi-file selection, window drop, bounded desktop reads, local/remote Base64
-uploads, per-source outcomes, and complete Metalink GID handling. The remaining
-per-file containment/conflict slice depends on `FILE-001`. The independent
-P0 filename, selection, task-state, network, add/retry/removal, and direct-file
-safety slices are complete.
+  specific runtime disk-full errors. Torrent/Metalink import now includes native
+  multi-file selection, window drop, bounded desktop reads, digest-bound file
+  previews, partial `select-file` submission, live per-file progress, local/remote
+  Base64 uploads, per-source outcomes, selected-size preflight, selected-path
+  containment/conflict checks, and complete Metalink GID handling. The P0
+  filename, selection, task-state, network, add/retry/removal, and file-safety
+  slices are complete.
 
 ## Audit Additions
 
@@ -460,13 +503,12 @@ several can be shared by more than one feature.
 - [x] `RETRY-002` Make retry semantics explicit in the UI: retry creates a new
   GID rather than resuming the failed task, the old result remains until removed,
   and an unknown add outcome must not create a second replacement task.
-- [-] `FILE-002` Add path and file-safety checks before destructive or output
+- [x] `FILE-002` Add path and file-safety checks before destructive or output
   operations. Exact local file/control-file deletion, canonical containment,
   Trash use, accumulated authorized roots, writable-directory, available-space
   and known-size preflight, direct-task overwrite/reject/auto-rename policy,
-  disk-full error presentation, and local-versus-remote capability handling are
-  complete. Torrent/Metalink per-file containment/conflicts remain and depend
-  on their import and file-selection flows.
+  disk-full error presentation, local-versus-remote capability handling, and
+  Torrent/Metalink selected-file containment/conflicts are complete.
 - [x] `STATE-001` Specify command race behavior: disable or coalesce duplicate
   actions, reject stale session responses, refresh after outcome-unknown
   mutations, and preserve details/selection when a Magnet parent is replaced by
@@ -561,5 +603,9 @@ acceptance outcomes overlap.
 | 2026-07-20 | `ADD-003` | `cargo test --workspace` | Pass - 201 passed, 8 ignored; covers metadata validation and explicit-runtime file reads, 16 MiB bounds, extension/dedup/mode/remove/pending-drop UI behavior, Base64 RPC parameters, multi-GID propagation and result selection, empty-GID gateway rejection, managed aria2 arguments, and unknown-outcome no-replay behavior |
 | 2026-07-20 | `ADD-003` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 | 2026-07-20 | `ADD-003` live upload and regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored --nocapture` | Pass - all 6 real aria2 flows; uploaded Torrent metadata is registered as BitTorrent, every GID returned from uploaded Metalink metadata is observable, and authentication, restart, command/removal, proxy, and cleanup regressions remain green |
+| 2026-07-21 | `FILE-001`, completed `FILE-002` | `cargo test --workspace --no-fail-fast` | Pass - 210 passed, 8 ignored; covers digest-bound Torrent/Metalink previews, zero/partial/all selection, stale indexes/results, live revision-driven file progress, selected-size preflight, safe relative paths, Reject conflicts, and remote filesystem isolation |
+| 2026-07-21 | `FILE-001`, completed `FILE-002` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo build -p ariadeck-desktop`; `cargo fmt --all -- --check`; `git diff --check` | Pass - no warnings, native desktop build succeeds, formatting clean, and the patch has no whitespace errors |
+| 2026-07-21 | `FILE-001` live selection and regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored --nocapture` | Pass - all 6 real aria2 flows; a two-file Torrent reports `files[].selected` as `[false, true]`, a two-file Metalink returns only the selected file GID, and authentication, restart, command/removal, proxy, and cleanup regressions remain green |
+| 2026-07-21 | Desktop Tokio runtime regression after metadata parsing | isolated `target/debug/ariadeck-desktop.exe` startup with `RUST_BACKTRACE=1` and a real local aria2 | Pass - the desktop remained alive for the six-second observation; logs contained no panic and no `there is no reactor running` failure |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.

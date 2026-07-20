@@ -3,6 +3,7 @@
     windows_subsystem = "windows"
 )]
 
+mod metadata;
 mod workspace;
 
 use std::sync::Arc;

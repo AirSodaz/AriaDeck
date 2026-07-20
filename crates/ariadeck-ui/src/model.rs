@@ -463,6 +463,8 @@ pub enum AddDownloadSourceView {
     MetadataFile {
         path: PathBuf,
         kind: AddDownloadMetadataKindView,
+        content_sha256: String,
+        selected_file_indices: Vec<u32>,
     },
 }
 
@@ -471,7 +473,7 @@ impl AddDownloadSourceView {
     pub fn label(&self) -> String {
         match self {
             Self::Uri { line, uri } => format!("Line {line} - {uri}"),
-            Self::MetadataFile { path, kind } => {
+            Self::MetadataFile { path, kind, .. } => {
                 let name = path.file_name().map_or_else(
                     || path.display().to_string(),
                     |name| name.to_string_lossy().into(),
@@ -480,6 +482,46 @@ impl AddDownloadSourceView {
             }
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AddDownloadMetadataFileView {
+    pub index: u32,
+    pub path: String,
+    pub length: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AddDownloadMetadataPreviewView {
+    pub path: PathBuf,
+    pub kind: AddDownloadMetadataKindView,
+    pub content_sha256: String,
+    pub files: Vec<AddDownloadMetadataFileView>,
+    pub selected_file_indices: Vec<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AddDownloadMetadataPreviewRequestView {
+    pub request_id: RequestId,
+    pub paths: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AddDownloadMetadataPreviewOutcomeView {
+    Ready(AddDownloadMetadataPreviewView),
+    Failed(OperationErrorView),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AddDownloadMetadataPreviewItemView {
+    pub path: PathBuf,
+    pub outcome: AddDownloadMetadataPreviewOutcomeView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AddDownloadMetadataPreviewResultView {
+    pub request_id: RequestId,
+    pub items: Vec<AddDownloadMetadataPreviewItemView>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

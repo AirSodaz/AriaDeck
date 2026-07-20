@@ -43,6 +43,13 @@ pub enum TaskRemovalTarget {
 pub struct DownloadDestinationRequest {
     pub directory: EnginePath,
     pub required_bytes: Option<u64>,
+    pub files: Vec<DownloadDestinationFile>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DownloadDestinationFile {
+    pub relative_path: EnginePath,
+    pub reject_existing: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
