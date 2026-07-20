@@ -17,6 +17,7 @@ pub use ids::{
 };
 pub use task::{
     DownloadFilter, DownloadSort, DownloadStatus, DownloadTask, EnginePath, SortDirection, SortKey,
-    TaskDetails, TaskError, TaskFields, TaskFile, TaskMetadata, TaskSnapshot, TaskUpdateError,
+    TaskDetails, TaskError, TaskFields, TaskFile, TaskMetadata, TaskNameState, TaskSnapshot,
+    TaskSourceKind, TaskUpdateError,
 };
 pub use transfer::{ByteCount, ByteRate, GlobalStat, TaskProgress};

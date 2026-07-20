@@ -6,11 +6,16 @@ rust-version.workspace = true
 authors.workspace = true
 
 [dependencies]
+ariadeck-application = { path = "../ariadeck-application" }
 ariadeck-domain = { path = "../ariadeck-domain" }
+async-trait.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sysinfo.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
+trash.workspace = true
 url.workspace = true
 uuid.workspace = true
 

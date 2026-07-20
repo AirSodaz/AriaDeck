@@ -1,23 +1,29 @@
 use std::{
     env,
     error::Error,
+    io::{Read, Write},
     net::TcpListener,
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
     sync::Arc,
+    thread,
     time::{Duration, Instant},
 };
 
 use ariadeck_application::{
-    AddDownloadRequest, AppCommand, CommandItem, CommandOutcome, CoordinatorConfig, PollIntervals,
-    ReconnectPolicy, RefreshPolicy, RemoveTasksRequest, StoreSnapshot, SyncHandle, TaskListQuery,
+    AddDownloadRequest, AppCommand, CommandItem, CommandOutcome, CoordinatorConfig,
+    DownloadProxyConfig, DownloadProxyMode, PollIntervals, ReconnectPolicy, RefreshPolicy,
+    RemoveTasksRequest, SetTaskOutputNameRequest, StoreSnapshot, SyncHandle, TaskListQuery,
     TaskRemovalScope, spawn_sync_coordinator,
 };
-use ariadeck_domain::{ConnectionState, DownloadStatus, ProfileId, TaskIdentity};
+use ariadeck_domain::{
+    ConnectionState, DownloadStatus, EnginePath, ProfileId, TaskIdentity, TaskSourceKind,
+};
 use ariadeck_rpc::{
     Aria2Client, AuthenticatedTransport, RpcSecret, RpcSyncConnector, TaskKey, WebSocketConfig,
     WebSocketTransport,
 };
+use secrecy::SecretString;
 use tempfile::TempDir;
 use url::Url;
 use uuid::Uuid;
@@ -163,11 +169,202 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
     let secret = Uuid::new_v4().simple().to_string();
     let mut process = ChildGuard::spawn(Path::new(&executable), data_dir.path(), port, &secret)?;
     let endpoint = Url::parse(&format!("ws://127.0.0.1:{port}/jsonrpc"))?;
-    let handle = spawn_live_coordinator(endpoint, &secret);
+    let handle = spawn_live_coordinator(endpoint.clone(), &secret);
     let connected = wait_for_snapshot(&handle, Duration::from_secs(5), |snapshot| {
         snapshot.connection_state == ConnectionState::Connected && !snapshot.stale
     })
     .await?;
+
+    let payload = b"AriaDeck removal keeps completed files".to_vec();
+    let (fixture_url, fixture_server) = spawn_http_fixture(payload.clone())?;
+    let kept_name = "kept-after-remove.bin";
+    let completed = handle
+        .execute(
+            connected.session,
+            AppCommand::AddDownload(AddDownloadRequest {
+                uris: vec![fixture_url],
+                destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
+                file_conflict: ariadeck_application::FileConflictPolicy::default(),
+                options: vec![
+                    ("out".into(), kept_name.into()),
+                    ("split".into(), "1".into()),
+                    ("max-connection-per-server".into(), "1".into()),
+                ],
+            }),
+        )
+        .await;
+    let completed_identity = single_succeeded_task(completed)?;
+    handle.force_refresh().await;
+    wait_for_task_status(
+        &handle,
+        completed_identity,
+        Duration::from_secs(5),
+        |status| status == DownloadStatus::Complete,
+    )
+    .await?;
+    fixture_server.join().map_err(|_| {
+        std::io::Error::other("local HTTP fixture thread panicked during download")
+    })??;
+    let kept_path = data_dir.path().join(kept_name);
+    assert_eq!(std::fs::read(&kept_path)?, payload);
+    let (conflict_url, conflict_server) = spawn_http_fixture(payload.clone())?;
+    let auto_renamed = handle
+        .execute(
+            connected.session,
+            AppCommand::AddDownload(AddDownloadRequest {
+                uris: vec![conflict_url],
+                destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
+                file_conflict: ariadeck_application::FileConflictPolicy::AutoRename,
+                options: vec![
+                    ("out".into(), kept_name.into()),
+                    ("split".into(), "1".into()),
+                    ("max-connection-per-server".into(), "1".into()),
+                ],
+            }),
+        )
+        .await;
+    let auto_renamed_identity = single_succeeded_task(auto_renamed)?;
+    handle.force_refresh().await;
+    wait_for_task_status(
+        &handle,
+        auto_renamed_identity,
+        Duration::from_secs(5),
+        |status| status == DownloadStatus::Complete,
+    )
+    .await?;
+    conflict_server.join().map_err(|_| {
+        std::io::Error::other("local HTTP fixture thread panicked during conflict download")
+    })??;
+    let auto_renamed_path = data_dir.path().join("kept-after-remove.1.bin");
+    assert_eq!(std::fs::read(&auto_renamed_path)?, payload);
+    let removed_completed = handle
+        .execute(
+            connected.session,
+            AppCommand::RemoveTasks(RemoveTasksRequest {
+                tasks: vec![completed_identity, auto_renamed_identity],
+                scope: TaskRemovalScope::TaskOnly,
+            }),
+        )
+        .await;
+    assert!(
+        removed_completed.has_successes(),
+        "completed-result removal failed: {removed_completed:?}"
+    );
+    handle.force_refresh().await;
+    wait_for_snapshot(&handle, Duration::from_secs(5), |snapshot| {
+        snapshot
+            .tasks
+            .iter()
+            .all(|task| task.gid != completed_identity.gid && task.gid != auto_renamed_identity.gid)
+    })
+    .await?;
+    assert_eq!(
+        std::fs::read(&kept_path)?,
+        payload,
+        "aria2 result removal must not delete the completed file"
+    );
+    assert_eq!(
+        std::fs::read(&auto_renamed_path)?,
+        payload,
+        "aria2 result removal must not delete the auto-renamed file"
+    );
+
+    let direct_added = handle
+        .execute(
+            connected.session,
+            AppCommand::AddDownload(AddDownloadRequest {
+                uris: vec!["https://example.invalid/original-live-name.bin".into()],
+                destination: None,
+                file_conflict: ariadeck_application::FileConflictPolicy::default(),
+                options: vec![("pause".into(), "true".into())],
+            }),
+        )
+        .await;
+    let direct_identity = single_succeeded_task(direct_added)?;
+    handle.force_refresh().await;
+    wait_for_snapshot(&handle, Duration::from_secs(5), |snapshot| {
+        snapshot.tasks.iter().any(|task| {
+            task.gid == direct_identity.gid
+                && task.status == DownloadStatus::Paused
+                && task.metadata.source_kind == TaskSourceKind::DirectUri
+        })
+    })
+    .await?;
+
+    let renamed = handle
+        .execute(
+            connected.session,
+            AppCommand::SetTaskOutputName(SetTaskOutputNameRequest {
+                task: direct_identity,
+                output_name: "renamed-live.bin".into(),
+            }),
+        )
+        .await;
+    assert!(
+        renamed.has_successes(),
+        "output-name change failed: {renamed:?}"
+    );
+    handle.force_refresh().await;
+    wait_for_snapshot(&handle, Duration::from_secs(5), |snapshot| {
+        snapshot
+            .tasks
+            .iter()
+            .any(|task| task.gid == direct_identity.gid && task.display_name == "renamed-live.bin")
+    })
+    .await?;
+
+    let removed_direct = handle
+        .execute(
+            connected.session,
+            AppCommand::RemoveTasks(RemoveTasksRequest {
+                tasks: vec![direct_identity],
+                scope: TaskRemovalScope::TaskOnly,
+            }),
+        )
+        .await;
+    assert!(
+        removed_direct.has_successes(),
+        "direct-task removal failed: {removed_direct:?}"
+    );
+
+    let mirrors_added = handle
+        .execute(
+            connected.session,
+            AppCommand::AddDownload(AddDownloadRequest {
+                uris: vec![
+                    "https://example.invalid/mirrored-live.bin".into(),
+                    "https://mirror.invalid/mirrored-live.bin".into(),
+                ],
+                destination: None,
+                file_conflict: ariadeck_application::FileConflictPolicy::default(),
+                options: vec![("pause".into(), "true".into())],
+            }),
+        )
+        .await;
+    let mirrors_identity = single_succeeded_task(mirrors_added)?;
+    handle.force_refresh().await;
+    wait_for_snapshot(&handle, Duration::from_secs(5), |snapshot| {
+        snapshot.tasks.iter().any(|task| {
+            task.gid == mirrors_identity.gid
+                && task.status == DownloadStatus::Paused
+                && task.metadata.primary_uri.as_deref()
+                    == Some("https://example.invalid/mirrored-live.bin")
+        })
+    })
+    .await?;
+    let removed_mirrors = handle
+        .execute(
+            connected.session,
+            AppCommand::RemoveTasks(RemoveTasksRequest {
+                tasks: vec![mirrors_identity],
+                scope: TaskRemovalScope::TaskOnly,
+            }),
+        )
+        .await;
+    assert!(
+        removed_mirrors.has_successes(),
+        "mirrored-task removal failed: {removed_mirrors:?}"
+    );
 
     let added = handle
         .execute(
@@ -175,6 +372,7 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
             AppCommand::AddDownload(AddDownloadRequest {
                 uris: vec!["magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".into()],
                 destination: None,
+                file_conflict: ariadeck_application::FileConflictPolicy::default(),
                 options: Vec::new(),
             }),
         )
@@ -245,6 +443,7 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
     .await?;
 
     let unavailable_port = reserve_loopback_port()?;
+    let checksum_option = format!("sha-256={}", "0".repeat(64));
     let failed = handle
         .execute(
             connected.session,
@@ -253,9 +452,17 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
                     "http://127.0.0.1:{unavailable_port}/unreachable-test-file"
                 )],
                 destination: None,
+                file_conflict: ariadeck_application::FileConflictPolicy::default(),
                 options: vec![
                     ("connect-timeout".into(), "1".into()),
                     ("max-tries".into(), "1".into()),
+                    ("out".into(), "preserved-retry-name.bin".into()),
+                    ("header".into(), "Cookie: session=preserved".into()),
+                    ("http-user".into(), "retry-user".into()),
+                    ("http-passwd".into(), "retry-password".into()),
+                    ("max-download-limit".into(), "64K".into()),
+                    ("max-connection-per-server".into(), "2".into()),
+                    ("checksum".into(), checksum_option.clone()),
                 ],
             }),
         )
@@ -278,10 +485,232 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
         .await;
     let retried_identity = single_succeeded_task(retried)?;
     assert_ne!(retried_identity.gid, failed_identity.gid);
+    handle.force_refresh().await;
+    wait_for_snapshot(&handle, Duration::from_secs(5), |snapshot| {
+        snapshot
+            .tasks
+            .iter()
+            .any(|task| task.gid == failed_identity.gid)
+            && snapshot
+                .tasks
+                .iter()
+                .any(|task| task.gid == retried_identity.gid)
+    })
+    .await?;
+
+    let query_transport = connect_with_retry(endpoint, Duration::from_secs(5)).await?;
+    let query_client = Aria2Client::new(AuthenticatedTransport::new(
+        query_transport.clone(),
+        Some(RpcSecret::new(secret.clone())),
+    ));
+    let retried_options = query_client.get_options(retried_identity.gid).await?;
+    for (key, expected) in [
+        ("out", "preserved-retry-name.bin"),
+        ("header", "Cookie: session=preserved"),
+        ("http-user", "retry-user"),
+        ("http-passwd", "retry-password"),
+        ("max-download-limit", "65536"),
+        ("max-connection-per-server", "2"),
+    ] {
+        assert!(
+            rpc_option_contains(&retried_options, key, expected),
+            "retry did not preserve {key}: {:?}",
+            retried_options.get(key)
+        );
+    }
+    assert_eq!(
+        retried_options
+            .get("checksum")
+            .and_then(serde_json::Value::as_str),
+        Some(checksum_option.as_str())
+    );
+    query_transport.close().await;
 
     handle.stop().await;
     let _ = process.terminate()?;
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires ARIA2C_PATH and launches a real local aria2 process"]
+async fn download_proxy_routes_bypasses_and_disables_live_traffic() -> Result<(), TestError> {
+    let executable = env::var("ARIA2C_PATH")?;
+    let data_dir = TempDir::new()?;
+    let port = reserve_loopback_port()?;
+    let secret = Uuid::new_v4().simple().to_string();
+    let mut process = ChildGuard::spawn(Path::new(&executable), data_dir.path(), port, &secret)?;
+    let endpoint = Url::parse(&format!("ws://127.0.0.1:{port}/jsonrpc"))?;
+    let handle = spawn_live_coordinator(endpoint, &secret);
+    let connected = wait_for_snapshot(&handle, Duration::from_secs(5), |snapshot| {
+        snapshot.connection_state == ConnectionState::Connected && !snapshot.stale
+    })
+    .await?;
+
+    let proxied_payload = b"download reached the configured proxy".to_vec();
+    let (proxy_endpoint, proxy_server) = spawn_http_proxy_fixture(proxied_payload.clone())?;
+    handle
+        .apply_download_proxy(
+            connected.session,
+            DownloadProxyConfig {
+                mode: DownloadProxyMode::Manual,
+                all_proxy: Some(proxy_endpoint),
+                username: Some("proxy-user".into()),
+                password: Some(SecretString::new("proxy-pass".into())),
+                ..DownloadProxyConfig::default()
+            },
+        )
+        .await
+        .map_err(|error| std::io::Error::other(error.summary))?;
+    let proxied = handle
+        .execute(
+            connected.session,
+            AppCommand::AddDownload(AddDownloadRequest {
+                uris: vec!["http://proxy-target.invalid/proxied.bin".into()],
+                destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
+                options: vec![
+                    ("out".into(), "proxied.bin".into()),
+                    ("split".into(), "1".into()),
+                    ("max-connection-per-server".into(), "1".into()),
+                ],
+                ..AddDownloadRequest::default()
+            }),
+        )
+        .await;
+    let proxied_identity = single_succeeded_task(proxied)?;
+    wait_for_task_status(
+        &handle,
+        proxied_identity,
+        Duration::from_secs(5),
+        |status| status == DownloadStatus::Complete,
+    )
+    .await?;
+    let proxy_request = proxy_server
+        .join()
+        .map_err(|_| std::io::Error::other("proxy fixture thread panicked"))??;
+    assert!(proxy_request.starts_with("GET http://proxy-target.invalid/proxied.bin "));
+    assert!(
+        proxy_request
+            .to_ascii_lowercase()
+            .contains("proxy-authorization: basic chjvehktdxnlcjpwcm94es1wyxnz"),
+        "authenticated proxy request did not contain the expected Basic header: {proxy_request:?}"
+    );
+    assert_eq!(
+        std::fs::read(data_dir.path().join("proxied.bin"))?,
+        proxied_payload
+    );
+
+    let bypass_payload = b"download bypassed the configured proxy".to_vec();
+    let (bypass_url, bypass_server) = spawn_http_fixture(bypass_payload.clone())?;
+    let (bypass_proxy, bypass_detector) = spawn_proxy_detector(Duration::from_secs(2))?;
+    handle
+        .apply_download_proxy(
+            connected.session,
+            DownloadProxyConfig {
+                mode: DownloadProxyMode::Manual,
+                all_proxy: Some(bypass_proxy),
+                no_proxy: vec!["127.0.0.1".into()],
+                ..DownloadProxyConfig::default()
+            },
+        )
+        .await
+        .map_err(|error| std::io::Error::other(error.summary))?;
+    let bypassed = handle
+        .execute(
+            connected.session,
+            AppCommand::AddDownload(AddDownloadRequest {
+                uris: vec![bypass_url],
+                destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
+                options: vec![("out".into(), "bypassed.bin".into())],
+                ..AddDownloadRequest::default()
+            }),
+        )
+        .await;
+    let bypassed_identity = single_succeeded_task(bypassed)?;
+    wait_for_task_status(
+        &handle,
+        bypassed_identity,
+        Duration::from_secs(5),
+        |status| status == DownloadStatus::Complete,
+    )
+    .await?;
+    bypass_server
+        .join()
+        .map_err(|_| std::io::Error::other("bypass fixture thread panicked"))??;
+    assert!(
+        !bypass_detector
+            .join()
+            .map_err(|_| std::io::Error::other("bypass detector thread panicked"))??
+    );
+    assert_eq!(
+        std::fs::read(data_dir.path().join("bypassed.bin"))?,
+        bypass_payload
+    );
+
+    let disabled_payload = b"download stayed direct after disabling the proxy".to_vec();
+    let (disabled_url, disabled_server) = spawn_http_fixture(disabled_payload.clone())?;
+    let (stale_proxy, stale_detector) = spawn_proxy_detector(Duration::from_secs(2))?;
+    handle
+        .apply_download_proxy(
+            connected.session,
+            DownloadProxyConfig {
+                mode: DownloadProxyMode::Manual,
+                all_proxy: Some(stale_proxy),
+                ..DownloadProxyConfig::default()
+            },
+        )
+        .await
+        .map_err(|error| std::io::Error::other(error.summary))?;
+    handle
+        .apply_download_proxy(connected.session, DownloadProxyConfig::default())
+        .await
+        .map_err(|error| std::io::Error::other(error.summary))?;
+    let direct = handle
+        .execute(
+            connected.session,
+            AppCommand::AddDownload(AddDownloadRequest {
+                uris: vec![disabled_url],
+                destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
+                options: vec![("out".into(), "disabled.bin".into())],
+                ..AddDownloadRequest::default()
+            }),
+        )
+        .await;
+    let direct_identity = single_succeeded_task(direct)?;
+    wait_for_task_status(&handle, direct_identity, Duration::from_secs(5), |status| {
+        status == DownloadStatus::Complete
+    })
+    .await?;
+    disabled_server
+        .join()
+        .map_err(|_| std::io::Error::other("disabled fixture thread panicked"))??;
+    assert!(
+        !stale_detector
+            .join()
+            .map_err(|_| std::io::Error::other("disabled detector thread panicked"))??
+    );
+    assert_eq!(
+        std::fs::read(data_dir.path().join("disabled.bin"))?,
+        disabled_payload
+    );
+
+    handle.stop().await;
+    let _ = process.terminate()?;
+    Ok(())
+}
+
+fn rpc_option_contains(
+    options: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    expected: &str,
+) -> bool {
+    match options.get(key) {
+        Some(serde_json::Value::String(value)) => value.trim() == expected,
+        Some(serde_json::Value::Array(values)) => values
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .any(|value| value.trim() == expected),
+        _ => false,
+    }
 }
 
 fn spawn_live_coordinator(endpoint: Url, secret: &str) -> SyncHandle {
@@ -343,6 +772,94 @@ async fn wait_for_task_status(
 fn reserve_loopback_port() -> Result<u16, TestError> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     Ok(listener.local_addr()?.port())
+}
+
+fn spawn_http_fixture(
+    payload: Vec<u8>,
+) -> Result<(String, thread::JoinHandle<Result<(), std::io::Error>>), TestError> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let address = listener.local_addr()?;
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept()?;
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request)?;
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            payload.len()
+        );
+        stream.write_all(header.as_bytes())?;
+        stream.write_all(&payload)?;
+        stream.flush()
+    });
+    Ok((format!("http://{address}/fixture.bin"), handle))
+}
+
+fn spawn_http_proxy_fixture(
+    payload: Vec<u8>,
+) -> Result<(String, thread::JoinHandle<Result<String, std::io::Error>>), TestError> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let address = listener.local_addr()?;
+    let handle = thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept()?;
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request)?;
+            let request = String::from_utf8_lossy(&request[..read]).into_owned();
+            if request
+                .to_ascii_lowercase()
+                .contains("proxy-authorization: basic chjvehktdxnlcjpwcm94es1wyxnz")
+            {
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    payload.len()
+                );
+                stream.write_all(header.as_bytes())?;
+                stream.write_all(&payload)?;
+                stream.flush()?;
+                return Ok(request);
+            }
+            stream.write_all(
+                b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"AriaDeck test\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )?;
+            stream.flush()?;
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "aria2 did not retry the proxy request with credentials",
+        ))
+    });
+    Ok((format!("http://{address}"), handle))
+}
+
+fn spawn_proxy_detector(
+    timeout: Duration,
+) -> Result<(String, thread::JoinHandle<Result<bool, std::io::Error>>), TestError> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    listener.set_nonblocking(true)?;
+    let address = listener.local_addr()?;
+    let handle = thread::spawn(move || {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut request = [0_u8; 512];
+                    let _ = stream.read(&mut request)?;
+                    stream.write_all(
+                        b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )?;
+                    return Ok(true);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Ok(false);
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    });
+    Ok((format!("http://{address}"), handle))
 }
 
 async fn connect_with_retry(

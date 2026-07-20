@@ -17,8 +17,8 @@ use tokio::{
 
 use crate::{
     AppCommand, ApplicationError, ApplicationErrorCode, CommandOutcome, CommandService,
-    DownloadEngineGateway, DownloadStore, StoreError, StorePatch, TaskCommandContext, TaskCounts,
-    TaskDetailsGateway, TaskListQuery, TaskListView,
+    DownloadEngineGateway, DownloadProxyConfig, DownloadStore, StoreError, StorePatch,
+    TaskCommandContext, TaskCounts, TaskDetailsGateway, TaskListQuery, TaskListView,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -321,6 +321,25 @@ impl SyncHandle {
         })
     }
 
+    pub async fn apply_download_proxy(
+        &self,
+        session: EngineSession,
+        config: DownloadProxyConfig,
+    ) -> Result<(), ApplicationError> {
+        let (sender, receiver) = oneshot::channel();
+        self.commands
+            .send(Control::ApplyDownloadProxy {
+                session,
+                config,
+                sender,
+            })
+            .await
+            .map_err(|_| unavailable_error("The synchronization coordinator is unavailable."))?;
+        receiver.await.map_err(|_| {
+            unavailable_error("The synchronization coordinator stopped unexpectedly.")
+        })?
+    }
+
     pub async fn task_details(
         &self,
         session: EngineSession,
@@ -362,6 +381,11 @@ enum Control {
         command: AppCommand,
         sender: oneshot::Sender<CommandOutcome>,
     },
+    ApplyDownloadProxy {
+        session: EngineSession,
+        config: DownloadProxyConfig,
+        sender: oneshot::Sender<Result<(), ApplicationError>>,
+    },
     TaskDetails {
         session: EngineSession,
         task: TaskIdentity,
@@ -399,6 +423,12 @@ fn handle_unavailable_control(
             let _ = sender.send(unavailable_command_outcome(
                 "Task commands are unavailable until aria2 is connected and synchronized.",
             ));
+            UnavailableControlDisposition::Continue
+        }
+        Some(Control::ApplyDownloadProxy { sender, .. }) => {
+            let _ = sender.send(Err(unavailable_error(
+                "Download proxy settings cannot be applied until aria2 is connected and synchronized.",
+            )));
             UnavailableControlDisposition::Continue
         }
         Some(Control::TaskDetails { sender, .. }) => {
@@ -821,8 +851,14 @@ async fn run_connected(
                         };
                         let service = CommandService::new(config.profile_id, gateway.clone());
                         let task_contexts = match &command {
+                            AppCommand::PauseTasks(tasks) | AppCommand::ResumeTasks(tasks) => {
+                                Some(tasks.as_slice())
+                            }
                             AppCommand::RemoveTasks(request) => Some(request.tasks.as_slice()),
                             AppCommand::RetryTasks(tasks) => Some(tasks.as_slice()),
+                            AppCommand::SetTaskOutputName(request) => {
+                                Some(std::slice::from_ref(&request.task))
+                            }
                             _ => None,
                         }
                         .map_or_else(HashMap::new, |tasks| {
@@ -842,15 +878,63 @@ async fn run_connected(
                                 })
                                 .collect::<HashMap<_, _>>()
                         });
+                        let refresh_after_success = match &command {
+                            AppCommand::SetTaskOutputName(request) => {
+                                RefreshHint::Task(request.task.gid)
+                            }
+                            _ => RefreshHint::Full,
+                        };
+                        let custom_output_name = match &command {
+                            AppCommand::SetTaskOutputName(request) => {
+                                Some((request.task.gid, request.output_name.clone()))
+                            }
+                            _ => None,
+                        };
                         let outcome = tokio::select! {
                             biased;
                             () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
                             outcome = service.execute(command, &task_contexts) => outcome,
                         };
                         if outcome.has_successes() {
-                            pending_full = true;
+                            if let Some((gid, output_name)) = custom_output_name {
+                                match store.set_custom_output_name(generation, gid, output_name) {
+                                    Ok(patch) => emit_patch(events, patch),
+                                    Err(error) => {
+                                        return ConnectedExit::Retry(SyncError::store(error));
+                                    }
+                                }
+                            }
+                            match refresh_after_success {
+                                RefreshHint::Task(gid) => {
+                                    pending_tasks.insert(gid);
+                                }
+                                RefreshHint::Full => pending_full = true,
+                            }
                         }
                         let _ = sender.send(outcome);
+                    }
+                    Some(Control::ApplyDownloadProxy {
+                        session: expected_session,
+                        config: proxy,
+                        sender,
+                    }) => {
+                        if expected_session != store.session() {
+                            let _ = sender.send(Err(stale_session_error()));
+                            continue;
+                        }
+                        let Some(gateway) = command_gateway else {
+                            let _ = sender.send(Err(unsupported_error(
+                                "The connected engine does not expose global proxy settings.",
+                            )));
+                            continue;
+                        };
+                        let service = CommandService::new(config.profile_id, gateway.clone());
+                        let result = tokio::select! {
+                            biased;
+                            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
+                            result = service.apply_download_proxy(&proxy) => result,
+                        };
+                        let _ = sender.send(result);
                     }
                     Some(Control::TaskDetails {
                         session: expected_session,
@@ -1378,7 +1462,9 @@ mod tests {
         },
     };
 
-    use ariadeck_domain::{DownloadStatus, EnginePath, TaskDetails, TaskFile, TaskSnapshot};
+    use ariadeck_domain::{
+        DownloadStatus, EnginePath, TaskDetails, TaskFile, TaskSnapshot, TaskSourceKind,
+    };
 
     use super::*;
 
@@ -1527,6 +1613,7 @@ mod tests {
     struct FakeInteractiveGateway {
         command_calls: Mutex<Vec<(&'static str, Gid)>>,
         details_calls: Mutex<Vec<Gid>>,
+        proxy_calls: Mutex<Vec<DownloadProxyConfig>>,
     }
 
     #[async_trait]
@@ -1543,6 +1630,15 @@ mod tests {
             Ok(gid)
         }
 
+        async fn retry_download(
+            &self,
+            gid: Gid,
+            _fallback: &crate::AddDownloadRequest,
+        ) -> Result<Gid, crate::GatewayError> {
+            self.record_command("retry", gid);
+            Ok(Gid::from_u64(100))
+        }
+
         async fn pause(&self, gid: Gid) -> Result<(), crate::GatewayError> {
             self.record_command("pause", gid);
             Ok(())
@@ -1550,6 +1646,26 @@ mod tests {
 
         async fn resume(&self, gid: Gid) -> Result<(), crate::GatewayError> {
             self.record_command("resume", gid);
+            Ok(())
+        }
+
+        async fn change_options(
+            &self,
+            gid: Gid,
+            _options: &[(String, String)],
+        ) -> Result<(), crate::GatewayError> {
+            self.record_command("change_options", gid);
+            Ok(())
+        }
+
+        async fn apply_download_proxy(
+            &self,
+            config: &DownloadProxyConfig,
+        ) -> Result<(), crate::GatewayError> {
+            self.proxy_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(config.clone());
             Ok(())
         }
 
@@ -1826,11 +1942,13 @@ mod tests {
         let targeted_calls = Arc::new(Mutex::new(Vec::new()));
         let gateway = Arc::new(FakeInteractiveGateway::default());
         let (notification_tx, notification_rx) = mpsc::channel(16);
+        let mut initial = initial_snapshot(gid);
+        initial.live.active[0].metadata.source_kind = TaskSourceKind::DirectUri;
         let connector = Arc::new(ScriptedConnector {
             steps: Mutex::new(VecDeque::from([Ok(
                 ConnectedSyncSession::new_with_gateways(
                     Box::new(FakeSession {
-                        initial: initial_snapshot(gid),
+                        initial,
                         targeted_calls,
                     }),
                     gateway.clone(),
@@ -1848,8 +1966,25 @@ mod tests {
             .execute(snapshot.session, AppCommand::PauseTasks(vec![identity]))
             .await;
         assert!(matches!(outcome, CommandOutcome::Success { .. }));
+        let output_name = handle
+            .execute(
+                snapshot.session,
+                AppCommand::SetTaskOutputName(crate::SetTaskOutputNameRequest {
+                    task: identity,
+                    output_name: "renamed.bin".into(),
+                }),
+            )
+            .await;
+        assert!(matches!(output_name, CommandOutcome::Success { .. }));
         let details = handle.task_details(snapshot.session, identity).await;
         assert!(matches!(details, Ok(TaskDetails { gid: value, .. }) if value == gid));
+        let proxy = DownloadProxyConfig::default();
+        assert!(
+            handle
+                .apply_download_proxy(snapshot.session, proxy.clone())
+                .await
+                .is_ok()
+        );
 
         let stale_session = EngineSession::new(
             profile_id,
@@ -1871,6 +2006,16 @@ mod tests {
                 ..
             })
         ));
+        let stale_proxy = handle
+            .apply_download_proxy(stale_session, proxy.clone())
+            .await;
+        assert!(matches!(
+            stale_proxy,
+            Err(ApplicationError {
+                code: ApplicationErrorCode::StaleSession,
+                ..
+            })
+        ));
 
         assert_eq!(
             gateway
@@ -1878,7 +2023,7 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .as_slice(),
-            &[("pause", gid)]
+            &[("pause", gid), ("change_options", gid)]
         );
         assert_eq!(
             gateway
@@ -1887,6 +2032,14 @@ mod tests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .as_slice(),
             &[gid]
+        );
+        assert_eq!(
+            gateway
+                .proxy_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_slice(),
+            &[proxy]
         );
         handle.stop().await;
         drop(notification_tx);
@@ -1911,6 +2064,7 @@ mod tests {
                 AppCommand::AddDownload(crate::AddDownloadRequest {
                     uris: vec!["https://example.test/item".into()],
                     destination: None,
+                    file_conflict: crate::FileConflictPolicy::default(),
                     options: Vec::new(),
                 }),
             ),

@@ -2,9 +2,9 @@
 
 **Status:** MVP complete; post-MVP work remains
 
-**Current stage:** 8 - MVP completion and hardening
+**Current stage:** Post-MVP download-management usability
 
-**Last updated:** 2026-07-19
+**Last updated:** 2026-07-20
 
 This document is the persistent source of truth for implementation state. It is
 updated whenever scope, architecture, verification results, or commit boundaries
@@ -21,6 +21,9 @@ change.
 - [x] Stage 7 - Manage a local external aria2 process and persistent profile.
 - [x] Stage 8 - Complete and harden the MVP.
 - [ ] Post-MVP - Managed aria2 core installation, platform integration, and release work.
+
+Post-MVP usability and download-management work is tracked in
+[`docs/post-mvp-progress.md`](post-mvp-progress.md).
 
 ## Current Stage
 
@@ -100,7 +103,25 @@ visible until the user explicitly removes it.
 - [x] Distinguish live-task removal from stopped download-result removal.
 - [x] Report mutating RPC timeouts and disconnects as unknown outcomes without auto-retry.
 - [x] Extend the typed aria2 adapter for add, pause, resume, and remove commands.
+- [x] Apply profile download proxy settings through session-bound
+  `changeGlobalOption`, with explicit clearing, unknown-outcome handling, and
+  once-per-new-session reapplication.
 - [x] Extend the typed adapter and application contract for explicit failed-task retry.
+- [x] Preserve replayable per-task options and mirrors when retry creates its replacement GID.
+- [x] Reconcile unknown single/batch retry outcomes through one authoritative refresh without replay.
+- [x] Expose typed keep-both/reject/overwrite policy for new tasks and map it
+  authoritatively to aria2 conflict options.
+- [x] Preflight managed-local download directories with a real write probe and
+  available-space query while treating external RPC paths as remote-only.
+- [x] Accumulate only successfully preflighted local download roots so changing
+  settings preserves safe file removal for old and new tasks.
+- [x] Reject known-size local submissions before engine mutation when free
+  space is insufficient, and expose aria2 disk-full error code 9 in task UI.
+- [x] Keep downloaded files by default when removing tasks or stopped results.
+- [x] Gate explicit file deletion to the managed local engine, move exact task
+  files and incomplete control files to Trash, and reject unsafe paths.
+- [x] Preserve per-item removal outcomes and reconcile unknown mutations once
+  without automatic replay.
 - [x] Execute commands through the application ports with structured outcomes.
 - [x] Add a focused add-download flow for URLs and magnet links.
 - [x] Add row actions and keyboard commands for the safe task lifecycle operations.
@@ -128,8 +149,13 @@ visible until the user explicitly removes it.
 
 - [x] Add versioned, validated typed settings with atomic persistence and
   corruption-preserving recovery.
+- [x] Migrate settings schema v1 to v2 with validated download-proxy fields and
+  non-secret credential references.
 - [x] Load and save the light/dark theme and default download directory outside
   the render path.
+- [x] Store proxy passwords in the operating-system credential manager, mask
+  password UI/debug values, and roll back credential changes when apply or
+  persistence fails.
 - [x] Add an accessible settings flow and apply the configured destination to
   both local-engine startup and newly added tasks.
 - [x] Feed the application-layer fixed-capacity speed history from live global
@@ -212,6 +238,17 @@ of GPUI and makes a later SQLite adapter possible without changing UI contracts.
 SQLite remains the target for multi-profile metadata, history, installation
 records, and diagnostics; persistent speed analytics are explicitly post-MVP.
 
+### ADR-008 - Separate download proxy, RPC transport, and credential storage
+
+aria2 download traffic is configured through a typed application command and
+the RPC adapter's `changeGlobalOption` implementation. It is independent from
+the WebSocket connection endpoint and any future application-update proxy.
+Settings JSON stores validated non-secret proxy fields and an opaque credential
+reference; the operating-system credential manager owns the password. Mutations
+are bound to the exact engine session and are not replayed after an unknown
+outcome in that session, while a newly connected session receives the latest
+persisted configuration once.
+
 ## Verification Log
 
 | Date | Command or check | Result |
@@ -278,11 +315,37 @@ records, and diagnostics; persistent speed analytics are explicitly post-MVP.
 | 2026-07-19 | `cargo build -p ariadeck-desktop` | Pass - native desktop executable built successfully |
 | 2026-07-19 | All ignored live aria2 flows with Scoop `aria2c 1.37.0` | Pass - engine lifecycle and 3 RPC/coordinator/command flows; no residual current-tree desktop or aria2 process |
 | 2026-07-19 | Native GPUI MVP smoke | Pass - connected local engine, speed chart accessibility group, health status, settings dialog focus trap, light-theme save, status notice, and clean close verified at 1180 x 760 |
+| 2026-07-20 | Post-MVP filename and multi-selection tests across domain/application/RPC/UI/desktop | Pass - 125 passed, 3 ignored; includes custom output names, Magnet identity migration, query-scoped selection, batch partial results, and per-task failure details |
+| 2026-07-20 | Post-MVP filename and multi-selection Clippy gate across domain/application/RPC/UI/desktop | Pass - no issues with `-D warnings` |
+| 2026-07-20 | Post-MVP multiline add, mirror grouping, and unknown-outcome reconciliation tests | Pass - 135 passed, 3 ignored; coordinator test proves accepted-but-unknown add resolves from a new GID after refresh with one gateway call |
+| 2026-07-20 | Real aria2 add/removal flow after multiline work | Pass - two-source mirror add, paused projection, live removal, stopped-result removal, and cleanup succeeded |
+| 2026-07-20 | Post-MVP retry correctness tests across domain/application/RPC/UI/desktop | Pass - 140 passed, 3 ignored; option replay, new-GID semantics, old-result retention, and single/partial-batch unknown reconciliation are covered |
+| 2026-07-20 | Post-MVP retry Clippy gate across domain/application/RPC/UI/desktop | Pass - no issues with `-D warnings` |
+| 2026-07-20 | Real aria2 option-preserving retry flow | Pass - distinct GID, old failed result retained, no-URI-data source fallback, and output/directory/Cookie header/HTTP credential/limit/connection/checksum preservation verified |
+| 2026-07-20 | `cargo test --workspace` after safe local file removal | Pass - 153 tests, 5 ignored; includes keep-files defaults, local/remote capability gating, exact path/control-file containment, Trash errors, partial batches, and unknown-outcome reconciliation |
+| 2026-07-20 | `cargo clippy --workspace --all-targets -- -D warnings` after safe local file removal | Pass - no issues |
+| 2026-07-20 | Real aria2 removal flow with a completed HTTP download | Pass - active and terminal records were removed while the downloaded file remained byte-for-byte unchanged |
+| 2026-07-20 | `cargo test --workspace` after output conflict and destination preflight | Pass - 160 tests, 5 ignored; includes all three conflict mappings, write-probe cleanup, free-space and required-size checks, Windows path normalization, unsafe local-path rejection, and external RPC path isolation |
+| 2026-07-20 | `cargo clippy --workspace --all-targets -- -D warnings` after output preflight | Pass - no issues |
+| 2026-07-20 | Real aria2 same-name output flow | Pass - default keep-both created the `.1` file and result removal preserved both completed files |
+| 2026-07-20 | `cargo test --workspace` after authorized-root and disk-full handling | Pass - 164 tests, 5 ignored; includes settings-root accumulation, unconfigured-root rejection, known-size preflight, RPC error-code preservation, and task error presentation |
+| 2026-07-20 | `cargo clippy --workspace --all-targets -- -D warnings` after disk-full handling | Pass - no issues |
+| 2026-07-20 | `cargo test --workspace` after download-proxy and credential-store integration | Pass - 178 tests, 6 ignored; includes settings migration/recovery, proxy validation, secret redaction, credential rollback, exact-session apply, aria2 option mapping, and GPUI proxy drafts |
+| 2026-07-20 | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop` | Pass - no warnings, formatting clean, native desktop executable built |
+| 2026-07-20 | All ignored live RPC tests with Scoop `aria2c 1.37.0` | Pass - 4 flows; authenticated proxy 407 retry, routed request, `no-proxy` bypass, Disabled direct traffic, connection restart, command/removal contracts, and clean shutdown |
 
 ## Known Gaps
 
-- Failed-task retry preserves the source URI/info hash and destination for the
-  URL/magnet MVP; arbitrary per-task aria2 options are not replayed.
+- Failed-task retry preserves aria2's replayable per-task options and mirror
+  sources. Engine-scoped cookie-file loading is not exposed as per-task state;
+  task-level Cookie headers are preserved.
+- Explicit local deletion now moves exact engine-reported task files and
+  incomplete control files to the operating-system Trash. Output-side safety
+  now covers local directory writability/space checks, remote path isolation,
+  accumulated authorized roots, known-size submission checks, direct-task
+  conflict policy, and explicit runtime disk-full errors. Torrent/Metalink
+  per-file containment/conflicts remain coupled to their future import and
+  file-selection flows.
 - Local process recovery and terminal failure are visible in the desktop;
   persistent engine-health history and exported diagnostic bundles are post-MVP.
 - Profile and typed settings persistence use atomic JSON documents for the
@@ -290,7 +353,11 @@ records, and diagnostics; persistent speed analytics are explicitly post-MVP.
   history, installation records, and diagnostics.
 - Add-download, task lifecycle commands, and the details drawer are implemented
   for the external WebSocket engine path.
-- Theme and download-directory choices persist; window geometry remains session-only.
+- Theme, download-directory, and aria2 download-proxy choices persist; proxy
+  passwords remain outside JSON in the system credential manager. Window
+  geometry remains session-only.
+- RPC connection proxy/TLS policy remains separate post-MVP work; the completed
+  proxy controls affect aria2 download traffic only.
 - The optional Windows DXGI debug layer is absent; GPUI logs a development-only
   warning and continues with DirectX debugging disabled.
 - The repository license has not been selected; release metadata remains provisional.
@@ -313,6 +380,9 @@ records, and diagnostics; persistent speed analytics are explicitly post-MVP.
 - `feat: integrate persistent desktop preferences` - accessible settings UI, ordered background saves, and configured add-task destinations.
 - `feat: chart bounded transfer speed history` - application-owned half-second samples and a stable one-minute download/upload chart.
 - `feat: surface local engine recovery health` - weak supervision observer, retained restart counts, and persistent failure presentation.
+- `feat: complete post-mvp download safety and proxy controls` - filename,
+  multi-selection, add/retry/removal safety, output preflight, and profile
+  download-proxy checkpoint.
 
 ## Final MVP Checkpoint
 

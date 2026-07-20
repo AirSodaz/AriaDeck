@@ -18,6 +18,40 @@ pub enum TaskStatusView {
     Unknown,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum TaskNameStateView {
+    #[default]
+    Resolving,
+    Resolved,
+    Custom,
+}
+
+impl TaskNameStateView {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Resolving => "Resolving filename",
+            Self::Resolved => "Filename resolved",
+            Self::Custom => "Custom filename",
+        }
+    }
+
+    #[must_use]
+    pub const fn is_resolving(self) -> bool {
+        matches!(self, Self::Resolving)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum TaskSourceKindView {
+    #[default]
+    Unknown,
+    DirectUri,
+    Magnet,
+    BitTorrent,
+    Metalink,
+}
+
 impl TaskStatusView {
     #[must_use]
     pub const fn label(self) -> &'static str {
@@ -50,15 +84,31 @@ impl TaskStatusView {
 
     #[must_use]
     pub const fn can_remove(self) -> bool {
-        !matches!(self, Self::Removed)
+        !matches!(self, Self::Unknown)
     }
+
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Complete | Self::Failed | Self::Removed)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskErrorView {
+    pub code: Option<u32>,
+    pub summary: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DownloadRowView {
     pub identity: TaskIdentity,
     pub display_name: String,
+    pub name_state: TaskNameStateView,
+    pub source_kind: TaskSourceKindView,
+    pub followed_by: Vec<String>,
+    pub belongs_to: Option<String>,
     pub status: TaskStatusView,
+    pub error: Option<TaskErrorView>,
     pub total_bytes: u64,
     pub completed_bytes: u64,
     pub download_rate: u64,
@@ -75,6 +125,18 @@ impl DownloadRowView {
         }
         let completed = u128::from(self.completed_bytes.min(self.total_bytes));
         Some(((completed * 10_000) / u128::from(self.total_bytes)) as u16)
+    }
+
+    #[must_use]
+    pub const fn can_set_output_name(&self) -> bool {
+        matches!(self.source_kind, TaskSourceKindView::DirectUri)
+            && matches!(
+                self.status,
+                TaskStatusView::Active
+                    | TaskStatusView::Waiting
+                    | TaskStatusView::Paused
+                    | TaskStatusView::Verifying
+            )
     }
 }
 
@@ -248,42 +310,130 @@ impl RequestId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum TaskCommandView {
     Pause,
     Resume,
     Retry,
+    SetOutputName { output_name: String },
     RemoveTask,
+    RemoveTaskAndFiles,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum BatchTaskCommandView {
+    Pause,
+    Resume,
+    Retry,
+    RemoveTask,
+    RemoveTaskAndFiles,
+}
+
+impl BatchTaskCommandView {
+    #[must_use]
+    pub const fn progress_label(self) -> &'static str {
+        match self {
+            Self::Pause => "Pausing selected tasks...",
+            Self::Resume => "Resuming selected tasks...",
+            Self::Retry => "Creating new tasks from selected failed tasks...",
+            Self::RemoveTask => "Removing selected tasks...",
+            Self::RemoveTaskAndFiles => {
+                "Removing selected tasks and moving local files to the Recycle Bin..."
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pause => "Pause",
+            Self::Resume => "Resume",
+            Self::Retry => "Retry",
+            Self::RemoveTask => "Remove",
+            Self::RemoveTaskAndFiles => "Remove with files",
+        }
+    }
 }
 
 impl TaskCommandView {
     #[must_use]
-    pub const fn progress_label(self) -> &'static str {
+    pub const fn progress_label(&self) -> &'static str {
         match self {
             Self::Pause => "Pausing task...",
             Self::Resume => "Resuming task...",
             Self::Retry => "Creating a new task from the failed source...",
+            Self::SetOutputName { .. } => "Updating output name...",
             Self::RemoveTask => "Removing task...",
+            Self::RemoveTaskAndFiles => {
+                "Removing task and moving local files to the Recycle Bin..."
+            }
         }
     }
 
     #[must_use]
-    pub const fn success_label(self) -> &'static str {
+    pub const fn success_label(&self) -> &'static str {
         match self {
             Self::Pause => "Task paused.",
             Self::Resume => "Task resumed.",
-            Self::Retry => "Retry task accepted by aria2.",
-            Self::RemoveTask => "Task removed from aria2.",
+            Self::Retry => "New retry task created; the failed result was kept.",
+            Self::SetOutputName { .. } => "Output name updated.",
+            Self::RemoveTask => "Task removed from aria2; downloaded files were kept.",
+            Self::RemoveTaskAndFiles => "Task removed; local files were moved to the Recycle Bin.",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AddDownloadModeView {
+    #[default]
+    SeparateTasks,
+    Mirrors,
+}
+
+impl AddDownloadModeView {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SeparateTasks => "Separate tasks",
+            Self::Mirrors => "Mirrors (one task)",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FileConflictPolicyView {
+    #[default]
+    AutoRename,
+    Reject,
+    Overwrite,
+}
+
+impl FileConflictPolicyView {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::AutoRename => "Keep both",
+            Self::Reject => "Reject",
+            Self::Overwrite => "Overwrite",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AddDownloadSourceView {
+    pub line: usize,
+    pub uri: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AddDownloadRequestView {
     pub request_id: RequestId,
     pub session: EngineSessionView,
-    pub uri: String,
+    pub sources: Vec<AddDownloadSourceView>,
+    pub mode: AddDownloadModeView,
     pub destination: Option<String>,
+    pub required_bytes: Option<u64>,
+    pub file_conflict: FileConflictPolicyView,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -292,6 +442,14 @@ pub struct TaskCommandRequestView {
     pub session: EngineSessionView,
     pub identity: TaskIdentity,
     pub command: TaskCommandView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchTaskCommandRequestView {
+    pub request_id: RequestId,
+    pub session: EngineSessionView,
+    pub identities: Vec<TaskIdentity>,
+    pub command: BatchTaskCommandView,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -322,10 +480,36 @@ pub enum CommandOutcomeView {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchTaskFailureView {
+    pub identity: Option<TaskIdentity>,
+    pub error: OperationErrorView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BatchCommandOutcomeView {
+    Success {
+        succeeded: Vec<TaskIdentity>,
+    },
+    PartialSuccess {
+        succeeded: Vec<TaskIdentity>,
+        failed: Vec<BatchTaskFailureView>,
+    },
+    Failure {
+        failed: Vec<BatchTaskFailureView>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AddDownloadItemResultView {
+    pub sources: Vec<AddDownloadSourceView>,
+    pub outcome: CommandOutcomeView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AddDownloadResultView {
     pub request_id: RequestId,
     pub session: EngineSessionView,
-    pub outcome: CommandOutcomeView,
+    pub items: Vec<AddDownloadItemResultView>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -335,6 +519,15 @@ pub struct TaskCommandResultView {
     pub identity: TaskIdentity,
     pub command: TaskCommandView,
     pub outcome: CommandOutcomeView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchTaskCommandResultView {
+    pub request_id: RequestId,
+    pub session: EngineSessionView,
+    pub identities: Vec<TaskIdentity>,
+    pub command: BatchTaskCommandView,
+    pub outcome: BatchCommandOutcomeView,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -386,16 +579,76 @@ impl ColorSchemeView {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ProxyModeView {
+    #[default]
+    Disabled,
+    Manual,
+}
+
+impl ProxyModeView {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Disabled => "Disabled",
+            Self::Manual => "Manual",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DownloadProxySettingsView {
+    pub mode: ProxyModeView,
+    pub all_proxy: String,
+    pub http_proxy: String,
+    pub https_proxy: String,
+    pub ftp_proxy: String,
+    pub no_proxy: Vec<String>,
+    pub username: String,
+    pub has_password: bool,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct SecretStringView(String);
+
+impl SecretStringView {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    #[must_use]
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for SecretStringView {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SecretStringView([REDACTED])")
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum ProxyPasswordUpdateView {
+    #[default]
+    Unchanged,
+    Clear,
+    Set(SecretStringView),
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SettingsView {
     pub color_scheme: ColorSchemeView,
     pub download_directory: String,
+    pub download_proxy: DownloadProxySettingsView,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SettingsSaveRequestView {
     pub request_id: RequestId,
     pub settings: SettingsView,
+    pub proxy_password: ProxyPasswordUpdateView,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -537,6 +790,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn settings_request_debug_output_redacts_proxy_password() {
+        let request = SettingsSaveRequestView {
+            request_id: RequestId::from_u64(1),
+            settings: SettingsView::default(),
+            proxy_password: ProxyPasswordUpdateView::Set(SecretStringView::new("never-log-this")),
+        };
+
+        let debug = format!("{request:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("never-log-this"));
+    }
+
+    #[test]
     fn compact_transfer_formatting_is_stable_at_unit_boundaries() {
         assert_eq!(format_bytes(0), "0 B");
         assert_eq!(format_bytes(1_536), "1.5 KiB");
@@ -546,14 +812,30 @@ mod tests {
     }
 
     #[test]
+    fn file_conflict_policy_defaults_to_keep_both() {
+        assert_eq!(
+            FileConflictPolicyView::default(),
+            FileConflictPolicyView::AutoRename
+        );
+        assert_eq!(FileConflictPolicyView::AutoRename.label(), "Keep both");
+        assert_eq!(FileConflictPolicyView::Reject.label(), "Reject");
+        assert_eq!(FileConflictPolicyView::Overwrite.label(), "Overwrite");
+    }
+
+    #[test]
     fn progress_clamps_overreported_completion() {
-        let row = DownloadRowView {
+        let mut row = DownloadRowView {
             identity: TaskIdentity {
                 profile_id: "profile".into(),
                 gid: "gid".into(),
             },
             display_name: "archive".into(),
+            name_state: TaskNameStateView::Resolved,
+            source_kind: TaskSourceKindView::DirectUri,
+            followed_by: Vec::new(),
+            belongs_to: None,
             status: TaskStatusView::Active,
+            error: None,
             total_bytes: 100,
             completed_bytes: 120,
             download_rate: 0,
@@ -563,6 +845,13 @@ mod tests {
         };
 
         assert_eq!(row.progress_basis_points(), Some(10_000));
+        assert!(row.can_set_output_name());
+
+        row.source_kind = TaskSourceKindView::Magnet;
+        assert!(!row.can_set_output_name());
+        row.source_kind = TaskSourceKindView::DirectUri;
+        row.status = TaskStatusView::Complete;
+        assert!(!row.can_set_output_name());
     }
 
     #[test]
@@ -570,5 +859,14 @@ mod tests {
         assert!(TaskStatusView::Failed.can_retry());
         assert!(!TaskStatusView::Paused.can_retry());
         assert!(!TaskStatusView::Complete.can_retry());
+    }
+
+    #[test]
+    fn remove_is_available_for_live_tasks_and_stopped_results() {
+        assert!(TaskStatusView::Active.can_remove());
+        assert!(TaskStatusView::Complete.can_remove());
+        assert!(TaskStatusView::Failed.can_remove());
+        assert!(TaskStatusView::Removed.can_remove());
+        assert!(!TaskStatusView::Unknown.can_remove());
     }
 }

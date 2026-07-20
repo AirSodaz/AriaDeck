@@ -1,21 +1,26 @@
-use std::{ops::Range, sync::Arc, time::Duration};
+use std::{collections::HashSet, ops::Range, sync::Arc, time::Duration};
 
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, Div, Entity, FocusHandle, Focusable, FontFeatures,
-    FontWeight, Hsla, IntoElement, Render, Role, ScrollStrategy, SharedString, Stateful,
-    Subscription, UniformListScrollHandle, WeakFocusHandle, Window, WindowControlArea, div,
-    prelude::*, px, relative, uniform_list,
+    AnyElement, App, ClickEvent, ClipboardItem, Context, Div, Entity, FocusHandle, Focusable,
+    FontFeatures, FontWeight, Hsla, IntoElement, Render, Role, ScrollStrategy, SharedString,
+    Stateful, Subscription, Toggled, UniformListScrollHandle, WeakFocusHandle, Window,
+    WindowControlArea, div, prelude::*, px, relative, uniform_list,
 };
 
 use crate::{
-    AddDownloadRequestView, AddDownloadResultView, Button, ButtonStyle, ClearSearch,
-    CloseAddDownload, CloseSettings, ColorSchemeView, CommandOutcomeView, ConnectionView, Dialog,
-    DownloadRowView, EngineHealthView, EngineSessionView, FocusNext, FocusPrevious, FocusSearch,
-    Icon, IconButton, IconName, IconSize, OpenAddDownload, OpenSettings, OpenTaskDetails,
-    OperationErrorView, PauseSelectedTask, RemoveSelectedTask, RequestId, ResumeSelectedTask,
-    RetrySelectedTask, SaveSettings, SearchInputEvent, Segment, SegmentedControl, SelectNextTask,
-    SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
-    SettingsView, SpeedSampleView, StatusIndicator, SubmitAddDownload, TaskCommandRequestView,
+    AddDownloadItemResultView, AddDownloadModeView, AddDownloadRequestView, AddDownloadResultView,
+    AddDownloadSourceView, BatchCommandOutcomeView, BatchTaskCommandRequestView,
+    BatchTaskCommandResultView, BatchTaskCommandView, BatchTaskFailureView, Button, ButtonStyle,
+    ClearSearch, CloseAddDownload, CloseBatchFailures, CloseSettings, CloseTaskOutputName,
+    ColorSchemeView, CommandOutcomeView, ConnectionView, Dialog, DownloadProxySettingsView,
+    DownloadRowView, EngineHealthView, EngineSessionView, FileConflictPolicyView, FocusNext,
+    FocusPrevious, FocusSearch, Icon, IconButton, IconName, IconSize, OpenAddDownload,
+    OpenSettings, OpenTaskDetails, OpenTaskOutputName, OperationErrorView, PauseSelectedTask,
+    ProxyModeView, ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask,
+    RetrySelectedTask, SaveSettings, SearchInputEvent, SecretStringView, Segment, SegmentedControl,
+    SelectAllTasks, SelectNextTask, SelectPreviousTask, SettingsSaveOutcomeView,
+    SettingsSaveRequestView, SettingsSaveResultView, SettingsView, SpeedSampleView,
+    StatusIndicator, SubmitAddDownload, SubmitTaskOutputName, TaskCommandRequestView,
     TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView, TaskDetailsRequestView,
     TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity, TaskStatusView, TextField,
     TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Tooltip, WorkspaceFilter, WorkspaceQuery,
@@ -71,6 +76,7 @@ pub enum AppShellEvent {
     RetryRequested,
     AddDownloadRequested(AddDownloadRequestView),
     TaskCommandRequested(TaskCommandRequestView),
+    BatchTaskCommandRequested(BatchTaskCommandRequestView),
     TaskDetailsRequested(TaskDetailsRequestView),
     SettingsSaveRequested(SettingsSaveRequestView),
 }
@@ -83,9 +89,13 @@ struct PendingAddDownload {
 #[derive(Default)]
 struct AddDownloadDialog {
     open: bool,
+    mode: AddDownloadModeView,
+    file_conflict: FileConflictPolicyView,
     previous_focus: Option<WeakFocusHandle>,
     pending: Option<PendingAddDownload>,
     error: Option<OperationErrorView>,
+    results: Vec<AddDownloadItemResultView>,
+    updating_input_from_result: bool,
 }
 
 struct PendingTaskCommand {
@@ -93,6 +103,13 @@ struct PendingTaskCommand {
     session: EngineSessionView,
     identity: TaskIdentity,
     command: TaskCommandView,
+}
+
+struct PendingBatchTaskCommand {
+    request_id: RequestId,
+    session: EngineSessionView,
+    identities: Vec<TaskIdentity>,
+    command: BatchTaskCommandView,
 }
 
 enum TaskDetailsLoadState {
@@ -141,6 +158,8 @@ enum AppPage {
 struct SettingsPage {
     previous_focus: Option<WeakFocusHandle>,
     draft_color_scheme: ColorSchemeView,
+    draft_proxy_mode: ProxyModeView,
+    clear_proxy_password: bool,
     error: Option<OperationErrorView>,
 }
 
@@ -148,6 +167,7 @@ struct SettingsPage {
 enum SettingsSaveSource {
     Theme,
     Directory,
+    Proxy,
 }
 
 struct PendingSettingsSave {
@@ -157,8 +177,25 @@ struct PendingSettingsSave {
 }
 
 struct RemoveConfirmation {
+    identities: Vec<TaskIdentity>,
+    display_name: String,
+    has_live_tasks: bool,
+    has_terminal_tasks: bool,
+    delete_files: bool,
+    previous_focus: Option<WeakFocusHandle>,
+}
+
+struct TaskOutputNameDialog {
     identity: TaskIdentity,
     display_name: String,
+    active: bool,
+    previous_focus: Option<WeakFocusHandle>,
+    error: Option<OperationErrorView>,
+}
+
+struct BatchFailureDetails {
+    command: BatchTaskCommandView,
+    failures: Vec<BatchTaskFailureView>,
     previous_focus: Option<WeakFocusHandle>,
 }
 
@@ -170,9 +207,19 @@ pub struct AppShell {
     snapshot: WorkspaceSnapshot,
     query: WorkspaceQuery,
     selected: Option<TaskIdentity>,
+    selected_tasks: HashSet<TaskIdentity>,
+    range_anchor: Option<TaskIdentity>,
     search_input: Entity<TextField>,
     add_input: Entity<TextField>,
+    output_name_input: Entity<TextField>,
     settings_directory_input: Entity<TextField>,
+    settings_all_proxy_input: Entity<TextField>,
+    settings_http_proxy_input: Entity<TextField>,
+    settings_https_proxy_input: Entity<TextField>,
+    settings_ftp_proxy_input: Entity<TextField>,
+    settings_no_proxy_input: Entity<TextField>,
+    settings_proxy_username_input: Entity<TextField>,
+    settings_proxy_password_input: Entity<TextField>,
     add_dialog: AddDownloadDialog,
     add_dialog_focus: FocusHandle,
     add_cancel_focus: FocusHandle,
@@ -181,6 +228,14 @@ pub struct AppShell {
     settings_save_focus: FocusHandle,
     pending_settings_save: Option<PendingSettingsSave>,
     pending_task_command: Option<PendingTaskCommand>,
+    pending_batch_command: Option<PendingBatchTaskCommand>,
+    batch_failure_details: Option<BatchFailureDetails>,
+    batch_failure_dialog_focus: FocusHandle,
+    batch_failure_close_focus: FocusHandle,
+    output_name_dialog: Option<TaskOutputNameDialog>,
+    output_name_dialog_focus: FocusHandle,
+    output_name_cancel_focus: FocusHandle,
+    output_name_submit_focus: FocusHandle,
     details_drawer: Option<TaskDetailsDrawer>,
     remove_confirmation: Option<RemoveConfirmation>,
     remove_dialog_focus: FocusHandle,
@@ -196,7 +251,8 @@ pub struct AppShell {
     rendered_range: Range<usize>,
     _search_subscription: Subscription,
     _add_subscription: Subscription,
-    _settings_subscription: Subscription,
+    _output_name_subscription: Subscription,
+    _settings_subscriptions: Vec<Subscription>,
     _window_bounds_subscription: Subscription,
 }
 
@@ -214,6 +270,7 @@ impl AppShell {
             SettingsView {
                 color_scheme,
                 download_directory: String::new(),
+                ..SettingsView::default()
             },
             window,
             cx,
@@ -246,6 +303,7 @@ impl AppShell {
             |this: &mut Self, _input, event: &SearchInputEvent, cx| {
                 if this.query.search != event.text {
                     this.query.search.clone_from(&event.text);
+                    this.clear_task_selection();
                     this.emit_query(cx);
                 }
             },
@@ -256,10 +314,12 @@ impl AppShell {
                     element_id: "add-download-uri".into(),
                     key_context: "AddDownloadInput".into(),
                     role: Role::TextInput,
-                    accessibility_label: "Download URL or magnet link".into(),
-                    placeholder: "https://example.com/file or magnet:?xt=...".into(),
+                    accessibility_label: "Download URLs or magnet links".into(),
+                    placeholder: "Paste one or more URLs".into(),
                     leading_icon: Some(IconName::Link),
                     clearable: true,
+                    allow_newlines: true,
+                    secure: false,
                 },
                 theme,
                 cx,
@@ -268,9 +328,43 @@ impl AppShell {
         let add_subscription = cx.subscribe(
             &add_input,
             |this: &mut Self, _input, _event: &SearchInputEvent, cx| {
-                if this.add_dialog.open
-                    && this.add_dialog.pending.is_none()
-                    && this.add_dialog.error.take().is_some()
+                if this.add_dialog.open && this.add_dialog.pending.is_none() {
+                    if this.add_dialog.updating_input_from_result {
+                        this.add_dialog.updating_input_from_result = false;
+                        return;
+                    }
+                    let changed = this.add_dialog.error.take().is_some()
+                        || !this.add_dialog.results.is_empty();
+                    this.add_dialog.results.clear();
+                    if changed {
+                        cx.notify();
+                    }
+                }
+            },
+        );
+        let output_name_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "task-output-name".into(),
+                    key_context: "OutputNameInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "Task output filename".into(),
+                    placeholder: "archive.iso".into(),
+                    leading_icon: Some(IconName::Pencil),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: false,
+                },
+                theme,
+                cx,
+            )
+        });
+        let output_name_subscription = cx.subscribe(
+            &output_name_input,
+            |this: &mut Self, _input, _event: &SearchInputEvent, cx| {
+                if let Some(dialog) = &mut this.output_name_dialog
+                    && this.pending_task_command.is_none()
+                    && dialog.error.take().is_some()
                 {
                     cx.notify();
                 }
@@ -286,22 +380,142 @@ impl AppShell {
                     placeholder: "D:\\Downloads".into(),
                     leading_icon: Some(IconName::FolderDown),
                     clearable: true,
+                    allow_newlines: false,
+                    secure: false,
                 },
                 theme,
                 cx,
             )
         });
-        let settings_subscription = cx.subscribe(
+        let settings_all_proxy_input = cx.new(|cx| {
+            TextField::new_with_config(
+                settings_input_config(
+                    "settings-all-proxy",
+                    "All-protocol proxy",
+                    "http://proxy.example:8080",
+                    Some(IconName::Wifi),
+                    false,
+                ),
+                theme,
+                cx,
+            )
+        });
+        let settings_http_proxy_input = cx.new(|cx| {
+            TextField::new_with_config(
+                settings_input_config(
+                    "settings-http-proxy",
+                    "HTTP proxy",
+                    "http://proxy.example:8080",
+                    Some(IconName::Link),
+                    false,
+                ),
+                theme,
+                cx,
+            )
+        });
+        let settings_https_proxy_input = cx.new(|cx| {
+            TextField::new_with_config(
+                settings_input_config(
+                    "settings-https-proxy",
+                    "HTTPS proxy",
+                    "http://proxy.example:8080",
+                    Some(IconName::Link),
+                    false,
+                ),
+                theme,
+                cx,
+            )
+        });
+        let settings_ftp_proxy_input = cx.new(|cx| {
+            TextField::new_with_config(
+                settings_input_config(
+                    "settings-ftp-proxy",
+                    "FTP proxy",
+                    "http://proxy.example:8080",
+                    Some(IconName::Link),
+                    false,
+                ),
+                theme,
+                cx,
+            )
+        });
+        let settings_no_proxy_input = cx.new(|cx| {
+            TextField::new_with_config(
+                settings_input_config(
+                    "settings-no-proxy",
+                    "Hosts that bypass the proxy",
+                    "localhost, 127.0.0.1, 10.0.0.0/8",
+                    Some(IconName::WifiOff),
+                    false,
+                ),
+                theme,
+                cx,
+            )
+        });
+        let settings_proxy_username_input = cx.new(|cx| {
+            TextField::new_with_config(
+                settings_input_config(
+                    "settings-proxy-username",
+                    "Proxy username",
+                    "Optional username",
+                    None,
+                    false,
+                ),
+                theme,
+                cx,
+            )
+        });
+        let settings_proxy_password_input = cx.new(|cx| {
+            TextField::new_with_config(
+                settings_input_config(
+                    "settings-proxy-password",
+                    "Proxy password",
+                    "Optional password or replacement",
+                    None,
+                    true,
+                ),
+                theme,
+                cx,
+            )
+        });
+        let mut settings_subscriptions = [
             &settings_directory_input,
+            &settings_all_proxy_input,
+            &settings_http_proxy_input,
+            &settings_https_proxy_input,
+            &settings_ftp_proxy_input,
+            &settings_no_proxy_input,
+            &settings_proxy_username_input,
+        ]
+        .into_iter()
+        .map(|input| {
+            cx.subscribe(
+                input,
+                |this: &mut Self, _input, _event: &SearchInputEvent, cx| {
+                    if this.page == AppPage::Settings
+                        && this.pending_settings_save.is_none()
+                        && this.settings_page.error.take().is_some()
+                    {
+                        cx.notify();
+                    }
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+        settings_subscriptions.push(cx.subscribe(
+            &settings_proxy_password_input,
             |this: &mut Self, _input, _event: &SearchInputEvent, cx| {
-                if this.page == AppPage::Settings
-                    && this.pending_settings_save.is_none()
-                    && this.settings_page.error.take().is_some()
-                {
+                let changed = this.settings_page.clear_proxy_password
+                    || (this.page == AppPage::Settings
+                        && this.pending_settings_save.is_none()
+                        && this.settings_page.error.is_some());
+                this.settings_page.clear_proxy_password = false;
+                this.settings_page.error = None;
+                if changed {
                     cx.notify();
                 }
             },
-        );
+        ));
         let window_bounds_subscription = cx.observe_window_bounds(window, |_, _, cx| {
             cx.notify();
         });
@@ -315,9 +529,19 @@ impl AppShell {
             snapshot: WorkspaceSnapshot::default(),
             query: WorkspaceQuery::default(),
             selected: None,
+            selected_tasks: HashSet::new(),
+            range_anchor: None,
             search_input,
             add_input,
+            output_name_input,
             settings_directory_input,
+            settings_all_proxy_input,
+            settings_http_proxy_input,
+            settings_https_proxy_input,
+            settings_ftp_proxy_input,
+            settings_no_proxy_input,
+            settings_proxy_username_input,
+            settings_proxy_password_input,
             add_dialog: AddDownloadDialog::default(),
             add_dialog_focus: cx.focus_handle(),
             add_cancel_focus: cx.focus_handle().tab_stop(true),
@@ -326,6 +550,14 @@ impl AppShell {
             settings_save_focus: cx.focus_handle().tab_stop(true),
             pending_settings_save: None,
             pending_task_command: None,
+            pending_batch_command: None,
+            batch_failure_details: None,
+            batch_failure_dialog_focus: cx.focus_handle(),
+            batch_failure_close_focus: cx.focus_handle().tab_stop(true),
+            output_name_dialog: None,
+            output_name_dialog_focus: cx.focus_handle(),
+            output_name_cancel_focus: cx.focus_handle().tab_stop(true),
+            output_name_submit_focus: cx.focus_handle().tab_stop(true),
             details_drawer: None,
             remove_confirmation: None,
             remove_dialog_focus: cx.focus_handle(),
@@ -341,7 +573,8 @@ impl AppShell {
             rendered_range: 0..0,
             _search_subscription: search_subscription,
             _add_subscription: add_subscription,
-            _settings_subscription: settings_subscription,
+            _output_name_subscription: output_name_subscription,
+            _settings_subscriptions: settings_subscriptions,
             _window_bounds_subscription: window_bounds_subscription,
         }
     }
@@ -355,19 +588,47 @@ impl AppShell {
             .selected
             .as_ref()
             .is_some_and(|selected| selected.profile_id != snapshot.profile_id);
+        let selected_before = self.selected.clone();
+        let selected_set_had_previous = selected_before
+            .as_ref()
+            .is_some_and(|identity| self.selected_tasks.contains(identity));
+        let anchor_was_previous = selected_before.as_ref() == self.range_anchor.as_ref();
+        let successor = (!profile_changed)
+            .then(|| {
+                selected_before
+                    .as_ref()
+                    .and_then(|selected| successor_task(&self.snapshot, &snapshot, selected))
+            })
+            .flatten();
 
         if profile_changed {
             self.selected = None;
+            self.selected_tasks.clear();
+            self.range_anchor = None;
             self.details_drawer = None;
+            self.batch_failure_details = None;
         }
 
         if session_changed {
             if self.add_dialog.pending.take().is_some() {
                 self.add_dialog.error = Some(stale_session_error());
             }
-            if self.pending_task_command.take().is_some() {
+            if let Some(pending) = self.pending_task_command.take() {
+                if matches!(&pending.command, TaskCommandView::SetOutputName { .. }) {
+                    if let Some(dialog) = &mut self.output_name_dialog {
+                        dialog.error = Some(stale_session_error());
+                    }
+                } else {
+                    self.show_notice(
+                        "The engine session changed before the command completed. Its outcome was not replayed.",
+                        true,
+                        cx,
+                    );
+                }
+            }
+            if self.pending_batch_command.take().is_some() {
                 self.show_notice(
-                    "The engine session changed before the command completed. Its outcome was not replayed.",
+                    "The engine session changed before the batch command completed. Its outcome was not replayed.",
                     true,
                     cx,
                 );
@@ -379,6 +640,39 @@ impl AppShell {
         }
 
         self.snapshot = snapshot;
+        let followed_task = successor.is_some();
+
+        if let (Some(selected_before), Some(successor)) = (selected_before, successor) {
+            self.selected = Some(successor.identity.clone());
+            if selected_set_had_previous {
+                self.selected_tasks.insert(successor.identity.clone());
+            }
+            if anchor_was_previous {
+                self.range_anchor = Some(successor.identity.clone());
+            }
+            if let Some(drawer) = &mut self.details_drawer
+                && drawer.identity == selected_before
+            {
+                drawer.identity = successor.identity.clone();
+                drawer.overview = successor;
+                drawer.state = TaskDetailsLoadState::Stale;
+            }
+        }
+
+        if self.selected.as_ref().is_none_or(|selected| {
+            !self
+                .snapshot
+                .tasks
+                .iter()
+                .any(|task| &task.identity == selected)
+        }) && let Some(visible_selected) = self
+            .snapshot
+            .tasks
+            .iter()
+            .find(|task| self.selected_tasks.contains(&task.identity))
+        {
+            self.selected = Some(visible_selected.identity.clone());
+        }
 
         if let Some(drawer) = &mut self.details_drawer {
             if let Some(task) = self
@@ -396,7 +690,7 @@ impl AppShell {
 
         let should_refresh_details = self.details_drawer.is_some()
             && self.snapshot.commands_available()
-            && (session_changed || !previous_commands_available);
+            && (followed_task || session_changed || !previous_commands_available);
         if should_refresh_details {
             self.request_current_details(cx);
         }
@@ -440,26 +734,86 @@ impl AppShell {
         }
 
         self.add_dialog.pending = None;
-        match result.outcome {
-            CommandOutcomeView::Success { task } => {
-                self.add_input
-                    .update(cx, |input, cx| input.set_text("", cx));
-                self.show_notice("Download accepted by aria2.", false, cx);
-                if let Some(identity) = task {
-                    self.selected = Some(identity);
-                }
-                self.close_add_download(window, cx);
-            }
-            CommandOutcomeView::Failure(error) => {
-                self.add_dialog.error = Some(error);
-                cx.notify();
-            }
+        if result.items.is_empty() {
+            self.add_dialog.error = Some(OperationErrorView {
+                code: "application.internal".into(),
+                summary: "The add request returned no item results.".into(),
+                retryable: false,
+            });
+            cx.notify();
+            return;
         }
+
+        let accepted = result
+            .items
+            .iter()
+            .filter_map(|item| match &item.outcome {
+                CommandOutcomeView::Success { task } => task.clone(),
+                CommandOutcomeView::Failure(_) => None,
+            })
+            .collect::<Vec<_>>();
+        let failed_count = result
+            .items
+            .iter()
+            .filter(|item| matches!(item.outcome, CommandOutcomeView::Failure(_)))
+            .count();
+        let all_succeeded = failed_count == 0;
+        if !accepted.is_empty() {
+            self.selected_tasks = accepted.iter().cloned().collect();
+            self.selected = accepted.first().cloned();
+            self.range_anchor = self.selected.clone();
+        }
+
+        if all_succeeded {
+            self.add_input
+                .update(cx, |input, cx| input.set_text("", cx));
+            self.show_notice(
+                format!(
+                    "{} download{} accepted by aria2.",
+                    accepted.len(),
+                    if accepted.len() == 1 { "" } else { "s" }
+                ),
+                false,
+                cx,
+            );
+            self.close_add_download(window, cx);
+            return;
+        }
+
+        let retryable_sources = result
+            .items
+            .iter()
+            .filter_map(|item| match &item.outcome {
+                CommandOutcomeView::Failure(error)
+                    if error.retryable && !error.outcome_unknown() =>
+                {
+                    Some(item.sources.iter().map(|source| source.uri.as_str()))
+                }
+                CommandOutcomeView::Success { .. } | CommandOutcomeView::Failure(_) => None,
+            })
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.add_dialog.updating_input_from_result =
+            self.add_input.read(cx).text() != retryable_sources;
+        self.add_input
+            .update(cx, |input, cx| input.set_text(retryable_sources, cx));
+        self.add_dialog.results = result.items;
+        self.show_notice(
+            format!(
+                "{} accepted, {failed_count} need attention.",
+                accepted.len()
+            ),
+            true,
+            cx,
+        );
+        cx.notify();
     }
 
     pub fn set_task_command_result(
         &mut self,
         result: TaskCommandResultView,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let matches_pending = self.pending_task_command.as_ref().is_some_and(|pending| {
@@ -476,29 +830,219 @@ impl AppShell {
         match result.outcome {
             CommandOutcomeView::Success { task } => {
                 self.show_notice(result.command.success_label(), false, cx);
-                if result.command == TaskCommandView::RemoveTask {
-                    self.selected = None;
-                    self.details_drawer = None;
-                } else if result.command == TaskCommandView::Retry {
-                    if let Some(identity) = task {
-                        self.selected = Some(identity);
+                match result.command {
+                    TaskCommandView::RemoveTask | TaskCommandView::RemoveTaskAndFiles => {
+                        self.selected_tasks.remove(&result.identity);
+                        self.range_anchor = None;
+                        self.selected = None;
+                        self.details_drawer = None;
                     }
-                    self.details_drawer = None;
+                    TaskCommandView::Retry => {
+                        self.selected_tasks.remove(&result.identity);
+                        if let Some(identity) = task {
+                            self.selected_tasks.insert(identity.clone());
+                            self.selected = Some(identity);
+                        }
+                        self.range_anchor = self.selected.clone();
+                        self.details_drawer = None;
+                    }
+                    TaskCommandView::SetOutputName { .. } => {
+                        self.close_task_output_name(window, cx);
+                    }
+                    TaskCommandView::Pause | TaskCommandView::Resume => {}
                 }
             }
-            CommandOutcomeView::Failure(error) => {
-                let message = if error.outcome_unknown() {
-                    format!(
+            CommandOutcomeView::Failure(mut error) => {
+                if error.outcome_unknown() {
+                    error.summary = format!(
                         "Command outcome is unknown; AriaDeck will not retry it automatically. {}",
                         error.summary
-                    )
+                    );
+                }
+                if matches!(result.command, TaskCommandView::SetOutputName { .. }) {
+                    if let Some(dialog) = &mut self.output_name_dialog {
+                        dialog.error = Some(error);
+                    } else {
+                        self.show_notice(error.summary, true, cx);
+                    }
                 } else {
-                    error.summary
-                };
-                self.show_notice(message, true, cx);
+                    self.show_notice(error.summary, true, cx);
+                }
             }
         }
         cx.notify();
+    }
+
+    pub fn set_batch_task_command_result(
+        &mut self,
+        result: BatchTaskCommandResultView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let matches_pending = self.pending_batch_command.as_ref().is_some_and(|pending| {
+            pending.request_id == result.request_id
+                && pending.session == result.session
+                && pending.identities == result.identities
+                && pending.command == result.command
+        });
+        if !matches_pending {
+            return;
+        }
+
+        self.pending_batch_command = None;
+        match result.outcome {
+            BatchCommandOutcomeView::Success { succeeded } => {
+                self.apply_batch_selection_result(
+                    &result.identities,
+                    result.command,
+                    &succeeded,
+                    &[],
+                );
+                let summary = if result.command == BatchTaskCommandView::Retry {
+                    format!(
+                        "Created {} new retry task{}; failed results were kept.",
+                        succeeded.len(),
+                        if succeeded.len() == 1 { "" } else { "s" }
+                    )
+                } else {
+                    format!(
+                        "{} completed for {} task{}.",
+                        result.command.label(),
+                        succeeded.len(),
+                        if succeeded.len() == 1 { "" } else { "s" }
+                    )
+                };
+                self.show_notice(summary, false, cx);
+            }
+            BatchCommandOutcomeView::PartialSuccess { succeeded, failed } => {
+                let failure_details = failed.clone();
+                self.apply_batch_selection_result(
+                    &result.identities,
+                    result.command,
+                    &succeeded,
+                    &failed,
+                );
+                let summary = if result.command == BatchTaskCommandView::Retry {
+                    format!(
+                        "Retry created {} new task{}; {} failed. Original failed results were kept and unresolved items remain selected.",
+                        succeeded.len(),
+                        if succeeded.len() == 1 { "" } else { "s" },
+                        failed.len()
+                    )
+                } else {
+                    format!(
+                        "{}: {} succeeded, {} failed. Failed tasks remain selected.",
+                        result.command.label(),
+                        succeeded.len(),
+                        failed.len()
+                    )
+                };
+                self.show_notice(summary, true, cx);
+                self.open_batch_failure_details(result.command, failure_details, window, cx);
+            }
+            BatchCommandOutcomeView::Failure { failed } => {
+                let failure_details = failed.clone();
+                self.apply_batch_selection_result(&result.identities, result.command, &[], &failed);
+                let detail = failed
+                    .first()
+                    .map(|failure| failure.error.summary.as_str())
+                    .unwrap_or("The batch command returned no item results.");
+                self.show_notice(
+                    format!(
+                        "{} failed for {} task{}. {detail}",
+                        result.command.label(),
+                        failed.len().max(result.identities.len()),
+                        if failed.len().max(result.identities.len()) == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ),
+                    true,
+                    cx,
+                );
+                self.open_batch_failure_details(result.command, failure_details, window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn open_batch_failure_details(
+        &mut self,
+        command: BatchTaskCommandView,
+        failures: Vec<BatchTaskFailureView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.batch_failure_details = Some(BatchFailureDetails {
+            command,
+            failures,
+            previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
+        });
+        cx.defer_in(window, |this, window, cx| {
+            if this.batch_failure_details.is_some() {
+                window.focus(&this.batch_failure_close_focus, cx);
+            }
+        });
+    }
+
+    fn close_batch_failure_details_action(
+        &mut self,
+        _: &CloseBatchFailures,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_batch_failure_details(window, cx);
+    }
+
+    fn close_batch_failure_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(details) = self.batch_failure_details.take() else {
+            return;
+        };
+        if let Some(focus) = details.previous_focus.and_then(|focus| focus.upgrade()) {
+            window.focus(&focus, cx);
+        } else {
+            window.focus(&self.focus_handle, cx);
+        }
+        cx.notify();
+    }
+
+    fn apply_batch_selection_result(
+        &mut self,
+        requested: &[TaskIdentity],
+        command: BatchTaskCommandView,
+        succeeded: &[TaskIdentity],
+        failed: &[BatchTaskFailureView],
+    ) {
+        let requested = requested.iter().cloned().collect::<HashSet<_>>();
+        let failed_identities = failed
+            .iter()
+            .filter_map(|failure| failure.identity.clone())
+            .collect::<HashSet<_>>();
+        let has_global_failure = failed.iter().any(|failure| failure.identity.is_none());
+        if !has_global_failure {
+            self.selected_tasks.retain(|identity| {
+                !requested.contains(identity) || failed_identities.contains(identity)
+            });
+        }
+        if command == BatchTaskCommandView::Retry {
+            self.selected_tasks.extend(succeeded.iter().cloned());
+        }
+
+        if matches!(
+            command,
+            BatchTaskCommandView::Retry
+                | BatchTaskCommandView::RemoveTask
+                | BatchTaskCommandView::RemoveTaskAndFiles
+        ) && self.selected.as_ref().is_some_and(|identity| {
+            requested.contains(identity) && !failed_identities.contains(identity)
+        }) {
+            self.selected = self.selected_tasks.iter().next().cloned();
+            self.details_drawer = None;
+        }
+        if self.selected_tasks.is_empty() {
+            self.range_anchor = None;
+        }
     }
 
     pub fn set_task_details_result(
@@ -549,6 +1093,12 @@ impl AppShell {
                 let message = match source {
                     SettingsSaveSource::Theme => "Appearance updated.",
                     SettingsSaveSource::Directory => "Download directory saved.",
+                    SettingsSaveSource::Proxy => {
+                        self.settings_proxy_password_input
+                            .update(cx, |input, cx| input.set_text("", cx));
+                        self.settings_page.clear_proxy_password = false;
+                        "Download proxy settings saved."
+                    }
                 };
                 self.show_notice(message, false, cx);
             }
@@ -580,6 +1130,20 @@ impl AppShell {
     }
 
     #[must_use]
+    pub fn selected_task_count(&self) -> usize {
+        self.selected_tasks.len()
+    }
+
+    #[must_use]
+    pub fn visible_selected_task_count(&self) -> usize {
+        self.snapshot
+            .tasks
+            .iter()
+            .filter(|task| self.selected_tasks.contains(&task.identity))
+            .count()
+    }
+
+    #[must_use]
     pub fn rendered_range(&self) -> Range<usize> {
         self.rendered_range.clone()
     }
@@ -595,6 +1159,7 @@ impl AppShell {
         self.speed_popover_open = false;
         if query_changed {
             self.query.filter = filter;
+            self.clear_task_selection();
         }
         self.list_scroll
             .scroll_to_item_strict(0, ScrollStrategy::Top);
@@ -616,6 +1181,8 @@ impl AppShell {
     fn clear_search(&mut self, _: &ClearSearch, window: &mut Window, cx: &mut Context<Self>) {
         if self.speed_popover_open {
             self.close_speed_popover(window, cx);
+        } else if self.output_name_dialog.is_some() {
+            self.close_task_output_name(window, cx);
         } else if self.remove_confirmation.is_some() {
             self.close_remove_confirmation(window, cx);
         } else if self.page == AppPage::Settings {
@@ -623,6 +1190,9 @@ impl AppShell {
         } else if !self.search_input.read(cx).text().is_empty() {
             self.search_input
                 .update(cx, |input, cx| input.set_text("", cx));
+        } else if !self.selected_tasks.is_empty() {
+            self.clear_task_selection();
+            cx.notify();
         } else if self.details_drawer.take().is_some() {
             window.focus(&self.focus_handle, cx);
             cx.notify();
@@ -659,15 +1229,129 @@ impl AppShell {
     }
 
     fn select_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_at_with_modifiers(index, false, false, window, cx);
+    }
+
+    fn select_at_with_modifiers(
+        &mut self,
+        index: usize,
+        extend_range: bool,
+        toggle: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(task) = self.snapshot.tasks.get(index) else {
             return;
         };
         let task = task.clone();
+        if extend_range {
+            let anchor_index = self
+                .range_anchor
+                .as_ref()
+                .and_then(|anchor| {
+                    self.snapshot
+                        .tasks
+                        .iter()
+                        .position(|candidate| &candidate.identity == anchor)
+                })
+                .or_else(|| self.selected_index())
+                .unwrap_or(index);
+            let (start, end) = if anchor_index <= index {
+                (anchor_index, index)
+            } else {
+                (index, anchor_index)
+            };
+            self.selected_tasks = self.snapshot.tasks[start..=end]
+                .iter()
+                .map(|task| task.identity.clone())
+                .collect();
+            if self.range_anchor.is_none() {
+                self.range_anchor = self
+                    .snapshot
+                    .tasks
+                    .get(anchor_index)
+                    .map(|task| task.identity.clone());
+            }
+        } else if toggle {
+            if !self.selected_tasks.remove(&task.identity) {
+                self.selected_tasks.insert(task.identity.clone());
+            }
+            self.range_anchor = Some(task.identity.clone());
+        } else {
+            self.selected_tasks.clear();
+            self.selected_tasks.insert(task.identity.clone());
+            self.range_anchor = Some(task.identity.clone());
+        }
         self.selected = Some(task.identity.clone());
         self.list_scroll
             .scroll_to_item(index, ScrollStrategy::Nearest);
         if self.details_drawer.is_some() {
             self.open_details_for(task, cx);
+        }
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    fn select_all_tasks(
+        &mut self,
+        _: &SelectAllTasks,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.page != AppPage::Downloads
+            || self.add_dialog.open
+            || self.output_name_dialog.is_some()
+            || self.remove_confirmation.is_some()
+            || self.batch_failure_details.is_some()
+            || self.snapshot.tasks.is_empty()
+        {
+            return;
+        }
+        self.selected_tasks
+            .extend(self.snapshot.tasks.iter().map(|task| task.identity.clone()));
+        if self.selected_index().is_none() {
+            self.selected = self
+                .snapshot
+                .tasks
+                .first()
+                .map(|task| task.identity.clone());
+        }
+        self.range_anchor = self.selected.clone();
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    fn toggle_select_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.snapshot.tasks.is_empty() {
+            return;
+        }
+        let all_selected = self
+            .snapshot
+            .tasks
+            .iter()
+            .all(|task| self.selected_tasks.contains(&task.identity));
+        if all_selected {
+            let visible = self
+                .snapshot
+                .tasks
+                .iter()
+                .map(|task| task.identity.clone())
+                .collect::<HashSet<_>>();
+            self.selected_tasks
+                .retain(|identity| !visible.contains(identity));
+            self.range_anchor = None;
+        } else {
+            self.selected_tasks
+                .extend(self.snapshot.tasks.iter().map(|task| task.identity.clone()));
+            self.range_anchor = self.selected.clone().or_else(|| {
+                self.snapshot
+                    .tasks
+                    .first()
+                    .map(|task| task.identity.clone())
+            });
+            if self.selected.is_none() {
+                self.selected = self.range_anchor.clone();
+            }
         }
         window.focus(&self.focus_handle, cx);
         cx.notify();
@@ -681,6 +1365,11 @@ impl AppShell {
             .position(|task| &task.identity == selected)
     }
 
+    fn clear_task_selection(&mut self) {
+        self.selected_tasks.clear();
+        self.range_anchor = None;
+    }
+
     fn apply_settings(&mut self, settings: SettingsView, cx: &mut Context<Self>) {
         self.theme = theme_for_scheme(settings.color_scheme);
         self.settings = settings.clone();
@@ -689,18 +1378,39 @@ impl AppShell {
             .update(cx, |input, cx| input.set_theme(self.theme, cx));
         self.add_input
             .update(cx, |input, cx| input.set_theme(self.theme, cx));
+        self.output_name_input
+            .update(cx, |input, cx| input.set_theme(self.theme, cx));
         self.settings_directory_input
             .update(cx, |input, cx| input.set_theme(self.theme, cx));
+        for input in [
+            &self.settings_all_proxy_input,
+            &self.settings_http_proxy_input,
+            &self.settings_https_proxy_input,
+            &self.settings_ftp_proxy_input,
+            &self.settings_no_proxy_input,
+            &self.settings_proxy_username_input,
+            &self.settings_proxy_password_input,
+        ] {
+            input.update(cx, |input, cx| input.set_theme(self.theme, cx));
+        }
     }
 
     fn focus_next(&mut self, _: &FocusNext, window: &mut Window, cx: &mut Context<Self>) {
         window.focus_next(cx);
         if self.add_dialog.open && !self.add_dialog_focus.contains_focused(window, cx) {
             window.focus(&self.add_input.focus_handle(cx), cx);
+        } else if self.output_name_dialog.is_some()
+            && !self.output_name_dialog_focus.contains_focused(window, cx)
+        {
+            window.focus(&self.output_name_input.focus_handle(cx), cx);
         } else if self.remove_confirmation.is_some()
             && !self.remove_dialog_focus.contains_focused(window, cx)
         {
             window.focus(&self.remove_cancel_focus, cx);
+        } else if self.batch_failure_details.is_some()
+            && !self.batch_failure_dialog_focus.contains_focused(window, cx)
+        {
+            window.focus(&self.batch_failure_close_focus, cx);
         }
     }
 
@@ -708,10 +1418,18 @@ impl AppShell {
         window.focus_prev(cx);
         if self.add_dialog.open && !self.add_dialog_focus.contains_focused(window, cx) {
             window.focus(&self.add_submit_focus, cx);
+        } else if self.output_name_dialog.is_some()
+            && !self.output_name_dialog_focus.contains_focused(window, cx)
+        {
+            window.focus(&self.output_name_submit_focus, cx);
         } else if self.remove_confirmation.is_some()
             && !self.remove_dialog_focus.contains_focused(window, cx)
         {
             window.focus(&self.remove_submit_focus, cx);
+        } else if self.batch_failure_details.is_some()
+            && !self.batch_failure_dialog_focus.contains_focused(window, cx)
+        {
+            window.focus(&self.batch_failure_close_focus, cx);
         }
     }
 
@@ -720,18 +1438,45 @@ impl AppShell {
             window.focus(&self.settings_directory_input.focus_handle(cx), cx);
             return;
         }
-        if self.add_dialog.open || self.remove_confirmation.is_some() {
+        if self.add_dialog.open
+            || self.output_name_dialog.is_some()
+            || self.remove_confirmation.is_some()
+            || self.batch_failure_details.is_some()
+        {
             return;
         }
         let download_directory = self.settings.download_directory.clone();
         self.settings_directory_input
             .update(cx, |input, cx| input.set_text(download_directory, cx));
+        let proxy = self.settings.download_proxy.clone();
+        self.settings_all_proxy_input.update(cx, |input, cx| {
+            input.set_text(proxy.all_proxy.clone(), cx);
+        });
+        self.settings_http_proxy_input.update(cx, |input, cx| {
+            input.set_text(proxy.http_proxy.clone(), cx);
+        });
+        self.settings_https_proxy_input.update(cx, |input, cx| {
+            input.set_text(proxy.https_proxy.clone(), cx);
+        });
+        self.settings_ftp_proxy_input.update(cx, |input, cx| {
+            input.set_text(proxy.ftp_proxy.clone(), cx);
+        });
+        self.settings_no_proxy_input.update(cx, |input, cx| {
+            input.set_text(proxy.no_proxy.join(", "), cx);
+        });
+        self.settings_proxy_username_input.update(cx, |input, cx| {
+            input.set_text(proxy.username.clone(), cx);
+        });
+        self.settings_proxy_password_input
+            .update(cx, |input, cx| input.set_text("", cx));
         self.page = AppPage::Settings;
         self.details_drawer = None;
         self.speed_popover_open = false;
         self.settings_page = SettingsPage {
             previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
             draft_color_scheme: self.settings.color_scheme,
+            draft_proxy_mode: proxy.mode,
+            clear_proxy_password: false,
             error: None,
         };
         cx.notify();
@@ -788,11 +1533,11 @@ impl AppShell {
             cx.notify();
             return;
         }
+        let mut settings = self.settings.clone();
+        settings.download_directory = download_directory;
         self.request_settings_save(
-            SettingsView {
-                color_scheme: self.settings.color_scheme,
-                download_directory,
-            },
+            settings,
+            ProxyPasswordUpdateView::Unchanged,
             SettingsSaveSource::Directory,
             cx,
         );
@@ -803,19 +1548,95 @@ impl AppShell {
             return;
         }
         self.settings_page.draft_color_scheme = scheme;
+        let mut settings = self.settings.clone();
+        settings.color_scheme = scheme;
         self.request_settings_save(
-            SettingsView {
-                color_scheme: scheme,
-                download_directory: self.settings.download_directory.clone(),
-            },
+            settings,
+            ProxyPasswordUpdateView::Unchanged,
             SettingsSaveSource::Theme,
             cx,
         );
     }
 
+    fn select_proxy_mode(&mut self, mode: ProxyModeView, cx: &mut Context<Self>) {
+        if self.pending_settings_save.is_some() || mode == self.settings_page.draft_proxy_mode {
+            return;
+        }
+        self.settings_page.draft_proxy_mode = mode;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    fn clear_saved_proxy_password(&mut self, cx: &mut Context<Self>) {
+        if self.pending_settings_save.is_some() || !self.settings.download_proxy.has_password {
+            return;
+        }
+        let clear = !self.settings_page.clear_proxy_password;
+        if clear {
+            self.settings_proxy_password_input
+                .update(cx, |input, cx| input.set_text("", cx));
+        }
+        self.settings_page.clear_proxy_password = clear;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    fn submit_proxy_settings(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        let mut settings = self.settings.clone();
+        let password = self
+            .settings_proxy_password_input
+            .read(cx)
+            .text()
+            .to_owned();
+        let password_update = if self.settings_page.clear_proxy_password {
+            ProxyPasswordUpdateView::Clear
+        } else if password.is_empty() {
+            ProxyPasswordUpdateView::Unchanged
+        } else {
+            ProxyPasswordUpdateView::Set(SecretStringView::new(password))
+        };
+        settings.download_proxy = DownloadProxySettingsView {
+            mode: self.settings_page.draft_proxy_mode,
+            all_proxy: self.settings_all_proxy_input.read(cx).text().trim().into(),
+            http_proxy: self.settings_http_proxy_input.read(cx).text().trim().into(),
+            https_proxy: self
+                .settings_https_proxy_input
+                .read(cx)
+                .text()
+                .trim()
+                .into(),
+            ftp_proxy: self.settings_ftp_proxy_input.read(cx).text().trim().into(),
+            no_proxy: self
+                .settings_no_proxy_input
+                .read(cx)
+                .text()
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(ToOwned::to_owned)
+                .collect(),
+            username: self
+                .settings_proxy_username_input
+                .read(cx)
+                .text()
+                .trim()
+                .into(),
+            has_password: match &password_update {
+                ProxyPasswordUpdateView::Unchanged => self.settings.download_proxy.has_password,
+                ProxyPasswordUpdateView::Clear => false,
+                ProxyPasswordUpdateView::Set(_) => true,
+            },
+        };
+        self.request_settings_save(settings, password_update, SettingsSaveSource::Proxy, cx);
+    }
+
     fn request_settings_save(
         &mut self,
         settings: SettingsView,
+        proxy_password: ProxyPasswordUpdateView,
         source: SettingsSaveSource,
         cx: &mut Context<Self>,
     ) {
@@ -833,6 +1654,7 @@ impl AppShell {
             SettingsSaveRequestView {
                 request_id,
                 settings,
+                proxy_password,
             },
         ));
         cx.notify();
@@ -898,6 +1720,15 @@ impl AppShell {
             window.focus(&self.add_input.focus_handle(cx), cx);
             return;
         }
+        if self.output_name_dialog.is_some()
+            || self.remove_confirmation.is_some()
+            || self.batch_failure_details.is_some()
+        {
+            return;
+        }
+        if self.pending_task_command.is_some() || self.pending_batch_command.is_some() {
+            return;
+        }
         if !self.snapshot.commands_available() {
             self.show_notice(
                 "Connect and finish synchronization before adding a download.",
@@ -911,9 +1742,13 @@ impl AppShell {
             .update(cx, |input, cx| input.set_text("", cx));
         self.add_dialog = AddDownloadDialog {
             open: true,
+            mode: AddDownloadModeView::SeparateTasks,
+            file_conflict: FileConflictPolicyView::AutoRename,
             previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
             pending: None,
             error: None,
+            results: Vec::new(),
+            updating_input_from_result: false,
         };
         cx.notify();
         cx.defer_in(window, |this, window, cx| {
@@ -963,11 +1798,11 @@ impl AppShell {
         if !self.add_dialog.open || self.add_dialog.pending.is_some() {
             return;
         }
-        let uri = self.add_input.read(cx).text().trim().to_owned();
-        if uri.is_empty() {
+        let sources = parse_add_download_sources(self.add_input.read(cx).text());
+        if sources.is_empty() {
             self.add_dialog.error = Some(OperationErrorView {
                 code: "validation.invalid_request".into(),
-                summary: "Enter a URL or magnet link.".into(),
+                summary: "Enter at least one URL or magnet link.".into(),
                 retryable: false,
             });
             cx.notify();
@@ -994,11 +1829,34 @@ impl AppShell {
             AddDownloadRequestView {
                 request_id,
                 session,
-                uri,
+                sources,
+                mode: self.add_dialog.mode,
                 destination: (!self.settings.download_directory.is_empty())
                     .then(|| self.settings.download_directory.clone()),
+                required_bytes: None,
+                file_conflict: self.add_dialog.file_conflict,
             },
         ));
+        cx.notify();
+    }
+
+    fn set_add_download_mode(&mut self, mode: AddDownloadModeView, cx: &mut Context<Self>) {
+        if self.add_dialog.pending.is_some() || self.add_dialog.mode == mode {
+            return;
+        }
+        self.add_dialog.mode = mode;
+        self.add_dialog.error = None;
+        self.add_dialog.results.clear();
+        cx.notify();
+    }
+
+    fn set_file_conflict_policy(&mut self, policy: FileConflictPolicyView, cx: &mut Context<Self>) {
+        if self.add_dialog.pending.is_some() || self.add_dialog.file_conflict == policy {
+            return;
+        }
+        self.add_dialog.file_conflict = policy;
+        self.add_dialog.error = None;
+        self.add_dialog.results.clear();
         cx.notify();
     }
 
@@ -1081,7 +1939,11 @@ impl AppShell {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.begin_task_command(TaskCommandView::Pause, cx);
+        if self.visible_selected_task_count() > 1 {
+            self.begin_batch_task_command(BatchTaskCommandView::Pause, cx);
+        } else {
+            self.begin_task_command(TaskCommandView::Pause, cx);
+        }
     }
 
     fn resume_selected(
@@ -1090,7 +1952,11 @@ impl AppShell {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.begin_task_command(TaskCommandView::Resume, cx);
+        if self.visible_selected_task_count() > 1 {
+            self.begin_batch_task_command(BatchTaskCommandView::Resume, cx);
+        } else {
+            self.begin_task_command(TaskCommandView::Resume, cx);
+        }
     }
 
     fn retry_selected(
@@ -1099,7 +1965,152 @@ impl AppShell {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.begin_task_command(TaskCommandView::Retry, cx);
+        if self.visible_selected_task_count() > 1 {
+            self.begin_batch_task_command(BatchTaskCommandView::Retry, cx);
+        } else {
+            self.begin_task_command(TaskCommandView::Retry, cx);
+        }
+    }
+
+    fn open_task_output_name_action(
+        &mut self,
+        _: &OpenTaskOutputName,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_task_output_name(window, cx);
+    }
+
+    fn open_task_output_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.output_name_dialog.is_some() {
+            window.focus(&self.output_name_input.focus_handle(cx), cx);
+            return;
+        }
+        if self.add_dialog.open
+            || self.remove_confirmation.is_some()
+            || self.batch_failure_details.is_some()
+            || self.pending_task_command.is_some()
+            || self.pending_batch_command.is_some()
+        {
+            return;
+        }
+        let Some(task) = self.selected_task_view() else {
+            self.show_notice("Select a visible task first.", true, cx);
+            return;
+        };
+        if !task.can_set_output_name() || !self.snapshot.commands_available() {
+            self.show_notice(
+                "Output names can be changed only for non-terminal direct URI tasks.",
+                true,
+                cx,
+            );
+            return;
+        }
+
+        let initial_name = if task.name_state.is_resolving() {
+            String::new()
+        } else {
+            task.display_name.clone()
+        };
+        self.output_name_input
+            .update(cx, |input, cx| input.set_text(initial_name, cx));
+        self.output_name_dialog = Some(TaskOutputNameDialog {
+            identity: task.identity.clone(),
+            display_name: task_display_name(&task),
+            active: task.status == TaskStatusView::Active,
+            previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
+            error: None,
+        });
+        cx.notify();
+        cx.defer_in(window, |this, window, cx| {
+            if this.output_name_dialog.is_some() {
+                window.focus(&this.output_name_input.focus_handle(cx), cx);
+            }
+        });
+    }
+
+    fn close_task_output_name_action(
+        &mut self,
+        _: &CloseTaskOutputName,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_task_output_name(window, cx);
+    }
+
+    fn close_task_output_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.output_name_dialog.is_none()
+            || self.pending_task_command.as_ref().is_some_and(|pending| {
+                matches!(&pending.command, TaskCommandView::SetOutputName { .. })
+            })
+        {
+            return;
+        }
+        let previous_focus = self
+            .output_name_dialog
+            .take()
+            .and_then(|dialog| dialog.previous_focus)
+            .and_then(|focus| focus.upgrade());
+        if let Some(focus) = previous_focus {
+            window.focus(&focus, cx);
+        } else {
+            window.focus(&self.focus_handle, cx);
+        }
+        cx.notify();
+    }
+
+    fn submit_task_output_name_action(
+        &mut self,
+        _: &SubmitTaskOutputName,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.submit_task_output_name(cx);
+    }
+
+    fn submit_task_output_name(&mut self, cx: &mut Context<Self>) {
+        if self.pending_task_command.is_some() {
+            return;
+        }
+        let Some(identity) = self
+            .output_name_dialog
+            .as_ref()
+            .map(|dialog| dialog.identity.clone())
+        else {
+            return;
+        };
+        let output_name = self.output_name_input.read(cx).text().trim().to_owned();
+        if let Some(summary) = output_name_validation_error(&output_name) {
+            if let Some(dialog) = &mut self.output_name_dialog {
+                dialog.error = Some(OperationErrorView {
+                    code: "validation.invalid_output_name".into(),
+                    summary: summary.into(),
+                    retryable: false,
+                });
+            }
+            cx.notify();
+            return;
+        }
+        let current_task = self
+            .snapshot
+            .tasks
+            .iter()
+            .find(|task| task.identity == identity);
+        if self.selected.as_ref() != Some(&identity)
+            || current_task.is_none_or(|task| !task.can_set_output_name())
+        {
+            if let Some(dialog) = &mut self.output_name_dialog {
+                dialog.error = Some(OperationErrorView {
+                    code: "command.task_changed".into(),
+                    summary: "The task changed. Close this dialog and review its current state."
+                        .into(),
+                    retryable: false,
+                });
+            }
+            cx.notify();
+            return;
+        }
+        self.begin_task_command(TaskCommandView::SetOutputName { output_name }, cx);
     }
 
     fn remove_selected(
@@ -1112,10 +2123,13 @@ impl AppShell {
     }
 
     fn begin_task_command(&mut self, command: TaskCommandView, cx: &mut Context<Self>) {
-        if self.pending_task_command.is_some() {
+        if self.pending_task_command.is_some()
+            || self.pending_batch_command.is_some()
+            || self.batch_failure_details.is_some()
+        {
             return;
         }
-        let Some(task) = self.selected_task_view() else {
+        let Some(task) = self.command_target_task_view() else {
             self.show_notice("Select a visible task first.", true, cx);
             return;
         };
@@ -1123,13 +2137,16 @@ impl AppShell {
             TaskCommandView::Pause => task.status.can_pause(),
             TaskCommandView::Resume => task.status.can_resume(),
             TaskCommandView::Retry => task.status.can_retry(),
-            TaskCommandView::RemoveTask => task.status.can_remove(),
+            TaskCommandView::SetOutputName { .. } => task.can_set_output_name(),
+            TaskCommandView::RemoveTask | TaskCommandView::RemoveTaskAndFiles => {
+                task.status.can_remove()
+            }
         };
         if !allowed {
             self.show_notice(
                 format!(
                     "{} is not available while the task is {}.",
-                    task_command_label(command),
+                    task_command_label(&command),
                     task.status.label().to_lowercase()
                 ),
                 true,
@@ -1153,7 +2170,7 @@ impl AppShell {
             request_id,
             session: session.clone(),
             identity: identity.clone(),
-            command,
+            command: command.clone(),
         });
         self.show_notice(command.progress_label(), false, cx);
         cx.emit(AppShellEvent::TaskCommandRequested(
@@ -1167,11 +2184,103 @@ impl AppShell {
         cx.notify();
     }
 
-    fn confirm_remove_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.remove_confirmation.is_some() || self.pending_task_command.is_some() {
+    fn begin_batch_task_command(&mut self, command: BatchTaskCommandView, cx: &mut Context<Self>) {
+        if self.pending_task_command.is_some()
+            || self.pending_batch_command.is_some()
+            || self.batch_failure_details.is_some()
+        {
             return;
         }
-        let Some(task) = self.selected_task_view() else {
+        let identities = self
+            .snapshot
+            .tasks
+            .iter()
+            .filter(|task| self.selected_tasks.contains(&task.identity))
+            .map(|task| task.identity.clone())
+            .collect::<Vec<_>>();
+        if identities.len() < 2 {
+            self.show_notice(
+                "Select at least two visible tasks for a batch action.",
+                true,
+                cx,
+            );
+            return;
+        }
+        let Some(session) = self
+            .snapshot
+            .commands_available()
+            .then(|| self.snapshot.engine_session())
+            .flatten()
+        else {
+            self.show_notice("The engine is not ready for commands.", true, cx);
+            return;
+        };
+        let request_id = self.allocate_request_id();
+        self.pending_batch_command = Some(PendingBatchTaskCommand {
+            request_id,
+            session: session.clone(),
+            identities: identities.clone(),
+            command,
+        });
+        self.show_notice(command.progress_label(), false, cx);
+        cx.emit(AppShellEvent::BatchTaskCommandRequested(
+            BatchTaskCommandRequestView {
+                request_id,
+                session,
+                identities,
+                command,
+            },
+        ));
+        cx.notify();
+    }
+
+    fn confirm_remove_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remove_confirmation.is_some()
+            || self.output_name_dialog.is_some()
+            || self.batch_failure_details.is_some()
+            || self.pending_task_command.is_some()
+            || self.pending_batch_command.is_some()
+        {
+            return;
+        }
+        let visible_selected_count = self.visible_selected_task_count();
+        if visible_selected_count > 1 {
+            let selected_tasks = self
+                .snapshot
+                .tasks
+                .iter()
+                .filter(|task| self.selected_tasks.contains(&task.identity))
+                .collect::<Vec<_>>();
+            let identities = selected_tasks
+                .iter()
+                .map(|task| task.identity.clone())
+                .collect::<Vec<_>>();
+            if identities.len() > 1 && self.snapshot.commands_available() {
+                self.remove_confirmation = Some(RemoveConfirmation {
+                    display_name: format!("{} selected tasks", identities.len()),
+                    identities,
+                    has_live_tasks: selected_tasks.iter().any(|task| !task.status.is_terminal()),
+                    has_terminal_tasks: selected_tasks.iter().any(|task| task.status.is_terminal()),
+                    delete_files: false,
+                    previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
+                });
+                cx.notify();
+                cx.defer_in(window, |this, window, cx| {
+                    if this.remove_confirmation.is_some() {
+                        window.focus(&this.remove_cancel_focus, cx);
+                    }
+                });
+            }
+            return;
+        }
+        let Some(task) = self.command_target_task_view() else {
+            if !self.selected_tasks.is_empty() {
+                self.show_notice(
+                    "Selected tasks are outside the current result. Clear the hidden selection or change the query.",
+                    true,
+                    cx,
+                );
+            }
             return;
         };
         if !task.status.can_remove() || !self.snapshot.commands_available() {
@@ -1183,9 +2292,13 @@ impl AppShell {
             return;
         }
 
+        let display_name = task_display_name(&task);
         self.remove_confirmation = Some(RemoveConfirmation {
-            identity: task.identity,
-            display_name: task.display_name,
+            identities: vec![task.identity],
+            display_name,
+            has_live_tasks: !task.status.is_terminal(),
+            has_terminal_tasks: task.status.is_terminal(),
+            delete_files: false,
             previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
         });
         cx.notify();
@@ -1215,15 +2328,54 @@ impl AppShell {
         let Some(confirmation) = self.remove_confirmation.take() else {
             return;
         };
-        if self.selected.as_ref() != Some(&confirmation.identity) {
+        let selection_matches = if confirmation.identities.len() > 1 {
+            confirmation
+                .identities
+                .iter()
+                .all(|identity| self.selected_tasks.contains(identity))
+        } else {
+            confirmation
+                .identities
+                .first()
+                .is_some_and(|identity| self.selected.as_ref() == Some(identity))
+        };
+        if !selection_matches {
             self.show_notice(
-                "The selected task changed. Review the task before removing it.",
+                "The task selection changed. Review it before removing tasks.",
                 true,
                 cx,
             );
             return;
         }
-        self.begin_task_command(TaskCommandView::RemoveTask, cx);
+        if confirmation.identities.len() > 1 {
+            self.begin_batch_task_command(
+                if confirmation.delete_files {
+                    BatchTaskCommandView::RemoveTaskAndFiles
+                } else {
+                    BatchTaskCommandView::RemoveTask
+                },
+                cx,
+            );
+        } else {
+            self.begin_task_command(
+                if confirmation.delete_files {
+                    TaskCommandView::RemoveTaskAndFiles
+                } else {
+                    TaskCommandView::RemoveTask
+                },
+                cx,
+            );
+        }
+    }
+
+    fn toggle_remove_files(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.engine_health, EngineHealthView::External) {
+            return;
+        }
+        if let Some(confirmation) = &mut self.remove_confirmation {
+            confirmation.delete_files = !confirmation.delete_files;
+            cx.notify();
+        }
     }
 
     fn toggle_speed_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1264,6 +2416,22 @@ impl AppShell {
                     .filter(|drawer| &drawer.identity == selected)
                     .map(|drawer| drawer.overview.clone())
             })
+    }
+
+    fn command_target_task_view(&self) -> Option<DownloadRowView> {
+        let mut visible_selected = self
+            .snapshot
+            .tasks
+            .iter()
+            .filter(|task| self.selected_tasks.contains(&task.identity));
+        let first = visible_selected.next();
+        if first.is_some() && visible_selected.next().is_none() {
+            return first.cloned();
+        }
+        if first.is_none() && !self.selected_tasks.is_empty() {
+            return None;
+        }
+        self.selected_task_view()
     }
 
     fn render_header(&mut self, _window: &Window, cx: &mut Context<Self>) -> Div {
@@ -1595,8 +2763,21 @@ impl AppShell {
             )
     }
 
-    fn render_task_header(&self, layout: TaskLayoutMode) -> Div {
+    fn render_task_header(&mut self, layout: TaskLayoutMode, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
+        let selected_count = self.visible_selected_task_count();
+        let selection_state = if selected_count == 0 {
+            Toggled::False
+        } else if selected_count == self.snapshot.tasks.len() {
+            Toggled::True
+        } else {
+            Toggled::Mixed
+        };
+        let selection_icon = match selection_state {
+            Toggled::False => IconName::Square,
+            Toggled::True => IconName::SquareCheckBig,
+            Toggled::Mixed => IconName::SquareMinus,
+        };
         let header = div()
             .h(px(36.0))
             .flex_none()
@@ -1610,6 +2791,33 @@ impl AppShell {
             .text_xs()
             .font_weight(FontWeight::MEDIUM)
             .text_color(colors.text_muted)
+            .child(
+                div()
+                    .id("select-all-tasks")
+                    .role(Role::CheckBox)
+                    .aria_label(match selection_state {
+                        Toggled::True => "Clear selection",
+                        Toggled::False | Toggled::Mixed => "Select all visible tasks",
+                    })
+                    .aria_toggled(selection_state)
+                    .size(px(20.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(colors.surface_hover))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_select_all(window, cx);
+                    }))
+                    .child(Icon::new(selection_icon).size(IconSize::Small).color(
+                        if selected_count == 0 {
+                            colors.text_muted
+                        } else {
+                            colors.accent
+                        },
+                    )),
+            )
             .child(div().w(px(32.0)).flex_none());
 
         match layout {
@@ -1630,6 +2838,8 @@ impl AppShell {
     fn render_main(&mut self, layout: TaskLayoutMode, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
         let task_count = self.snapshot.tasks.len();
+        let selected_count = self.visible_selected_task_count();
+        let hidden_selected_count = self.selected_tasks.len().saturating_sub(selected_count);
         let content =
             if task_count == 0 {
                 self.render_empty_state(cx)
@@ -1694,11 +2904,26 @@ impl AppShell {
                                     .text_xs()
                                     .text_color(colors.text_muted)
                                     .child(format!("{task_count} visible")),
-                            ),
+                            )
+                            .when(selected_count > 0 || hidden_selected_count > 0, |element| {
+                                element.child(
+                                    div()
+                                        .font_features(tabular_numbers())
+                                        .text_xs()
+                                        .text_color(colors.text_secondary)
+                                        .child(if hidden_selected_count > 0 {
+                                            format!(
+                                                "{selected_count} selected, {hidden_selected_count} hidden"
+                                            )
+                                        } else {
+                                            format!("{selected_count} selected")
+                                        }),
+                                )
+                            }),
                     )
                     .child(self.render_task_toolbar(cx)),
             )
-            .child(self.render_task_header(layout))
+            .child(self.render_task_header(layout, cx))
             .child(div().flex_1().min_h_0().child(content));
 
         div()
@@ -1861,15 +3086,25 @@ impl AppShell {
     }
 
     fn render_task_toolbar(&mut self, cx: &mut Context<Self>) -> Div {
+        let visible_selected_count = self.visible_selected_task_count();
+        if visible_selected_count > 1 {
+            return self.render_batch_task_toolbar(cx);
+        }
+        if !self.selected_tasks.is_empty() && self.selected_tasks.len() > visible_selected_count {
+            return self.render_hidden_selection_toolbar(cx);
+        }
         let colors = self.theme.colors;
         let Some(task) = self.selected_task_view() else {
             return div();
         };
-        let idle = self.pending_task_command.is_none() && self.remove_confirmation.is_none();
+        let idle = self.pending_task_command.is_none()
+            && self.pending_batch_command.is_none()
+            && self.remove_confirmation.is_none()
+            && self.output_name_dialog.is_none();
         let pending_command = self
             .pending_task_command
             .as_ref()
-            .map(|pending| pending.command);
+            .map(|pending| pending.command.clone());
         let commands_available = self.snapshot.commands_available() && idle;
         let details_enabled = self.snapshot.commands_available();
         let pause_enabled = commands_available && task.status.can_pause();
@@ -1962,6 +3197,24 @@ impl AppShell {
                     }),
                 )
             })
+            .when(task.can_set_output_name(), |element| {
+                element.child(
+                    toolbar_icon_button(
+                        "task-output-name-action",
+                        IconName::Pencil,
+                        "Change output name",
+                        ToolbarButtonState::from_flags(commands_available, false),
+                        false,
+                        Some("F2"),
+                        colors,
+                    )
+                    .when(commands_available, |button| {
+                        button.on_click(cx.listener(|this, _, window, cx| {
+                            this.open_task_output_name(window, cx);
+                        }))
+                    }),
+                )
+            })
             .child(
                 toolbar_icon_button(
                     "remove-task-action",
@@ -1969,7 +3222,10 @@ impl AppShell {
                     "Remove",
                     ToolbarButtonState::from_flags(
                         remove_enabled,
-                        pending_command == Some(TaskCommandView::RemoveTask),
+                        matches!(
+                            pending_command,
+                            Some(TaskCommandView::RemoveTask | TaskCommandView::RemoveTaskAndFiles)
+                        ),
                     ),
                     true,
                     Some("Delete"),
@@ -1983,6 +3239,172 @@ impl AppShell {
             )
     }
 
+    fn render_batch_task_toolbar(&mut self, cx: &mut Context<Self>) -> Div {
+        let colors = self.theme.colors;
+        let selected = self
+            .snapshot
+            .tasks
+            .iter()
+            .filter(|task| self.selected_tasks.contains(&task.identity))
+            .collect::<Vec<_>>();
+        let idle = self.pending_task_command.is_none()
+            && self.pending_batch_command.is_none()
+            && self.remove_confirmation.is_none();
+        let commands_available = self.snapshot.commands_available() && idle;
+        let can_pause = selected.iter().any(|task| task.status.can_pause());
+        let can_resume = selected.iter().any(|task| task.status.can_resume());
+        let can_retry = selected.iter().any(|task| task.status.can_retry());
+        let can_remove = selected.iter().any(|task| task.status.can_remove());
+        let pending = self
+            .pending_batch_command
+            .as_ref()
+            .map(|pending| pending.command);
+
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(
+                div()
+                    .mr_2()
+                    .font_features(tabular_numbers())
+                    .text_xs()
+                    .text_color(colors.text_secondary)
+                    .child(format!("{} selected", selected.len())),
+            )
+            .child(
+                toolbar_icon_button(
+                    "batch-pause-action",
+                    IconName::Pause,
+                    "Pause selected",
+                    ToolbarButtonState::from_flags(
+                        commands_available && can_pause,
+                        pending == Some(BatchTaskCommandView::Pause),
+                    ),
+                    false,
+                    Some("Cmd+Shift+P"),
+                    colors,
+                )
+                .when(commands_available && can_pause, |button| {
+                    button.on_click(cx.listener(|this, _, _, cx| {
+                        this.begin_batch_task_command(BatchTaskCommandView::Pause, cx);
+                    }))
+                }),
+            )
+            .child(
+                toolbar_icon_button(
+                    "batch-resume-action",
+                    IconName::Play,
+                    "Resume selected",
+                    ToolbarButtonState::from_flags(
+                        commands_available && can_resume,
+                        pending == Some(BatchTaskCommandView::Resume),
+                    ),
+                    false,
+                    Some("Cmd+Shift+R"),
+                    colors,
+                )
+                .when(commands_available && can_resume, |button| {
+                    button.on_click(cx.listener(|this, _, _, cx| {
+                        this.begin_batch_task_command(BatchTaskCommandView::Resume, cx);
+                    }))
+                }),
+            )
+            .child(
+                toolbar_icon_button(
+                    "batch-retry-action",
+                    IconName::RotateCcw,
+                    "Retry selected",
+                    ToolbarButtonState::from_flags(
+                        commands_available && can_retry,
+                        pending == Some(BatchTaskCommandView::Retry),
+                    ),
+                    false,
+                    Some("Cmd+Alt+R"),
+                    colors,
+                )
+                .when(commands_available && can_retry, |button| {
+                    button.on_click(cx.listener(|this, _, _, cx| {
+                        this.begin_batch_task_command(BatchTaskCommandView::Retry, cx);
+                    }))
+                }),
+            )
+            .child(
+                toolbar_icon_button(
+                    "batch-remove-action",
+                    IconName::Trash2,
+                    "Remove selected",
+                    ToolbarButtonState::from_flags(
+                        commands_available && can_remove,
+                        matches!(
+                            pending,
+                            Some(
+                                BatchTaskCommandView::RemoveTask
+                                    | BatchTaskCommandView::RemoveTaskAndFiles
+                            )
+                        ),
+                    ),
+                    true,
+                    Some("Delete"),
+                    colors,
+                )
+                .when(commands_available && can_remove, |button| {
+                    button.on_click(cx.listener(|this, _, window, cx| {
+                        this.confirm_remove_selected(window, cx);
+                    }))
+                }),
+            )
+            .child(
+                toolbar_icon_button(
+                    "clear-task-selection",
+                    IconName::X,
+                    "Clear selection",
+                    ToolbarButtonState::from_flags(idle, false),
+                    false,
+                    Some("Escape"),
+                    colors,
+                )
+                .when(idle, |button| {
+                    button.on_click(cx.listener(|this, _, _, cx| {
+                        this.clear_task_selection();
+                        cx.notify();
+                    }))
+                }),
+            )
+    }
+
+    fn render_hidden_selection_toolbar(&mut self, cx: &mut Context<Self>) -> Div {
+        let colors = self.theme.colors;
+        let visible = self.visible_selected_task_count();
+        let hidden = self.selected_tasks.len().saturating_sub(visible);
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .font_features(tabular_numbers())
+                    .text_xs()
+                    .text_color(colors.text_secondary)
+                    .child(format!("{visible} visible, {hidden} hidden selected")),
+            )
+            .child(
+                toolbar_icon_button(
+                    "clear-hidden-task-selection",
+                    IconName::X,
+                    "Clear selection",
+                    ToolbarButtonState::Enabled,
+                    false,
+                    Some("Escape"),
+                    colors,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.clear_task_selection();
+                    cx.notify();
+                })),
+            )
+    }
+
     fn render_task_details_drawer(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = self.theme.colors;
         let Some(drawer) = self.details_drawer.as_ref() else {
@@ -1990,6 +3412,7 @@ impl AppShell {
         };
         let identity = drawer.identity.clone();
         let overview = drawer.overview.clone();
+        let display_name = task_display_name(&overview);
         let overview_progress = overview.progress_basis_points();
         let presentation = match &drawer.state {
             TaskDetailsLoadState::Loading { .. } => TaskDetailsPresentation::Loading,
@@ -2259,7 +3682,7 @@ impl AppShell {
         div()
             .id("task-details-drawer")
             .role(Role::Complementary)
-            .aria_label(format!("Task details for {}", overview.display_name))
+            .aria_label(format!("Task details for {display_name}"))
             .w(px(DETAILS_DRAWER_WIDTH))
             .flex_none()
             .min_h_0()
@@ -2307,7 +3730,7 @@ impl AppShell {
                                     .truncate()
                                     .text_sm()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(overview.display_name.clone()),
+                                    .child(display_name),
                             )
                             .child(
                                 div()
@@ -2348,7 +3771,8 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let colors = self.theme.colors;
-        let selected = self.selected.as_ref() == Some(&task.identity);
+        let focused = self.selected.as_ref() == Some(&task.identity);
+        let selected = self.selected_tasks.contains(&task.identity);
         let stable_id = SharedString::from(format!(
             "task-row:{}:{}",
             task.identity.profile_id, task.identity.gid
@@ -2357,6 +3781,7 @@ impl AppShell {
         let basis_points = task.progress_basis_points();
         let progress = f32::from(basis_points.unwrap_or(0)) / 10_000.0;
         let status_color = task_status_color(task.status, colors);
+        let display_name = task_display_name(&task);
         let size_label = if task.total_bytes == 0 {
             format_bytes(task.completed_bytes)
         } else {
@@ -2366,14 +3791,39 @@ impl AppShell {
                 format_bytes(task.total_bytes)
             )
         };
-        let aria_label = format!(
+        let task_error_label = task.error.as_ref().map(|error| {
+            error.code.map_or_else(
+                || error.summary.clone(),
+                |code| format!("Error {code}: {}", error.summary),
+            )
+        });
+        let mut aria_label = format!(
             "{}, {}, {}, download speed {}, ETA {}",
-            task.display_name,
+            display_name.as_str(),
             task.status.label(),
             format_percent(basis_points),
             format_rate(task.download_rate),
             format_eta(task.eta_seconds)
         );
+        if let Some(error) = &task_error_label {
+            aria_label.push_str(", ");
+            aria_label.push_str(error);
+        }
+        let wide_secondary_label = task_error_label
+            .clone()
+            .unwrap_or_else(|| format!("GID {}", task.identity.gid));
+        let compact_secondary_label = task_error_label.clone().unwrap_or_else(|| {
+            format!(
+                "{size_label} · {} · {}",
+                format_rate(task.download_rate),
+                format_eta(task.eta_seconds)
+            )
+        });
+        let secondary_color = if task_error_label.is_some() {
+            colors.danger
+        } else {
+            colors.text_muted
+        };
         let progress_label = format_percent(basis_points);
         let rate_label = format_rate(task.download_rate);
         let eta_label = format_eta(task.eta_seconds);
@@ -2385,7 +3835,7 @@ impl AppShell {
             .aria_selected(selected)
             .aria_position_in_set(index + 1)
             .aria_size_of_set(task_count)
-            .when(selected, |row| row.aria_active_descendant())
+            .when(focused, |row| row.aria_active_descendant())
             .h(px(TASK_ROW_HEIGHT))
             .w_full()
             .flex_none()
@@ -2400,14 +3850,63 @@ impl AppShell {
             } else {
                 colors.background
             })
-            .when(selected, |row| {
+            .when(focused, |row| {
                 row.border_1().border_color(with_alpha(colors.accent, 0.72))
             })
             .hover(|style| style.bg(colors.surface_hover))
             .cursor_pointer()
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.select_at(index, window, cx);
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                let modifiers = event.modifiers();
+                this.select_at_with_modifiers(
+                    index,
+                    modifiers.shift,
+                    modifiers.secondary(),
+                    window,
+                    cx,
+                );
             }))
+            .child(
+                div()
+                    .id(SharedString::from(format!(
+                        "task-select:{}:{}",
+                        task.identity.profile_id, task.identity.gid
+                    )))
+                    .role(Role::CheckBox)
+                    .aria_label(if selected {
+                        format!("Deselect {display_name}")
+                    } else {
+                        format!("Select {display_name}")
+                    })
+                    .aria_toggled(if selected {
+                        Toggled::True
+                    } else {
+                        Toggled::False
+                    })
+                    .size(px(20.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(colors.surface_hover))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.select_at_with_modifiers(index, false, true, window, cx);
+                    }))
+                    .child(
+                        Icon::new(if selected {
+                            IconName::SquareCheckBig
+                        } else {
+                            IconName::Square
+                        })
+                        .size(IconSize::Small)
+                        .color(if selected {
+                            colors.accent
+                        } else {
+                            colors.text_muted
+                        }),
+                    ),
+            )
             .child(
                 div()
                     .size(px(32.0))
@@ -2440,15 +3939,15 @@ impl AppShell {
                                 .truncate()
                                 .text_sm()
                                 .font_weight(FontWeight::MEDIUM)
-                                .child(task.display_name),
+                                .child(display_name),
                         )
                         .child(
                             div()
                                 .truncate()
                                 .font_features(tabular_numbers())
                                 .text_xs()
-                                .text_color(colors.text_muted)
-                                .child(format!("GID {}", task.identity.gid)),
+                                .text_color(secondary_color)
+                                .child(wide_secondary_label),
                         ),
                 )
                 .child(
@@ -2488,15 +3987,15 @@ impl AppShell {
                                 .truncate()
                                 .text_sm()
                                 .font_weight(FontWeight::MEDIUM)
-                                .child(task.display_name),
+                                .child(display_name),
                         )
                         .child(
                             div()
                                 .truncate()
                                 .font_features(tabular_numbers())
                                 .text_xs()
-                                .text_color(colors.text_muted)
-                                .child(format!("{size_label} · {rate_label} · {eta_label}")),
+                                .text_color(secondary_color)
+                                .child(compact_secondary_label),
                         ),
                 )
                 .child(
@@ -2527,6 +4026,58 @@ impl AppShell {
         let colors = self.theme.colors;
         let pending = self.add_dialog.pending.is_some();
         let error = self.add_dialog.error.clone();
+        let sources = parse_add_download_sources(self.add_input.read(cx).text());
+        let mode = self.add_dialog.mode;
+        let file_conflict = self.add_dialog.file_conflict;
+        let shell = cx.entity().downgrade();
+        let conflict_shell = shell.clone();
+        let mode_control = SegmentedControl::new(
+            "add-download-mode",
+            [
+                Segment::new(AddDownloadModeView::SeparateTasks.label()),
+                Segment::new(AddDownloadModeView::Mirrors.label()),
+            ],
+            usize::from(mode == AddDownloadModeView::Mirrors),
+            self.theme,
+        )
+        .disabled(pending)
+        .on_select(move |index, _window, cx| {
+            let mode = if index == 0 {
+                AddDownloadModeView::SeparateTasks
+            } else {
+                AddDownloadModeView::Mirrors
+            };
+            shell
+                .update(cx, |shell, cx| shell.set_add_download_mode(mode, cx))
+                .ok();
+        });
+        let conflict_control = SegmentedControl::new(
+            "add-download-file-conflict",
+            [
+                Segment::new(FileConflictPolicyView::AutoRename.label()),
+                Segment::new(FileConflictPolicyView::Reject.label()),
+                Segment::new(FileConflictPolicyView::Overwrite.label()),
+            ],
+            match file_conflict {
+                FileConflictPolicyView::AutoRename => 0,
+                FileConflictPolicyView::Reject => 1,
+                FileConflictPolicyView::Overwrite => 2,
+            },
+            self.theme,
+        )
+        .disabled(pending)
+        .on_select(move |index, _window, cx| {
+            let policy = match index {
+                0 => FileConflictPolicyView::AutoRename,
+                1 => FileConflictPolicyView::Reject,
+                _ => FileConflictPolicyView::Overwrite,
+            };
+            conflict_shell
+                .update(cx, |shell, cx| {
+                    shell.set_file_conflict_policy(policy, cx);
+                })
+                .ok();
+        });
         let content = div()
             .flex()
             .flex_col()
@@ -2539,6 +4090,56 @@ impl AppShell {
                     .child("URL or magnet link"),
             )
             .child(self.add_input.clone())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(div().text_xs().text_color(colors.text_muted).child(
+                        if sources.is_empty() {
+                            "No sources detected".to_owned()
+                        } else {
+                            format!(
+                                "{} source{} detected",
+                                sources.len(),
+                                if sources.len() == 1 { "" } else { "s" }
+                            )
+                        },
+                    ))
+                    .child(mode_control),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(colors.text_secondary)
+                            .child("If file exists"),
+                    )
+                    .child(conflict_control),
+            )
+            .when(
+                file_conflict == FileConflictPolicyView::Overwrite,
+                |element| {
+                    element.child(
+                        div()
+                            .id("add-download-overwrite-warning")
+                            .role(Role::Alert)
+                            .text_xs()
+                            .text_color(colors.danger)
+                            .child("Existing destination files may be replaced."),
+                    )
+                },
+            )
+            .when(!self.add_dialog.results.is_empty(), |element| {
+                element.child(self.render_add_result_list(colors))
+            })
             .when_some(error, |element, error| {
                 element.child(
                     div()
@@ -2585,6 +4186,72 @@ impl AppShell {
             .into_any_element()
     }
 
+    fn render_add_result_list(&self, colors: crate::ThemeColors) -> Stateful<Div> {
+        let rows = self
+            .add_dialog
+            .results
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let source_label = item
+                    .sources
+                    .iter()
+                    .map(|source| format!("Line {} · {}", source.line, source.uri))
+                    .collect::<Vec<_>>()
+                    .join("  |  ");
+                let (icon, label, color) = match &item.outcome {
+                    CommandOutcomeView::Success { task } => (
+                        IconName::CircleCheck,
+                        task.as_ref().map_or_else(
+                            || "Accepted".to_owned(),
+                            |task| format!("Accepted · GID {}", task.gid),
+                        ),
+                        colors.success,
+                    ),
+                    CommandOutcomeView::Failure(error) if error.outcome_unknown() => (
+                        IconName::TriangleAlert,
+                        format!("Outcome unknown · {}", error.summary),
+                        colors.warning,
+                    ),
+                    CommandOutcomeView::Failure(error) => {
+                        (IconName::CircleAlert, error.summary.clone(), colors.danger)
+                    }
+                };
+                div()
+                    .id(SharedString::from(format!("add-result-{index}")))
+                    .role(Role::ListItem)
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .child(Icon::new(icon).size(IconSize::XSmall).color(color))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(div().truncate().text_xs().child(source_label))
+                            .child(div().text_xs().text_color(color).child(label)),
+                    )
+            })
+            .collect::<Vec<_>>();
+        div()
+            .id("add-download-results")
+            .role(Role::List)
+            .aria_label("Add download results")
+            .max_h(px(220.0))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_2()
+            .border_1()
+            .border_color(colors.border)
+            .rounded_md()
+            .children(rows)
+    }
+
     fn render_settings_page(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let colors = self.theme.colors;
         let pending = self.pending_settings_save.is_some();
@@ -2592,10 +4259,58 @@ impl AppShell {
             .pending_settings_save
             .as_ref()
             .is_some_and(|pending| pending.source == SettingsSaveSource::Directory);
+        let proxy_saving = self
+            .pending_settings_save
+            .as_ref()
+            .is_some_and(|pending| pending.source == SettingsSaveSource::Proxy);
         let error = self.settings_page.error.clone();
         let draft_scheme = self.settings_page.draft_color_scheme;
         let directory_dirty = self.settings_directory_input.read(cx).text().trim()
             != self.settings.download_directory;
+        let password_changed = !self
+            .settings_proxy_password_input
+            .read(cx)
+            .text()
+            .is_empty();
+        let password_cleared = self.settings_page.clear_proxy_password;
+        let proxy_has_password = if password_changed {
+            true
+        } else if password_cleared {
+            false
+        } else {
+            self.settings.download_proxy.has_password
+        };
+        let proxy_draft = DownloadProxySettingsView {
+            mode: self.settings_page.draft_proxy_mode,
+            all_proxy: self.settings_all_proxy_input.read(cx).text().trim().into(),
+            http_proxy: self.settings_http_proxy_input.read(cx).text().trim().into(),
+            https_proxy: self
+                .settings_https_proxy_input
+                .read(cx)
+                .text()
+                .trim()
+                .into(),
+            ftp_proxy: self.settings_ftp_proxy_input.read(cx).text().trim().into(),
+            no_proxy: self
+                .settings_no_proxy_input
+                .read(cx)
+                .text()
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(ToOwned::to_owned)
+                .collect(),
+            username: self
+                .settings_proxy_username_input
+                .read(cx)
+                .text()
+                .trim()
+                .into(),
+            has_password: proxy_has_password,
+        };
+        let proxy_dirty =
+            proxy_draft != self.settings.download_proxy || password_changed || password_cleared;
+        let manual_proxy = proxy_draft.mode == ProxyModeView::Manual;
         let selected_scheme = usize::from(draft_scheme == ColorSchemeView::Dark);
         let shell = cx.entity().downgrade();
         let scheme_control = SegmentedControl::new(
@@ -2618,6 +4333,34 @@ impl AppShell {
                 .update(cx, |shell, cx| shell.select_color_scheme(scheme, cx))
                 .ok();
         });
+        let proxy_shell = cx.entity().downgrade();
+        let proxy_mode_control = SegmentedControl::new(
+            "settings-proxy-mode",
+            [Segment::new("Disabled"), Segment::new("Manual")],
+            usize::from(manual_proxy),
+            self.theme,
+        )
+        .disabled(pending)
+        .on_select(move |index, _window, cx| {
+            let mode = if index == 0 {
+                ProxyModeView::Disabled
+            } else {
+                ProxyModeView::Manual
+            };
+            proxy_shell
+                .update(cx, |shell, cx| shell.select_proxy_mode(mode, cx))
+                .ok();
+        });
+        let password_button_label = if password_cleared {
+            "Keep saved proxy password"
+        } else {
+            "Clear saved proxy password"
+        };
+        let password_button_icon = if password_cleared {
+            IconName::RotateCcw
+        } else {
+            IconName::Trash2
+        };
 
         div()
             .id("settings-page")
@@ -2644,7 +4387,7 @@ impl AppShell {
                     ),
             )
             .child(
-                div().flex_1().min_h_0().px_6().py_5().child(
+                div().id("settings-scroll").flex_1().min_h_0().overflow_y_scroll().px_6().py_5().child(
                     div()
                         .max_w(px(720.0))
                         .flex()
@@ -2700,41 +4443,286 @@ impl AppShell {
                                         )
                                         .render(colors),
                                     ),
+                            ),
+                        )
+                        .child(
+                            settings_section(
+                                "Network proxy",
+                                "Configure the proxy used by aria2 download traffic.",
+                                colors,
                             )
-                            .when_some(error, |element, error| {
-                                element.child(
+                            .child(div().mt_3().flex().items_start().child(proxy_mode_control))
+                            .when(manual_proxy, |section| {
+                                section.child(
                                     div()
-                                        .id("settings-error")
-                                        .role(Role::Alert)
-                                        .aria_label(error.summary.clone())
-                                        .mt_2()
+                                        .mt_4()
+                                        .max_w(px(620.0))
                                         .flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .text_xs()
-                                        .text_color(colors.danger)
+                                        .flex_col()
+                                        .gap_3()
+                                        .child(settings_labeled_input(
+                                            "All protocols",
+                                            self.settings_all_proxy_input.clone(),
+                                            colors,
+                                        ))
                                         .child(
-                                            Icon::new(IconName::CircleAlert)
-                                                .size(IconSize::XSmall)
-                                                .color(colors.danger),
+                                            div()
+                                                .flex()
+                                                .gap_3()
+                                                .child(
+                                                    settings_labeled_input(
+                                                        "HTTP",
+                                                        self.settings_http_proxy_input.clone(),
+                                                        colors,
+                                                    )
+                                                    .flex_1()
+                                                    .min_w_0(),
+                                                )
+                                                .child(
+                                                    settings_labeled_input(
+                                                        "HTTPS",
+                                                        self.settings_https_proxy_input.clone(),
+                                                        colors,
+                                                    )
+                                                    .flex_1()
+                                                    .min_w_0(),
+                                                ),
                                         )
-                                        .child(error.summary),
+                                        .child(settings_labeled_input(
+                                            "FTP",
+                                            self.settings_ftp_proxy_input.clone(),
+                                            colors,
+                                        ))
+                                        .child(settings_labeled_input(
+                                            "Bypass hosts",
+                                            self.settings_no_proxy_input.clone(),
+                                            colors,
+                                        ))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .gap_3()
+                                                .items_end()
+                                                .child(
+                                                    settings_labeled_input(
+                                                        "Username",
+                                                        self.settings_proxy_username_input.clone(),
+                                                        colors,
+                                                    )
+                                                    .flex_1()
+                                                    .min_w_0(),
+                                                )
+                                                .child(
+                                                    settings_labeled_input(
+                                                        "Password",
+                                                        self.settings_proxy_password_input.clone(),
+                                                        colors,
+                                                    )
+                                                    .flex_1()
+                                                    .min_w_0(),
+                                                )
+                                                .when(
+                                                    self.settings.download_proxy.has_password,
+                                                    |row| {
+                                                        row.child(
+                                                            IconButton::new(
+                                                                "clear-proxy-password",
+                                                                password_button_icon,
+                                                            )
+                                                            .aria_label(password_button_label)
+                                                            .disabled(pending)
+                                                            .tooltip(Tooltip::new(
+                                                                password_button_label,
+                                                            ))
+                                                            .on_click(cx.listener(
+                                                                |this, _, _, cx| {
+                                                                    this.clear_saved_proxy_password(
+                                                                        cx,
+                                                                    );
+                                                                },
+                                                            ))
+                                                            .render(colors),
+                                                        )
+                                                    },
+                                                ),
+                                        )
+                                        .when(proxy_has_password, |form| {
+                                            form.child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(colors.text_muted)
+                                                    .child("A proxy password is saved in the system credential store."),
+                                            )
+                                        }),
                                 )
-                            }),
-                        ),
+                            })
+                            .when(
+                                !manual_proxy && self.settings.download_proxy.has_password,
+                                |section| {
+                                    section.child(
+                                        div()
+                                            .mt_4()
+                                            .max_w(px(620.0))
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .text_xs()
+                                            .text_color(colors.text_muted)
+                                            .child(if password_cleared {
+                                                "The saved proxy password will be removed."
+                                            } else {
+                                                "A proxy password is saved in the system credential store."
+                                            })
+                                            .child(
+                                                IconButton::new(
+                                                    "clear-disabled-proxy-password",
+                                                    password_button_icon,
+                                                )
+                                                .aria_label(password_button_label)
+                                                .disabled(pending)
+                                                .tooltip(Tooltip::new(password_button_label))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.clear_saved_proxy_password(cx);
+                                                }))
+                                                .render(colors),
+                                            ),
+                                    )
+                                },
+                            )
+                            .child(
+                                div()
+                                    .mt_4()
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        Button::new(
+                                            "save-proxy-settings",
+                                            if proxy_saving { "Saving..." } else { "Save proxy" },
+                                        )
+                                        .aria_label(if proxy_saving {
+                                            "Saving download proxy settings"
+                                        } else {
+                                            "Save download proxy settings"
+                                        })
+                                        .style(ButtonStyle::Primary)
+                                        .disabled(pending || !proxy_dirty)
+                                        .loading(proxy_saving)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.submit_proxy_settings(cx);
+                                        }))
+                                        .render(colors),
+                                    ),
+                            ),
+                        )
+                        .when_some(error, |element, error| {
+                            element.child(
+                                div()
+                                    .id("settings-error")
+                                    .role(Role::Alert)
+                                    .aria_label(error.summary.clone())
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .text_xs()
+                                    .text_color(colors.danger)
+                                    .child(
+                                        Icon::new(IconName::CircleAlert)
+                                            .size(IconSize::XSmall)
+                                            .color(colors.danger),
+                                    )
+                                    .child(error.summary),
+                            )
+                        }),
                 ),
             )
     }
 
     fn render_remove_confirmation(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = self.theme.colors;
-        let display_name = self
+        let (display_name, has_live_tasks, has_terminal_tasks, delete_files) = self
             .remove_confirmation
             .as_ref()
-            .map(|confirmation| confirmation.display_name.clone())
+            .map(|confirmation| {
+                (
+                    confirmation.display_name.clone(),
+                    confirmation.has_live_tasks,
+                    confirmation.has_terminal_tasks,
+                    confirmation.delete_files,
+                )
+            })
             .unwrap_or_default();
+        let local_files_available = !matches!(self.engine_health, EngineHealthView::External);
+        let removal_description = match (has_live_tasks, has_terminal_tasks) {
+            (true, true) => format!(
+                "{display_name}: live tasks will be stopped and terminal records will be removed from aria2."
+            ),
+            (true, false) => {
+                format!("{display_name} will be stopped and retained as a removed aria2 result.")
+            }
+            (false, true) => {
+                format!("{display_name} will be removed from aria2's stopped results.")
+            }
+            (false, false) => format!("{display_name} will be removed from aria2."),
+        };
+        let file_choice = if local_files_available {
+            div()
+                .id("remove-task-files")
+                .role(Role::CheckBox)
+                .aria_label("Move exact task files to the Recycle Bin")
+                .aria_toggled(if delete_files {
+                    Toggled::True
+                } else {
+                    Toggled::False
+                })
+                .flex()
+                .items_start()
+                .gap_2()
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.toggle_remove_files(cx);
+                }))
+                .child(
+                    Icon::new(if delete_files {
+                        IconName::SquareCheckBig
+                    } else {
+                        IconName::Square
+                    })
+                    .size(IconSize::Small)
+                    .color(if delete_files {
+                        colors.danger
+                    } else {
+                        colors.text_muted
+                    }),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .text_sm()
+                        .text_color(colors.text_primary)
+                        .child("Move exact task files to the Recycle Bin")
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(colors.text_muted)
+                                .child("Incomplete-task .aria2 control files are included; unrelated files are kept."),
+                        ),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_xs()
+                .text_color(colors.text_secondary)
+                .child(Icon::new(IconName::Info).size(IconSize::Small))
+                .child("This is an external engine; files on the engine host will be kept.")
+                .into_any_element()
+        };
         Dialog::new("remove-task-dialog", "Remove task?", self.theme)
-            .description(format!("{display_name} will be removed from aria2."))
+            .description(removal_description)
             .key_context("RemoveTaskDialog")
             .track_focus(self.remove_dialog_focus.clone())
             .child(
@@ -2749,8 +4737,13 @@ impl AppShell {
                             .size(IconSize::Small)
                             .color(colors.danger),
                     )
-                    .child("Downloaded files will be kept."),
+                    .child(if delete_files {
+                        "Selected task files will be moved to the Recycle Bin."
+                    } else {
+                        "Downloaded files will be kept."
+                    }),
             )
+            .child(file_choice)
             .action(
                 Button::new("cancel-remove-task", "Cancel")
                     .aria_label("Cancel task removal")
@@ -2762,14 +4755,209 @@ impl AppShell {
                     .render(colors),
             )
             .action(
-                Button::new("confirm-remove-task", "Remove")
-                    .aria_label("Remove task from aria2")
-                    .style(ButtonStyle::Danger)
-                    .track_focus(self.remove_submit_focus.clone())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.submit_remove_confirmation(cx);
+                Button::new(
+                    "confirm-remove-task",
+                    if delete_files {
+                        "Remove and move files"
+                    } else {
+                        "Remove"
+                    },
+                )
+                .aria_label(if delete_files {
+                    "Remove task and move exact local files to the Recycle Bin"
+                } else {
+                    "Remove task from aria2 and keep files"
+                })
+                .style(ButtonStyle::Danger)
+                .track_focus(self.remove_submit_focus.clone())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.submit_remove_confirmation(cx);
+                }))
+                .render(colors),
+            )
+            .into_any_element()
+    }
+
+    fn render_batch_failure_details(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = self.theme.colors;
+        let Some(details) = self.batch_failure_details.as_ref() else {
+            return div().into_any_element();
+        };
+        let command = details.command.label();
+        let failures = details
+            .failures
+            .iter()
+            .enumerate()
+            .map(|(index, failure)| {
+                let task_name = failure.identity.as_ref().map_or_else(
+                    || "Batch request".to_owned(),
+                    |identity| {
+                        self.snapshot
+                            .tasks
+                            .iter()
+                            .find(|task| task.identity == *identity)
+                            .map(task_display_name)
+                            .unwrap_or_else(|| format!("Task {}", identity.gid))
+                    },
+                );
+                div()
+                    .id(SharedString::from(format!("batch-failure-{index}")))
+                    .role(Role::ListItem)
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .child(
+                        Icon::new(IconName::CircleAlert)
+                            .size(IconSize::Small)
+                            .color(colors.danger),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(task_name),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(colors.text_muted)
+                                    .child(failure.error.summary.clone()),
+                            ),
+                    )
+            })
+            .collect::<Vec<_>>();
+        Dialog::new("batch-failure-dialog", "Batch action details", self.theme)
+            .description(format!(
+                "{} task{} failed. Failed tasks remain selected for follow-up.",
+                details.failures.len(),
+                if details.failures.len() == 1 { "" } else { "s" }
+            ))
+            .key_context("BatchFailureDialog")
+            .track_focus(self.batch_failure_dialog_focus.clone())
+            .width(560.0)
+            .child(
+                div()
+                    .id("batch-failure-list")
+                    .role(Role::List)
+                    .aria_label(format!("Failed {command} tasks"))
+                    .max_h(px(360.0))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .children(failures),
+            )
+            .action(
+                Button::new("close-batch-failures", "Close")
+                    .aria_label("Close batch action details")
+                    .style(ButtonStyle::Secondary)
+                    .track_focus(self.batch_failure_close_focus.clone())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.close_batch_failure_details(window, cx);
                     }))
                     .render(colors),
+            )
+            .into_any_element()
+    }
+
+    fn render_task_output_name_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = self.theme.colors;
+        let Some(dialog) = self.output_name_dialog.as_ref() else {
+            return div().into_any_element();
+        };
+        let identity = dialog.identity.clone();
+        let display_name = dialog.display_name.clone();
+        let active = dialog.active;
+        let error = dialog.error.clone();
+        let pending = self.pending_task_command.as_ref().is_some_and(|pending| {
+            pending.identity == identity
+                && matches!(&pending.command, TaskCommandView::SetOutputName { .. })
+        });
+        let content = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(colors.text_secondary)
+                    .child("Filename"),
+            )
+            .child(self.output_name_input.clone())
+            .when(active, |element| {
+                element.child(
+                    div()
+                        .id("active-output-name-warning")
+                        .role(Role::Status)
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_xs()
+                        .text_color(colors.warning)
+                        .child(
+                            Icon::new(IconName::TriangleAlert)
+                                .size(IconSize::Small)
+                                .color(colors.warning),
+                        )
+                        .child("Changing an active task's output name may restart its transfer."),
+                )
+            })
+            .when_some(error, |element, error| {
+                element.child(
+                    div()
+                        .id("task-output-name-error")
+                        .role(Role::Alert)
+                        .aria_label(error.summary.clone())
+                        .text_xs()
+                        .text_color(colors.danger)
+                        .child(error.summary),
+                )
+            });
+
+        Dialog::new("task-output-name-dialog", "Change output name", self.theme)
+            .description(format!(
+                "Set the filename used by aria2 for {display_name}."
+            ))
+            .key_context("TaskOutputNameDialog")
+            .track_focus(self.output_name_dialog_focus.clone())
+            .width(520.0)
+            .child(content)
+            .action(
+                Button::new("cancel-task-output-name", "Cancel")
+                    .aria_label("Cancel output name change")
+                    .style(ButtonStyle::Secondary)
+                    .disabled(pending)
+                    .track_focus(self.output_name_cancel_focus.clone())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.close_task_output_name(window, cx);
+                    }))
+                    .render(colors),
+            )
+            .action(
+                Button::new(
+                    "submit-task-output-name",
+                    if pending { "Saving..." } else { "Save" },
+                )
+                .aria_label(if pending {
+                    "Saving task output name"
+                } else {
+                    "Save task output name"
+                })
+                .style(ButtonStyle::Primary)
+                .loading(pending)
+                .track_focus(self.output_name_submit_focus.clone())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.submit_task_output_name(cx);
+                }))
+                .render(colors),
             )
             .into_any_element()
     }
@@ -2929,6 +5117,7 @@ impl Render for AppShell {
             .aria_label("AriaDeck download workspace")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::focus_search))
+            .on_action(cx.listener(Self::select_all_tasks))
             .on_action(cx.listener(Self::clear_search))
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_previous))
@@ -2942,6 +5131,10 @@ impl Render for AppShell {
             .on_action(cx.listener(Self::pause_selected))
             .on_action(cx.listener(Self::resume_selected))
             .on_action(cx.listener(Self::retry_selected))
+            .on_action(cx.listener(Self::open_task_output_name_action))
+            .on_action(cx.listener(Self::close_task_output_name_action))
+            .on_action(cx.listener(Self::submit_task_output_name_action))
+            .on_action(cx.listener(Self::close_batch_failure_details_action))
             .on_action(cx.listener(Self::remove_selected))
             .on_action(cx.listener(Self::focus_next))
             .on_action(cx.listener(Self::focus_previous))
@@ -2967,6 +5160,9 @@ impl Render for AppShell {
             .when(self.add_dialog.open, |element| {
                 element.child(self.render_add_download_dialog(cx))
             })
+            .when(self.output_name_dialog.is_some(), |element| {
+                element.child(self.render_task_output_name_dialog(cx))
+            })
             .when(self.remove_confirmation.is_some(), |element| {
                 element.child(self.render_remove_confirmation(cx))
             })
@@ -2975,6 +5171,9 @@ impl Render for AppShell {
             })
             .when(self.status_notice.is_some(), |element| {
                 element.child(self.render_toast(cx))
+            })
+            .when(self.batch_failure_details.is_some(), |element| {
+                element.child(self.render_batch_failure_details(cx))
             })
     }
 }
@@ -3188,6 +5387,39 @@ fn settings_section(title: &'static str, detail: &'static str, colors: crate::Th
         )
 }
 
+fn settings_input_config(
+    element_id: &'static str,
+    accessibility_label: &'static str,
+    placeholder: &'static str,
+    leading_icon: Option<IconName>,
+    secure: bool,
+) -> TextFieldConfig {
+    TextFieldConfig {
+        element_id: element_id.into(),
+        key_context: "SettingsInput".into(),
+        role: Role::TextInput,
+        accessibility_label: accessibility_label.into(),
+        placeholder: placeholder.into(),
+        leading_icon,
+        clearable: !secure,
+        allow_newlines: false,
+        secure,
+    }
+}
+
+fn settings_labeled_input(
+    label: &'static str,
+    input: Entity<TextField>,
+    colors: crate::ThemeColors,
+) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(div().text_xs().text_color(colors.text_muted).child(label))
+        .child(input)
+}
+
 fn filter_icon(filter: WorkspaceFilter) -> IconName {
     match filter {
         WorkspaceFilter::All => IconName::List,
@@ -3212,6 +5444,56 @@ fn task_status_icon(status: TaskStatusView) -> IconName {
     }
 }
 
+fn task_display_name(task: &DownloadRowView) -> String {
+    if task.name_state.is_resolving() {
+        "Resolving filename...".into()
+    } else {
+        task.display_name.clone()
+    }
+}
+
+fn parse_add_download_sources(input: &str) -> Vec<AddDownloadSourceView> {
+    input
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let uri = line.trim();
+            (!uri.is_empty()).then(|| AddDownloadSourceView {
+                line: index + 1,
+                uri: uri.to_owned(),
+            })
+        })
+        .collect()
+}
+
+fn successor_task(
+    previous: &WorkspaceSnapshot,
+    next: &WorkspaceSnapshot,
+    selected: &TaskIdentity,
+) -> Option<DownloadRowView> {
+    if selected.profile_id != next.profile_id {
+        return None;
+    }
+
+    let previous_task = previous
+        .tasks
+        .iter()
+        .find(|task| task.identity == *selected);
+    if let Some(previous_task) = previous_task
+        && let Some(successor) = previous_task
+            .followed_by
+            .iter()
+            .find_map(|gid| next.tasks.iter().find(|task| task.identity.gid == *gid))
+    {
+        return Some(successor.clone());
+    }
+
+    next.tasks
+        .iter()
+        .find(|task| task.belongs_to.as_deref() == Some(selected.gid.as_str()))
+        .cloned()
+}
+
 fn task_overview_summary(task: &DownloadRowView, colors: crate::ThemeColors) -> Div {
     let basis_points = task.progress_basis_points();
     let progress = f32::from(basis_points.unwrap_or(0)) / 10_000.0;
@@ -3228,6 +5510,13 @@ fn task_overview_summary(task: &DownloadRowView, colors: crate::ThemeColors) -> 
         || task.status.label().to_owned(),
         |seconds| format!("{} remaining", format_eta(Some(seconds))),
     );
+    let error_label = task.error.as_ref().map(|error| {
+        error.code.map_or_else(
+            || error.summary.clone(),
+            |code| format!("Error {code}: {}", error.summary),
+        )
+    });
+    let error_id = SharedString::from(format!("task-error-{}", task.identity.gid));
 
     div()
         .flex_none()
@@ -3283,6 +5572,16 @@ fn task_overview_summary(task: &DownloadRowView, colors: crate::ThemeColors) -> 
                 .child(size_label)
                 .child(format_rate(task.download_rate)),
         )
+        .when_some(error_label, |element, error| {
+            element.child(
+                div()
+                    .id(error_id)
+                    .role(Role::Alert)
+                    .text_xs()
+                    .text_color(colors.danger)
+                    .child(error),
+            )
+        })
 }
 
 fn drawer_message(
@@ -3443,12 +5742,25 @@ fn render_file_row(
         )
 }
 
-fn task_command_label(command: TaskCommandView) -> &'static str {
+fn task_command_label(command: &TaskCommandView) -> &'static str {
     match command {
         TaskCommandView::Pause => "Pause",
         TaskCommandView::Resume => "Resume",
         TaskCommandView::Retry => "Retry",
-        TaskCommandView::RemoveTask => "Remove",
+        TaskCommandView::SetOutputName { .. } => "Change output name",
+        TaskCommandView::RemoveTask | TaskCommandView::RemoveTaskAndFiles => "Remove",
+    }
+}
+
+fn output_name_validation_error(output_name: &str) -> Option<&'static str> {
+    if output_name.is_empty() {
+        Some("Enter a filename.")
+    } else if output_name == "." || output_name == ".." {
+        Some("A filename cannot be '.' or '..'.")
+    } else if output_name.contains(['/', '\\', '\0']) {
+        Some("Use a filename without path separators.")
+    } else {
+        None
     }
 }
 
@@ -3557,7 +5869,7 @@ mod tests {
     use gpui::{TestAppContext, point, px};
 
     use super::*;
-    use crate::{TaskCountsView, TaskStatusView};
+    use crate::{TaskCountsView, TaskNameStateView, TaskSourceKindView, TaskStatusView};
 
     fn task(index: usize) -> DownloadRowView {
         DownloadRowView {
@@ -3566,7 +5878,12 @@ mod tests {
                 gid: format!("{index:016x}"),
             },
             display_name: format!("archive-{index:05}.bin"),
+            name_state: TaskNameStateView::Resolved,
+            source_kind: TaskSourceKindView::DirectUri,
+            followed_by: Vec::new(),
+            belongs_to: None,
             status: TaskStatusView::Complete,
+            error: None,
             total_bytes: 1_048_576,
             completed_bytes: 1_048_576,
             download_rate: 0,
@@ -3754,6 +6071,177 @@ mod tests {
     }
 
     #[gpui::test]
+    fn task_selection_supports_toggle_range_and_visible_select_all(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(5);
+            shell
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.select_at_with_modifiers(1, false, false, window, cx);
+            shell.select_at_with_modifiers(3, true, false, window, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            let selected = [1, 2, 3]
+                .into_iter()
+                .map(|index| task(index).identity)
+                .collect::<HashSet<_>>();
+            assert_eq!(shell.selected_tasks, selected);
+            assert_eq!(shell.range_anchor, Some(task(1).identity));
+            assert_eq!(shell.selected, Some(task(3).identity));
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.select_at_with_modifiers(2, false, true, window, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(!shell.selected_tasks.contains(&task(2).identity));
+            assert_eq!(shell.selected_tasks.len(), 2);
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.toggle_select_all(window, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert_eq!(shell.selected_tasks.len(), 5);
+        });
+        view.update_in(cx, |shell, window, cx| {
+            shell.toggle_select_all(window, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(shell.selected_tasks.is_empty());
+            assert!(shell.range_anchor.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn select_all_shortcut_selects_the_current_loaded_query(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(4);
+            window.focus(&shell.focus_handle, cx);
+            shell
+        });
+
+        cx.simulate_keystrokes("secondary-a");
+        view.read_with(cx, |shell, _| {
+            assert_eq!(shell.visible_selected_task_count(), 4);
+            assert_eq!(shell.selected_task_count(), 4);
+            assert_eq!(shell.selected, Some(task(0).identity));
+        });
+    }
+
+    #[gpui::test]
+    fn visible_selection_counts_and_header_toggle_exclude_hidden_tasks(cx: &mut TestAppContext) {
+        let hidden = task(99).identity;
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(2);
+            shell.selected = Some(task(0).identity);
+            shell.selected_tasks = HashSet::from([task(0).identity, hidden.clone()]);
+            shell
+        });
+
+        view.read_with(cx, |shell, _| {
+            assert_eq!(shell.selected_task_count(), 2);
+            assert_eq!(shell.visible_selected_task_count(), 1);
+        });
+        view.update_in(cx, |shell, window, cx| {
+            shell.toggle_select_all(window, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert_eq!(shell.visible_selected_task_count(), 2);
+            assert_eq!(shell.selected_task_count(), 3);
+        });
+        view.update_in(cx, |shell, window, cx| {
+            shell.toggle_select_all(window, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert_eq!(shell.visible_selected_task_count(), 0);
+            assert_eq!(shell.selected_tasks, HashSet::from([hidden]));
+        });
+    }
+
+    #[gpui::test]
+    fn query_change_clears_the_query_scoped_task_selection(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(3);
+            shell.select_at_with_modifiers(0, false, false, window, cx);
+            shell.select_at_with_modifiers(1, false, true, window, cx);
+            shell
+        });
+        view.update_in(cx, |shell, window, cx| {
+            shell.set_filter(WorkspaceFilter::Completed, window, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(shell.selected_tasks.is_empty());
+            assert!(shell.range_anchor.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn batch_partial_result_retains_only_failed_source_tasks(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(3);
+            for task in &mut shell.snapshot.tasks {
+                task.status = TaskStatusView::Active;
+            }
+            shell.select_at_with_modifiers(0, false, false, window, cx);
+            shell.select_at_with_modifiers(1, false, true, window, cx);
+            shell.begin_batch_task_command(BatchTaskCommandView::Pause, cx);
+            shell
+        });
+        let result = view.read_with(cx, |shell, _| {
+            let pending = shell
+                .pending_batch_command
+                .as_ref()
+                .expect("batch command pending");
+            assert_eq!(pending.identities, vec![task(0).identity, task(1).identity]);
+            BatchTaskCommandResultView {
+                request_id: pending.request_id,
+                session: pending.session.clone(),
+                identities: pending.identities.clone(),
+                command: pending.command,
+                outcome: BatchCommandOutcomeView::PartialSuccess {
+                    succeeded: vec![task(0).identity],
+                    failed: vec![BatchTaskFailureView {
+                        identity: Some(task(1).identity),
+                        error: OperationErrorView {
+                            code: "rpc.command_rejected".into(),
+                            summary: "aria2 rejected pause".into(),
+                            retryable: false,
+                        },
+                    }],
+                },
+            }
+        });
+        view.update_in(cx, |shell, window, cx| {
+            shell.set_batch_task_command_result(result, window, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(shell.pending_batch_command.is_none());
+            assert_eq!(shell.selected_tasks, HashSet::from([task(1).identity]));
+            assert_eq!(
+                shell
+                    .batch_failure_details
+                    .as_ref()
+                    .map(|details| details.failures.len()),
+                Some(1)
+            );
+            assert!(
+                shell
+                    .status_notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.is_error)
+            );
+        });
+    }
+
+    #[gpui::test]
     fn hidden_selection_arrows_start_at_the_visible_edges(cx: &mut TestAppContext) {
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut shell = AppShell::new(Theme::dark(), window, cx);
@@ -3777,6 +6265,30 @@ mod tests {
         });
         view.read_with(cx, |shell, _| {
             assert_eq!(shell.selected, Some(task(2).identity));
+        });
+    }
+
+    #[gpui::test]
+    fn magnet_successor_relationship_preserves_selected_task(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            let mut previous = snapshot(1);
+            previous.tasks[0].followed_by = vec![format!("{:016x}", 1)];
+            shell.snapshot = previous;
+            shell.selected = Some(shell.snapshot.tasks[0].identity.clone());
+            shell
+        });
+
+        view.update_in(cx, |shell, _window, cx| {
+            let mut next = snapshot(1);
+            next.tasks[0] = task(1);
+            shell.set_snapshot(next, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert_eq!(
+                shell.selected.as_ref().map(|task| task.gid.as_str()),
+                Some("0000000000000001")
+            );
         });
     }
 
@@ -3812,6 +6324,27 @@ mod tests {
             );
             assert_eq!(shell.next_request_id, first.get() + 1);
         });
+    }
+
+    #[test]
+    fn add_download_input_parses_trimmed_non_empty_lines_with_source_positions() {
+        let sources = parse_add_download_sources(
+            "  https://example.test/one  \r\n\r\nmagnet:?xt=urn:btih:abc\n",
+        );
+
+        assert_eq!(
+            sources,
+            vec![
+                AddDownloadSourceView {
+                    line: 1,
+                    uri: "https://example.test/one".into(),
+                },
+                AddDownloadSourceView {
+                    line: 3,
+                    uri: "magnet:?xt=urn:btih:abc".into(),
+                },
+            ]
+        );
     }
 
     #[gpui::test]
@@ -3904,6 +6437,109 @@ mod tests {
     }
 
     #[gpui::test]
+    fn add_download_input_preserves_pasted_lines_and_shift_enter(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell.open_add_download(&OpenAddDownload, window, cx);
+            shell
+        });
+
+        cx.write_to_clipboard(ClipboardItem::new_string(
+            "https://example.test/one\r\nhttps://example.test/two".into(),
+        ));
+        cx.simulate_keystrokes("secondary-v shift-enter");
+        cx.simulate_input("magnet:?xt=urn:btih:abc");
+
+        view.read_with(cx, |shell, cx| {
+            assert_eq!(
+                shell.add_input.read(cx).text(),
+                "https://example.test/one\nhttps://example.test/two\nmagnet:?xt=urn:btih:abc"
+            );
+            assert_eq!(
+                parse_add_download_sources(shell.add_input.read(cx).text()).len(),
+                3
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn partial_add_result_keeps_only_sources_that_are_safe_to_retry(cx: &mut TestAppContext) {
+        let accepted = task(10).identity;
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell.add_dialog.open = true;
+            shell.add_input.update(cx, |input, cx| {
+                input.set_text(
+                    "https://example.test/accepted\nhttps://example.test/retry\nhttps://example.test/unknown",
+                    cx,
+                );
+            });
+            shell.submit_add_download(cx);
+            shell
+        });
+        let (request_id, session) = view.read_with(cx, |shell, _| {
+            let pending = shell.add_dialog.pending.as_ref().expect("add pending");
+            (pending.request_id, pending.session.clone())
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.set_add_download_result(
+                AddDownloadResultView {
+                    request_id,
+                    session,
+                    items: vec![
+                        AddDownloadItemResultView {
+                            sources: vec![AddDownloadSourceView {
+                                line: 1,
+                                uri: "https://example.test/accepted".into(),
+                            }],
+                            outcome: CommandOutcomeView::Success {
+                                task: Some(accepted.clone()),
+                            },
+                        },
+                        AddDownloadItemResultView {
+                            sources: vec![AddDownloadSourceView {
+                                line: 2,
+                                uri: "https://example.test/retry".into(),
+                            }],
+                            outcome: CommandOutcomeView::Failure(OperationErrorView {
+                                code: "rpc.add_not_observed".into(),
+                                summary: "Safe to retry".into(),
+                                retryable: true,
+                            }),
+                        },
+                        AddDownloadItemResultView {
+                            sources: vec![AddDownloadSourceView {
+                                line: 3,
+                                uri: "https://example.test/unknown".into(),
+                            }],
+                            outcome: CommandOutcomeView::Failure(OperationErrorView {
+                                code: "rpc.command_outcome_unknown".into(),
+                                summary: "Still unknown".into(),
+                                retryable: false,
+                            }),
+                        },
+                    ],
+                },
+                window,
+                cx,
+            );
+        });
+        view.read_with(cx, |shell, cx| {
+            assert!(shell.add_dialog.open);
+            assert_eq!(shell.add_dialog.results.len(), 3);
+            assert_eq!(
+                shell.add_input.read(cx).text(),
+                "https://example.test/retry"
+            );
+            assert_eq!(shell.selected_tasks, HashSet::from([accepted]));
+        });
+    }
+
+    #[gpui::test]
     fn successful_retry_selects_the_new_task_identity(cx: &mut TestAppContext) {
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut shell = AppShell::new(Theme::dark(), window, cx);
@@ -3929,7 +6565,7 @@ mod tests {
             gid: "0000000000000063".into(),
         };
 
-        view.update(cx, |shell, cx| {
+        view.update_in(cx, |shell, window, cx| {
             shell.set_task_command_result(
                 TaskCommandResultView {
                     request_id,
@@ -3940,6 +6576,7 @@ mod tests {
                         task: Some(new_identity.clone()),
                     },
                 },
+                window,
                 cx,
             );
         });
@@ -3951,10 +6588,171 @@ mod tests {
     }
 
     #[gpui::test]
+    fn output_name_dialog_accepts_only_non_terminal_direct_uri_tasks(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell.selected = Some(shell.snapshot.tasks[0].identity.clone());
+            shell
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.open_task_output_name(window, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(shell.output_name_dialog.is_none());
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.snapshot.tasks[0].status = TaskStatusView::Waiting;
+            shell.snapshot.tasks[0].source_kind = TaskSourceKindView::Magnet;
+            shell.open_task_output_name(window, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(shell.output_name_dialog.is_none());
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.snapshot.tasks[0].source_kind = TaskSourceKindView::DirectUri;
+            shell.open_task_output_name(window, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(shell.output_name_dialog.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn output_name_dialog_validates_and_submits_the_exact_filename(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell.snapshot.tasks[0].status = TaskStatusView::Waiting;
+            shell.selected = Some(shell.snapshot.tasks[0].identity.clone());
+            shell.open_task_output_name(window, cx);
+            shell
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.output_name_input.update(cx, |input, cx| {
+                input.set_text("folder/archive.iso", cx);
+            });
+        });
+        view.update(cx, |shell, cx| {
+            shell.submit_task_output_name(cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(shell.pending_task_command.is_none());
+            assert!(
+                shell
+                    .output_name_dialog
+                    .as_ref()
+                    .and_then(|dialog| dialog.error.as_ref())
+                    .is_some()
+            );
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.output_name_input.update(cx, |input, cx| {
+                input.set_text("  archive-renamed.iso  ", cx);
+            });
+        });
+        view.update(cx, |shell, cx| {
+            shell.submit_task_output_name(cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(matches!(
+                shell
+                    .pending_task_command
+                    .as_ref()
+                    .map(|pending| &pending.command),
+                Some(TaskCommandView::SetOutputName { output_name })
+                    if output_name == "archive-renamed.iso"
+            ));
+        });
+    }
+
+    #[gpui::test]
+    fn output_name_result_closes_on_success_and_stays_open_on_failure(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell.snapshot.tasks[0].status = TaskStatusView::Waiting;
+            shell.selected = Some(shell.snapshot.tasks[0].identity.clone());
+            shell.open_task_output_name(window, cx);
+            shell
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.output_name_input.update(cx, |input, cx| {
+                input.set_text("first.iso", cx);
+            });
+        });
+        let first = view.update(cx, |shell, cx| {
+            shell.submit_task_output_name(cx);
+            let pending = shell
+                .pending_task_command
+                .as_ref()
+                .expect("pending command");
+            TaskCommandResultView {
+                request_id: pending.request_id,
+                session: pending.session.clone(),
+                identity: pending.identity.clone(),
+                command: pending.command.clone(),
+                outcome: CommandOutcomeView::Failure(OperationErrorView {
+                    code: "rpc.command_rejected".into(),
+                    summary: "aria2 rejected the output name".into(),
+                    retryable: false,
+                }),
+            }
+        });
+        view.update_in(cx, |shell, window, cx| {
+            shell.set_task_command_result(first, window, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(shell.pending_task_command.is_none());
+            assert!(
+                shell
+                    .output_name_dialog
+                    .as_ref()
+                    .and_then(|dialog| dialog.error.as_ref())
+                    .is_some()
+            );
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.output_name_input.update(cx, |input, cx| {
+                input.set_text("second.iso", cx);
+            });
+        });
+        let second = view.update(cx, |shell, cx| {
+            shell.submit_task_output_name(cx);
+            let pending = shell
+                .pending_task_command
+                .as_ref()
+                .expect("pending command");
+            TaskCommandResultView {
+                request_id: pending.request_id,
+                session: pending.session.clone(),
+                identity: pending.identity.clone(),
+                command: pending.command.clone(),
+                outcome: CommandOutcomeView::Success { task: None },
+            }
+        });
+        view.update_in(cx, |shell, window, cx| {
+            shell.set_task_command_result(second, window, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(shell.pending_task_command.is_none());
+            assert!(shell.output_name_dialog.is_none());
+        });
+    }
+
+    #[gpui::test]
     fn theme_applies_only_after_the_matching_save_succeeds(cx: &mut TestAppContext) {
         let initial = SettingsView {
             color_scheme: ColorSchemeView::Dark,
             download_directory: "C:/Downloads".into(),
+            ..SettingsView::default()
         };
         let expected_initial = initial.clone();
         let (view, cx) =
@@ -4001,6 +6799,52 @@ mod tests {
             assert_eq!(shell.theme.mode, ThemeMode::Light);
             assert!(shell.pending_settings_save.is_none());
             assert_eq!(shell.page, AppPage::Settings);
+        });
+    }
+
+    #[gpui::test]
+    fn proxy_settings_build_a_manual_draft_with_a_masked_password(cx: &mut TestAppContext) {
+        let initial = SettingsView {
+            color_scheme: ColorSchemeView::Dark,
+            download_directory: "C:/Downloads".into(),
+            download_proxy: DownloadProxySettingsView {
+                mode: ProxyModeView::Disabled,
+                ..DownloadProxySettingsView::default()
+            },
+        };
+        let (view, cx) =
+            cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.open_settings(&OpenSettings, window, cx);
+            shell.select_proxy_mode(ProxyModeView::Manual, cx);
+            shell.settings_all_proxy_input.update(cx, |input, cx| {
+                input.set_text("proxy.example:8080", cx);
+            });
+            shell
+                .settings_proxy_username_input
+                .update(cx, |input, cx| input.set_text("proxy-user", cx));
+            shell
+                .settings_proxy_password_input
+                .update(cx, |input, cx| input.set_text("never-render-this", cx));
+            shell.submit_proxy_settings(cx);
+        });
+
+        view.read_with(cx, |shell, cx| {
+            assert!(shell.settings_proxy_password_input.read(cx).is_secure());
+            let pending = shell
+                .pending_settings_save
+                .as_ref()
+                .expect("proxy settings save must become pending");
+            assert_eq!(pending.source, SettingsSaveSource::Proxy);
+            assert_eq!(pending.settings.download_proxy.mode, ProxyModeView::Manual);
+            assert_eq!(
+                pending.settings.download_proxy.all_proxy,
+                "proxy.example:8080"
+            );
+            assert_eq!(pending.settings.download_proxy.username, "proxy-user");
+            assert!(pending.settings.download_proxy.has_password);
+            assert_eq!(pending.settings.download_directory, "C:/Downloads");
         });
     }
 
@@ -4129,6 +6973,12 @@ mod tests {
         });
         view.read_with(cx, |shell, _| {
             assert!(shell.remove_confirmation.is_some());
+            assert!(
+                !shell
+                    .remove_confirmation
+                    .as_ref()
+                    .is_some_and(|value| value.delete_files)
+            );
             assert!(shell.pending_task_command.is_none());
         });
         view.update(cx, |shell, cx| shell.submit_remove_confirmation(cx));
@@ -4138,8 +6988,39 @@ mod tests {
                 shell
                     .pending_task_command
                     .as_ref()
-                    .map(|pending| pending.command),
+                    .map(|pending| pending.command.clone()),
                 Some(TaskCommandView::RemoveTask)
+            ));
+        });
+    }
+
+    #[gpui::test]
+    fn local_removal_can_explicitly_request_recycle_bin_files(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.engine_health = EngineHealthView::Running { restarts: 0 };
+            shell.snapshot = snapshot(1);
+            shell.selected = Some(shell.snapshot.tasks[0].identity.clone());
+            shell.confirm_remove_selected(window, cx);
+            shell
+        });
+        view.update(cx, |shell, cx| shell.toggle_remove_files(cx));
+        view.read_with(cx, |shell, _| {
+            assert!(
+                shell
+                    .remove_confirmation
+                    .as_ref()
+                    .is_some_and(|value| value.delete_files)
+            );
+        });
+        view.update(cx, |shell, cx| shell.submit_remove_confirmation(cx));
+        view.read_with(cx, |shell, _| {
+            assert!(matches!(
+                shell
+                    .pending_task_command
+                    .as_ref()
+                    .map(|pending| pending.command.clone()),
+                Some(TaskCommandView::RemoveTaskAndFiles)
             ));
         });
     }
@@ -4216,6 +7097,7 @@ mod tests {
         let initial = SettingsView {
             color_scheme: ColorSchemeView::Dark,
             download_directory: "C:/Downloads".into(),
+            ..SettingsView::default()
         };
         let (view, cx) =
             cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));

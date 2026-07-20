@@ -1,8 +1,9 @@
 use ariadeck_domain::{
     ByteCount, ByteRate, DownloadStatus, EnginePath, Gid, GlobalStat, TaskDetails, TaskError,
-    TaskFile, TaskMetadata, TaskSnapshot,
+    TaskFile, TaskMetadata, TaskNameState, TaskSnapshot, TaskSourceKind,
 };
 use serde::Deserialize;
+use url::Url;
 
 use crate::RpcError;
 
@@ -30,6 +31,8 @@ pub enum TaskKey {
     BitTorrent,
     Directory,
     InfoHash,
+    FollowedBy,
+    BelongsTo,
     PieceLength,
     NumPieces,
 }
@@ -66,6 +69,8 @@ impl TaskKey {
         Self::BitTorrent,
         Self::Directory,
         Self::InfoHash,
+        Self::FollowedBy,
+        Self::BelongsTo,
     ];
 
     pub const DETAILS_PROJECTION: &'static [Self] = &[
@@ -96,6 +101,8 @@ impl TaskKey {
             Self::BitTorrent => "bittorrent",
             Self::Directory => "dir",
             Self::InfoHash => "infoHash",
+            Self::FollowedBy => "followedBy",
+            Self::BelongsTo => "belongsTo",
             Self::PieceLength => "pieceLength",
             Self::NumPieces => "numPieces",
         }
@@ -183,6 +190,10 @@ pub(crate) struct TaskWire {
     #[serde(default)]
     info_hash: String,
     #[serde(default)]
+    followed_by: Vec<String>,
+    #[serde(default)]
+    belongs_to: String,
+    #[serde(default)]
     piece_length: String,
     #[serde(default)]
     num_pieces: String,
@@ -203,7 +214,7 @@ impl TaskWire {
             status = DownloadStatus::Verifying;
         }
 
-        let display_name = self
+        let resolved_name = self
             .bittorrent
             .as_ref()
             .and_then(|torrent| torrent.info.as_ref())
@@ -214,14 +225,29 @@ impl TaskWire {
                     .first()
                     .and_then(|file| basename(&file.path))
                     .map(str::to_owned)
-            })
-            .unwrap_or_else(|| gid.to_string());
+            });
+        let (display_name, name_state) = resolved_name.map_or_else(
+            || (gid.to_string(), TaskNameState::Resolving),
+            |name| (name, TaskNameState::Resolved),
+        );
         let primary_uri = self
             .files
             .first()
             .and_then(|file| file.uris.first())
             .and_then(|uri| non_empty(&uri.uri))
             .map(str::to_owned);
+        let followed_by = self
+            .followed_by
+            .iter()
+            .map(|value| parse_gid(method, "followedBy", value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let belongs_to = parse_optional_gid(method, "belongsTo", &self.belongs_to)?;
+        let source_kind = task_source_kind(
+            self.bittorrent.is_some(),
+            self.files.len(),
+            primary_uri.as_deref(),
+            !self.info_hash.is_empty(),
+        );
         let error_code = parse_optional_u32(method, "errorCode", &self.error_code)?;
         let error = (error_code.is_some() || !self.error_message.is_empty()).then_some(TaskError {
             code: error_code,
@@ -232,6 +258,7 @@ impl TaskWire {
             gid,
             status,
             display_name,
+            name_state,
             total_length: ByteCount::new(parse_u64(method, "totalLength", &self.total_length)?),
             completed_length: ByteCount::new(parse_u64(
                 method,
@@ -252,6 +279,9 @@ impl TaskWire {
                 primary_uri,
                 info_hash: non_empty(&self.info_hash).map(str::to_owned),
                 file_count: u32::try_from(self.files.len()).unwrap_or(u32::MAX),
+                followed_by,
+                belongs_to,
+                source_kind,
             },
         })
     }
@@ -345,6 +375,45 @@ fn parse_status(value: &str) -> DownloadStatus {
     }
 }
 
+fn task_source_kind(
+    has_bittorrent_metadata: bool,
+    file_count: usize,
+    primary_uri: Option<&str>,
+    has_info_hash: bool,
+) -> TaskSourceKind {
+    if has_bittorrent_metadata {
+        return TaskSourceKind::BitTorrent;
+    }
+    let parsed_uri = primary_uri.and_then(|uri| Url::parse(uri).ok());
+    if parsed_uri
+        .as_ref()
+        .is_some_and(|uri| uri.scheme() == "magnet")
+    {
+        return TaskSourceKind::Magnet;
+    }
+    if has_info_hash {
+        return TaskSourceKind::BitTorrent;
+    }
+    if file_count > 1 {
+        return TaskSourceKind::Metalink;
+    }
+    let Some(uri) = parsed_uri else {
+        return TaskSourceKind::Unknown;
+    };
+    let path = uri.path().to_ascii_lowercase();
+    if path.ends_with(".torrent") {
+        return TaskSourceKind::BitTorrent;
+    }
+    if path.ends_with(".metalink") || path.ends_with(".meta4") {
+        return TaskSourceKind::Metalink;
+    }
+    if matches!(uri.scheme(), "http" | "https" | "ftp" | "sftp") {
+        TaskSourceKind::DirectUri
+    } else {
+        TaskSourceKind::Unknown
+    }
+}
+
 fn parse_u64(method: &str, field: &str, value: &str) -> Result<u64, RpcError> {
     if value.is_empty() {
         return Ok(0);
@@ -375,6 +444,22 @@ fn parse_optional_u32(method: &str, field: &str, value: &str) -> Result<Option<u
 fn parse_optional_u64(method: &str, field: &str, value: &str) -> Result<Option<u64>, RpcError> {
     let parsed = parse_u64(method, field, value)?;
     Ok((parsed != 0).then_some(parsed))
+}
+
+fn parse_gid(method: &str, field: &str, value: &str) -> Result<Gid, RpcError> {
+    value.parse::<Gid>().map_err(|error| RpcError::InvalidData {
+        method: method.into(),
+        field: field.into(),
+        message: error.to_string(),
+    })
+}
+
+fn parse_optional_gid(method: &str, field: &str, value: &str) -> Result<Option<Gid>, RpcError> {
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        parse_gid(method, field, value).map(Some)
+    }
 }
 
 fn parse_bool(method: &str, field: &str, value: &str) -> Result<bool, RpcError> {
@@ -428,10 +513,37 @@ mod tests {
 
         assert_eq!(task.status, DownloadStatus::Verifying);
         assert_eq!(task.display_name, "archive.iso");
+        assert_eq!(task.name_state, TaskNameState::Resolved);
+        assert_eq!(task.metadata.source_kind, TaskSourceKind::DirectUri);
         assert_eq!(task.total_length, ByteCount::new(100));
         assert_eq!(
             task.metadata.primary_uri.as_deref(),
             Some("https://example.test/archive.iso")
+        );
+    }
+
+    #[test]
+    fn task_conversion_preserves_disk_space_error_details() {
+        let wire = serde_json::from_value::<TaskWire>(json!({
+            "gid": "0000000000000009",
+            "status": "error",
+            "errorCode": "9",
+            "errorMessage": "File allocation failed",
+            "files": [{"path": "/downloads/large.iso"}]
+        }))
+        .expect("valid failed task fixture");
+
+        let task = wire
+            .into_domain("aria2.tellStopped")
+            .expect("valid failed task conversion");
+
+        assert_eq!(task.status, DownloadStatus::Error);
+        assert_eq!(
+            task.error,
+            Some(TaskError {
+                code: Some(9),
+                message: "File allocation failed".into(),
+            })
         );
     }
 
@@ -452,6 +564,58 @@ mod tests {
         };
 
         assert_eq!(task.display_name, "Linux Images");
+        assert_eq!(task.name_state, TaskNameState::Resolved);
+        assert_eq!(task.metadata.source_kind, TaskSourceKind::BitTorrent);
+    }
+
+    #[test]
+    fn task_without_metadata_keeps_gid_as_fallback_while_name_resolves() {
+        let wire = serde_json::from_value::<TaskWire>(json!({
+            "gid": "0000000000000004",
+            "status": "waiting"
+        }))
+        .expect("valid unresolved task fixture");
+        let task = wire
+            .into_domain("aria2.tellWaiting")
+            .expect("valid unresolved task conversion");
+
+        assert_eq!(task.display_name, "0000000000000004");
+        assert_eq!(task.name_state, TaskNameState::Resolving);
+        assert_eq!(task.metadata.source_kind, TaskSourceKind::Unknown);
+    }
+
+    #[test]
+    fn source_kind_distinguishes_magnet_and_metalink_inputs() {
+        assert_eq!(
+            task_source_kind(false, 0, Some("magnet:?xt=urn:btih:abcd"), false),
+            TaskSourceKind::Magnet
+        );
+        assert_eq!(
+            task_source_kind(
+                false,
+                1,
+                Some("https://example.test/download.meta4?token=one"),
+                false,
+            ),
+            TaskSourceKind::Metalink
+        );
+    }
+
+    #[test]
+    fn task_metadata_preserves_magnet_task_relationships() {
+        let wire = serde_json::from_value::<TaskWire>(json!({
+            "gid": "0000000000000005",
+            "status": "active",
+            "followedBy": ["0000000000000006"],
+            "belongsTo": "0000000000000004"
+        }))
+        .expect("valid relationship fixture");
+        let task = wire
+            .into_domain("aria2.tellActive")
+            .expect("valid relationship conversion");
+
+        assert_eq!(task.metadata.followed_by, vec![Gid::from_u64(6)]);
+        assert_eq!(task.metadata.belongs_to, Some(Gid::from_u64(4)));
     }
 
     #[test]

@@ -10,11 +10,12 @@ mod theme;
 
 pub use actions::init;
 pub use actions::{
-    Backspace, ClearSearch, CloseAddDownload, CloseSettings, Copy, Cut, Delete, FocusNext,
-    FocusPrevious, FocusSearch, MoveEnd, MoveHome, MoveLeft, MoveRight, OpenAddDownload,
-    OpenSettings, OpenTaskDetails, Paste, PauseSelectedTask, RemoveSelectedTask,
-    ResumeSelectedTask, RetrySelectedTask, SaveSettings, SelectAll, SelectLeft, SelectNextTask,
-    SelectPreviousTask, SelectRight, SubmitAddDownload,
+    Backspace, ClearSearch, CloseAddDownload, CloseBatchFailures, CloseSettings,
+    CloseTaskOutputName, Copy, Cut, Delete, FocusNext, FocusPrevious, FocusSearch, InsertNewline,
+    MoveEnd, MoveHome, MoveLeft, MoveRight, OpenAddDownload, OpenSettings, OpenTaskDetails,
+    OpenTaskOutputName, Paste, PauseSelectedTask, RemoveSelectedTask, ResumeSelectedTask,
+    RetrySelectedTask, SaveSettings, SelectAll, SelectAllTasks, SelectLeft, SelectNextTask,
+    SelectPreviousTask, SelectRight, SubmitAddDownload, SubmitTaskOutputName,
 };
 pub use assets::Assets;
 pub use components::{
@@ -22,13 +23,18 @@ pub use components::{
     LoadingIndicator, Segment, SegmentedControl, StatusIndicator, Toast, ToastKind, Tooltip,
 };
 pub use model::{
-    AddDownloadRequestView, AddDownloadResultView, ColorSchemeView, CommandOutcomeView,
-    ConnectionView, DownloadRowView, EngineHealthView, EngineSessionView, OperationErrorView,
-    RequestId, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
-    SettingsView, SpeedSampleView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
-    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
-    TaskDetailsView, TaskFileView, TaskIdentity, TaskStatusView, WorkspaceFilter, WorkspaceQuery,
-    WorkspaceSnapshot, format_bytes, format_eta, format_percent, format_rate,
+    AddDownloadItemResultView, AddDownloadModeView, AddDownloadRequestView, AddDownloadResultView,
+    AddDownloadSourceView, BatchCommandOutcomeView, BatchTaskCommandRequestView,
+    BatchTaskCommandResultView, BatchTaskCommandView, BatchTaskFailureView, ColorSchemeView,
+    CommandOutcomeView, ConnectionView, DownloadProxySettingsView, DownloadRowView,
+    EngineHealthView, EngineSessionView, FileConflictPolicyView, OperationErrorView, ProxyModeView,
+    ProxyPasswordUpdateView, RequestId, SecretStringView, SettingsSaveOutcomeView,
+    SettingsSaveRequestView, SettingsSaveResultView, SettingsView, SpeedSampleView,
+    TaskCommandRequestView, TaskCommandResultView, TaskCommandView, TaskCountsView,
+    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
+    TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView, TaskSourceKindView,
+    TaskStatusView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, format_bytes, format_eta,
+    format_percent, format_rate,
 };
 pub use search_input::{SearchInput, SearchInputEvent, TextField, TextFieldConfig, TextFieldEvent};
 pub use shell::{AppShell, AppShellEvent};

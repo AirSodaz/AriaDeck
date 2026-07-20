@@ -9,12 +9,15 @@ mod view;
 
 pub use commands::{
     AddDownloadRequest, AppCommand, ApplicationError, ApplicationErrorCode, CommandItem,
-    CommandOutcome, CommandService, ItemFailure, RemoveTasksRequest, TaskCommandContext,
+    CommandOutcome, CommandService, DownloadProxyConfig, DownloadProxyMode, FileConflictPolicy,
+    ItemFailure, RemoveTasksRequest, SetTaskOutputNameRequest, TaskCommandContext,
     TaskRemovalScope,
 };
 pub use history::{DEFAULT_SPEED_HISTORY_CAPACITY, SpeedHistory, SpeedHistoryError, SpeedSample};
 pub use ports::{
-    DownloadEngineGateway, GatewayError, GatewayErrorKind, TaskDetailsGateway, TaskRemovalTarget,
+    DownloadDestinationGateway, DownloadDestinationReport, DownloadDestinationRequest,
+    DownloadEngineGateway, GatewayError, GatewayErrorKind, TaskDetailsGateway, TaskFileGateway,
+    TaskFileRemovalPreview, TaskFileRemovalReport, TaskFileRemovalRequest, TaskRemovalTarget,
 };
 pub use store::{
     DownloadStore, OrderPatch, StoreError, StorePatch, TaskCollection, TaskFieldPatch,

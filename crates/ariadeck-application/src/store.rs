@@ -337,6 +337,33 @@ impl DownloadStore {
         Ok(self.finish_patch(patch))
     }
 
+    pub fn set_custom_output_name(
+        &mut self,
+        generation: SessionGeneration,
+        gid: Gid,
+        output_name: impl Into<String>,
+    ) -> Result<StorePatch, StoreError> {
+        self.ensure_generation(generation)?;
+        let (fields, task_revision, search_name) = {
+            let task = self
+                .tasks
+                .get_mut(&gid)
+                .ok_or(StoreError::TaskNotFound(gid))?;
+            let fields = task.set_custom_output_name(output_name);
+            (fields, task.revision, task.display_name.to_lowercase())
+        };
+        let mut patch = StorePatch::new(generation, self.revision);
+        if !fields.is_empty() {
+            self.search_index.insert(gid, search_name);
+            patch.updated.push(TaskFieldPatch {
+                gid,
+                fields,
+                task_revision,
+            });
+        }
+        Ok(self.finish_patch(patch))
+    }
+
     pub fn set_stale(
         &mut self,
         generation: SessionGeneration,
@@ -478,6 +505,8 @@ pub enum StoreError {
     },
     #[error("targeted task response GID mismatch: expected {expected}, received {received}")]
     TargetedGidMismatch { expected: Gid, received: Gid },
+    #[error("task {0} is not present in the current engine session")]
+    TaskNotFound(Gid),
     #[error(transparent)]
     TaskUpdate(#[from] TaskUpdateError),
 }
@@ -526,6 +555,47 @@ mod tests {
         assert_eq!(
             store.task(Gid::from_u64(1)).map(|task| task.revision),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn custom_output_name_updates_search_and_survives_targeted_refresh() {
+        let mut store = store();
+        store
+            .reconcile_live(
+                generation(),
+                vec![task(1, DownloadStatus::Paused, "original.bin")],
+                Vec::new(),
+            )
+            .expect("initial task");
+
+        let patch = store
+            .set_custom_output_name(generation(), Gid::from_u64(1), "renamed.bin")
+            .expect("set custom output name");
+        assert_eq!(patch.updated[0].gid, Gid::from_u64(1));
+        assert_eq!(
+            store
+                .task(Gid::from_u64(1))
+                .expect("renamed task")
+                .display_name,
+            "renamed.bin"
+        );
+
+        let mut refreshed = task(1, DownloadStatus::Paused, "original.bin");
+        refreshed.name_state = ariadeck_domain::TaskNameState::Resolved;
+        store
+            .apply_task_snapshot(generation(), Gid::from_u64(1), Some(refreshed))
+            .expect("targeted refresh");
+        assert_eq!(
+            store
+                .task(Gid::from_u64(1))
+                .expect("refreshed task")
+                .display_name,
+            "renamed.bin"
+        );
+        assert_eq!(
+            store.search_index.get(&Gid::from_u64(1)),
+            Some(&"renamed.bin".into())
         );
     }
 

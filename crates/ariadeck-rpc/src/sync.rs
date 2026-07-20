@@ -80,14 +80,19 @@ impl RpcSyncSession {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             for task in &mut tasks {
                 if let Some((display_name, metadata)) = cache.get(&task.gid) {
+                    let followed_by = std::mem::take(&mut task.metadata.followed_by);
+                    let belongs_to = task.metadata.belongs_to;
                     task.display_name.clone_from(display_name);
                     task.metadata.clone_from(metadata);
+                    task.metadata.followed_by = followed_by;
+                    task.metadata.belongs_to = belongs_to;
                 } else {
                     missing.push(task.gid);
                 }
             }
         }
         if missing.is_empty() {
+            self.remember_tasks(&tasks);
             return Ok(tasks);
         }
 
@@ -107,6 +112,7 @@ impl RpcSyncSession {
                 task.metadata.clone_from(&discovered.metadata);
             }
         }
+        self.remember_tasks(&tasks);
         Ok(tasks)
     }
 }

@@ -1,10 +1,11 @@
 use ariadeck_application::{
-    AddDownloadRequest, DownloadEngineGateway, GatewayError, GatewayErrorKind, TaskDetailsGateway,
-    TaskRemovalTarget,
+    AddDownloadRequest, DownloadEngineGateway, DownloadProxyConfig, DownloadProxyMode,
+    FileConflictPolicy, GatewayError, GatewayErrorKind, TaskDetailsGateway, TaskRemovalTarget,
 };
 use ariadeck_domain::{Gid, GlobalStat, TaskDetails, TaskSnapshot};
 use async_trait::async_trait;
-use serde::de::DeserializeOwned;
+use secrecy::ExposeSecret;
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -94,14 +95,91 @@ where
             .cloned()
             .map(|(key, value)| (key, Value::String(value)))
             .collect::<Map<_, _>>();
+        apply_file_conflict_policy(&mut options, request.file_conflict);
         if let Some(destination) = &request.destination {
             options.insert("dir".into(), Value::String(destination.as_str().to_owned()));
         }
-        self.call_gid(
-            "aria2.addUri",
-            vec![json!(request.uris), Value::Object(options)],
-        )
-        .await
+        self.add_uri_with_options(&request.uris, options).await
+    }
+
+    async fn retry_uri(
+        &self,
+        gid: Gid,
+        fallback: &AddDownloadRequest,
+    ) -> Result<Gid, RetryRpcError> {
+        let mut options = self.get_options(gid).await.map_err(RetryRpcError::Query)?;
+        let discovered_uris = match self.get_uris(gid).await {
+            Ok(uris) => uris,
+            Err(error) if is_no_uri_data(&error) => Vec::new(),
+            Err(error) => return Err(RetryRpcError::Query(error)),
+        };
+        let uris = if discovered_uris.is_empty() {
+            fallback.uris.clone()
+        } else {
+            discovered_uris
+        };
+
+        options.remove("gid");
+        options.remove("pause");
+        for (key, value) in &fallback.options {
+            options
+                .entry(key.clone())
+                .or_insert_with(|| Value::String(value.clone()));
+        }
+        if let Some(destination) = &fallback.destination {
+            options
+                .entry("dir")
+                .or_insert_with(|| Value::String(destination.as_str().to_owned()));
+        }
+
+        self.add_uri_with_options(&uris, options)
+            .await
+            .map_err(RetryRpcError::Mutation)
+    }
+
+    pub async fn get_options(&self, gid: Gid) -> Result<Map<String, Value>, RpcError> {
+        const METHOD: &str = "aria2.getOption";
+        let value = self
+            .transport
+            .call(METHOD, vec![json!(gid.to_string())])
+            .await?;
+        let options = decode::<Map<String, Value>>(METHOD, value)?;
+        for (key, value) in &options {
+            let valid = matches!(value, Value::String(_))
+                || matches!(value, Value::Array(values) if values.iter().all(Value::is_string));
+            if !valid {
+                return Err(RpcError::InvalidData {
+                    method: METHOD.into(),
+                    field: key.clone(),
+                    message: "expected a string or an array of strings".into(),
+                });
+            }
+        }
+        Ok(options)
+    }
+
+    async fn get_uris(&self, gid: Gid) -> Result<Vec<String>, RpcError> {
+        const METHOD: &str = "aria2.getUris";
+        let value = self
+            .transport
+            .call(METHOD, vec![json!(gid.to_string())])
+            .await?;
+        let uris = decode::<Vec<UriWire>>(METHOD, value)?;
+        let mut seen = std::collections::HashSet::new();
+        Ok(uris
+            .into_iter()
+            .map(|uri| uri.uri.trim().to_owned())
+            .filter(|uri| !uri.is_empty() && seen.insert(uri.clone()))
+            .collect())
+    }
+
+    async fn add_uri_with_options(
+        &self,
+        uris: &[String],
+        options: Map<String, Value>,
+    ) -> Result<Gid, RpcError> {
+        self.call_gid("aria2.addUri", vec![json!(uris), Value::Object(options)])
+            .await
     }
 
     pub async fn pause(&self, gid: Gid) -> Result<Gid, RpcError> {
@@ -111,6 +189,36 @@ where
 
     pub async fn resume(&self, gid: Gid) -> Result<Gid, RpcError> {
         self.call_gid("aria2.unpause", vec![json!(gid.to_string())])
+            .await
+    }
+
+    pub async fn change_options(
+        &self,
+        gid: Gid,
+        options: &[(String, String)],
+    ) -> Result<(), RpcError> {
+        let options = options
+            .iter()
+            .cloned()
+            .map(|(key, value)| (key, Value::String(value)))
+            .collect::<Map<_, _>>();
+        self.call_ok(
+            "aria2.changeOption",
+            vec![json!(gid.to_string()), Value::Object(options)],
+        )
+        .await
+    }
+
+    pub async fn change_global_options(
+        &self,
+        options: &[(String, String)],
+    ) -> Result<(), RpcError> {
+        let options = options
+            .iter()
+            .cloned()
+            .map(|(key, value)| (key, Value::String(value)))
+            .collect::<Map<_, _>>();
+        self.call_ok("aria2.changeGlobalOption", vec![Value::Object(options)])
             .await
     }
 
@@ -350,6 +458,22 @@ where
     }
 }
 
+fn apply_file_conflict_policy(options: &mut Map<String, Value>, policy: FileConflictPolicy) {
+    let (allow_overwrite, auto_file_renaming) = match policy {
+        FileConflictPolicy::AutoRename => (false, true),
+        FileConflictPolicy::Reject => (false, false),
+        FileConflictPolicy::Overwrite => (true, false),
+    };
+    options.insert(
+        "allow-overwrite".into(),
+        Value::String(allow_overwrite.to_string()),
+    );
+    options.insert(
+        "auto-file-renaming".into(),
+        Value::String(auto_file_renaming.to_string()),
+    );
+}
+
 fn next_batch_result(
     results: &mut impl Iterator<Item = Result<Value, RpcError>>,
     method: &str,
@@ -369,6 +493,14 @@ fn decode_tasks(method: &str, value: Value) -> Result<Vec<TaskSnapshot>, RpcErro
 fn is_gid_not_found(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("gid") && message.contains("not found")
+}
+
+fn is_no_uri_data(error: &RpcError) -> bool {
+    matches!(
+        error,
+        RpcError::Remote { message, .. }
+            if message.to_ascii_lowercase().contains("no uri data is available")
+    )
 }
 
 fn task_keys(keys: &[TaskKey]) -> Value {
@@ -399,6 +531,18 @@ where
         self.add_uri(request).await.map_err(map_mutation_error)
     }
 
+    async fn retry_download(
+        &self,
+        gid: Gid,
+        fallback: &AddDownloadRequest,
+    ) -> Result<Gid, GatewayError> {
+        match self.retry_uri(gid, fallback).await {
+            Ok(gid) => Ok(gid),
+            Err(RetryRpcError::Query(error)) => Err(map_query_error(error)),
+            Err(RetryRpcError::Mutation(error)) => Err(map_mutation_error(error)),
+        }
+    }
+
     async fn pause(&self, gid: Gid) -> Result<(), GatewayError> {
         Aria2Client::pause(self, gid)
             .await
@@ -410,6 +554,22 @@ where
         Aria2Client::resume(self, gid)
             .await
             .map(|_| ())
+            .map_err(map_mutation_error)
+    }
+
+    async fn change_options(
+        &self,
+        gid: Gid,
+        options: &[(String, String)],
+    ) -> Result<(), GatewayError> {
+        Aria2Client::change_options(self, gid, options)
+            .await
+            .map_err(map_mutation_error)
+    }
+
+    async fn apply_download_proxy(&self, config: &DownloadProxyConfig) -> Result<(), GatewayError> {
+        self.change_global_options(&download_proxy_options(config))
+            .await
             .map_err(map_mutation_error)
     }
 
@@ -426,6 +586,48 @@ where
         }
         .map_err(map_mutation_error)
     }
+}
+
+fn download_proxy_options(config: &DownloadProxyConfig) -> Vec<(String, String)> {
+    let manual = config.mode == DownloadProxyMode::Manual;
+    let endpoint = |value: &Option<String>| {
+        if manual {
+            value.clone().unwrap_or_default()
+        } else {
+            String::new()
+        }
+    };
+    let username = manual
+        .then(|| config.username.clone())
+        .flatten()
+        .unwrap_or_default();
+    let password = if manual {
+        config
+            .password
+            .as_ref()
+            .map(ExposeSecret::expose_secret)
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let no_proxy = if manual {
+        config.no_proxy.join(",")
+    } else {
+        String::new()
+    };
+    let mut options = vec![
+        ("all-proxy".into(), endpoint(&config.all_proxy)),
+        ("http-proxy".into(), endpoint(&config.http_proxy)),
+        ("https-proxy".into(), endpoint(&config.https_proxy)),
+        ("ftp-proxy".into(), endpoint(&config.ftp_proxy)),
+        ("no-proxy".into(), no_proxy),
+    ];
+    for prefix in ["all", "http", "https", "ftp"] {
+        options.push((format!("{prefix}-proxy-user"), username.clone()));
+        options.push((format!("{prefix}-proxy-passwd"), password.clone()));
+    }
+    options
 }
 
 #[async_trait]
@@ -484,6 +686,16 @@ fn live_task_became_stopped(error: &RpcError) -> bool {
         && (message.contains("not found")
             || message.contains("not active")
             || message.contains("stopped"))
+}
+
+#[derive(Deserialize)]
+struct UriWire {
+    uri: String,
+}
+
+enum RetryRpcError {
+    Query(RpcError),
+    Mutation(RpcError),
 }
 
 #[cfg(test)]
@@ -566,8 +778,12 @@ mod tests {
         let transport = ScriptedTransport::new([Ok(json!("0000000000000009"))]);
         let client = Aria2Client::new(transport);
         let request = AddDownloadRequest {
-            uris: vec!["https://example.test/file".into()],
+            uris: vec![
+                "https://example.test/file".into(),
+                "https://mirror.test/file".into(),
+            ],
             destination: Some("D:/Downloads".into()),
+            file_conflict: FileConflictPolicy::AutoRename,
             options: vec![("max-download-limit".into(), "1M".into())],
         };
 
@@ -582,11 +798,264 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(calls[0].0, "aria2.addUri");
+        assert_eq!(
+            calls[0].1[0],
+            json!(["https://example.test/file", "https://mirror.test/file"])
+        );
         assert_eq!(calls[0].1[1]["dir"], Value::String("D:/Downloads".into()));
         assert_eq!(
             calls[0].1[1]["max-download-limit"],
             Value::String("1M".into())
         );
+        assert_eq!(
+            calls[0].1[1]["allow-overwrite"],
+            Value::String("false".into())
+        );
+        assert_eq!(
+            calls[0].1[1]["auto-file-renaming"],
+            Value::String("true".into())
+        );
+    }
+
+    #[test]
+    fn file_conflict_policy_maps_to_authoritative_aria2_options() {
+        for (policy, allow_overwrite, auto_file_renaming) in [
+            (FileConflictPolicy::AutoRename, "false", "true"),
+            (FileConflictPolicy::Reject, "false", "false"),
+            (FileConflictPolicy::Overwrite, "true", "false"),
+        ] {
+            let mut options = Map::from_iter([
+                ("allow-overwrite".into(), Value::String("unexpected".into())),
+                (
+                    "auto-file-renaming".into(),
+                    Value::String("unexpected".into()),
+                ),
+            ]);
+
+            apply_file_conflict_policy(&mut options, policy);
+
+            assert_eq!(
+                options["allow-overwrite"],
+                Value::String(allow_overwrite.into())
+            );
+            assert_eq!(
+                options["auto-file-renaming"],
+                Value::String(auto_file_renaming.into())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_replays_sources_and_safe_task_options_with_a_new_gid() {
+        let transport = ScriptedTransport::new([
+            Ok(json!({
+                "gid": "0000000000000007",
+                "pause": "true",
+                "dir": "/downloads",
+                "out": "renamed.iso",
+                "header": ["Cookie: session=abc", "Referer: https://example.test/"],
+                "load-cookies": "/cookies.txt",
+                "all-proxy": "http://proxy.test:8080",
+                "max-download-limit": "1M",
+                "max-connection-per-server": "4",
+                "checksum": "sha-256=deadbeef",
+                "select-file": "1,3-4"
+            })),
+            Ok(json!([
+                {"uri": "https://example.test/archive.iso", "status": "used"},
+                {"uri": "https://mirror.test/archive.iso", "status": "waiting"}
+            ])),
+            Ok(json!("0000000000000009")),
+        ]);
+        let client = Aria2Client::new(transport);
+        let fallback = AddDownloadRequest {
+            uris: vec!["https://fallback.test/archive.iso".into()],
+            destination: Some("/fallback".into()),
+            file_conflict: FileConflictPolicy::default(),
+            options: Vec::new(),
+        };
+
+        let new_gid = DownloadEngineGateway::retry_download(&client, Gid::from_u64(7), &fallback)
+            .await
+            .expect("retry succeeds");
+
+        assert_eq!(new_gid, Gid::from_u64(9));
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(
+            calls.iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
+            vec!["aria2.getOption", "aria2.getUris", "aria2.addUri"]
+        );
+        assert_eq!(
+            calls[2].1[0],
+            json!([
+                "https://example.test/archive.iso",
+                "https://mirror.test/archive.iso"
+            ])
+        );
+        let replayed = calls[2].1[1].as_object().expect("option object");
+        for key in [
+            "dir",
+            "out",
+            "header",
+            "load-cookies",
+            "all-proxy",
+            "max-download-limit",
+            "max-connection-per-server",
+            "checksum",
+            "select-file",
+        ] {
+            assert!(replayed.contains_key(key), "missing replayed option {key}");
+        }
+        assert!(!replayed.contains_key("gid"));
+        assert!(!replayed.contains_key("pause"));
+    }
+
+    #[tokio::test]
+    async fn retry_maps_only_the_add_uri_phase_to_unknown_outcome() {
+        let query_failure = ScriptedTransport::new([Err(RpcError::Timeout {
+            method: "aria2.getOption".into(),
+        })]);
+        let query_client = Aria2Client::new(query_failure);
+        let fallback = AddDownloadRequest {
+            uris: vec!["https://example.test/archive.iso".into()],
+            destination: None,
+            file_conflict: FileConflictPolicy::default(),
+            options: Vec::new(),
+        };
+        let query_error =
+            DownloadEngineGateway::retry_download(&query_client, Gid::from_u64(7), &fallback)
+                .await
+                .expect_err("query timeout must fail");
+        assert_eq!(query_error.kind, GatewayErrorKind::Timeout);
+        assert!(query_error.retryable);
+
+        let mutation_failure = ScriptedTransport::new([
+            Ok(json!({"dir": "/downloads"})),
+            Err(RpcError::Remote {
+                code: 1,
+                message: "No URI data is available for GID#0000000000000007".into(),
+                data: None,
+            }),
+            Err(RpcError::Timeout {
+                method: "aria2.addUri".into(),
+            }),
+        ]);
+        let mutation_client = Aria2Client::new(mutation_failure);
+        let mutation_error =
+            DownloadEngineGateway::retry_download(&mutation_client, Gid::from_u64(7), &fallback)
+                .await
+                .expect_err("addUri timeout must be unknown");
+        assert_eq!(mutation_error.kind, GatewayErrorKind::OutcomeUnknown);
+        assert!(!mutation_error.retryable);
+        assert_eq!(
+            mutation_client
+                .transport()
+                .calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn change_options_sends_output_name_to_the_exact_gid() {
+        let transport = ScriptedTransport::new([Ok(json!("OK"))]);
+        let client = Aria2Client::new(transport);
+        let gid = Gid::from_u64(10);
+
+        client
+            .change_options(gid, &[("out".into(), "renamed.iso".into())])
+            .await
+            .expect("changeOption succeeds");
+
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(calls[0].0, "aria2.changeOption");
+        assert_eq!(calls[0].1[0], Value::String(gid.to_string()));
+        assert_eq!(calls[0].1[1]["out"], Value::String("renamed.iso".into()));
+    }
+
+    #[tokio::test]
+    async fn download_proxy_uses_global_options_and_clears_unspecified_values() {
+        let transport = ScriptedTransport::new([Ok(json!("OK"))]);
+        let client = Aria2Client::new(transport);
+        let config = DownloadProxyConfig {
+            mode: DownloadProxyMode::Manual,
+            all_proxy: Some("http://proxy.example:8080".into()),
+            https_proxy: Some("secure-proxy.example:8443".into()),
+            no_proxy: vec!["localhost".into(), "10.0.0.0/8".into()],
+            username: Some("proxy-user".into()),
+            password: Some(secrecy::SecretString::new("secret-value".into())),
+            ..DownloadProxyConfig::default()
+        };
+
+        DownloadEngineGateway::apply_download_proxy(&client, &config)
+            .await
+            .expect("changeGlobalOption succeeds");
+
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(calls[0].0, "aria2.changeGlobalOption");
+        let options = calls[0].1[0].as_object().expect("global option object");
+        assert_eq!(options["all-proxy"], "http://proxy.example:8080");
+        assert_eq!(options["http-proxy"], "");
+        assert_eq!(options["https-proxy"], "secure-proxy.example:8443");
+        assert_eq!(options["no-proxy"], "localhost,10.0.0.0/8");
+        assert_eq!(options["all-proxy-user"], "proxy-user");
+        assert_eq!(options["all-proxy-passwd"], "secret-value");
+        assert_eq!(options["ftp-proxy-passwd"], "secret-value");
+    }
+
+    #[tokio::test]
+    async fn disabled_download_proxy_explicitly_clears_endpoints_and_credentials() {
+        let transport = ScriptedTransport::new([Ok(json!("OK"))]);
+        let client = Aria2Client::new(transport);
+        let config = DownloadProxyConfig {
+            mode: DownloadProxyMode::Disabled,
+            all_proxy: Some("http://stale.example:8080".into()),
+            username: Some("stale-user".into()),
+            password: Some(secrecy::SecretString::new("stale-secret".into())),
+            ..DownloadProxyConfig::default()
+        };
+
+        DownloadEngineGateway::apply_download_proxy(&client, &config)
+            .await
+            .expect("disabled proxy is applied");
+
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let options = calls[0].1[0].as_object().expect("global option object");
+        for key in [
+            "all-proxy",
+            "http-proxy",
+            "https-proxy",
+            "ftp-proxy",
+            "no-proxy",
+            "all-proxy-user",
+            "all-proxy-passwd",
+            "http-proxy-user",
+            "http-proxy-passwd",
+            "https-proxy-user",
+            "https-proxy-passwd",
+            "ftp-proxy-user",
+            "ftp-proxy-passwd",
+        ] {
+            assert_eq!(options[key], "", "{key} was not cleared");
+        }
     }
 
     #[tokio::test]

@@ -30,6 +30,37 @@ impl DownloadStatus {
     }
 }
 
+/// How the engine-derived display name should be interpreted by consumers.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskNameState {
+    /// aria2 has not exposed a reliable file or metadata name yet.
+    #[default]
+    Resolving,
+    /// The name came from aria2 task metadata or a file path.
+    Resolved,
+    /// A user supplied an explicit output name.
+    Custom,
+}
+
+impl TaskNameState {
+    #[must_use]
+    pub const fn is_resolving(self) -> bool {
+        matches!(self, Self::Resolving)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskSourceKind {
+    #[default]
+    Unknown,
+    DirectUri,
+    Magnet,
+    BitTorrent,
+    Metalink,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TaskError {
     pub code: Option<u32>,
@@ -42,6 +73,9 @@ pub struct TaskMetadata {
     pub primary_uri: Option<String>,
     pub info_hash: Option<String>,
     pub file_count: u32,
+    pub followed_by: Vec<Gid>,
+    pub belongs_to: Option<Gid>,
+    pub source_kind: TaskSourceKind,
 }
 
 /// Path in the engine's own filesystem namespace.
@@ -105,6 +139,7 @@ pub struct TaskSnapshot {
     pub gid: Gid,
     pub status: DownloadStatus,
     pub display_name: String,
+    pub name_state: TaskNameState,
     pub total_length: ByteCount,
     pub completed_length: ByteCount,
     pub upload_length: ByteCount,
@@ -122,6 +157,7 @@ impl TaskSnapshot {
             gid,
             status,
             display_name: display_name.into(),
+            name_state: TaskNameState::Resolved,
             total_length: ByteCount::default(),
             completed_length: ByteCount::default(),
             upload_length: ByteCount::default(),
@@ -148,6 +184,7 @@ bitflags! {
         const CONNECTIONS = 1 << 7;
         const ERROR = 1 << 8;
         const METADATA = 1 << 9;
+        const NAME_STATE = 1 << 10;
     }
 }
 
@@ -157,6 +194,7 @@ pub struct DownloadTask {
     pub gid: Gid,
     pub status: DownloadStatus,
     pub display_name: String,
+    pub name_state: TaskNameState,
     pub total_length: ByteCount,
     pub completed_length: ByteCount,
     pub upload_length: ByteCount,
@@ -175,6 +213,7 @@ impl DownloadTask {
             gid: snapshot.gid,
             status: snapshot.status,
             display_name: snapshot.display_name,
+            name_state: snapshot.name_state,
             total_length: snapshot.total_length,
             completed_length: snapshot.completed_length,
             upload_length: snapshot.upload_length,
@@ -205,12 +244,20 @@ impl DownloadTask {
             TaskFields::STATUS,
             &mut changed,
         );
-        update_field(
-            &mut self.display_name,
-            snapshot.display_name,
-            TaskFields::DISPLAY_NAME,
-            &mut changed,
-        );
+        if self.name_state != TaskNameState::Custom {
+            update_field(
+                &mut self.display_name,
+                snapshot.display_name,
+                TaskFields::DISPLAY_NAME,
+                &mut changed,
+            );
+            update_field(
+                &mut self.name_state,
+                snapshot.name_state,
+                TaskFields::NAME_STATE,
+                &mut changed,
+            );
+        }
         update_field(
             &mut self.total_length,
             snapshot.total_length,
@@ -264,6 +311,26 @@ impl DownloadTask {
             self.revision = self.revision.saturating_add(1);
         }
         Ok(changed)
+    }
+
+    pub fn set_custom_output_name(&mut self, output_name: impl Into<String>) -> TaskFields {
+        let mut changed = TaskFields::empty();
+        update_field(
+            &mut self.display_name,
+            output_name.into(),
+            TaskFields::DISPLAY_NAME,
+            &mut changed,
+        );
+        update_field(
+            &mut self.name_state,
+            TaskNameState::Custom,
+            TaskFields::NAME_STATE,
+            &mut changed,
+        );
+        if !changed.is_empty() {
+            self.revision = self.revision.saturating_add(1);
+        }
+        changed
     }
 
     #[must_use]
@@ -375,5 +442,49 @@ mod tests {
 
         assert_eq!(changed, TaskFields::STATUS | TaskFields::COMPLETED_LENGTH);
         assert_eq!(task.revision, 2);
+    }
+
+    #[test]
+    fn resolved_name_state_is_a_semantic_task_change() {
+        let mut snapshot = TaskSnapshot::new(
+            Gid::from_u64(3),
+            DownloadStatus::Waiting,
+            "0000000000000003",
+        );
+        snapshot.name_state = TaskNameState::Resolving;
+        let mut task = DownloadTask::from_snapshot(snapshot.clone());
+
+        snapshot.display_name = "archive.iso".into();
+        snapshot.name_state = TaskNameState::Resolved;
+        let changed = task
+            .apply_snapshot(snapshot)
+            .expect("matching resolved snapshot");
+
+        assert_eq!(changed, TaskFields::DISPLAY_NAME | TaskFields::NAME_STATE);
+        assert_eq!(task.name_state, TaskNameState::Resolved);
+        assert_eq!(task.revision, 2);
+    }
+
+    #[test]
+    fn custom_output_name_survives_later_engine_snapshots() {
+        let mut task = DownloadTask::from_snapshot(TaskSnapshot::new(
+            Gid::from_u64(4),
+            DownloadStatus::Waiting,
+            "original.bin",
+        ));
+        let changed = task.set_custom_output_name("renamed.bin");
+        assert_eq!(changed, TaskFields::DISPLAY_NAME | TaskFields::NAME_STATE);
+        assert_eq!(task.display_name, "renamed.bin");
+        assert_eq!(task.name_state, TaskNameState::Custom);
+
+        let mut snapshot =
+            TaskSnapshot::new(Gid::from_u64(4), DownloadStatus::Active, "engine.bin");
+        snapshot.name_state = TaskNameState::Resolved;
+        let changed = task
+            .apply_snapshot(snapshot)
+            .expect("matching engine snapshot");
+        assert_eq!(changed, TaskFields::STATUS);
+        assert_eq!(task.display_name, "renamed.bin");
+        assert_eq!(task.name_state, TaskNameState::Custom);
     }
 }

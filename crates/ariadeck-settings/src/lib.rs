@@ -6,11 +6,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use url::Url;
 use uuid::Uuid;
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -20,10 +22,177 @@ pub enum ColorScheme {
     Dark,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadProxyMode {
+    #[default]
+    Disabled,
+    Manual,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct ProxyCredentialRef(Uuid);
+
+impl ProxyCredentialRef {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    #[must_use]
+    pub fn as_uuid(self) -> Uuid {
+        self.0
+    }
+}
+
+impl Default for ProxyCredentialRef {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("system credential store operation failed while {operation}: {message}")]
+pub struct ProxyCredentialError {
+    operation: &'static str,
+    message: String,
+}
+
+pub trait ProxyCredentialStore: Send + Sync {
+    fn load(
+        &self,
+        credential: ProxyCredentialRef,
+    ) -> Result<Option<SecretString>, ProxyCredentialError>;
+    fn save(
+        &self,
+        credential: ProxyCredentialRef,
+        password: &SecretString,
+    ) -> Result<(), ProxyCredentialError>;
+    fn delete(&self, credential: ProxyCredentialRef) -> Result<(), ProxyCredentialError>;
+}
+
+#[derive(Clone, Debug)]
+pub struct SystemProxyCredentialStore {
+    service: String,
+}
+
+impl Default for SystemProxyCredentialStore {
+    fn default() -> Self {
+        Self::new("AriaDeck download proxy")
+    }
+}
+
+impl SystemProxyCredentialStore {
+    #[must_use]
+    pub fn new(service: impl Into<String>) -> Self {
+        Self {
+            service: service.into(),
+        }
+    }
+
+    fn entry(
+        &self,
+        credential: ProxyCredentialRef,
+    ) -> Result<keyring::Entry, ProxyCredentialError> {
+        keyring::Entry::new(&self.service, &credential.as_uuid().to_string()).map_err(|error| {
+            ProxyCredentialError {
+                operation: "opening an entry",
+                message: error.to_string(),
+            }
+        })
+    }
+}
+
+impl ProxyCredentialStore for SystemProxyCredentialStore {
+    fn load(
+        &self,
+        credential: ProxyCredentialRef,
+    ) -> Result<Option<SecretString>, ProxyCredentialError> {
+        match self.entry(credential)?.get_password() {
+            Ok(password) => Ok(Some(SecretString::new(password))),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(ProxyCredentialError {
+                operation: "reading an entry",
+                message: error.to_string(),
+            }),
+        }
+    }
+
+    fn save(
+        &self,
+        credential: ProxyCredentialRef,
+        password: &SecretString,
+    ) -> Result<(), ProxyCredentialError> {
+        use secrecy::ExposeSecret as _;
+
+        self.entry(credential)?
+            .set_password(password.expose_secret())
+            .map_err(|error| ProxyCredentialError {
+                operation: "writing an entry",
+                message: error.to_string(),
+            })
+    }
+
+    fn delete(&self, credential: ProxyCredentialRef) -> Result<(), ProxyCredentialError> {
+        match self.entry(credential)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(ProxyCredentialError {
+                operation: "deleting an entry",
+                message: error.to_string(),
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DownloadProxySettings {
+    pub mode: DownloadProxyMode,
+    pub all_proxy: Option<String>,
+    pub http_proxy: Option<String>,
+    pub https_proxy: Option<String>,
+    pub ftp_proxy: Option<String>,
+    pub no_proxy: Vec<String>,
+    pub username: Option<String>,
+    pub credential: Option<ProxyCredentialRef>,
+}
+
+impl DownloadProxySettings {
+    pub fn validate(&self) -> Result<(), SettingsError> {
+        for (label, endpoint) in [
+            ("all", self.all_proxy.as_deref()),
+            ("HTTP", self.http_proxy.as_deref()),
+            ("HTTPS", self.https_proxy.as_deref()),
+            ("FTP", self.ftp_proxy.as_deref()),
+        ] {
+            if let Some(endpoint) = endpoint {
+                validate_proxy_endpoint(label, endpoint)?;
+            }
+        }
+        if self.mode == DownloadProxyMode::Manual
+            && self.all_proxy.is_none()
+            && self.http_proxy.is_none()
+            && self.https_proxy.is_none()
+            && self.ftp_proxy.is_none()
+        {
+            return Err(SettingsError::MissingManualProxyEndpoint);
+        }
+        if self.credential.is_some() && self.username.as_deref().is_none_or(str::is_empty) {
+            return Err(SettingsError::ProxyCredentialWithoutUsername);
+        }
+        for entry in &self.no_proxy {
+            validate_no_proxy_entry(entry)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppSettings {
     pub color_scheme: ColorScheme,
     pub download_directory: PathBuf,
+    pub download_proxy: DownloadProxySettings,
 }
 
 impl AppSettings {
@@ -32,6 +201,7 @@ impl AppSettings {
         Self {
             color_scheme: ColorScheme::default(),
             download_directory: download_directory.into(),
+            download_proxy: DownloadProxySettings::default(),
         }
     }
 
@@ -39,6 +209,7 @@ impl AppSettings {
         if self.download_directory.as_os_str().is_empty() {
             return Err(SettingsError::EmptyDownloadDirectory);
         }
+        self.download_proxy.validate()?;
         Ok(())
     }
 }
@@ -61,6 +232,14 @@ pub enum SettingsError {
     InvalidStorePath { path: PathBuf },
     #[error("download directory must not be empty")]
     EmptyDownloadDirectory,
+    #[error("manual download proxy requires at least one proxy endpoint")]
+    MissingManualProxyEndpoint,
+    #[error("proxy credential requires a non-empty username")]
+    ProxyCredentialWithoutUsername,
+    #[error("invalid {label} proxy endpoint: {reason}")]
+    InvalidProxyEndpoint { label: &'static str, reason: String },
+    #[error("invalid no-proxy entry {entry:?}: {reason}")]
+    InvalidNoProxyEntry { entry: String, reason: String },
     #[error("unsupported settings schema version {found}; this build supports {supported}")]
     UnsupportedSchemaVersion { found: u32, supported: u32 },
     #[error("malformed settings document at {path}: {message}")]
@@ -76,12 +255,107 @@ pub enum SettingsError {
     },
 }
 
+fn validate_proxy_endpoint(label: &'static str, endpoint: &str) -> Result<(), SettingsError> {
+    if endpoint.is_empty() || endpoint.trim() != endpoint {
+        return Err(SettingsError::InvalidProxyEndpoint {
+            label,
+            reason: "value must be non-empty and must not have surrounding whitespace".into(),
+        });
+    }
+    let candidate = if endpoint.contains("://") {
+        endpoint.to_owned()
+    } else {
+        format!("http://{endpoint}")
+    };
+    let parsed = Url::parse(&candidate).map_err(|error| SettingsError::InvalidProxyEndpoint {
+        label,
+        reason: error.to_string(),
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(SettingsError::InvalidProxyEndpoint {
+            label,
+            reason: "only HTTP and HTTPS proxy URLs are supported".into(),
+        });
+    }
+    if parsed.host_str().is_none() {
+        return Err(SettingsError::InvalidProxyEndpoint {
+            label,
+            reason: "host is required".into(),
+        });
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(SettingsError::InvalidProxyEndpoint {
+            label,
+            reason: "credentials must be stored separately from the proxy URL".into(),
+        });
+    }
+    if parsed.path() != "/" || parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(SettingsError::InvalidProxyEndpoint {
+            label,
+            reason: "path, query, and fragment components are not allowed".into(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_no_proxy_entry(entry: &str) -> Result<(), SettingsError> {
+    let invalid = |reason: &str| SettingsError::InvalidNoProxyEntry {
+        entry: entry.to_owned(),
+        reason: reason.into(),
+    };
+    if entry.is_empty() || entry.trim() != entry {
+        return Err(invalid(
+            "value must be non-empty and must not have surrounding whitespace",
+        ));
+    }
+    if entry.contains([',', '@']) || entry.contains("://") || entry.chars().any(char::is_whitespace)
+    {
+        return Err(invalid(
+            "expected a host, domain, IP address, or CIDR network",
+        ));
+    }
+    if let Some((address, prefix)) = entry.rsplit_once('/') {
+        let address = address
+            .parse::<std::net::IpAddr>()
+            .map_err(|_| invalid("CIDR base must be an IPv4 or IPv6 address"))?;
+        let prefix = prefix
+            .parse::<u8>()
+            .map_err(|_| invalid("CIDR prefix must be a number"))?;
+        let max_prefix = if address.is_ipv4() { 32 } else { 128 };
+        if prefix > max_prefix {
+            return Err(invalid("CIDR prefix exceeds the address width"));
+        }
+        return Ok(());
+    }
+    if !entry
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || ".-:[]".contains(character))
+    {
+        return Err(invalid("contains unsupported characters"));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct SettingsVersionProbe {
+    schema_version: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsDocumentV1 {
+    schema_version: u32,
+    color_scheme: ColorScheme,
+    download_directory: PathBuf,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SettingsDocument {
     schema_version: u32,
     color_scheme: ColorScheme,
     download_directory: PathBuf,
+    download_proxy: DownloadProxySettings,
 }
 
 impl From<&AppSettings> for SettingsDocument {
@@ -90,6 +364,7 @@ impl From<&AppSettings> for SettingsDocument {
             schema_version: CURRENT_SETTINGS_SCHEMA_VERSION,
             color_scheme: settings.color_scheme,
             download_directory: settings.download_directory.clone(),
+            download_proxy: settings.download_proxy.clone(),
         }
     }
 }
@@ -107,6 +382,7 @@ impl TryFrom<SettingsDocument> for AppSettings {
         let settings = Self {
             color_scheme: document.color_scheme,
             download_directory: document.download_directory,
+            download_proxy: document.download_proxy,
         };
         settings.validate()?;
         Ok(settings)
@@ -130,14 +406,45 @@ impl JsonSettingsStore {
     }
 
     pub fn load(&self) -> Result<AppSettings, SettingsError> {
+        self.load_versioned().map(|(settings, _)| settings)
+    }
+
+    fn load_versioned(&self) -> Result<(AppSettings, bool), SettingsError> {
         let bytes = fs::read(&self.path)
             .map_err(|source| io_error("read the settings document", &self.path, source))?;
-        let document: SettingsDocument =
-            serde_json::from_slice(&bytes).map_err(|error| SettingsError::MalformedDocument {
-                path: self.path.clone(),
-                message: error.to_string(),
-            })?;
-        AppSettings::try_from(document)
+        let malformed = |error: serde_json::Error| SettingsError::MalformedDocument {
+            path: self.path.clone(),
+            message: error.to_string(),
+        };
+        let version: SettingsVersionProbe = serde_json::from_slice(&bytes).map_err(malformed)?;
+        match version.schema_version {
+            1 => {
+                let document: SettingsDocumentV1 =
+                    serde_json::from_slice(&bytes).map_err(malformed)?;
+                if document.schema_version != 1 {
+                    return Err(SettingsError::UnsupportedSchemaVersion {
+                        found: document.schema_version,
+                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
+                    });
+                }
+                let settings = AppSettings {
+                    color_scheme: document.color_scheme,
+                    download_directory: document.download_directory,
+                    download_proxy: DownloadProxySettings::default(),
+                };
+                settings.validate()?;
+                Ok((settings, true))
+            }
+            CURRENT_SETTINGS_SCHEMA_VERSION => {
+                let document: SettingsDocument =
+                    serde_json::from_slice(&bytes).map_err(malformed)?;
+                AppSettings::try_from(document).map(|settings| (settings, false))
+            }
+            found => Err(SettingsError::UnsupportedSchemaVersion {
+                found,
+                supported: CURRENT_SETTINGS_SCHEMA_VERSION,
+            }),
+        }
     }
 
     pub fn load_or_initialize(
@@ -153,13 +460,22 @@ impl JsonSettingsStore {
             });
         }
 
-        match self.load() {
-            Ok(settings) => Ok(LoadedSettings {
-                settings,
-                recovery: None,
-            }),
+        match self.load_versioned() {
+            Ok((settings, migrated)) => {
+                if migrated {
+                    self.save(&settings)?;
+                }
+                Ok(LoadedSettings {
+                    settings,
+                    recovery: None,
+                })
+            }
             Err(error @ SettingsError::MalformedDocument { .. })
-            | Err(error @ SettingsError::EmptyDownloadDirectory) => {
+            | Err(error @ SettingsError::EmptyDownloadDirectory)
+            | Err(error @ SettingsError::MissingManualProxyEndpoint)
+            | Err(error @ SettingsError::ProxyCredentialWithoutUsername)
+            | Err(error @ SettingsError::InvalidProxyEndpoint { .. })
+            | Err(error @ SettingsError::InvalidNoProxyEntry { .. }) => {
                 let reason = error.to_string();
                 let backup_path = self.preserve_corrupt_document()?;
                 self.save(defaults)?;
@@ -280,6 +596,7 @@ mod tests {
         AppSettings {
             color_scheme: ColorScheme::Light,
             download_directory: root.join("downloads"),
+            download_proxy: DownloadProxySettings::default(),
         }
     }
 
@@ -297,8 +614,80 @@ mod tests {
         assert_eq!(store.load().expect("load settings"), expected);
 
         let document = fs::read_to_string(store.path()).expect("read settings JSON");
-        assert!(document.contains("\"schema_version\": 1"));
+        assert!(document.contains("\"schema_version\": 2"));
         assert!(document.ends_with('\n'));
+    }
+
+    #[test]
+    fn version_one_document_is_migrated_with_proxy_disabled() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        fs::write(
+            store.path(),
+            r#"{"schema_version":1,"color_scheme":"light","download_directory":"downloads"}"#,
+        )
+        .expect("seed version one settings");
+
+        let loaded = store
+            .load_or_initialize(&settings(root.path()))
+            .expect("migrate version one settings");
+
+        assert_eq!(
+            loaded.settings.download_proxy,
+            DownloadProxySettings::default()
+        );
+        assert!(loaded.recovery.is_none());
+        let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
+        assert!(migrated.contains("\"schema_version\": 2"));
+        assert!(migrated.contains("\"download_proxy\""));
+    }
+
+    #[test]
+    fn manual_proxy_round_trips_without_a_password_field() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        let mut expected = settings(root.path());
+        expected.download_proxy = DownloadProxySettings {
+            mode: DownloadProxyMode::Manual,
+            all_proxy: Some("http://proxy.example:8080".into()),
+            http_proxy: None,
+            https_proxy: Some("secure-proxy.example:8443".into()),
+            ftp_proxy: None,
+            no_proxy: vec!["localhost".into(), "10.0.0.0/8".into()],
+            username: Some("proxy-user".into()),
+            credential: Some(ProxyCredentialRef::new()),
+        };
+
+        store.save(&expected).expect("save proxy settings");
+
+        assert_eq!(store.load().expect("load proxy settings"), expected);
+        let document = fs::read_to_string(store.path()).expect("read proxy settings JSON");
+        assert!(!document.to_ascii_lowercase().contains("password"));
+        assert!(document.contains("proxy.example:8080"));
+        assert!(document.contains("proxy-user"));
+    }
+
+    #[test]
+    fn proxy_validation_rejects_ambiguous_or_secret_bearing_values() {
+        let mut settings = AppSettings::new("downloads");
+        settings.download_proxy.mode = DownloadProxyMode::Manual;
+        assert!(matches!(
+            settings.validate(),
+            Err(SettingsError::MissingManualProxyEndpoint)
+        ));
+
+        settings.download_proxy.all_proxy = Some("http://user:secret@proxy.example:8080".into());
+        assert!(matches!(
+            settings.validate(),
+            Err(SettingsError::InvalidProxyEndpoint { .. })
+        ));
+
+        settings.download_proxy.all_proxy = Some("proxy.example:8080".into());
+        settings.download_proxy.no_proxy = vec!["https://localhost".into()];
+        assert!(matches!(
+            settings.validate(),
+            Err(SettingsError::InvalidNoProxyEntry { .. })
+        ));
     }
 
     #[test]
@@ -316,6 +705,40 @@ mod tests {
             fs::read(recovery.backup_path).expect("read backup"),
             b"{not-json"
         );
+        assert_eq!(store.load().expect("load restored defaults"), defaults);
+    }
+
+    #[test]
+    fn invalid_proxy_document_is_preserved_before_defaults_are_restored() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        let invalid = r#"{
+            "schema_version": 2,
+            "color_scheme": "dark",
+            "download_directory": "downloads",
+            "download_proxy": {
+                "mode": "manual",
+                "all_proxy": null,
+                "http_proxy": null,
+                "https_proxy": null,
+                "ftp_proxy": null,
+                "no_proxy": [],
+                "username": null,
+                "credential": null
+            }
+        }"#;
+        fs::write(store.path(), invalid).expect("seed invalid proxy settings");
+        let defaults = settings(root.path());
+
+        let loaded = store
+            .load_or_initialize(&defaults)
+            .expect("recover invalid proxy settings");
+        let recovery = loaded.recovery.expect("recovery metadata");
+        assert_eq!(
+            fs::read_to_string(recovery.backup_path).expect("read backup"),
+            invalid
+        );
+        assert_eq!(loaded.settings, defaults);
         assert_eq!(store.load().expect("load restored defaults"), defaults);
     }
 

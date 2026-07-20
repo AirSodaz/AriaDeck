@@ -3,7 +3,10 @@ use std::{
     sync::Arc,
 };
 
-use ariadeck_domain::{DownloadStatus, EnginePath, ProfileId, TaskIdentity, TaskMetadata};
+use ariadeck_domain::{
+    DownloadStatus, EnginePath, ProfileId, TaskIdentity, TaskMetadata, TaskSourceKind,
+};
+use secrecy::{ExposeSecret, SecretString};
 use url::Url;
 
 use crate::{DownloadEngineGateway, GatewayError, GatewayErrorKind, TaskRemovalTarget};
@@ -12,7 +15,107 @@ use crate::{DownloadEngineGateway, GatewayError, GatewayErrorKind, TaskRemovalTa
 pub struct AddDownloadRequest {
     pub uris: Vec<String>,
     pub destination: Option<EnginePath>,
+    pub file_conflict: FileConflictPolicy,
     pub options: Vec<(String, String)>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FileConflictPolicy {
+    #[default]
+    AutoRename,
+    Reject,
+    Overwrite,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DownloadProxyMode {
+    #[default]
+    Disabled,
+    Manual,
+}
+
+#[derive(Clone)]
+pub struct DownloadProxyConfig {
+    pub mode: DownloadProxyMode,
+    pub all_proxy: Option<String>,
+    pub http_proxy: Option<String>,
+    pub https_proxy: Option<String>,
+    pub ftp_proxy: Option<String>,
+    pub no_proxy: Vec<String>,
+    pub username: Option<String>,
+    pub password: Option<SecretString>,
+}
+
+impl Default for DownloadProxyConfig {
+    fn default() -> Self {
+        Self {
+            mode: DownloadProxyMode::Disabled,
+            all_proxy: None,
+            http_proxy: None,
+            https_proxy: None,
+            ftp_proxy: None,
+            no_proxy: Vec::new(),
+            username: None,
+            password: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for DownloadProxyConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DownloadProxyConfig")
+            .field("mode", &self.mode)
+            .field("all_proxy", &self.all_proxy)
+            .field("http_proxy", &self.http_proxy)
+            .field("https_proxy", &self.https_proxy)
+            .field("ftp_proxy", &self.ftp_proxy)
+            .field("no_proxy", &self.no_proxy)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
+impl PartialEq for DownloadProxyConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.mode == other.mode
+            && self.all_proxy == other.all_proxy
+            && self.http_proxy == other.http_proxy
+            && self.https_proxy == other.https_proxy
+            && self.ftp_proxy == other.ftp_proxy
+            && self.no_proxy == other.no_proxy
+            && self.username == other.username
+            && self.password.as_ref().map(ExposeSecret::expose_secret)
+                == other.password.as_ref().map(ExposeSecret::expose_secret)
+    }
+}
+
+impl Eq for DownloadProxyConfig {}
+
+impl DownloadProxyConfig {
+    fn validate(&self) -> Result<(), ApplicationError> {
+        if self.mode == DownloadProxyMode::Manual
+            && self.all_proxy.is_none()
+            && self.http_proxy.is_none()
+            && self.https_proxy.is_none()
+            && self.ftp_proxy.is_none()
+        {
+            return Err(ApplicationError::new(
+                ApplicationErrorCode::Validation,
+                "Manual download proxy requires at least one proxy endpoint.",
+                false,
+            ));
+        }
+        if self.password.is_some() && self.username.as_deref().is_none_or(str::is_empty) {
+            return Err(ApplicationError::new(
+                ApplicationErrorCode::Validation,
+                "A proxy password requires a non-empty username.",
+                false,
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl AddDownloadRequest {
@@ -24,8 +127,17 @@ impl AddDownloadRequest {
                 false,
             ));
         }
+        let mut unique = HashSet::new();
         for uri in &self.uris {
-            let parsed = Url::parse(uri.trim()).map_err(|error| {
+            let uri = uri.trim();
+            if !unique.insert(uri) {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::Validation,
+                    format!("Duplicate download URI: {uri}"),
+                    false,
+                ));
+            }
+            let parsed = Url::parse(uri).map_err(|error| {
                 ApplicationError::new(
                     ApplicationErrorCode::Validation,
                     format!("Invalid download URI: {error}"),
@@ -53,6 +165,12 @@ pub struct RemoveTasksRequest {
     pub scope: TaskRemovalScope,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SetTaskOutputNameRequest {
+    pub task: TaskIdentity,
+    pub output_name: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TaskRemovalScope {
     TaskOnly,
@@ -64,6 +182,7 @@ pub enum AppCommand {
     PauseTasks(Vec<TaskIdentity>),
     ResumeTasks(Vec<TaskIdentity>),
     RetryTasks(Vec<TaskIdentity>),
+    SetTaskOutputName(SetTaskOutputNameRequest),
     RemoveTasks(RemoveTasksRequest),
 }
 
@@ -124,10 +243,15 @@ pub enum ApplicationErrorCode {
     StaleSession,
     Disconnected,
     OutcomeUnknown,
+    NotObserved,
+    RetryNotObserved,
+    RemovalNotObserved,
     Authentication,
     Timeout,
     Rejected,
     Unsupported,
+    UnsafePath,
+    Filesystem,
     Internal,
 }
 
@@ -140,10 +264,15 @@ impl ApplicationErrorCode {
             Self::StaleSession => "command.stale_session",
             Self::Disconnected => "rpc.disconnected",
             Self::OutcomeUnknown => "rpc.command_outcome_unknown",
+            Self::NotObserved => "rpc.add_not_observed",
+            Self::RetryNotObserved => "rpc.retry_not_observed",
+            Self::RemovalNotObserved => "rpc.remove_not_observed",
             Self::Authentication => "rpc.authentication_failed",
             Self::Timeout => "rpc.timeout",
             Self::Rejected => "rpc.command_rejected",
             Self::Unsupported => "command.unsupported",
+            Self::UnsafePath => "filesystem.unsafe_path",
+            Self::Filesystem => "filesystem.operation_failed",
             Self::Internal => "application.internal",
         }
     }
@@ -176,6 +305,8 @@ impl From<GatewayError> for ApplicationError {
             GatewayErrorKind::Timeout => ApplicationErrorCode::Timeout,
             GatewayErrorKind::Rejected => ApplicationErrorCode::Rejected,
             GatewayErrorKind::Unsupported => ApplicationErrorCode::Unsupported,
+            GatewayErrorKind::UnsafePath => ApplicationErrorCode::UnsafePath,
+            GatewayErrorKind::Filesystem => ApplicationErrorCode::Filesystem,
             GatewayErrorKind::Internal => ApplicationErrorCode::Internal,
         };
         Self::new(code, error.message, error.retryable)
@@ -212,6 +343,9 @@ impl CommandService {
                     .await
             }
             AppCommand::RetryTasks(tasks) => self.retry_tasks(tasks, task_contexts).await,
+            AppCommand::SetTaskOutputName(request) => {
+                self.set_task_output_name(request, task_contexts).await
+            }
             AppCommand::RemoveTasks(request) => {
                 self.execute_batch(
                     request.tasks,
@@ -221,6 +355,17 @@ impl CommandService {
                 .await
             }
         }
+    }
+
+    pub async fn apply_download_proxy(
+        &self,
+        config: &DownloadProxyConfig,
+    ) -> Result<(), ApplicationError> {
+        config.validate()?;
+        self.gateway
+            .apply_download_proxy(config)
+            .await
+            .map_err(Into::into)
     }
 
     async fn add_download(&self, request: AddDownloadRequest) -> CommandOutcome {
@@ -237,6 +382,96 @@ impl CommandService {
             Err(error) => CommandOutcome::Failure {
                 failed: vec![ItemFailure {
                     item: None,
+                    error: error.into(),
+                }],
+            },
+        }
+    }
+
+    async fn set_task_output_name(
+        &self,
+        request: SetTaskOutputNameRequest,
+        task_contexts: &HashMap<TaskIdentity, TaskCommandContext>,
+    ) -> CommandOutcome {
+        let item = CommandItem::Task(request.task);
+        if request.task.profile_id != self.profile_id {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::WrongProfile,
+                        "The task belongs to a different engine profile.",
+                        false,
+                    ),
+                }],
+            };
+        }
+        let Some(context) = task_contexts.get(&request.task) else {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Rejected,
+                        "The task is no longer present in the current engine session.",
+                        false,
+                    ),
+                }],
+            };
+        };
+        let output_name = request.output_name.trim();
+        if output_name.is_empty()
+            || output_name == "."
+            || output_name == ".."
+            || output_name.contains(['/', '\\', '\0'])
+        {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Validation,
+                        "Output name must be a non-empty file name without path separators.",
+                        false,
+                    ),
+                }],
+            };
+        }
+        if context.metadata.source_kind != TaskSourceKind::DirectUri {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Unsupported,
+                        "A custom output name is currently supported only for direct URI tasks.",
+                        false,
+                    ),
+                }],
+            };
+        }
+        if context.status.is_terminal() {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Rejected,
+                        "A completed or failed task cannot change its output name.",
+                        false,
+                    ),
+                }],
+            };
+        }
+
+        let options = [("out".to_owned(), output_name.to_owned())];
+        match self
+            .gateway
+            .change_options(request.task.gid, &options)
+            .await
+        {
+            Ok(()) => CommandOutcome::Success {
+                succeeded: vec![item],
+            },
+            Err(error) => CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
                     error: error.into(),
                 }],
             },
@@ -279,21 +514,45 @@ impl CommandService {
                 continue;
             }
 
+            let Some(context) = task_contexts.get(&identity) else {
+                failed.push(ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Rejected,
+                        "The task is no longer present in the current engine session.",
+                        false,
+                    ),
+                });
+                continue;
+            };
+            let allowed = match operation {
+                TaskOperation::Pause => matches!(
+                    context.status,
+                    DownloadStatus::Active | DownloadStatus::Waiting | DownloadStatus::Verifying
+                ),
+                TaskOperation::Resume => matches!(context.status, DownloadStatus::Paused),
+                TaskOperation::Remove(_) => !matches!(context.status, DownloadStatus::Unknown),
+            };
+            if !allowed {
+                failed.push(ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Rejected,
+                        format!(
+                            "{} is not available while the task is {:?}.",
+                            task_operation_label(operation),
+                            context.status
+                        ),
+                        false,
+                    ),
+                });
+                continue;
+            }
+
             let result = match operation {
                 TaskOperation::Pause => self.gateway.pause(identity.gid).await,
                 TaskOperation::Resume => self.gateway.resume(identity.gid).await,
                 TaskOperation::Remove(TaskRemovalScope::TaskOnly) => {
-                    let Some(context) = task_contexts.get(&identity) else {
-                        failed.push(ItemFailure {
-                            item: Some(item),
-                            error: ApplicationError::new(
-                                ApplicationErrorCode::Rejected,
-                                "The task is no longer present in the current engine session.",
-                                false,
-                            ),
-                        });
-                        continue;
-                    };
                     let target = if context.status.is_terminal() {
                         TaskRemovalTarget::DownloadResult
                     } else {
@@ -386,9 +645,10 @@ impl CommandService {
             let request = AddDownloadRequest {
                 uris: vec![source],
                 destination: context.metadata.directory.clone(),
+                file_conflict: FileConflictPolicy::default(),
                 options: Vec::new(),
             };
-            match self.gateway.add_download(&request).await {
+            match self.gateway.retry_download(identity.gid, &request).await {
                 Ok(gid) => {
                     succeeded.push(CommandItem::Task(TaskIdentity::new(self.profile_id, gid)))
                 }
@@ -400,6 +660,14 @@ impl CommandService {
         }
 
         finish_batch(succeeded, failed)
+    }
+}
+
+fn task_operation_label(operation: TaskOperation) -> &'static str {
+    match operation {
+        TaskOperation::Pause => "Pause",
+        TaskOperation::Resume => "Resume",
+        TaskOperation::Remove(_) => "Remove",
     }
 }
 
@@ -416,7 +684,7 @@ fn finish_batch(succeeded: Vec<CommandItem>, failed: Vec<ItemFailure>) -> Comman
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TaskOperation {
     Pause,
     Resume,
@@ -433,11 +701,30 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn proxy_config_debug_output_redacts_the_password() {
+        let config = DownloadProxyConfig {
+            mode: DownloadProxyMode::Manual,
+            all_proxy: Some("proxy.example:8080".into()),
+            username: Some("proxy-user".into()),
+            password: Some(SecretString::new("never-log-this".into())),
+            ..DownloadProxyConfig::default()
+        };
+
+        let debug = format!("{config:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("never-log-this"));
+    }
+
+    type ChangedOptionCall = (Gid, Vec<(String, String)>);
+
     #[derive(Default)]
     struct FakeGateway {
         adds: Mutex<Vec<AddDownloadRequest>>,
+        retries: Mutex<Vec<(Gid, AddDownloadRequest)>>,
         calls: Mutex<Vec<(TaskOperation, Gid)>>,
         removals: Mutex<Vec<(Gid, TaskRemovalTarget)>>,
+        changed_options: Mutex<Vec<ChangedOptionCall>>,
         fail_gid: Option<Gid>,
     }
 
@@ -451,12 +738,36 @@ mod tests {
             Ok(Gid::from_u64(99))
         }
 
+        async fn retry_download(
+            &self,
+            gid: Gid,
+            fallback: &AddDownloadRequest,
+        ) -> Result<Gid, GatewayError> {
+            self.retries
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((gid, fallback.clone()));
+            Ok(Gid::from_u64(99))
+        }
+
         async fn pause(&self, gid: Gid) -> Result<(), GatewayError> {
             self.record(TaskOperation::Pause, gid)
         }
 
         async fn resume(&self, gid: Gid) -> Result<(), GatewayError> {
             self.record(TaskOperation::Resume, gid)
+        }
+
+        async fn change_options(
+            &self,
+            gid: Gid,
+            options: &[(String, String)],
+        ) -> Result<(), GatewayError> {
+            self.changed_options
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((gid, options.to_vec()));
+            Ok(())
         }
 
         async fn remove(&self, gid: Gid, target: TaskRemovalTarget) -> Result<(), GatewayError> {
@@ -491,16 +802,34 @@ mod tests {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway {
             adds: Mutex::default(),
+            retries: Mutex::default(),
             calls: Mutex::default(),
             removals: Mutex::default(),
+            changed_options: Mutex::default(),
             fail_gid: Some(Gid::from_u64(2)),
         });
         let service = CommandService::new(profile_id, gateway.clone());
         let one = TaskIdentity::new(profile_id, Gid::from_u64(1));
         let two = TaskIdentity::new(profile_id, Gid::from_u64(2));
+        let contexts = HashMap::from([
+            (
+                one,
+                TaskCommandContext {
+                    status: DownloadStatus::Active,
+                    metadata: TaskMetadata::default(),
+                },
+            ),
+            (
+                two,
+                TaskCommandContext {
+                    status: DownloadStatus::Active,
+                    metadata: TaskMetadata::default(),
+                },
+            ),
+        ]);
 
         let outcome =
-            block_on(service.execute(AppCommand::PauseTasks(vec![one, one, two]), &HashMap::new()));
+            block_on(service.execute(AppCommand::PauseTasks(vec![one, one, two]), &contexts));
 
         let CommandOutcome::PartialSuccess { succeeded, failed } = outcome else {
             panic!("expected partial success");
@@ -514,6 +843,50 @@ mod tests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn batch_command_skips_ineligible_tasks_without_calling_the_gateway() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+        let active = TaskIdentity::new(profile_id, Gid::from_u64(1));
+        let complete = TaskIdentity::new(profile_id, Gid::from_u64(2));
+        let contexts = HashMap::from([
+            (
+                active,
+                TaskCommandContext {
+                    status: DownloadStatus::Active,
+                    metadata: TaskMetadata::default(),
+                },
+            ),
+            (
+                complete,
+                TaskCommandContext {
+                    status: DownloadStatus::Complete,
+                    metadata: TaskMetadata::default(),
+                },
+            ),
+        ]);
+
+        let outcome =
+            block_on(service.execute(AppCommand::PauseTasks(vec![active, complete]), &contexts));
+
+        let CommandOutcome::PartialSuccess { succeeded, failed } = outcome else {
+            panic!("expected partial success");
+        };
+        assert_eq!(succeeded, vec![CommandItem::Task(active)]);
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].item, Some(CommandItem::Task(complete)));
+        assert_eq!(failed[0].error.code, ApplicationErrorCode::Rejected);
+        assert_eq!(
+            gateway
+                .calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_slice(),
+            &[(TaskOperation::Pause, active.gid)]
         );
     }
 
@@ -556,6 +929,7 @@ mod tests {
                 AppCommand::AddDownload(AddDownloadRequest {
                     uris: vec![uri.into()],
                     destination: None,
+                    file_conflict: FileConflictPolicy::default(),
                     options: Vec::new(),
                 }),
                 &HashMap::new(),
@@ -568,12 +942,45 @@ mod tests {
     }
 
     #[test]
+    fn add_download_rejects_duplicate_mirror_sources_before_gateway_call() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+
+        let outcome = block_on(service.execute(
+            AppCommand::AddDownload(AddDownloadRequest {
+                uris: vec![
+                    "https://example.test/archive.iso".into(),
+                    "https://example.test/archive.iso".into(),
+                ],
+                destination: None,
+                file_conflict: FileConflictPolicy::default(),
+                options: Vec::new(),
+            }),
+            &HashMap::new(),
+        ));
+
+        let CommandOutcome::Failure { failed } = outcome else {
+            panic!("expected duplicate mirror validation failure");
+        };
+        assert_eq!(failed[0].error.code, ApplicationErrorCode::Validation);
+        assert!(
+            gateway
+                .adds
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn removal_targets_live_tasks_and_terminal_results_separately() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
         let service = CommandService::new(profile_id, gateway.clone());
         let live = TaskIdentity::new(profile_id, Gid::from_u64(1));
         let complete = TaskIdentity::new(profile_id, Gid::from_u64(2));
+        let removed = TaskIdentity::new(profile_id, Gid::from_u64(3));
 
         let contexts = HashMap::from([
             (
@@ -590,10 +997,17 @@ mod tests {
                     metadata: TaskMetadata::default(),
                 },
             ),
+            (
+                removed,
+                TaskCommandContext {
+                    status: DownloadStatus::Removed,
+                    metadata: TaskMetadata::default(),
+                },
+            ),
         ]);
         let outcome = block_on(service.execute(
             AppCommand::RemoveTasks(RemoveTasksRequest {
-                tasks: vec![live, complete],
+                tasks: vec![live, complete, removed],
                 scope: TaskRemovalScope::TaskOnly,
             }),
             &contexts,
@@ -608,6 +1022,7 @@ mod tests {
             vec![
                 (live.gid, TaskRemovalTarget::LiveTask),
                 (complete.gid, TaskRemovalTarget::DownloadResult),
+                (removed.gid, TaskRemovalTarget::DownloadResult),
             ]
         );
     }
@@ -644,14 +1059,94 @@ mod tests {
         );
         assert_eq!(
             *gateway
-                .adds
+                .retries
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
-            vec![AddDownloadRequest {
-                uris: vec!["https://example.test/archive.iso".into()],
-                destination: Some(EnginePath::new("/downloads")),
-                options: Vec::new(),
-            }]
+            vec![(
+                failed_task.gid,
+                AddDownloadRequest {
+                    uris: vec!["https://example.test/archive.iso".into()],
+                    destination: Some(EnginePath::new("/downloads")),
+                    file_conflict: FileConflictPolicy::default(),
+                    options: Vec::new(),
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn direct_uri_output_name_change_is_validated_and_forwarded() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+        let task = TaskIdentity::new(profile_id, Gid::from_u64(8));
+        let contexts = HashMap::from([(
+            task,
+            TaskCommandContext {
+                status: DownloadStatus::Waiting,
+                metadata: TaskMetadata {
+                    source_kind: TaskSourceKind::DirectUri,
+                    ..TaskMetadata::default()
+                },
+            },
+        )]);
+
+        let outcome = block_on(service.execute(
+            AppCommand::SetTaskOutputName(SetTaskOutputNameRequest {
+                task,
+                output_name: " renamed.iso ".into(),
+            }),
+            &contexts,
+        ));
+
+        assert_eq!(
+            outcome,
+            CommandOutcome::Success {
+                succeeded: vec![CommandItem::Task(task)]
+            }
+        );
+        assert_eq!(
+            *gateway
+                .changed_options
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![(task.gid, vec![("out".into(), "renamed.iso".into())])]
+        );
+    }
+
+    #[test]
+    fn output_name_change_rejects_paths_and_non_uri_tasks() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+        let task = TaskIdentity::new(profile_id, Gid::from_u64(9));
+        let contexts = HashMap::from([(
+            task,
+            TaskCommandContext {
+                status: DownloadStatus::Waiting,
+                metadata: TaskMetadata {
+                    source_kind: TaskSourceKind::BitTorrent,
+                    ..TaskMetadata::default()
+                },
+            },
+        )]);
+
+        for output_name in ["folder/file.iso", "archive.iso"] {
+            let outcome = block_on(service.execute(
+                AppCommand::SetTaskOutputName(SetTaskOutputNameRequest {
+                    task,
+                    output_name: output_name.into(),
+                }),
+                &contexts,
+            ));
+            assert!(matches!(outcome, CommandOutcome::Failure { .. }));
+        }
+        assert!(
+            gateway
+                .changed_options
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
         );
     }
 
@@ -691,7 +1186,7 @@ mod tests {
         assert_eq!(failed[1].error.code, ApplicationErrorCode::Unsupported);
         assert!(
             gateway
-                .adds
+                .retries
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .is_empty()

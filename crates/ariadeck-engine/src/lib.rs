@@ -5,7 +5,7 @@
 //! through `ariadeck-domain`.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fmt,
     fs::{self, OpenOptions},
     io::{self, Write},
@@ -21,9 +21,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+use ariadeck_application::{
+    DownloadDestinationGateway, DownloadDestinationReport, DownloadDestinationRequest,
+    GatewayError, GatewayErrorKind, TaskFileGateway, TaskFileRemovalPreview, TaskFileRemovalReport,
+    TaskFileRemovalRequest,
+};
 use ariadeck_domain::ProfileId;
+use async_trait::async_trait;
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
+use sysinfo::Disks;
 use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
@@ -81,6 +88,478 @@ fn io_error(operation: &'static str, path: &Path, source: io::Error) -> EngineEr
         path: path.to_path_buf(),
         source,
     }
+}
+
+#[derive(Clone, Default)]
+pub struct LocalDownloadRootRegistry {
+    roots: Arc<Mutex<Vec<PathBuf>>>,
+}
+
+impl LocalDownloadRootRegistry {
+    #[must_use]
+    pub fn new(initial_root: impl Into<PathBuf>) -> Self {
+        Self {
+            roots: Arc::new(Mutex::new(vec![initial_root.into()])),
+        }
+    }
+
+    fn authorize(&self, directory: &Path) -> Result<PathBuf, GatewayError> {
+        let canonical = canonical_directory(directory, "download directory")?;
+        let mut roots = self
+            .roots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let already_authorized = roots
+            .iter()
+            .any(|root| fs::canonicalize(root).is_ok_and(|existing| existing == canonical));
+        if !already_authorized {
+            roots.push(canonical.clone());
+        }
+        Ok(canonical)
+    }
+
+    fn snapshot(&self) -> Vec<PathBuf> {
+        self.roots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+#[derive(Default)]
+pub struct LocalDownloadDestinationGateway {
+    roots: LocalDownloadRootRegistry,
+}
+
+impl LocalDownloadDestinationGateway {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn with_roots(roots: LocalDownloadRootRegistry) -> Self {
+        Self { roots }
+    }
+}
+
+impl DownloadDestinationGateway for LocalDownloadDestinationGateway {
+    fn preflight(
+        &self,
+        request: &DownloadDestinationRequest,
+    ) -> Result<DownloadDestinationReport, GatewayError> {
+        let path = PathBuf::from(request.directory.as_str());
+        if !path.is_absolute() {
+            return Err(unsafe_path_error(format!(
+                "local download directory must be absolute: {}",
+                path.display()
+            )));
+        }
+        if path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        }) {
+            return Err(unsafe_path_error(format!(
+                "download directory contains parent or current-directory traversal: {}",
+                path.display()
+            )));
+        }
+
+        let directory = canonical_directory(&path, "download directory")?;
+        if fs::metadata(&directory)
+            .map_err(|error| {
+                filesystem_error("inspect download directory", &directory, error, true)
+            })?
+            .permissions()
+            .readonly()
+        {
+            return Err(filesystem_gateway_error(
+                format!("download directory is read-only: {}", directory.display()),
+                false,
+            ));
+        }
+
+        verify_directory_writable(&directory)?;
+        let available_bytes = available_space(&directory)?;
+        if available_bytes == 0 {
+            return Err(filesystem_gateway_error(
+                format!(
+                    "download directory has no free space: {}",
+                    directory.display()
+                ),
+                true,
+            ));
+        }
+        if let Some(required_bytes) = request.required_bytes
+            && required_bytes > available_bytes
+        {
+            return Err(filesystem_gateway_error(
+                format!(
+                    "download requires {required_bytes} bytes but only {available_bytes} bytes are available in {}",
+                    directory.display()
+                ),
+                true,
+            ));
+        }
+
+        self.roots.authorize(&directory)?;
+
+        Ok(DownloadDestinationReport { available_bytes })
+    }
+}
+
+fn verify_directory_writable(directory: &Path) -> Result<(), GatewayError> {
+    let probe = directory.join(format!(".ariadeck-write-test-{}", Uuid::new_v4()));
+    let write_result = (|| -> io::Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)?;
+        file.write_all(&[0])?;
+        file.sync_all()
+    })();
+    let remove_result = fs::remove_file(&probe);
+
+    if let Err(error) = write_result {
+        return Err(filesystem_error(
+            "write to download directory",
+            directory,
+            error,
+            true,
+        ));
+    }
+    remove_result.map_err(|error| {
+        filesystem_error("remove download-directory write probe", &probe, error, true)
+    })
+}
+
+fn available_space(directory: &Path) -> Result<u64, GatewayError> {
+    let disks = Disks::new_with_refreshed_list();
+    disks
+        .list()
+        .iter()
+        .filter(|disk| {
+            fs::canonicalize(disk.mount_point())
+                .is_ok_and(|mount_point| directory.starts_with(mount_point))
+        })
+        .max_by_key(|disk| disk.mount_point().components().count())
+        .map(|disk| disk.available_space())
+        .ok_or_else(|| {
+            filesystem_gateway_error(
+                format!(
+                    "could not determine free space for download directory: {}",
+                    directory.display()
+                ),
+                true,
+            )
+        })
+}
+
+/// Local-only adapter that moves exact aria2 task files to the OS Trash.
+pub struct LocalTaskFileGateway {
+    download_roots: LocalDownloadRootRegistry,
+    trash: Arc<dyn TrashBackend>,
+}
+
+impl LocalTaskFileGateway {
+    #[must_use]
+    pub fn new(download_root: impl Into<PathBuf>) -> Self {
+        Self {
+            download_roots: LocalDownloadRootRegistry::new(download_root),
+            trash: Arc::new(SystemTrash),
+        }
+    }
+
+    #[must_use]
+    pub fn with_roots(download_roots: LocalDownloadRootRegistry) -> Self {
+        Self {
+            download_roots,
+            trash: Arc::new(SystemTrash),
+        }
+    }
+
+    fn collect_safe_paths(
+        &self,
+        request: &TaskFileRemovalRequest,
+    ) -> Result<SafeTaskPaths, GatewayError> {
+        if request.files.is_empty() {
+            return Err(unsafe_path_error(
+                "aria2 did not report any exact task file paths; no local files were touched",
+            ));
+        }
+
+        let (root, raw_task_dir, task_dir) =
+            resolve_authorized_task_directory(&self.download_roots, &request.directory)?;
+        if fs::metadata(&task_dir)
+            .map_err(|error| filesystem_error("inspect task directory", &task_dir, error, true))?
+            .permissions()
+            .readonly()
+        {
+            return Err(filesystem_gateway_error(
+                format!("task directory is read-only: {}", task_dir.display()),
+                false,
+            ));
+        }
+
+        let raw_files = request
+            .files
+            .iter()
+            .map(|path| resolve_engine_path(&raw_task_dir, path.as_str()))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut candidates = raw_files
+            .iter()
+            .cloned()
+            .map(|path| (path, CandidateKind::Content))
+            .collect::<Vec<_>>();
+        if request.include_control_files {
+            candidates.extend(
+                raw_files
+                    .iter()
+                    .map(|path| (append_aria2_suffix(path), CandidateKind::Control)),
+            );
+            if let Some(common_root) = common_top_level_path(&raw_task_dir, &raw_files) {
+                candidates.push((append_aria2_suffix(&common_root), CandidateKind::Control));
+            }
+        }
+
+        let mut seen = HashSet::new();
+        let mut paths = Vec::new();
+        let mut content_files = 0;
+        let mut control_files = 0;
+        let mut missing_paths = 0;
+        for (raw_path, kind) in candidates {
+            match safe_existing_file(&raw_path, &root, &task_dir)? {
+                Some(path) if seen.insert(path.clone()) => {
+                    match kind {
+                        CandidateKind::Content => content_files += 1,
+                        CandidateKind::Control => control_files += 1,
+                    }
+                    paths.push(path);
+                }
+                Some(_) => {}
+                None => missing_paths += 1,
+            }
+        }
+        Ok(SafeTaskPaths {
+            paths,
+            preview: TaskFileRemovalPreview {
+                content_files,
+                control_files,
+                missing_paths,
+            },
+        })
+    }
+
+    #[cfg(test)]
+    fn with_trash(download_root: impl Into<PathBuf>, trash: Arc<dyn TrashBackend>) -> Self {
+        Self {
+            download_roots: LocalDownloadRootRegistry::new(download_root),
+            trash,
+        }
+    }
+}
+
+#[async_trait]
+impl TaskFileGateway for LocalTaskFileGateway {
+    fn preflight(
+        &self,
+        request: &TaskFileRemovalRequest,
+    ) -> Result<TaskFileRemovalPreview, GatewayError> {
+        self.collect_safe_paths(request).map(|paths| paths.preview)
+    }
+
+    async fn move_to_trash(
+        &self,
+        request: &TaskFileRemovalRequest,
+    ) -> Result<TaskFileRemovalReport, GatewayError> {
+        let safe = self.collect_safe_paths(request)?;
+        let missing_paths = safe.preview.missing_paths;
+        let trash = self.trash.clone();
+        let moved_to_trash = tokio::task::spawn_blocking(move || {
+            let mut moved = 0;
+            for path in safe.paths {
+                trash.move_to_trash(&path).map_err(|error| {
+                    filesystem_gateway_error(
+                        format!(
+                            "moved {moved} task file(s) before Trash failed for {}: {error}",
+                            path.display()
+                        ),
+                        true,
+                    )
+                })?;
+                moved += 1;
+            }
+            Ok::<_, GatewayError>(moved)
+        })
+        .await
+        .map_err(|error| {
+            filesystem_gateway_error(format!("local file worker stopped: {error}"), true)
+        })??;
+        Ok(TaskFileRemovalReport {
+            moved_to_trash,
+            missing_paths,
+        })
+    }
+}
+
+struct SafeTaskPaths {
+    paths: Vec<PathBuf>,
+    preview: TaskFileRemovalPreview,
+}
+
+#[derive(Clone, Copy)]
+enum CandidateKind {
+    Content,
+    Control,
+}
+
+trait TrashBackend: Send + Sync {
+    fn move_to_trash(&self, path: &Path) -> Result<(), String>;
+}
+
+struct SystemTrash;
+
+impl TrashBackend for SystemTrash {
+    fn move_to_trash(&self, path: &Path) -> Result<(), String> {
+        trash::delete(path).map_err(|error| error.to_string())
+    }
+}
+
+fn resolve_authorized_task_directory(
+    roots: &LocalDownloadRootRegistry,
+    directory: &ariadeck_domain::EnginePath,
+) -> Result<(PathBuf, PathBuf, PathBuf), GatewayError> {
+    for configured_root in roots.snapshot() {
+        let Ok(root) = canonical_directory(&configured_root, "download root") else {
+            continue;
+        };
+        let raw_task_dir = resolve_engine_path(&root, directory.as_str())?;
+        let Ok(task_dir) = canonical_directory(&raw_task_dir, "task directory") else {
+            continue;
+        };
+        if task_dir.starts_with(&root) {
+            return Ok((root, raw_task_dir, task_dir));
+        }
+    }
+    Err(unsafe_path_error(format!(
+        "task directory is outside the authorized local download roots: {}",
+        directory
+    )))
+}
+
+fn resolve_engine_path(base: &Path, value: &str) -> Result<PathBuf, GatewayError> {
+    let path = PathBuf::from(value);
+    if path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir | std::path::Component::CurDir
+        )
+    }) {
+        return Err(unsafe_path_error(format!(
+            "task path contains parent or current-directory traversal: {}",
+            path.display()
+        )));
+    }
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    })
+}
+
+fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf, GatewayError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| filesystem_error(&format!("inspect {label}"), path, error, true))?;
+    if metadata.file_type().is_symlink() {
+        return Err(unsafe_path_error(format!(
+            "{label} cannot be a symlink or reparse point: {}",
+            path.display()
+        )));
+    }
+    if !metadata.is_dir() {
+        return Err(unsafe_path_error(format!(
+            "{label} is not a directory: {}",
+            path.display()
+        )));
+    }
+    fs::canonicalize(path)
+        .map_err(|error| filesystem_error(&format!("canonicalize {label}"), path, error, true))
+}
+
+fn safe_existing_file(
+    path: &Path,
+    root: &Path,
+    task_dir: &Path,
+) -> Result<Option<PathBuf>, GatewayError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(filesystem_error("inspect task file", path, error, true)),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(unsafe_path_error(format!(
+            "task file cannot be a symlink or reparse point: {}",
+            path.display()
+        )));
+    }
+    if !metadata.is_file() {
+        return Err(unsafe_path_error(format!(
+            "task deletion only accepts exact files, not directories: {}",
+            path.display()
+        )));
+    }
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| filesystem_error("canonicalize task file", path, error, true))?;
+    if canonical == root || !canonical.starts_with(root) || !canonical.starts_with(task_dir) {
+        return Err(unsafe_path_error(format!(
+            "task file is outside the permitted local roots: {}",
+            path.display()
+        )));
+    }
+    Ok(Some(canonical))
+}
+
+fn append_aria2_suffix(path: &Path) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(".aria2");
+    PathBuf::from(value)
+}
+
+fn common_top_level_path(task_dir: &Path, files: &[PathBuf]) -> Option<PathBuf> {
+    let mut components = files.iter().filter_map(|path| {
+        path.strip_prefix(task_dir)
+            .ok()?
+            .components()
+            .next()
+            .map(|component| component.as_os_str().to_os_string())
+    });
+    let first = components.next()?;
+    components
+        .all(|component| component == first)
+        .then(|| task_dir.join(first))
+}
+
+fn unsafe_path_error(message: impl Into<String>) -> GatewayError {
+    GatewayError::new(GatewayErrorKind::UnsafePath, message, false)
+}
+
+fn filesystem_gateway_error(message: impl Into<String>, retryable: bool) -> GatewayError {
+    GatewayError::new(GatewayErrorKind::Filesystem, message, retryable)
+}
+
+fn filesystem_error(
+    operation: &str,
+    path: &Path,
+    error: io::Error,
+    retryable: bool,
+) -> GatewayError {
+    filesystem_gateway_error(
+        format!("failed to {operation} at {}: {error}", path.display()),
+        retryable,
+    )
 }
 
 /// Metadata for an externally supplied aria2 executable.
@@ -948,6 +1427,7 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
+        sync::Mutex,
     };
 
     use super::*;
@@ -968,6 +1448,212 @@ mod tests {
             root.join("data"),
             root.join("downloads"),
         )
+    }
+
+    #[derive(Default)]
+    struct RecordingTrash {
+        paths: Mutex<Vec<PathBuf>>,
+    }
+
+    impl TrashBackend for RecordingTrash {
+        fn move_to_trash(&self, path: &Path) -> Result<(), String> {
+            self.paths
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(path.to_path_buf());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn local_download_destination_preflight_checks_writability_and_free_space() {
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        fs::create_dir_all(&downloads).expect("create download directory");
+        let gateway = LocalDownloadDestinationGateway::new();
+        let request = DownloadDestinationRequest {
+            directory: ariadeck_domain::EnginePath::new(downloads.to_string_lossy()),
+            required_bytes: None,
+        };
+
+        let report = gateway.preflight(&request).expect("destination preflight");
+
+        assert!(report.available_bytes > 0);
+        assert!(
+            fs::read_dir(&downloads)
+                .expect("list download directory")
+                .next()
+                .is_none(),
+            "the writability probe must be removed"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_download_destination_rejects_relative_paths_and_insufficient_space() {
+        let gateway = LocalDownloadDestinationGateway::new();
+        let relative = gateway
+            .preflight(&DownloadDestinationRequest {
+                directory: ariadeck_domain::EnginePath::new("downloads"),
+                required_bytes: None,
+            })
+            .expect_err("relative local path must fail");
+        assert_eq!(relative.kind, GatewayErrorKind::UnsafePath);
+
+        let root = temporary_directory();
+        let insufficient = gateway
+            .preflight(&DownloadDestinationRequest {
+                directory: ariadeck_domain::EnginePath::new(root.to_string_lossy()),
+                required_bytes: Some(u64::MAX),
+            })
+            .expect_err("oversized download must fail");
+        assert_eq!(insufficient.kind, GatewayErrorKind::Filesystem);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn successful_destination_preflight_accumulates_authorized_removal_roots() {
+        let root = temporary_directory();
+        let first = root.join("first");
+        let second = root.join("second");
+        let unconfigured = root.join("unconfigured");
+        for directory in [&first, &second, &unconfigured] {
+            fs::create_dir_all(directory).expect("create download root");
+            fs::write(directory.join("item.bin"), b"content").expect("create task file");
+        }
+        let roots = LocalDownloadRootRegistry::new(&first);
+        let destination = LocalDownloadDestinationGateway::with_roots(roots.clone());
+        let files = LocalTaskFileGateway::with_roots(roots);
+        destination
+            .preflight(&DownloadDestinationRequest {
+                directory: ariadeck_domain::EnginePath::new(second.to_string_lossy()),
+                required_bytes: None,
+            })
+            .expect("authorize second root");
+        let removal = |directory: &Path| TaskFileRemovalRequest {
+            directory: ariadeck_domain::EnginePath::new(directory.to_string_lossy()),
+            files: vec![ariadeck_domain::EnginePath::new(
+                directory.join("item.bin").to_string_lossy(),
+            )],
+            include_control_files: false,
+        };
+
+        assert_eq!(
+            files
+                .preflight(&removal(&first))
+                .expect("first root")
+                .content_files,
+            1
+        );
+        assert_eq!(
+            files
+                .preflight(&removal(&second))
+                .expect("second root")
+                .content_files,
+            1
+        );
+        let outside = files
+            .preflight(&removal(&unconfigured))
+            .expect_err("unconfigured root must remain forbidden");
+        assert_eq!(outside.kind, GatewayErrorKind::UnsafePath);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn local_file_gateway_moves_only_exact_files_and_control_files() {
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        let task_dir = downloads.join("task");
+        fs::create_dir_all(&task_dir).expect("create task directory");
+        let content = task_dir.join("item.bin");
+        let direct_control = task_dir.join("item.bin.aria2");
+        let task_control = downloads.join("task.aria2");
+        let unrelated = task_dir.join("unrelated.txt");
+        for path in [&content, &direct_control, &task_control, &unrelated] {
+            fs::write(path, b"test").expect("create task fixture");
+        }
+        let trash = Arc::new(RecordingTrash::default());
+        let gateway = LocalTaskFileGateway::with_trash(&downloads, trash.clone());
+        let request = TaskFileRemovalRequest {
+            directory: ariadeck_domain::EnginePath::new(downloads.to_string_lossy()),
+            files: vec![ariadeck_domain::EnginePath::new(content.to_string_lossy())],
+            include_control_files: true,
+        };
+
+        let preview = gateway.preflight(&request).expect("safe preflight");
+        assert_eq!(preview.content_files, 1);
+        assert_eq!(preview.control_files, 2);
+        let report = gateway
+            .move_to_trash(&request)
+            .await
+            .expect("move exact files to trash");
+        assert_eq!(report.moved_to_trash, 3);
+        let moved = trash
+            .paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(moved.contains(&fs::canonicalize(content).expect("content path")));
+        assert!(moved.contains(&fs::canonicalize(direct_control).expect("control path")));
+        assert!(moved.contains(&fs::canonicalize(task_control).expect("task control path")));
+        assert!(!moved.contains(&fs::canonicalize(unrelated).expect("unrelated path")));
+        drop(moved);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_file_gateway_rejects_outside_traversal_and_directories() {
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        let task_dir = downloads.join("task");
+        let outside = root.join("outside.bin");
+        fs::create_dir_all(&task_dir).expect("create task directory");
+        fs::write(&outside, b"outside").expect("create outside file");
+        let gateway = LocalTaskFileGateway::new(&downloads);
+        let request = |file: ariadeck_domain::EnginePath| TaskFileRemovalRequest {
+            directory: ariadeck_domain::EnginePath::new(downloads.to_string_lossy()),
+            files: vec![file],
+            include_control_files: false,
+        };
+
+        for file in [
+            ariadeck_domain::EnginePath::new(outside.to_string_lossy()),
+            ariadeck_domain::EnginePath::new("../outside.bin"),
+            ariadeck_domain::EnginePath::new(task_dir.to_string_lossy()),
+        ] {
+            let error = gateway
+                .preflight(&request(file))
+                .expect_err("unsafe path must be rejected");
+            assert_eq!(error.kind, GatewayErrorKind::UnsafePath);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_file_gateway_accepts_windows_paths_with_different_casing() {
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        let task_dir = downloads.join("task");
+        let content = task_dir.join("item.bin");
+        fs::create_dir_all(&task_dir).expect("create task directory");
+        fs::write(&content, b"content").expect("create content file");
+        let gateway = LocalTaskFileGateway::new(&downloads);
+        let request = TaskFileRemovalRequest {
+            directory: ariadeck_domain::EnginePath::new(
+                downloads.to_string_lossy().to_ascii_uppercase(),
+            ),
+            files: vec![ariadeck_domain::EnginePath::new(
+                content.to_string_lossy().to_ascii_uppercase(),
+            )],
+            include_control_files: false,
+        };
+
+        let preview = gateway
+            .preflight(&request)
+            .expect("case-insensitive Windows path");
+
+        assert_eq!(preview.content_files, 1);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -13,14 +13,31 @@ use gpui::{
 };
 
 use crate::{
-    Backspace, Copy, Cut, Delete, MoveEnd, MoveHome, MoveLeft, MoveRight, Paste, SelectAll,
-    SelectLeft, SelectRight, Theme,
+    Backspace, Copy, Cut, Delete, InsertNewline, MoveEnd, MoveHome, MoveLeft, MoveRight, Paste,
+    SelectAll, SelectLeft, SelectRight, Theme,
     components::{Icon, IconButton, IconName, IconSize, Tooltip},
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct TextFieldEvent {
     pub text: String,
+    secure: bool,
+}
+
+impl std::fmt::Debug for TextFieldEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TextFieldEvent")
+            .field(
+                "text",
+                &if self.secure {
+                    "[REDACTED]"
+                } else {
+                    &self.text
+                },
+            )
+            .finish()
+    }
 }
 
 pub type SearchInputEvent = TextFieldEvent;
@@ -34,6 +51,8 @@ pub struct TextFieldConfig {
     pub placeholder: SharedString,
     pub leading_icon: Option<IconName>,
     pub clearable: bool,
+    pub allow_newlines: bool,
+    pub secure: bool,
 }
 
 impl TextFieldConfig {
@@ -47,6 +66,8 @@ impl TextFieldConfig {
             placeholder: placeholder.into(),
             leading_icon: Some(IconName::Search),
             clearable: true,
+            allow_newlines: false,
+            secure: false,
         }
     }
 }
@@ -61,6 +82,8 @@ pub struct TextField {
     placeholder: SharedString,
     leading_icon: Option<IconName>,
     clearable: bool,
+    allow_newlines: bool,
+    secure: bool,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -92,6 +115,8 @@ impl TextField {
             placeholder: config.placeholder,
             leading_icon: config.leading_icon,
             clearable: config.clearable,
+            allow_newlines: config.allow_newlines,
+            secure: config.secure,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -132,9 +157,15 @@ impl TextField {
         self.last_bounds
     }
 
+    #[cfg(test)]
+    pub(crate) fn is_secure(&self) -> bool {
+        self.secure
+    }
+
     fn emit_change(&self, cx: &mut Context<Self>) {
         cx.emit(TextFieldEvent {
             text: self.content.to_string(),
+            secure: self.secure,
         });
         cx.notify();
     }
@@ -209,11 +240,25 @@ impl TextField {
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace(['\r', '\n'], " "), window, cx);
+            let text = if self.allow_newlines {
+                text.replace("\r\n", "\n").replace('\r', "\n")
+            } else {
+                text.replace(['\r', '\n'], " ")
+            };
+            self.replace_text_in_range(None, &text, window, cx);
+        }
+    }
+
+    fn insert_newline(&mut self, _: &InsertNewline, window: &mut Window, cx: &mut Context<Self>) {
+        if self.allow_newlines {
+            self.replace_text_in_range(None, "\n", window, cx);
         }
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        if self.secure {
+            return;
+        }
         if !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
@@ -222,6 +267,9 @@ impl TextField {
     }
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
+        if self.secure {
+            return;
+        }
         if !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
@@ -535,8 +583,16 @@ impl Element for TextFieldElement {
         let theme = input.theme;
         let (display_text, text_color) = if content.is_empty() {
             (input.placeholder.clone(), theme.colors.text_muted)
+        } else if input.secure {
+            (
+                SharedString::from(mask_secret(&content)),
+                theme.colors.text_primary,
+            )
         } else {
-            (content, theme.colors.text_primary)
+            (
+                SharedString::from(content.replace(['\r', '\n'], " ")),
+                theme.colors.text_primary,
+            )
         };
         let base_run = TextRun {
             len: display_text.len(),
@@ -664,9 +720,14 @@ impl gpui::Render for TextField {
         } else {
             (self.selected_range.start, self.selected_range.end)
         };
+        let accessible_content = if self.secure {
+            mask_secret(&self.content)
+        } else {
+            self.content.to_string()
+        };
         let (a11y_value, a11y_text_runs) = text_field_a11y_state(
             self.element_id.clone(),
-            self.content.to_string(),
+            accessible_content,
             selection_tail,
             selection_head,
             self.focus_handle.is_focused(window),
@@ -713,6 +774,7 @@ impl gpui::Render for TextField {
             .on_action(cx.listener(Self::move_home))
             .on_action(cx.listener(Self::move_end))
             .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::insert_newline))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
@@ -769,6 +831,19 @@ impl gpui::Render for TextField {
                 )
             })
     }
+}
+
+fn mask_secret(secret: &str) -> String {
+    secret
+        .chars()
+        .map(|character| match character.len_utf8() {
+            1 => '*',
+            2 => '\u{00a2}',
+            3 => '\u{2022}',
+            4 => '\u{10000}',
+            _ => unreachable!("UTF-8 characters are at most four bytes"),
+        })
+        .collect()
 }
 
 impl Focusable for TextField {
@@ -944,6 +1019,8 @@ mod tests {
         assert_eq!(config.placeholder.as_ref(), "Search downloads or GID");
         assert_eq!(config.leading_icon, Some(IconName::Search));
         assert!(config.clearable);
+        assert!(!config.allow_newlines);
+        assert!(!config.secure);
     }
 
     #[gpui::test]
@@ -958,6 +1035,8 @@ mod tests {
                     placeholder: "https://example.com/file".into(),
                     leading_icon: Some(IconName::Link),
                     clearable: true,
+                    allow_newlines: false,
+                    secure: false,
                 },
                 Theme::dark(),
                 cx,
@@ -968,7 +1047,29 @@ mod tests {
             assert_eq!(input.leading_icon, Some(IconName::Link));
             assert!(input.clearable);
             assert_eq!(input.placeholder.as_ref(), "https://example.com/file");
+            assert!(!input.allow_newlines);
+            assert!(!input.secure);
         });
+    }
+
+    #[test]
+    fn secret_mask_preserves_utf8_boundaries_without_exposing_the_value() {
+        let secret = "aé中🙂";
+        let masked = mask_secret(secret);
+
+        assert_eq!(masked.len(), secret.len());
+        assert_eq!(
+            masked
+                .char_indices()
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>(),
+            secret
+                .char_indices()
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>()
+        );
+        assert!(!masked.contains('a'));
+        assert!(!masked.contains('é'));
     }
 
     #[test]
@@ -978,8 +1079,21 @@ mod tests {
 
         let event = SearchInputEvent {
             text: "example".to_owned(),
+            secure: false,
         };
         let _: TextFieldEvent = event;
+    }
+
+    #[test]
+    fn secure_change_event_debug_output_is_redacted() {
+        let event = TextFieldEvent {
+            text: "never-log-this".into(),
+            secure: true,
+        };
+
+        let debug = format!("{event:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("never-log-this"));
     }
 
     #[test]
