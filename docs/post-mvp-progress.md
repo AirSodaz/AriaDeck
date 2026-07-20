@@ -271,6 +271,45 @@ leaving a hidden duplicate selection.
   full update:
   https://github.com/qbittorrent/qBittorrent/blob/bc42af9fd8fb9f39df04ed6747e82f912aff4cc0/src/webui/www/private/scripts/client.js
 
+### D-011 - Remote RPC is explicit WebSocket with fail-closed TLS
+
+**Decision:** AriaDeck supports `ws://` and `wss://` aria2 JSON-RPC at the exact
+`/jsonrpc` path. Plain WebSocket is allowed for loopback only. A remote
+plaintext endpoint requires the explicit
+`ARIADECK_RPC_ALLOW_INSECURE_REMOTE=true` startup override; remote connections
+otherwise require WSS.
+
+**Fallback rule:** Do not automatically fall back to HTTP/HTTPS. aria2 HTTP
+JSON-RPC does not carry server notifications, and a silent fallback could hide
+a TLS or authentication failure. HTTP transport remains a future explicit
+profile capability rather than an error-recovery behavior.
+
+**Trust and credential rule:** Validate WSS with operating-system trust roots
+and expose certificate failures as terminal `sync.tls` errors. Do not add a
+certificate-validation bypass. Reject URL user information, query strings, and
+fragments; accept the aria2 method token only from `ARIADECK_RPC_SECRET`.
+WebSocket handshake failures retain the HTTP status but discard response
+headers, so proxy or authentication headers cannot enter diagnostics.
+
+**Control rule:** External connections default to 10-second connect and
+15-second request timeouts; managed local connections keep 750 ms and 5-second
+defaults. Startup environment settings can bound connection/request timeouts,
+reconnect base/max delay, stable-connection reset time, and total attempts.
+Invalid values fail before starting a connector and are reported without
+echoing their contents.
+
+**Evidence:**
+
+- aria2 manual documents `/jsonrpc`, `ws`/`wss`, method-level `token:`
+  authorization, TLS certificates, and the absence of notifications over HTTP:
+  https://aria2.github.io/manual/en/html/aria2c.html
+- AriaNg at commit `d6a765377e1eecfbcc387dcb824124df114decfb`
+  explicitly chooses HTTP or WebSocket from the configured scheme; its HTTP
+  service has no reconnect implementation rather than silently changing
+  transport:
+  https://github.com/mayswind/AriaNg/blob/d6a765377e1eecfbcc387dcb824124df114decfb/src/scripts/services/ariaNgSettingService.js
+  https://github.com/mayswind/AriaNg/blob/d6a765377e1eecfbcc387dcb824124df114decfb/src/scripts/services/aria2HttpRpcService.js
+
 ## Task Matrix
 
 Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
@@ -342,16 +381,17 @@ Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
 The filename, selection, add-outcome, retry, removal, proxy, and command-state
 slices (`FNM-001`
 through `FNM-003`, `SEL-001`, `SEL-002`, `ADD-001`, `ADD-002`, `ADD-004`,
-`RETRY-001`, `RETRY-002`, `REMOVE-001`, `NET-001`, `NET-002`, and `STATE-001`)
-are complete.
+`RETRY-001`, `RETRY-002`, `REMOVE-001`, `NET-001`, `NET-002`, `NET-003`, and
+`STATE-001`) are complete.
 The proxy slice includes schema migration, validated endpoint/bypass fields,
 masked password input, system credential storage, session-bound runtime apply,
 new-session reapply, and explicit clearing. `FILE-002` now has
 safe deletion, accumulated authorized roots, local writable-directory/space and
 known-size preflight, remote path isolation, direct-task conflict policy, and
 specific runtime disk-full errors. Its remaining Torrent/Metalink per-file
-containment/conflict slice depends on `ADD-003` and `FILE-001`. The remaining
-independent P0 work is tracked under `NET-003`.
+containment/conflict slice depends on `ADD-003` and `FILE-001`. The independent
+P0 filename, selection, task-state, network, add/retry/removal, and direct-file
+safety slices are complete.
 
 ## Audit Additions
 
@@ -381,7 +421,7 @@ several can be shared by more than one feature.
   actions, reject stale session responses, refresh after outcome-unknown
   mutations, and preserve details/selection when a Magnet parent is replaced by
   a metadata child or when a task changes GID.
-- [ ] `NET-003` Cover RPC connection security separately from download proxy
+- [x] `NET-003` Cover RPC connection security separately from download proxy
   settings: endpoint/scheme validation, `ws`/`wss` and HTTP fallback policy,
   TLS certificate errors, authentication testing, timeout/reconnect settings,
   and redaction of credentials embedded in URLs or headers.
@@ -466,5 +506,7 @@ acceptance outcomes overlap.
 | 2026-07-20 | Desktop Tokio runtime regression | `cargo test -p ariadeck-desktop`; isolated native startup with a real local aria2 | Pass - 30 tests; proxy settings loading is dispatched through the explicit Tokio runtime from a non-Tokio context, and the connected desktop remained healthy for the six-second observation with no reactor panic |
 | 2026-07-20 | `STATE-001` and desktop runtime checkpoint | `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop` | Pass - 183 tests, 6 ignored; no warnings, formatting clean, native desktop build succeeds |
 | 2026-07-20 | `STATE-001` live regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored --nocapture` | Pass - all 4 real aria2 flows; authenticated reads, restart/reconnect, command/removal behavior, proxy routing/bypass/disable, and cleanup remain intact |
+| 2026-07-20 | `NET-003` | `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop` | Pass - 190 tests, 7 ignored; strict endpoint/HTTP policy, timeout/reconnect parsing, terminal error mapping, URL/header redaction, local untrusted-WSS rejection, formatting, lints, and desktop build all pass |
+| 2026-07-20 | `NET-003` authentication and live regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored --nocapture` | Pass - 5 real aria2 flows; correct authentication succeeds, an incorrect secret is rejected without either credential appearing in errors, and restart, command/removal, proxy, and cleanup behavior remains intact |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.

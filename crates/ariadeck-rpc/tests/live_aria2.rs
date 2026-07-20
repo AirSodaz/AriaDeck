@@ -20,8 +20,8 @@ use ariadeck_domain::{
     ConnectionState, DownloadStatus, EnginePath, ProfileId, TaskIdentity, TaskSourceKind,
 };
 use ariadeck_rpc::{
-    Aria2Client, AuthenticatedTransport, RpcSecret, RpcSyncConnector, TaskKey, WebSocketConfig,
-    WebSocketTransport,
+    Aria2Client, AuthenticatedTransport, RpcError, RpcSecret, RpcSyncConnector, TaskKey,
+    WebSocketConfig, WebSocketTransport,
 };
 use secrecy::SecretString;
 use tempfile::TempDir;
@@ -121,6 +121,47 @@ async fn authenticates_and_reads_live_aria2_state() -> Result<(), TestError> {
     assert!(stopped.is_empty());
 
     client.shutdown().await?;
+    transport.close().await;
+    let status = process.wait_for_exit(Duration::from_secs(5))?;
+    assert!(status.success());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires ARIA2C_PATH and launches a real local aria2 process"]
+async fn rejects_a_wrong_secret_without_leaking_credentials() -> Result<(), TestError> {
+    let executable = env::var("ARIA2C_PATH")?;
+    let data_dir = TempDir::new()?;
+    let port = reserve_loopback_port()?;
+    let secret = Uuid::new_v4().simple().to_string();
+    let wrong_secret = format!("wrong-{}", Uuid::new_v4().simple());
+    let mut process = ChildGuard::spawn(Path::new(&executable), data_dir.path(), port, &secret)?;
+    let endpoint = Url::parse(&format!("ws://127.0.0.1:{port}/jsonrpc"))?;
+    let rejected_transport = connect_with_retry(endpoint.clone(), Duration::from_secs(5)).await?;
+    let rejected_client = Aria2Client::new(AuthenticatedTransport::new(
+        rejected_transport.clone(),
+        Some(RpcSecret::new(wrong_secret.clone())),
+    ));
+    let error = rejected_client
+        .get_version()
+        .await
+        .expect_err("aria2 must reject an invalid RPC secret");
+    let RpcError::Remote { message, .. } = &error else {
+        return Err(std::io::Error::other(format!(
+            "expected an aria2 authentication error, received {error}"
+        ))
+        .into());
+    };
+    assert!(message.to_ascii_lowercase().contains("unauthorized"));
+    let rendered = format!("{error:?} {error}");
+    assert!(!rendered.contains(&secret));
+    assert!(!rendered.contains(&wrong_secret));
+    rejected_transport.close().await;
+
+    let transport = connect_with_retry(endpoint, Duration::from_secs(5)).await?;
+    let authenticated =
+        AuthenticatedTransport::new(transport.clone(), Some(RpcSecret::new(secret)));
+    Aria2Client::new(authenticated).shutdown().await?;
     transport.close().await;
     let status = process.wait_for_exit(Duration::from_secs(5))?;
     assert!(status.success());

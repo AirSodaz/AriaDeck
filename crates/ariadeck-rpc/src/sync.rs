@@ -258,7 +258,10 @@ fn notification_hint(notification: Aria2Notification) -> RefreshHint {
 
 fn map_sync_error(error: RpcError) -> SyncError {
     let (kind, retryable) = match &error {
+        RpcError::Configuration(_) => (SyncErrorKind::Configuration, false),
         RpcError::Closed | RpcError::Transport(_) => (SyncErrorKind::Disconnected, true),
+        RpcError::Tls(_) => (SyncErrorKind::Tls, false),
+        RpcError::Authentication(_) => (SyncErrorKind::Authentication, false),
         RpcError::Timeout { .. } => (SyncErrorKind::Timeout, true),
         RpcError::Remote { message, .. }
             if message.to_ascii_lowercase().contains("unauthorized") =>
@@ -290,6 +293,25 @@ mod tests {
         assert!(!authentication.retryable);
         assert_eq!(disconnected.kind, SyncErrorKind::Disconnected);
         assert!(disconnected.retryable);
+    }
+
+    #[test]
+    fn configuration_tls_and_handshake_authentication_errors_are_terminal() {
+        for (error, expected) in [
+            (
+                RpcError::Configuration("HTTP fallback is disabled".into()),
+                SyncErrorKind::Configuration,
+            ),
+            (RpcError::Tls("unknown issuer".into()), SyncErrorKind::Tls),
+            (
+                RpcError::Authentication("HTTP status 401".into()),
+                SyncErrorKind::Authentication,
+            ),
+        ] {
+            let mapped = map_sync_error(error);
+            assert_eq!(mapped.kind, expected);
+            assert!(!mapped.retryable);
+        }
     }
 
     #[test]

@@ -20,6 +20,33 @@ Run the desktop shell:
 cargo run -p ariadeck-desktop
 ```
 
+### External aria2 RPC
+
+Set `ARIADECK_RPC_URL` to connect to an existing aria2 instance instead of
+starting a managed local process. AriaDeck accepts only the explicit aria2
+WebSocket endpoint path, for example `wss://downloads.example:6800/jsonrpc`.
+Plain `ws://` is restricted to loopback by default. HTTP is not used as an
+automatic fallback because it does not provide aria2 server notifications.
+
+The RPC secret must be supplied separately through `ARIADECK_RPC_SECRET`.
+Credentials, query strings, and fragments are rejected in `ARIADECK_RPC_URL`.
+WSS certificates are validated against the operating-system trust store and
+there is no certificate-validation bypass.
+
+Startup-only connection controls:
+
+| Variable | Default |
+| --- | --- |
+| `ARIADECK_RPC_CONNECT_TIMEOUT_MS` | local `750`, external `10000` |
+| `ARIADECK_RPC_REQUEST_TIMEOUT_MS` | local `5000`, external `15000` |
+| `ARIADECK_RPC_RECONNECT_BASE_DELAY_MS` | `250` |
+| `ARIADECK_RPC_RECONNECT_MAX_DELAY_MS` | `30000` |
+| `ARIADECK_RPC_RECONNECT_RESET_AFTER_MS` | `10000` |
+| `ARIADECK_RPC_RECONNECT_MAX_ATTEMPTS` | unlimited when unset |
+
+`ARIADECK_RPC_ALLOW_INSECURE_REMOTE=true` explicitly permits remote plaintext
+WebSocket for a trusted network. It does not disable WSS certificate checks.
+
 Run the current verification suite:
 
 ```sh

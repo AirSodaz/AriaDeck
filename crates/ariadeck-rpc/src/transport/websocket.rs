@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt,
     sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
@@ -9,8 +10,11 @@ use async_trait::async_trait;
 use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
-use url::Url;
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Error as WebSocketError, Message},
+};
+use url::{Host, Url};
 
 use crate::{
     Aria2Notification, RpcCall, RpcError,
@@ -18,11 +22,12 @@ use crate::{
     transport::RpcTransport,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct WebSocketConfig {
     pub endpoint: Url,
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
+    pub allow_insecure_remote: bool,
 }
 
 impl WebSocketConfig {
@@ -32,7 +37,35 @@ impl WebSocketConfig {
             endpoint,
             connect_timeout: Duration::from_secs(10),
             request_timeout: Duration::from_secs(15),
+            allow_insecure_remote: false,
         }
+    }
+
+    pub fn validate(&self) -> Result<(), RpcError> {
+        validate_endpoint(&self.endpoint, self.allow_insecure_remote)?;
+        if self.connect_timeout.is_zero() {
+            return Err(RpcError::Configuration(
+                "connect timeout must be greater than zero".into(),
+            ));
+        }
+        if self.request_timeout.is_zero() {
+            return Err(RpcError::Configuration(
+                "request timeout must be greater than zero".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for WebSocketConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebSocketConfig")
+            .field("endpoint", &redacted_endpoint(&self.endpoint))
+            .field("connect_timeout", &self.connect_timeout)
+            .field("request_timeout", &self.request_timeout)
+            .field("allow_insecure_remote", &self.allow_insecure_remote)
+            .finish()
     }
 }
 
@@ -47,19 +80,16 @@ pub struct WebSocketTransport {
 
 impl WebSocketTransport {
     pub async fn connect(config: WebSocketConfig) -> Result<Self, RpcError> {
-        if !matches!(config.endpoint.scheme(), "ws" | "wss") {
-            return Err(RpcError::Protocol(
-                "WebSocket endpoint must use ws or wss".into(),
-            ));
-        }
+        config.validate()?;
 
+        let secure = config.endpoint.scheme() == "wss";
         let endpoint = config.endpoint.as_str().to_owned();
         let (stream, _) = tokio::time::timeout(config.connect_timeout, connect_async(endpoint))
             .await
             .map_err(|_| RpcError::Timeout {
                 method: "websocket.connect".into(),
             })?
-            .map_err(|error| RpcError::Transport(error.to_string()))?;
+            .map_err(|error| map_connect_error(error, secure))?;
         let (commands, command_rx) = mpsc::channel(128);
         let (notifications, _) = broadcast::channel(128);
         let (closed_tx, closed) = watch::channel(None);
@@ -213,7 +243,7 @@ where
                     Some(Command::Send { payload, pending: new_pending }) => {
                         pending.extend(new_pending);
                         if let Err(error) = sink.send(Message::Text(payload.into())).await {
-                            let error = RpcError::Transport(error.to_string());
+                            let error = map_websocket_error(error);
                             fail_all(&mut pending, &error);
                             return error;
                         }
@@ -240,7 +270,7 @@ where
                     }
                     Some(Ok(Message::Ping(payload))) => {
                         if let Err(error) = sink.send(Message::Pong(payload)).await {
-                            let error = RpcError::Transport(error.to_string());
+                            let error = map_websocket_error(error);
                             fail_all(&mut pending, &error);
                             return error;
                         }
@@ -251,13 +281,101 @@ where
                         return RpcError::Closed;
                     }
                     Some(Err(error)) => {
-                        let error = RpcError::Transport(error.to_string());
+                        let error = map_websocket_error(error);
                         fail_all(&mut pending, &error);
                         return error;
                     }
                 }
             }
         }
+    }
+}
+
+fn validate_endpoint(endpoint: &Url, allow_insecure_remote: bool) -> Result<(), RpcError> {
+    match endpoint.scheme() {
+        "ws" | "wss" => {}
+        "http" | "https" => {
+            return Err(RpcError::Configuration(
+                "HTTP JSON-RPC fallback is disabled because it loses aria2 WebSocket notifications; use ws:// or wss:// explicitly"
+                    .into(),
+            ));
+        }
+        _ => {
+            return Err(RpcError::Configuration(
+                "RPC endpoint must use ws:// or wss://".into(),
+            ));
+        }
+    }
+    if endpoint.host().is_none() {
+        return Err(RpcError::Configuration(
+            "RPC endpoint must include a host".into(),
+        ));
+    }
+    if !endpoint.username().is_empty() || endpoint.password().is_some() {
+        return Err(RpcError::Configuration(
+            "RPC endpoint credentials are forbidden; supply ARIADECK_RPC_SECRET separately".into(),
+        ));
+    }
+    if endpoint.path() != "/jsonrpc" {
+        return Err(RpcError::Configuration(
+            "aria2 RPC endpoint path must be exactly /jsonrpc".into(),
+        ));
+    }
+    if endpoint.query().is_some() || endpoint.fragment().is_some() {
+        return Err(RpcError::Configuration(
+            "RPC endpoint query and fragment components are forbidden".into(),
+        ));
+    }
+    if endpoint.scheme() == "ws" && !allow_insecure_remote && !is_loopback(endpoint) {
+        return Err(RpcError::Configuration(
+            "remote aria2 RPC requires wss://; set ARIADECK_RPC_ALLOW_INSECURE_REMOTE=true only for an explicitly trusted network"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn is_loopback(endpoint: &Url) -> bool {
+    match endpoint.host() {
+        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    }
+}
+
+fn redacted_endpoint(endpoint: &Url) -> String {
+    let mut redacted = endpoint.clone();
+    let _ = redacted.set_username("");
+    let _ = redacted.set_password(None);
+    redacted.set_query(None);
+    redacted.set_fragment(None);
+    redacted.to_string()
+}
+
+fn map_websocket_error(error: WebSocketError) -> RpcError {
+    match error {
+        WebSocketError::Tls(error) => RpcError::Tls(error.to_string()),
+        WebSocketError::Http(response) if matches!(response.status().as_u16(), 401 | 403) => {
+            RpcError::Authentication(format!(
+                "WebSocket handshake returned HTTP status {}",
+                response.status().as_u16()
+            ))
+        }
+        WebSocketError::Http(response) => RpcError::Transport(format!(
+            "WebSocket handshake returned HTTP status {}",
+            response.status().as_u16()
+        )),
+        error => RpcError::Transport(error.to_string()),
+    }
+}
+
+fn map_connect_error(error: WebSocketError, secure: bool) -> RpcError {
+    match error {
+        WebSocketError::Io(error) if secure && error.kind() == std::io::ErrorKind::InvalidData => {
+            RpcError::Tls(error.to_string())
+        }
+        error => map_websocket_error(error),
     }
 }
 
@@ -303,8 +421,13 @@ fn fail_all(pending: &mut HashMap<RpcId, ResponseSender>, error: &RpcError) {
 mod tests {
     use std::error::Error;
 
+    use rcgen::generate_simple_self_signed;
     use serde_json::json;
     use tokio::net::TcpListener;
+    use tokio_rustls::{
+        TlsAcceptor,
+        rustls::{ServerConfig, pki_types::PrivatePkcs8KeyDer},
+    };
     use tokio_tungstenite::accept_async;
 
     use super::*;
@@ -315,6 +438,120 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = Url::parse(&format!("ws://{}/jsonrpc", listener.local_addr()?))?;
         Ok((listener, endpoint))
+    }
+
+    #[test]
+    fn endpoint_validation_enforces_transport_path_and_remote_tls_policy() -> Result<(), TestError>
+    {
+        for endpoint in [
+            "ws://localhost:6800/jsonrpc",
+            "ws://127.0.0.1:6800/jsonrpc",
+            "ws://[::1]:6800/jsonrpc",
+            "wss://downloads.example:443/jsonrpc",
+        ] {
+            WebSocketConfig::new(Url::parse(endpoint)?).validate()?;
+        }
+
+        for endpoint in [
+            "http://localhost:6800/jsonrpc",
+            "https://downloads.example/jsonrpc",
+            "ftp://localhost/jsonrpc",
+            "ws://localhost:6800/",
+            "ws://localhost:6800/jsonrpc?token=secret",
+            "ws://localhost:6800/jsonrpc#secret",
+            "ws://user:password@localhost:6800/jsonrpc",
+            "ws://downloads.example:6800/jsonrpc",
+        ] {
+            assert!(matches!(
+                WebSocketConfig::new(Url::parse(endpoint)?).validate(),
+                Err(RpcError::Configuration(_))
+            ));
+        }
+
+        let mut explicitly_insecure =
+            WebSocketConfig::new(Url::parse("ws://downloads.example:6800/jsonrpc")?);
+        explicitly_insecure.allow_insecure_remote = true;
+        explicitly_insecure.validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn endpoint_debug_redacts_userinfo_query_and_fragment() -> Result<(), TestError> {
+        let config = WebSocketConfig::new(Url::parse(
+            "wss://rpc-user:rpc-password@downloads.example/jsonrpc?authorization=bearer-token#secret",
+        )?);
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("wss://downloads.example/jsonrpc"));
+        for secret in [
+            "rpc-user",
+            "rpc-password",
+            "authorization",
+            "bearer-token",
+            "secret",
+        ] {
+            assert!(!debug.contains(secret));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handshake_authentication_error_omits_response_headers() -> Result<(), TestError> {
+        let response = tokio_tungstenite::tungstenite::http::Response::builder()
+            .status(401)
+            .header("www-authenticate", "Bearer embedded-secret")
+            .body(None)?;
+        let error = map_websocket_error(WebSocketError::Http(Box::new(response)));
+        let rendered = error.to_string();
+
+        assert!(matches!(error, RpcError::Authentication(_)));
+        assert!(rendered.contains("401"));
+        assert!(!rendered.contains("embedded-secret"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rejects_an_untrusted_wss_certificate_as_a_terminal_tls_error() -> Result<(), TestError>
+    {
+        let certified = generate_simple_self_signed(vec!["localhost".into()])?;
+        let certificate = certified.cert.der().clone();
+        let private_key = PrivatePkcs8KeyDer::from(certified.signing_key.serialize_der());
+        let server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![certificate], private_key.into())?;
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let _ = acceptor.accept(stream).await;
+            Ok::<_, std::io::Error>(())
+        });
+
+        let endpoint = Url::parse(&format!("wss://localhost:{port}/jsonrpc"))?;
+        let error = match WebSocketTransport::connect(WebSocketConfig::new(endpoint)).await {
+            Ok(transport) => {
+                transport.close().await;
+                return Err(std::io::Error::other(
+                    "the untrusted certificate was unexpectedly accepted",
+                )
+                .into());
+            }
+            Err(error) => error,
+        };
+
+        assert!(
+            matches!(error, RpcError::Tls(_)),
+            "unexpected TLS failure classification: {error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("certificate")
+        );
+        server.await??;
+        Ok(())
     }
 
     fn text_json(message: Message) -> Result<Value, TestError> {

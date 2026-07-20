@@ -131,7 +131,9 @@ pub trait DownloadSyncConnector: Send + Sync {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyncErrorKind {
+    Configuration,
     Disconnected,
+    Tls,
     Authentication,
     Timeout,
     Protocol,

@@ -3,10 +3,16 @@ use thiserror::Error;
 
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum RpcError {
+    #[error("invalid RPC connection configuration: {0}")]
+    Configuration(String),
     #[error("RPC transport is closed")]
     Closed,
     #[error("RPC transport failed: {0}")]
     Transport(String),
+    #[error("RPC TLS validation or handshake failed: {0}")]
+    Tls(String),
+    #[error("RPC authentication failed: {0}")]
+    Authentication(String),
     #[error("RPC request timed out: {method}")]
     Timeout { method: String },
     #[error("invalid JSON-RPC message: {0}")]

@@ -645,6 +645,8 @@ where
 fn map_query_error(error: RpcError) -> GatewayError {
     let (kind, retryable) = match &error {
         RpcError::Closed | RpcError::Transport(_) => (GatewayErrorKind::Disconnected, true),
+        RpcError::Tls(_) => (GatewayErrorKind::Disconnected, false),
+        RpcError::Authentication(_) => (GatewayErrorKind::Authentication, false),
         RpcError::Timeout { .. } => (GatewayErrorKind::Timeout, true),
         RpcError::Remote { message, .. }
             if message.to_ascii_lowercase().contains("unauthorized") =>
@@ -652,9 +654,10 @@ fn map_query_error(error: RpcError) -> GatewayError {
             (GatewayErrorKind::Authentication, false)
         }
         RpcError::Remote { .. } => (GatewayErrorKind::Rejected, false),
-        RpcError::Protocol(_) | RpcError::Serialization(_) | RpcError::InvalidData { .. } => {
-            (GatewayErrorKind::Internal, false)
-        }
+        RpcError::Configuration(_)
+        | RpcError::Protocol(_)
+        | RpcError::Serialization(_)
+        | RpcError::InvalidData { .. } => (GatewayErrorKind::Internal, false),
     };
     GatewayError::new(kind, error.to_string(), retryable)
 }
@@ -663,16 +666,18 @@ fn map_mutation_error(error: RpcError) -> GatewayError {
     let kind = match &error {
         RpcError::Closed
         | RpcError::Transport(_)
+        | RpcError::Tls(_)
         | RpcError::Timeout { .. }
         | RpcError::Protocol(_)
         | RpcError::InvalidData { .. } => GatewayErrorKind::OutcomeUnknown,
+        RpcError::Authentication(_) => GatewayErrorKind::Authentication,
         RpcError::Remote { message, .. }
             if message.to_ascii_lowercase().contains("unauthorized") =>
         {
             GatewayErrorKind::Authentication
         }
         RpcError::Remote { .. } => GatewayErrorKind::Rejected,
-        RpcError::Serialization(_) => GatewayErrorKind::Internal,
+        RpcError::Configuration(_) | RpcError::Serialization(_) => GatewayErrorKind::Internal,
     };
     GatewayError::new(kind, error.to_string(), false)
 }

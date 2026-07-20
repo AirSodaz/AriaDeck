@@ -260,6 +260,17 @@ Blocking filesystem, settings, and credential work launched from GPUI tasks is
 always dispatched through the desktop-owned Tokio runtime rather than assuming
 the UI executor has entered a Tokio reactor.
 
+### ADR-010 - Keep remote RPC WebSocket-only and fail closed on trust errors
+
+The current RPC adapter accepts only `ws`/`wss` at `/jsonrpc`; HTTP is not an
+automatic fallback because it removes notification semantics and could mask a
+TLS or authentication failure. Plain WebSocket defaults to loopback-only, while
+an explicit startup override can permit it on a trusted network. WSS uses
+operating-system trust roots with no validation bypass. URL credentials,
+queries, and fragments are rejected, the method token remains separate, and
+handshake diagnostics retain status codes without response headers. Connection
+and reconnect timing is bounded through validated startup configuration.
+
 ## Verification Log
 
 | Date | Command or check | Result |
@@ -348,6 +359,8 @@ the UI executor has entered a Tokio reactor.
 | 2026-07-20 | `cargo test -p ariadeck-desktop`; isolated connected desktop startup | Pass - 30 tests plus six-second native observation; explicit runtime dispatch prevents the GPUI-thread `no reactor running` panic |
 | 2026-07-20 | `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop` | Pass - 183 tests, 6 ignored; no warnings, formatting clean, native desktop executable built |
 | 2026-07-20 | All ignored live RPC tests with real `aria2c 1.37.0` after command-state reconciliation | Pass - 4 flows; authenticated reads, restart/reconnect, command/removal contracts, proxy routing/bypass/disable, and clean shutdown |
+| 2026-07-20 | `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop` after RPC connection hardening | Pass - 190 tests, 7 ignored; strict endpoint policy, startup timing controls, TLS/authentication classification, redaction, formatting, lints, and desktop build all pass |
+| 2026-07-20 | All ignored live RPC tests with real `aria2c 1.37.0` after RPC connection hardening | Pass - 5 flows; valid authentication, invalid-secret rejection without leakage, restart/reconnect, command/removal contracts, proxy behavior, and clean shutdown |
 
 ## Known Gaps
 
@@ -371,12 +384,14 @@ the UI executor has entered a Tokio reactor.
 - Theme, download-directory, and aria2 download-proxy choices persist; proxy
   passwords remain outside JSON in the system credential manager. Window
   geometry remains session-only.
-- RPC connection proxy/TLS policy remains separate post-MVP work; the completed
-  proxy controls affect aria2 download traffic only.
+- WSS validation and remote RPC transport policy are complete. An application-
+  side network proxy for reaching a remote RPC endpoint remains future work;
+  the current proxy controls affect aria2 download traffic only.
 - The optional Windows DXGI debug layer is absent; GPUI logs a development-only
   warning and continues with DirectX debugging disabled.
 - The repository license has not been selected; release metadata remains provisional.
-- HTTP JSON-RPC fallback is intentionally after the WebSocket MVP path.
+- HTTP JSON-RPC remains a future explicit profile capability. AriaDeck does not
+  automatically downgrade to it after WebSocket, TLS, or authentication errors.
 - Managed aria2 download, verification, extraction, activation, and rollback are post-MVP.
 
 ## Commit Log

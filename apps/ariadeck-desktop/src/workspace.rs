@@ -11,8 +11,8 @@ use ariadeck_application::{
     AddDownloadRequest, AppCommand, ApplicationError, ApplicationErrorCode, CommandItem,
     CommandOutcome, CoordinatorConfig, DownloadDestinationGateway, DownloadDestinationRequest,
     DownloadProxyConfig, DownloadProxyMode as ApplicationProxyMode, FileConflictPolicy,
-    ItemFailure, RemoveTasksRequest, SetTaskOutputNameRequest, StoreSnapshot, SyncHandle,
-    TaskFileGateway, TaskFileRemovalRequest, TaskListQuery, TaskRemovalScope,
+    ItemFailure, ReconnectPolicy, RemoveTasksRequest, SetTaskOutputNameRequest, StoreSnapshot,
+    SyncHandle, TaskFileGateway, TaskFileRemovalRequest, TaskListQuery, TaskRemovalScope,
     spawn_sync_coordinator,
 };
 use ariadeck_domain::{
@@ -1481,13 +1481,17 @@ fn create_sync_handle(
     data_dir: &Path,
     settings: &AppSettings,
 ) -> Result<(SyncHandle, Option<LocalEngineSupervisor>), String> {
-    let (endpoint, secret, local_engine, profile_id) = if let Some(endpoint) =
-        env::var("ARIADECK_RPC_URL")
-            .ok()
-            .filter(|endpoint| !endpoint.trim().is_empty())
-    {
+    let external_endpoint = env::var("ARIADECK_RPC_URL")
+        .ok()
+        .filter(|endpoint| !endpoint.trim().is_empty());
+    let rpc_runtime =
+        RpcRuntimeConfig::from_values(external_endpoint.is_some(), |name| env::var(name).ok())?;
+    let (endpoint, secret, local_engine, profile_id) = if let Some(endpoint) = external_endpoint {
+        if endpoint.trim() != endpoint {
+            return Err("ARIADECK_RPC_URL must not contain surrounding whitespace.".into());
+        }
         let endpoint =
-            Url::parse(&endpoint).map_err(|error| format!("Invalid RPC URL: {error}"))?;
+            Url::parse(&endpoint).map_err(|error| format!("Invalid ARIADECK_RPC_URL: {error}"))?;
         let profile_id = env::var("ARIADECK_PROFILE_ID")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -1508,18 +1512,147 @@ fn create_sync_handle(
     };
 
     let mut websocket = WebSocketConfig::new(endpoint.clone());
-    websocket.connect_timeout = Duration::from_millis(750);
-    websocket.request_timeout = Duration::from_secs(5);
+    websocket.connect_timeout = rpc_runtime.connect_timeout;
+    websocket.request_timeout = rpc_runtime.request_timeout;
+    websocket.allow_insecure_remote = rpc_runtime.allow_insecure_remote;
+    websocket.validate().map_err(|error| error.to_string())?;
     let connector = Arc::new(RpcSyncConnector::new(websocket, secret));
-    let coordinator = CoordinatorConfig::new(profile_id);
+    let mut coordinator = CoordinatorConfig::new(profile_id);
+    coordinator.reconnect = rpc_runtime.reconnect;
     tracing::info!(
         scheme = endpoint.scheme(),
         host = endpoint.host_str().unwrap_or("unknown"),
         port = endpoint.port_or_known_default(),
+        connect_timeout_ms = rpc_runtime.connect_timeout.as_millis(),
+        request_timeout_ms = rpc_runtime.request_timeout.as_millis(),
+        reconnect_base_ms = rpc_runtime.reconnect.base_delay.as_millis(),
+        reconnect_max_ms = rpc_runtime.reconnect.max_delay.as_millis(),
+        reconnect_max_attempts = ?rpc_runtime.reconnect.max_attempts,
         "configured external aria2 RPC profile"
     );
     let _runtime_guard = runtime.enter();
     Ok((spawn_sync_coordinator(connector, coordinator), local_engine))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RpcRuntimeConfig {
+    connect_timeout: Duration,
+    request_timeout: Duration,
+    reconnect: ReconnectPolicy,
+    allow_insecure_remote: bool,
+}
+
+impl RpcRuntimeConfig {
+    fn from_values(
+        external: bool,
+        mut value: impl FnMut(&str) -> Option<String>,
+    ) -> Result<Self, String> {
+        let defaults = ReconnectPolicy::default();
+        let connect_timeout = parse_millisecond_setting(
+            "ARIADECK_RPC_CONNECT_TIMEOUT_MS",
+            value("ARIADECK_RPC_CONNECT_TIMEOUT_MS"),
+            if external {
+                Duration::from_secs(10)
+            } else {
+                Duration::from_millis(750)
+            },
+        )?;
+        let request_timeout = parse_millisecond_setting(
+            "ARIADECK_RPC_REQUEST_TIMEOUT_MS",
+            value("ARIADECK_RPC_REQUEST_TIMEOUT_MS"),
+            if external {
+                Duration::from_secs(15)
+            } else {
+                Duration::from_secs(5)
+            },
+        )?;
+        let base_delay = parse_millisecond_setting(
+            "ARIADECK_RPC_RECONNECT_BASE_DELAY_MS",
+            value("ARIADECK_RPC_RECONNECT_BASE_DELAY_MS"),
+            defaults.base_delay,
+        )?;
+        let max_delay = parse_millisecond_setting(
+            "ARIADECK_RPC_RECONNECT_MAX_DELAY_MS",
+            value("ARIADECK_RPC_RECONNECT_MAX_DELAY_MS"),
+            defaults.max_delay,
+        )?;
+        if base_delay > max_delay {
+            return Err(
+                "ARIADECK_RPC_RECONNECT_BASE_DELAY_MS must not exceed ARIADECK_RPC_RECONNECT_MAX_DELAY_MS."
+                    .into(),
+            );
+        }
+        let reset_after = parse_millisecond_setting(
+            "ARIADECK_RPC_RECONNECT_RESET_AFTER_MS",
+            value("ARIADECK_RPC_RECONNECT_RESET_AFTER_MS"),
+            defaults.reset_after,
+        )?;
+        let max_attempts = parse_max_attempts(value("ARIADECK_RPC_RECONNECT_MAX_ATTEMPTS"))?;
+        let allow_insecure_remote = parse_boolean_setting(
+            "ARIADECK_RPC_ALLOW_INSECURE_REMOTE",
+            value("ARIADECK_RPC_ALLOW_INSECURE_REMOTE"),
+            false,
+        )?;
+        Ok(Self {
+            connect_timeout,
+            request_timeout,
+            reconnect: ReconnectPolicy {
+                base_delay,
+                max_delay,
+                jitter_percent: defaults.jitter_percent,
+                max_attempts,
+                reset_after,
+            },
+            allow_insecure_remote,
+        })
+    }
+}
+
+fn parse_millisecond_setting(
+    name: &'static str,
+    value: Option<String>,
+    default: Duration,
+) -> Result<Duration, String> {
+    let Some(value) = value else {
+        return Ok(default);
+    };
+    let milliseconds = value
+        .parse::<u64>()
+        .map_err(|_| format!("{name} must be an integer number of milliseconds."))?;
+    if !(1..=3_600_000).contains(&milliseconds) {
+        return Err(format!(
+            "{name} must be between 1 and 3600000 milliseconds."
+        ));
+    }
+    Ok(Duration::from_millis(milliseconds))
+}
+
+fn parse_max_attempts(value: Option<String>) -> Result<Option<u32>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let attempts = value.parse::<u32>().map_err(|_| {
+        "ARIADECK_RPC_RECONNECT_MAX_ATTEMPTS must be a positive integer.".to_owned()
+    })?;
+    if attempts == 0 {
+        return Err("ARIADECK_RPC_RECONNECT_MAX_ATTEMPTS must be at least 1.".into());
+    }
+    Ok(Some(attempts))
+}
+
+fn parse_boolean_setting(
+    name: &'static str,
+    value: Option<String>,
+    default: bool,
+) -> Result<bool, String> {
+    let Some(value) = value else {
+        return Ok(default);
+    };
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "1" => Ok(true),
+        "false" | "0" => Ok(false),
+        _ => Err(format!("{name} must be true, false, 1, or 0.")),
+    }
 }
 
 fn resolve_local_engine_config(
@@ -3707,6 +3840,71 @@ mod tests {
         assert_eq!(mapped.color_scheme, ColorScheme::Light);
         assert_eq!(mapped.download_directory, PathBuf::from("D:/Transfers"));
         assert_eq!(map_settings(&mapped), settings);
+    }
+
+    #[test]
+    fn rpc_runtime_settings_have_remote_defaults_and_accept_bounded_overrides() {
+        let local = RpcRuntimeConfig::from_values(false, |_| None).expect("local defaults");
+        let remote = RpcRuntimeConfig::from_values(true, |_| None).expect("remote defaults");
+        assert_eq!(local.connect_timeout, Duration::from_millis(750));
+        assert_eq!(local.request_timeout, Duration::from_secs(5));
+        assert_eq!(remote.connect_timeout, Duration::from_secs(10));
+        assert_eq!(remote.request_timeout, Duration::from_secs(15));
+        assert_eq!(remote.reconnect, ReconnectPolicy::default());
+        assert!(!remote.allow_insecure_remote);
+
+        let values = HashMap::from([
+            ("ARIADECK_RPC_CONNECT_TIMEOUT_MS", "1200"),
+            ("ARIADECK_RPC_REQUEST_TIMEOUT_MS", "3400"),
+            ("ARIADECK_RPC_RECONNECT_BASE_DELAY_MS", "100"),
+            ("ARIADECK_RPC_RECONNECT_MAX_DELAY_MS", "8000"),
+            ("ARIADECK_RPC_RECONNECT_RESET_AFTER_MS", "2500"),
+            ("ARIADECK_RPC_RECONNECT_MAX_ATTEMPTS", "7"),
+            ("ARIADECK_RPC_ALLOW_INSECURE_REMOTE", "true"),
+        ]);
+        let configured =
+            RpcRuntimeConfig::from_values(true, |name| values.get(name).map(ToString::to_string))
+                .expect("valid overrides");
+
+        assert_eq!(configured.connect_timeout, Duration::from_millis(1200));
+        assert_eq!(configured.request_timeout, Duration::from_millis(3400));
+        assert_eq!(configured.reconnect.base_delay, Duration::from_millis(100));
+        assert_eq!(configured.reconnect.max_delay, Duration::from_secs(8));
+        assert_eq!(
+            configured.reconnect.reset_after,
+            Duration::from_millis(2500)
+        );
+        assert_eq!(configured.reconnect.max_attempts, Some(7));
+        assert!(configured.allow_insecure_remote);
+    }
+
+    #[test]
+    fn invalid_rpc_runtime_settings_fail_without_echoing_the_value() {
+        let sensitive = "do-not-echo-this";
+        let error = RpcRuntimeConfig::from_values(true, |name| {
+            (name == "ARIADECK_RPC_CONNECT_TIMEOUT_MS").then(|| sensitive.to_owned())
+        })
+        .expect_err("invalid duration must fail");
+        assert!(error.contains("ARIADECK_RPC_CONNECT_TIMEOUT_MS"));
+        assert!(!error.contains(sensitive));
+
+        let reversed = HashMap::from([
+            ("ARIADECK_RPC_RECONNECT_BASE_DELAY_MS", "5000"),
+            ("ARIADECK_RPC_RECONNECT_MAX_DELAY_MS", "1000"),
+        ]);
+        assert!(
+            RpcRuntimeConfig::from_values(true, |name| {
+                reversed.get(name).map(ToString::to_string)
+            })
+            .is_err()
+        );
+
+        assert!(
+            RpcRuntimeConfig::from_values(true, |name| {
+                (name == "ARIADECK_RPC_RECONNECT_MAX_ATTEMPTS").then(|| "0".into())
+            })
+            .is_err()
+        );
     }
 
     #[test]
