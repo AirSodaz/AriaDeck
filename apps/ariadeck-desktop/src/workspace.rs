@@ -12,14 +12,15 @@ use ariadeck_application::{
     AddDownloadRequest, AddDownloadSource, AppCommand, ApplicationError, ApplicationErrorCode,
     CommandItem, CommandOutcome, CoordinatorConfig, DownloadDestinationFile,
     DownloadDestinationGateway, DownloadDestinationRequest, DownloadProxyConfig,
-    DownloadProxyMode as ApplicationProxyMode, FileConflictPolicy, ItemFailure, ReconnectPolicy,
-    RemoveTasksRequest, SetTaskOutputNameRequest, StoreSnapshot, SyncHandle, TaskFileGateway,
-    TaskFileRemovalRequest, TaskListQuery, TaskRemovalScope, spawn_sync_coordinator,
+    DownloadProxyMode as ApplicationProxyMode, FileConflictPolicy, ItemFailure,
+    MoveTaskInQueueRequest, QueueMove, ReconnectPolicy, RemoveTasksRequest,
+    SetTaskOutputNameRequest, StoreSnapshot, SyncHandle, TaskFileGateway, TaskFileRemovalRequest,
+    TaskListQuery, TaskRemovalScope, spawn_sync_coordinator,
 };
 use ariadeck_domain::{
-    ConnectionState, DownloadFilter, DownloadStatus, DownloadTask, EnginePath, EngineSession,
-    EngineSessionId, Gid, ProfileId, SessionGeneration, TaskDetails,
-    TaskIdentity as DomainTaskIdentity, TaskProgress,
+    ConnectionState, DownloadFilter, DownloadSort, DownloadStatus, DownloadTask, EnginePath,
+    EngineSession, EngineSessionId, Gid, ProfileId, SessionGeneration, SortDirection, SortKey,
+    TaskDetails, TaskIdentity as DomainTaskIdentity, TaskProgress,
 };
 use ariadeck_engine::{
     ExternalEngineProfile, JsonProfileStore, LocalDownloadDestinationGateway,
@@ -43,12 +44,14 @@ use ariadeck_ui::{
     BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
     BatchTaskFailureView, ColorSchemeView, CommandOutcomeView, ConnectionView,
     DownloadProxySettingsView, DownloadRowView, EngineHealthView, EngineSessionView,
-    FileConflictPolicyView, OperationErrorView, ProxyModeView, ProxyPasswordUpdateView,
+    FileConflictPolicyView, GlobalTaskCommandRequestView, GlobalTaskCommandResultView,
+    GlobalTaskCommandView, OperationErrorView, ProxyModeView, ProxyPasswordUpdateView,
     SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
     SpeedSampleView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
     TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
     TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
     TaskSourceKindView, TaskStatusView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
+    WorkspaceSortDirection, WorkspaceSortKey,
 };
 use data_encoding::BASE32_NOPAD;
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
@@ -230,6 +233,9 @@ impl DesktopRoot {
                 }
                 AppShellEvent::BatchTaskCommandRequested(request) => {
                     this.spawn_batch_task_command(request.clone(), window, cx);
+                }
+                AppShellEvent::GlobalTaskCommandRequested(request) => {
+                    this.spawn_global_task_command(request.clone(), window, cx);
                 }
                 AppShellEvent::TaskDetailsRequested(request) => {
                     this.spawn_task_details(request.clone(), window, cx);
@@ -423,6 +429,25 @@ impl DesktopRoot {
             this.update_in(cx, |this, window, cx| {
                 this.workspace.update(cx, |workspace, cx| {
                     workspace.set_batch_task_command_result(result, window, cx);
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn spawn_global_task_command(
+        &self,
+        request: GlobalTaskCommandRequestView,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let sync = self.sync.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = execute_global_task_command(sync, request).await;
+            this.update(cx, |this, cx| {
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.set_global_task_command_result(result, cx);
                 });
             })
             .ok();
@@ -1171,6 +1196,41 @@ fn magnet_info_hash(uri: &str) -> Option<String> {
     None
 }
 
+async fn execute_global_task_command(
+    sync: Option<SyncHandle>,
+    request: GlobalTaskCommandRequestView,
+) -> GlobalTaskCommandResultView {
+    let GlobalTaskCommandRequestView {
+        request_id,
+        session,
+        command,
+    } = request;
+    let app_command = match command {
+        GlobalTaskCommandView::PauseAll => AppCommand::PauseAll,
+        GlobalTaskCommandView::ResumeAll => AppCommand::ResumeAll,
+    };
+    let outcome = match (sync, map_engine_session(&session)) {
+        (Some(handle), Ok(engine_session)) => {
+            let outcome = handle.execute(engine_session, app_command).await;
+            // D-014 global command rule / D-010: a success or unknown outcome
+            // forces an authoritative refresh; an unknown mutation is never
+            // replayed in the same session.
+            if outcome.has_successes() || outcome.has_unknown_outcome() {
+                handle.force_refresh().await;
+            }
+            map_command_outcome(outcome)
+        }
+        (None, _) => CommandOutcomeView::Failure(unavailable_operation_error()),
+        (Some(_), Err(error)) => CommandOutcomeView::Failure(map_application_error(error)),
+    };
+    GlobalTaskCommandResultView {
+        request_id,
+        session,
+        command,
+        outcome,
+    }
+}
+
 async fn execute_task_command(
     sync: Option<SyncHandle>,
     task_file_gateway: Option<Arc<dyn TaskFileGateway>>,
@@ -1222,6 +1282,30 @@ async fn execute_task_command(
             let app_command = match &command {
                 TaskCommandView::Pause => AppCommand::PauseTasks(vec![task]),
                 TaskCommandView::Resume => AppCommand::ResumeTasks(vec![task]),
+                TaskCommandView::MoveToQueueTop => {
+                    AppCommand::MoveTaskInQueue(MoveTaskInQueueRequest {
+                        task,
+                        movement: QueueMove::Top,
+                    })
+                }
+                TaskCommandView::MoveUpInQueue => {
+                    AppCommand::MoveTaskInQueue(MoveTaskInQueueRequest {
+                        task,
+                        movement: QueueMove::Up,
+                    })
+                }
+                TaskCommandView::MoveDownInQueue => {
+                    AppCommand::MoveTaskInQueue(MoveTaskInQueueRequest {
+                        task,
+                        movement: QueueMove::Down,
+                    })
+                }
+                TaskCommandView::MoveToQueueBottom => {
+                    AppCommand::MoveTaskInQueue(MoveTaskInQueueRequest {
+                        task,
+                        movement: QueueMove::Bottom,
+                    })
+                }
                 TaskCommandView::Retry => AppCommand::RetryTasks(vec![task]),
                 TaskCommandView::SetOutputName { output_name } => {
                     AppCommand::SetTaskOutputName(SetTaskOutputNameRequest {
@@ -2781,7 +2865,20 @@ fn map_query(query: &WorkspaceQuery) -> TaskListQuery {
             WorkspaceFilter::Failed => DownloadFilter::Failed,
         },
         search: query.search.clone(),
-        ..TaskListQuery::default()
+        sort: DownloadSort {
+            key: match query.sort_key {
+                WorkspaceSortKey::Queue => SortKey::Queue,
+                WorkspaceSortKey::Name => SortKey::Name,
+                WorkspaceSortKey::Status => SortKey::Status,
+                WorkspaceSortKey::Progress => SortKey::Progress,
+                WorkspaceSortKey::DownloadSpeed => SortKey::DownloadSpeed,
+                WorkspaceSortKey::Size => SortKey::Size,
+            },
+            direction: match query.sort_direction {
+                WorkspaceSortDirection::Ascending => SortDirection::Ascending,
+                WorkspaceSortDirection::Descending => SortDirection::Descending,
+            },
+        },
     }
 }
 
@@ -3615,10 +3712,14 @@ mod tests {
         let query = map_query(&WorkspaceQuery {
             filter: WorkspaceFilter::Completed,
             search: "archive".into(),
+            sort_key: WorkspaceSortKey::Progress,
+            sort_direction: WorkspaceSortDirection::Descending,
         });
 
         assert_eq!(query.filter, DownloadFilter::Completed);
         assert_eq!(query.search, "archive");
+        assert_eq!(query.sort.key, SortKey::Progress);
+        assert_eq!(query.sort.direction, SortDirection::Descending);
     }
 
     #[test]

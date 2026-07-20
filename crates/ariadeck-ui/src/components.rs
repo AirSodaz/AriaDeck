@@ -54,6 +54,12 @@ pub enum IconName {
     List,
     RefreshCw,
     ScanSearch,
+    ArrowUpDown,
+    ChevronUp,
+    ChevronDown,
+    ChevronsUp,
+    ChevronsDown,
+    Check,
 }
 
 impl IconName {
@@ -100,6 +106,12 @@ impl IconName {
             Self::List => "icons/list.svg",
             Self::RefreshCw => "icons/refresh-cw.svg",
             Self::ScanSearch => "icons/scan-search.svg",
+            Self::ArrowUpDown => "icons/arrow-up-down.svg",
+            Self::ChevronUp => "icons/chevron-up.svg",
+            Self::ChevronDown => "icons/chevron-down.svg",
+            Self::ChevronsUp => "icons/chevrons-up.svg",
+            Self::ChevronsDown => "icons/chevrons-down.svg",
+            Self::Check => "icons/check.svg",
         }
     }
 }
@@ -1101,6 +1113,12 @@ mod tests {
             IconName::ScanSearch,
             IconName::Minus,
             IconName::Square,
+            IconName::ArrowUpDown,
+            IconName::ChevronUp,
+            IconName::ChevronDown,
+            IconName::ChevronsUp,
+            IconName::ChevronsDown,
+            IconName::Check,
         ] {
             assert!(icon.path().starts_with("icons/"));
             assert!(icon.path().ends_with(".svg"));

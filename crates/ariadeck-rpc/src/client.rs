@@ -1,7 +1,7 @@
 use ariadeck_application::{
     AddDownloadRequest, AddDownloadSource, DownloadEngineGateway, DownloadProxyConfig,
-    DownloadProxyMode, FileConflictPolicy, GatewayError, GatewayErrorKind, TaskDetailsGateway,
-    TaskRemovalTarget,
+    DownloadProxyMode, FileConflictPolicy, GatewayError, GatewayErrorKind, QueueMove,
+    TaskDetailsGateway, TaskRemovalTarget,
 };
 use ariadeck_domain::{Gid, GlobalStat, TaskDetails, TaskSnapshot};
 use async_trait::async_trait;
@@ -246,6 +246,37 @@ where
     pub async fn resume(&self, gid: Gid) -> Result<Gid, RpcError> {
         self.call_gid("aria2.unpause", vec![json!(gid.to_string())])
             .await
+    }
+
+    pub async fn pause_all(&self) -> Result<(), RpcError> {
+        self.call_ok("aria2.pauseAll", Vec::new()).await
+    }
+
+    pub async fn resume_all(&self) -> Result<(), RpcError> {
+        self.call_ok("aria2.unpauseAll", Vec::new()).await
+    }
+
+    pub async fn move_in_queue(&self, gid: Gid, movement: QueueMove) -> Result<u32, RpcError> {
+        const METHOD: &str = "aria2.changePosition";
+        let (position, how) = match movement {
+            QueueMove::Top => (0, "POS_SET"),
+            QueueMove::Up => (-1, "POS_CUR"),
+            QueueMove::Down => (1, "POS_CUR"),
+            QueueMove::Bottom => (0, "POS_END"),
+        };
+        let value = self
+            .transport
+            .call(
+                METHOD,
+                vec![json!(gid.to_string()), json!(position), json!(how)],
+            )
+            .await?;
+        let position = decode::<i64>(METHOD, value)?;
+        u32::try_from(position).map_err(|_| RpcError::InvalidData {
+            method: METHOD.into(),
+            field: "response".into(),
+            message: "expected a non-negative queue position".into(),
+        })
     }
 
     pub async fn change_options(
@@ -666,6 +697,25 @@ where
             .map_err(map_mutation_error)
     }
 
+    async fn pause_all(&self) -> Result<(), GatewayError> {
+        Aria2Client::pause_all(self)
+            .await
+            .map_err(map_mutation_error)
+    }
+
+    async fn resume_all(&self) -> Result<(), GatewayError> {
+        Aria2Client::resume_all(self)
+            .await
+            .map_err(map_mutation_error)
+    }
+
+    async fn move_in_queue(&self, gid: Gid, movement: QueueMove) -> Result<(), GatewayError> {
+        Aria2Client::move_in_queue(self, gid, movement)
+            .await
+            .map(|_| ())
+            .map_err(map_mutation_error)
+    }
+
     async fn change_options(
         &self,
         gid: Gid,
@@ -1011,6 +1061,54 @@ mod tests {
 
             assert!(client.add_metalink(&request).await.is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn change_position_maps_each_queue_move_to_the_authoritative_aria2_arguments() {
+        // aria2.changePosition takes (gid, pos, how); zero-based POS_SET/POS_END
+        // and relative POS_CUR (D-014 evidence).
+        for (movement, expected_pos, expected_how) in [
+            (QueueMove::Top, json!(0), "POS_SET"),
+            (QueueMove::Up, json!(-1), "POS_CUR"),
+            (QueueMove::Down, json!(1), "POS_CUR"),
+            (QueueMove::Bottom, json!(0), "POS_END"),
+        ] {
+            let transport = ScriptedTransport::new([Ok(json!(0))]);
+            let client = Aria2Client::new(transport);
+
+            let position = client
+                .move_in_queue(Gid::from_u64(7), movement)
+                .await
+                .expect("changePosition must accept a queue move");
+            assert_eq!(position, 0);
+
+            let calls = client
+                .transport()
+                .calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert_eq!(calls.len(), 1);
+            let (method, params) = &calls[0];
+            assert_eq!(method, "aria2.changePosition");
+            assert_eq!(
+                params.as_slice(),
+                &[json!("0000000000000007"), expected_pos, json!(expected_how),]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn change_position_rejects_a_negative_result_position() {
+        let transport = ScriptedTransport::new([Ok(json!(-1))]);
+        let client = Aria2Client::new(transport);
+
+        assert!(
+            client
+                .move_in_queue(Gid::from_u64(1), QueueMove::Top)
+                .await
+                .is_err(),
+            "aria2 must report a non-negative queue position"
+        );
     }
 
     #[test]

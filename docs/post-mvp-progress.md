@@ -2,7 +2,7 @@
 
 **Status:** active
 
-**Last updated:** 2026-07-20
+**Last updated:** 2026-07-21
 
 This document is the persistent task state for the post-MVP usability and
 download-management work. It records decisions, dependencies, implementation
@@ -399,6 +399,169 @@ an already-added task is deferred to the task-option editor in `RPC-001`, where
   task projection, then applies later edits through `select-file`:
   https://github.com/mayswind/AriaNg/blob/d6a765377e1eecfbcc387dcb824124df114decfb/src/scripts/services/aria2TaskService.js
 
+### D-014 - Sorting is local; priority changes the authoritative queue
+
+**Decision:** Expose all existing list sort keys through one compact sort menu.
+Changing the sort key or direction only changes the current AriaDeck query and
+preserves identity-based selection; it never writes a new engine priority.
+Queue priority is a separate task command with four direct actions: move to
+top, move up, move down, and move to bottom.
+
+**Scope rule:** Enable priority actions only for a live task while the visible
+query is All tasks, has no search text, and uses ascending queue order. aria2's
+queue is global across active, waiting, and paused tasks, so offering relative
+movement inside a filtered, searched, reversed, or value-sorted projection
+would imply a position that is not authoritative. A successful or
+unknown-outcome mutation forces an authoritative refresh.
+
+**Global command rule:** Pause all and resume all are engine-wide commands,
+not batch operations over the currently loaded query. Use `aria2.pauseAll` and
+`aria2.unpauseAll`, surface one pending global command at a time, and do not
+replay an unknown mutation outcome in the same session.
+
+**Evidence:**
+
+- aria2 documents queue positions as zero-based and supports `POS_SET`,
+  `POS_CUR`, and `POS_END`; it also defines `pauseAll` and `unpauseAll` as
+  engine-wide operations:
+  https://aria2.github.io/manual/en/html/aria2c.html#aria2.changePosition
+  https://aria2.github.io/manual/en/html/aria2c.html#aria2.pauseAll
+  https://aria2.github.io/manual/en/html/aria2c.html#aria2.unpauseAll
+- AriaNg uses `changePosition` with an explicit absolute queue position and
+  keeps that operation separate from display filtering and sorting:
+  https://github.com/mayswind/AriaNg/blob/d6a765377e1eecfbcc387dcb824124df114decfb/src/scripts/services/aria2TaskService.js
+- qBittorrent exposes top, up, down, and bottom as four distinct queue actions
+  in both its toolbar and task menu. Motrix exposes pause-all/resume-all in its
+  task toolbar, while its move-up/move-down commands remain placeholders and
+  are therefore not used as implementation evidence:
+  https://github.com/qbittorrent/qBittorrent/blob/bc42af9fd8fb9f39df04ed6747e82f912aff4cc0/src/webui/www/private/index.html
+  https://github.com/agalwood/Motrix/blob/7012040fec926e16fe8f6c403cf038527f5c18b9/src/renderer/components/Task/TaskActions.vue
+  https://github.com/agalwood/Motrix/blob/7012040fec926e16fe8f6c403cf038527f5c18b9/src/renderer/pages/index/commands.js
+
+### D-015 - RPC-001 is the shared adapter prerequisite for advanced controls
+
+**Decision:** `QUEUE-001`, `DETAIL-001`, `RATE-001`, and `BT-001` all depend on
+typed RPC surface that belongs to `RPC-001`: `changePosition`,
+`getUris`/`getPeers`/`getServers`, `getOption`/`changeOption`,
+`changeGlobalOption`, and force operations. Rather than block every P1 feature
+on a single large `RPC-001` milestone, each adapter method is added to the
+`DownloadEngineGateway` boundary at the point of first use, with an
+`Unsupported` default so an engine that lacks the method returns a typed
+capability error instead of a raw RPC failure. `RPC-001` remains the task that
+consolidates the remaining projections (`getPeers`/`getServers`, force
+operations, multicall) and adds cross-version capability tests.
+
+**Dependency rule:** A P1 feature that consumes an RPC method already present
+on the gateway is not blocked by `RPC-001`. A feature that needs a method not
+yet on the gateway adds it behind the same `Unsupported`-defaulted trait method
+and records the addition here. The Task Matrix marks `DETAIL-001`, `RATE-001`,
+and `BT-001` as depending on `RPC-001` for their not-yet-added projections.
+
+**Evidence:**
+
+- aria2 RPC manual documents every method named above and its parameters:
+  https://aria2.github.io/manual/en/html/aria2c.html
+- The current gateway already defaults `pause_all`, `resume_all`,
+  `move_in_queue`, and `apply_download_proxy` to `GatewayErrorKind::Unsupported`
+  in `crates/ariadeck-application/src/ports.rs`, so capability degradation is an
+  established pattern rather than a new one.
+
+### D-016 - Transfer limits are typed, scope-labeled, and capability-aware
+
+**Decision:** `RATE-001` exposes aria2 speed limits as typed controls, not a
+free-form option bag. Global download/upload limits use
+`aria2.changeGlobalOption` with `max-overall-download-limit` and
+`max-overall-upload-limit`; per-task limits use `aria2.changeOption` with
+`max-download-limit` and `max-upload-limit`. Each control states whether it
+affects existing tasks, new tasks, or both, because aria2 applies per-task
+option changes only to the targeted download.
+
+**Value rule:** Accept aria2's documented `K`/`M` suffix syntax and `0`
+(unlimited). Validate and normalize on the desktop before submission; reject
+values aria2 would silently ignore. Per-task limit changes follow the same
+outcome-unknown reconciliation as other `changeOption` mutations (D-010).
+
+**Evidence:**
+
+- aria2 manual documents `max-overall-download-limit`,
+  `max-overall-upload-limit`, `max-download-limit`, and `max-upload-limit`,
+  their `K`/`M` suffix syntax, and their presence in the dynamically
+  changeable option set:
+  https://aria2.github.io/manual/en/html/aria2c.html#cmdoption-max-download-limit
+- Motrix exposes global and per-task speed limits as distinct settings, not one
+  combined value:
+  https://github.com/agalwood/Motrix/blob/7012040fec926e16fe8f6c403cf038527f5c18b9/src/renderer/components/Preference/Basic.vue
+
+### D-017 - On-demand detail projections are request-scoped and refresh-bounded
+
+**Decision:** `DETAIL-001` loads URI/mirror, peer, tracker, and server data
+through `aria2.getUris`, `aria2.getPeers`, and `aria2.getServers` only when the
+details drawer requests them, never on the list-refresh path. Peer and server
+data exist only while a task is active, so those sections are shown only for
+active downloads and are cleared when the task leaves the active state.
+
+**Refresh rule:** Detail projections follow the same visible-revision refresh
+model already used for `files[]` in `FILE-001`: they refresh when the task
+revision advances while the drawer is open and are dropped when the drawer
+closes or the session changes. Task-option projections (`getOption`) are
+read-only display here; editing options is deferred to `RPC-001`'s task-option
+editor.
+
+**Evidence:**
+
+- aria2 manual documents `getUris`, `getPeers` (BitTorrent-only, active tasks),
+  and `getServers` (active HTTP(S)/FTP tasks):
+  https://aria2.github.io/manual/en/html/aria2c.html#aria2.getPeers
+- AriaNg loads peer/server data only for the active-task detail view and
+  refreshes it on its detail poll rather than the global list poll:
+  https://github.com/mayswind/AriaNg/blob/d6a765377e1eecfbcc387dcb824124df114decfb/src/scripts/services/aria2TaskService.js
+
+### D-018 - Seeding is a distinct state from completed download
+
+**Decision:** `BT-001` represents a BitTorrent task that has finished
+downloading but is still seeding as a separate presentation state from a
+terminal `Complete` download. aria2 keeps such a task `active` with upload
+activity, so the row must not be shown as finished while it still uploads.
+Expose seed ratio, seed time, and the effective stop rule
+(`seed-ratio`/`seed-time`) for the task.
+
+**Runtime rule:** Do not derive seeding purely from a zero download rate. Use
+aria2's task status plus the presence of a BitTorrent `bittorrent` projection
+and non-zero upload activity, and surface the configured seed stop rule so the
+user understands why a completed download is still running. Changing
+seed-ratio/seed-time on a live task follows `RATE-001`/`RPC-001`
+`changeOption` semantics.
+
+**Evidence:**
+
+- aria2 manual documents `seed-ratio` and `seed-time`, and that a completed
+  BitTorrent download continues seeding until the stop rule is met:
+  https://aria2.github.io/manual/en/html/aria2c.html#cmdoption-seed-ratio
+- qBittorrent presents seeding as a distinct state with ratio and seeding-time
+  columns separate from completed:
+  https://github.com/qbittorrent/qBittorrent/blob/bc42af9fd8fb9f39df04ed6747e82f912aff4cc0/src/base/bittorrent/torrentimpl.cpp
+
+### D-019 - Post-metadata output conflicts are surfaced, not silently resolved
+
+**Decision:** D-008 defers the per-file conflict and containment flow for
+Magnet/Torrent/Metalink tasks until metadata is available at runtime. That
+runtime path is owned by `TASK-001`: once aria2 reports authoritative file
+paths, AriaDeck re-runs selected-file containment against the authorized-root
+registry and presents aria2's own overwrite/disk error (error code 9 and
+existing-file handling) as a specific task-row and details reason. AriaDeck does
+not force `allow-overwrite=true` for these tasks and does not silently delete or
+rename engine-side files.
+
+**Evidence:**
+
+- aria2 manual: `allow-overwrite` defaults to false and auto-renaming applies
+  only to HTTP(S)/FTP; BitTorrent/Metalink conflicts surface as download errors
+  rather than renamed outputs:
+  https://aria2.github.io/manual/en/html/aria2c.html#cmdoption-allow-overwrite
+- D-008 and D-009 in this document define the add-time policy and the runtime
+  disk-full presentation that this decision extends to post-metadata file
+  paths.
+
 ## Task Matrix
 
 Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
@@ -441,16 +604,23 @@ Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
   native multi-file picker flows. Desktop paths are read and bounded locally;
   only Base64 content reaches aria2, and every Metalink GID is preserved.
 - [x] `FILE-001` Add Torrent/Metalink file selection and per-file progress.
-- [ ] `QUEUE-001` Add sorting controls, queue reordering, task priority, and
-  pause-all/resume-all.
+- [x] `QUEUE-001` Add sorting controls, queue reordering, task priority, and
+  pause-all/resume-all. Sort is local and selection-preserving; queue priority
+  offers move-to-top/up/down/bottom, gated to the authoritative unfiltered,
+  unsearched, ascending-queue projection (D-014); pause-all/resume-all are
+  engine-wide commands with single-flight, no-replay reconciliation.
 - [ ] `RATE-001` Add global/per-task download and upload limits, with aria2
-  capability-aware controls.
+  capability-aware controls. Typed limits and scope labeling per D-016; depends
+  on `RPC-001` for the `changeOption`/`changeGlobalOption` gateway surface.
 - [ ] `DETAIL-001` Add URI/mirror, peer, tracker, server, and task-option
-  projections on demand.
+  projections on demand. Request-scoped and refresh-bounded per D-017; depends
+  on `RPC-001` for the `getUris`/`getPeers`/`getServers`/`getOption` surface.
 - [ ] `BT-001` Represent seeding separately from completed download and expose
-  seed ratio/time/upload rules.
+  seed ratio/time/upload rules. Distinct seeding state per D-018; depends on
+  `RPC-001` for the `bittorrent`/seed-option projections.
 - [ ] `TASK-001` Add duplicate detection, source/path display, open-file/open-
-  folder actions, and disk/permission/path-length error details.
+  folder actions, disk/permission/path-length error details, and the
+  post-metadata output-conflict surfacing defined in D-019.
 - [ ] `RPC-001` Extend the typed RPC adapter for addTorrent/addMetalink,
   getUris/getPeers/getServers, get/changeOption, changePosition, global
   options, force operations, and multicall where needed.
@@ -468,11 +638,16 @@ Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
 
 ## Current Implementation Slice
 
-The filename, selection, add-outcome, retry, removal, proxy, and command-state
-slices (`FNM-001`
+The filename, selection, add-outcome, retry, removal, proxy, command-state, and
+metadata-import/file-selection slices (`FNM-001`
 through `FNM-003`, `SEL-001`, `SEL-002`, `ADD-001`, `ADD-002`, `ADD-003`,
-`ADD-004`, `RETRY-001`, `RETRY-002`, `REMOVE-001`, `NET-001`, `NET-002`, `NET-003`, and
-`STATE-001`) are complete.
+`ADD-004`, `RETRY-001`, `RETRY-002`, `REMOVE-001`, `FILE-001`, `FILE-002`,
+`NET-001`, `NET-002`, `NET-003`, and
+`STATE-001`) are complete. `QUEUE-001` (sorting, queue reordering, task
+priority, and pause-all/resume-all) is now complete across the domain, RPC,
+application, desktop, and UI layers, with unit coverage and a live aria2
+`changePosition`/`pauseAll`/`unpauseAll` flow. `RATE-001` is the next active
+slice.
 The proxy slice includes schema migration, validated endpoint/bypass fields,
 masked password input, system credential storage, session-bound runtime apply,
 new-session reapply, and explicit clearing. `FILE-002` now has
@@ -607,5 +782,8 @@ acceptance outcomes overlap.
 | 2026-07-21 | `FILE-001`, completed `FILE-002` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo build -p ariadeck-desktop`; `cargo fmt --all -- --check`; `git diff --check` | Pass - no warnings, native desktop build succeeds, formatting clean, and the patch has no whitespace errors |
 | 2026-07-21 | `FILE-001` live selection and regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored --nocapture` | Pass - all 6 real aria2 flows; a two-file Torrent reports `files[].selected` as `[false, true]`, a two-file Metalink returns only the selected file GID, and authentication, restart, command/removal, proxy, and cleanup regressions remain green |
 | 2026-07-21 | Desktop Tokio runtime regression after metadata parsing | isolated `target/debug/ariadeck-desktop.exe` startup with `RUST_BACKTRACE=1` and a real local aria2 | Pass - the desktop remained alive for the six-second observation; logs contained no panic and no `there is no reactor running` failure |
+| 2026-07-21 | `QUEUE-001` | `cargo test --workspace --no-fail-fast` | Pass - 218 passed, 9 ignored; adds queue-reordering scope gating (All/no-search/Queue/ascending), selection-preserving sort with query emission, blocked movement outside the authoritative queue, global pause-all pending/emit, application-layer queue-move dispatch and terminal rejection, UI→domain sort mapping, and `changePosition` argument/negative-position mapping |
+| 2026-07-21 | `QUEUE-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+| 2026-07-21 | `QUEUE-001` live queue and regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored` | Pass - all 7 real aria2 flows; a three-task paused queue reorders correctly under `changePosition` move-to-top and move-to-bottom, `unpauseAll`/`pauseAll` apply without error, and authentication, restart, command/removal, proxy, metadata-upload, and cleanup regressions remain green |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.

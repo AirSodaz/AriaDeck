@@ -31,13 +31,15 @@ pub use model::{
     BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
     BatchTaskFailureView, ColorSchemeView, CommandOutcomeView, ConnectionView,
     DownloadProxySettingsView, DownloadRowView, EngineHealthView, EngineSessionView,
-    FileConflictPolicyView, OperationErrorView, ProxyModeView, ProxyPasswordUpdateView, RequestId,
+    FileConflictPolicyView, GlobalTaskCommandRequestView, GlobalTaskCommandResultView,
+    GlobalTaskCommandView, OperationErrorView, ProxyModeView, ProxyPasswordUpdateView, RequestId,
     SecretStringView, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
     SettingsView, SpeedSampleView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
     TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
     TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
     TaskSourceKindView, TaskStatusView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
-    format_bytes, format_eta, format_percent, format_rate,
+    WorkspaceSortDirection, WorkspaceSortKey, format_bytes, format_eta, format_percent,
+    format_rate,
 };
 pub use search_input::{SearchInput, SearchInputEvent, TextField, TextFieldConfig, TextFieldEvent};
 pub use shell::{AppShell, AppShellEvent};

@@ -2,7 +2,7 @@ use ariadeck_domain::{EnginePath, Gid, TaskDetails};
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::{AddDownloadRequest, DownloadProxyConfig};
+use crate::{AddDownloadRequest, DownloadProxyConfig, QueueMove};
 
 /// UI-independent port implemented by the aria2 RPC adapter.
 #[async_trait]
@@ -15,6 +15,27 @@ pub trait DownloadEngineGateway: Send + Sync {
     ) -> Result<Gid, GatewayError>;
     async fn pause(&self, gid: Gid) -> Result<(), GatewayError>;
     async fn resume(&self, gid: Gid) -> Result<(), GatewayError>;
+    async fn pause_all(&self) -> Result<(), GatewayError> {
+        Err(GatewayError::new(
+            GatewayErrorKind::Unsupported,
+            "The connected engine does not expose pause-all.",
+            false,
+        ))
+    }
+    async fn resume_all(&self) -> Result<(), GatewayError> {
+        Err(GatewayError::new(
+            GatewayErrorKind::Unsupported,
+            "The connected engine does not expose resume-all.",
+            false,
+        ))
+    }
+    async fn move_in_queue(&self, _gid: Gid, _movement: QueueMove) -> Result<(), GatewayError> {
+        Err(GatewayError::new(
+            GatewayErrorKind::Unsupported,
+            "The connected engine does not expose queue positioning.",
+            false,
+        ))
+    }
     async fn change_options(
         &self,
         gid: Gid,

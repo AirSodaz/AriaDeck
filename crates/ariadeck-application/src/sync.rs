@@ -856,6 +856,9 @@ async fn run_connected(
                             AppCommand::PauseTasks(tasks) | AppCommand::ResumeTasks(tasks) => {
                                 Some(tasks.as_slice())
                             }
+                            AppCommand::MoveTaskInQueue(request) => {
+                                Some(std::slice::from_ref(&request.task))
+                            }
                             AppCommand::RemoveTasks(request) => Some(request.tasks.as_slice()),
                             AppCommand::RetryTasks(tasks) => Some(tasks.as_slice()),
                             AppCommand::SetTaskOutputName(request) => {

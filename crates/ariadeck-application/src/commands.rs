@@ -236,6 +236,20 @@ pub struct SetTaskOutputNameRequest {
     pub output_name: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum QueueMove {
+    Top,
+    Up,
+    Down,
+    Bottom,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MoveTaskInQueueRequest {
+    pub task: TaskIdentity,
+    pub movement: QueueMove,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TaskRemovalScope {
     TaskOnly,
@@ -244,8 +258,11 @@ pub enum TaskRemovalScope {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AppCommand {
     AddDownload(AddDownloadRequest),
+    PauseAll,
+    ResumeAll,
     PauseTasks(Vec<TaskIdentity>),
     ResumeTasks(Vec<TaskIdentity>),
+    MoveTaskInQueue(MoveTaskInQueueRequest),
     RetryTasks(Vec<TaskIdentity>),
     SetTaskOutputName(SetTaskOutputNameRequest),
     RemoveTasks(RemoveTasksRequest),
@@ -293,9 +310,8 @@ impl CommandOutcome {
     #[must_use]
     pub fn has_successes(&self) -> bool {
         match self {
-            Self::Success { succeeded } | Self::PartialSuccess { succeeded, .. } => {
-                !succeeded.is_empty()
-            }
+            Self::Success { .. } => true,
+            Self::PartialSuccess { succeeded, .. } => !succeeded.is_empty(),
             Self::Failure { .. } => false,
         }
     }
@@ -410,6 +426,8 @@ impl CommandService {
     ) -> CommandOutcome {
         match command {
             AppCommand::AddDownload(request) => self.add_download(request).await,
+            AppCommand::PauseAll => self.execute_global(GlobalTaskOperation::PauseAll).await,
+            AppCommand::ResumeAll => self.execute_global(GlobalTaskOperation::ResumeAll).await,
             AppCommand::PauseTasks(tasks) => {
                 self.execute_batch(tasks, TaskOperation::Pause, task_contexts)
                     .await
@@ -417,6 +435,14 @@ impl CommandService {
             AppCommand::ResumeTasks(tasks) => {
                 self.execute_batch(tasks, TaskOperation::Resume, task_contexts)
                     .await
+            }
+            AppCommand::MoveTaskInQueue(request) => {
+                self.execute_batch(
+                    vec![request.task],
+                    TaskOperation::MoveInQueue(request.movement),
+                    task_contexts,
+                )
+                .await
             }
             AppCommand::RetryTasks(tasks) => self.retry_tasks(tasks, task_contexts).await,
             AppCommand::SetTaskOutputName(request) => {
@@ -474,6 +500,19 @@ impl CommandService {
                     error: error.into(),
                 }],
             },
+        }
+    }
+
+    async fn execute_global(&self, operation: GlobalTaskOperation) -> CommandOutcome {
+        let result = match operation {
+            GlobalTaskOperation::PauseAll => self.gateway.pause_all().await,
+            GlobalTaskOperation::ResumeAll => self.gateway.resume_all().await,
+        };
+        match result {
+            Ok(()) => CommandOutcome::Success {
+                succeeded: Vec::new(),
+            },
+            Err(error) => CommandOutcome::failure(error.into()),
         }
     }
 
@@ -620,6 +659,13 @@ impl CommandService {
                     DownloadStatus::Active | DownloadStatus::Waiting | DownloadStatus::Verifying
                 ),
                 TaskOperation::Resume => matches!(context.status, DownloadStatus::Paused),
+                TaskOperation::MoveInQueue(_) => !matches!(
+                    context.status,
+                    DownloadStatus::Complete
+                        | DownloadStatus::Error
+                        | DownloadStatus::Removed
+                        | DownloadStatus::Unknown
+                ),
                 TaskOperation::Remove(_) => !matches!(context.status, DownloadStatus::Unknown),
             };
             if !allowed {
@@ -641,6 +687,9 @@ impl CommandService {
             let result = match operation {
                 TaskOperation::Pause => self.gateway.pause(identity.gid).await,
                 TaskOperation::Resume => self.gateway.resume(identity.gid).await,
+                TaskOperation::MoveInQueue(movement) => {
+                    self.gateway.move_in_queue(identity.gid, movement).await
+                }
                 TaskOperation::Remove(TaskRemovalScope::TaskOnly) => {
                     let target = if context.status.is_terminal() {
                         TaskRemovalTarget::DownloadResult
@@ -757,6 +806,7 @@ fn task_operation_label(operation: TaskOperation) -> &'static str {
     match operation {
         TaskOperation::Pause => "Pause",
         TaskOperation::Resume => "Resume",
+        TaskOperation::MoveInQueue(_) => "Change queue priority",
         TaskOperation::Remove(_) => "Remove",
     }
 }
@@ -778,7 +828,14 @@ fn finish_batch(succeeded: Vec<CommandItem>, failed: Vec<ItemFailure>) -> Comman
 enum TaskOperation {
     Pause,
     Resume,
+    MoveInQueue(QueueMove),
     Remove(TaskRemovalScope),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GlobalTaskOperation {
+    PauseAll,
+    ResumeAll,
 }
 
 #[cfg(test)]
@@ -857,6 +914,7 @@ mod tests {
         calls: Mutex<Vec<(TaskOperation, Gid)>>,
         removals: Mutex<Vec<(Gid, TaskRemovalTarget)>>,
         changed_options: Mutex<Vec<ChangedOptionCall>>,
+        queue_moves: Mutex<Vec<(Gid, QueueMove)>>,
         fail_gid: Option<Gid>,
     }
 
@@ -896,6 +954,14 @@ mod tests {
 
         async fn resume(&self, gid: Gid) -> Result<(), GatewayError> {
             self.record(TaskOperation::Resume, gid)
+        }
+
+        async fn move_in_queue(&self, gid: Gid, movement: QueueMove) -> Result<(), GatewayError> {
+            self.queue_moves
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((gid, movement));
+            self.record(TaskOperation::MoveInQueue(movement), gid)
         }
 
         async fn change_options(
@@ -947,6 +1013,7 @@ mod tests {
             calls: Mutex::default(),
             removals: Mutex::default(),
             changed_options: Mutex::default(),
+            queue_moves: Mutex::default(),
             fail_gid: Some(Gid::from_u64(2)),
         });
         let service = CommandService::new(profile_id, gateway.clone());
@@ -1310,6 +1377,78 @@ mod tests {
                 (complete.gid, TaskRemovalTarget::DownloadResult),
                 (removed.gid, TaskRemovalTarget::DownloadResult),
             ]
+        );
+    }
+
+    #[test]
+    fn queue_move_dispatches_to_the_gateway_for_a_live_task() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+        let waiting = TaskIdentity::new(profile_id, Gid::from_u64(4));
+        let contexts = HashMap::from([(
+            waiting,
+            TaskCommandContext {
+                status: DownloadStatus::Waiting,
+                metadata: TaskMetadata::default(),
+            },
+        )]);
+
+        let outcome = block_on(service.execute(
+            AppCommand::MoveTaskInQueue(MoveTaskInQueueRequest {
+                task: waiting,
+                movement: QueueMove::Top,
+            }),
+            &contexts,
+        ));
+
+        assert_eq!(
+            outcome,
+            CommandOutcome::Success {
+                succeeded: vec![CommandItem::Task(waiting)],
+            }
+        );
+        assert_eq!(
+            *gateway
+                .queue_moves
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![(waiting.gid, QueueMove::Top)]
+        );
+    }
+
+    #[test]
+    fn queue_move_is_rejected_for_terminal_tasks_before_the_gateway() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+        let complete = TaskIdentity::new(profile_id, Gid::from_u64(5));
+        let contexts = HashMap::from([(
+            complete,
+            TaskCommandContext {
+                status: DownloadStatus::Complete,
+                metadata: TaskMetadata::default(),
+            },
+        )]);
+
+        let outcome = block_on(service.execute(
+            AppCommand::MoveTaskInQueue(MoveTaskInQueueRequest {
+                task: complete,
+                movement: QueueMove::Up,
+            }),
+            &contexts,
+        ));
+
+        let CommandOutcome::Failure { failed } = outcome else {
+            panic!("expected queue-move rejection for a terminal task");
+        };
+        assert_eq!(failed[0].error.code, ApplicationErrorCode::Rejected);
+        assert!(
+            gateway
+                .queue_moves
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
         );
     }
 

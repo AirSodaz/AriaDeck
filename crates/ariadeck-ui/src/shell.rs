@@ -22,18 +22,19 @@ use crate::{
     BatchTaskFailureView, Button, ButtonStyle, ClearSearch, CloseAddDownload, CloseBatchFailures,
     CloseSettings, CloseTaskOutputName, ColorSchemeView, CommandOutcomeView, ConnectionView,
     Dialog, DownloadProxySettingsView, DownloadRowView, EngineHealthView, EngineSessionView,
-    FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch, Icon, IconButton, IconName,
-    IconSize, OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName,
-    OperationErrorView, PauseSelectedTask, ProxyModeView, ProxyPasswordUpdateView,
-    RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask, SaveSettings,
-    SearchInputEvent, SecretStringView, Segment, SegmentedControl, SelectAllTasks, SelectNextTask,
-    SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
-    SettingsView, SpeedSampleView, StatusIndicator, SubmitAddDownload, SubmitTaskOutputName,
+    FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch, GlobalTaskCommandRequestView,
+    GlobalTaskCommandResultView, GlobalTaskCommandView, Icon, IconButton, IconName, IconSize,
+    OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName, OperationErrorView,
+    PauseSelectedTask, ProxyModeView, ProxyPasswordUpdateView, RemoveSelectedTask, RequestId,
+    ResumeSelectedTask, RetrySelectedTask, SaveSettings, SearchInputEvent, SecretStringView,
+    Segment, SegmentedControl, SelectAllTasks, SelectNextTask, SelectPreviousTask,
+    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
+    SpeedSampleView, StatusIndicator, SubmitAddDownload, SubmitTaskOutputName,
     TaskCommandRequestView, TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView,
     TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity,
     TaskStatusView, TextField, TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Tooltip,
-    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, format_bytes, format_eta, format_percent,
-    format_rate,
+    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    format_bytes, format_eta, format_percent, format_rate,
 };
 
 const SPEED_CHART_SAMPLES: usize = 120;
@@ -86,6 +87,7 @@ pub enum AppShellEvent {
     AddDownloadRequested(AddDownloadRequestView),
     AddDownloadMetadataPreviewRequested(AddDownloadMetadataPreviewRequestView),
     TaskCommandRequested(TaskCommandRequestView),
+    GlobalTaskCommandRequested(GlobalTaskCommandRequestView),
     BatchTaskCommandRequested(BatchTaskCommandRequestView),
     TaskDetailsRequested(TaskDetailsRequestView),
     SettingsSaveRequested(SettingsSaveRequestView),
@@ -122,6 +124,12 @@ struct PendingTaskCommand {
     session: EngineSessionView,
     identity: TaskIdentity,
     command: TaskCommandView,
+}
+
+struct PendingGlobalTaskCommand {
+    request_id: RequestId,
+    session: EngineSessionView,
+    command: GlobalTaskCommandView,
 }
 
 struct PendingBatchTaskCommand {
@@ -253,6 +261,7 @@ pub struct AppShell {
     settings_save_focus: FocusHandle,
     pending_settings_save: Option<PendingSettingsSave>,
     pending_task_command: Option<PendingTaskCommand>,
+    pending_global_task_command: Option<PendingGlobalTaskCommand>,
     pending_batch_command: Option<PendingBatchTaskCommand>,
     batch_failure_details: Option<BatchFailureDetails>,
     batch_failure_dialog_focus: FocusHandle,
@@ -268,6 +277,7 @@ pub struct AppShell {
     remove_submit_focus: FocusHandle,
     speed_popover_open: bool,
     speed_popover_previous_focus: Option<WeakFocusHandle>,
+    sort_popover_open: bool,
     status_notice: Option<StatusNotice>,
     next_notice_id: u64,
     next_request_id: u64,
@@ -329,6 +339,7 @@ impl AppShell {
             |this: &mut Self, _input, event: &SearchInputEvent, cx| {
                 if this.query.search != event.text {
                     this.query.search.clone_from(&event.text);
+                    this.sort_popover_open = false;
                     this.clear_task_selection();
                     this.emit_query(cx);
                 }
@@ -576,6 +587,7 @@ impl AppShell {
             settings_save_focus: cx.focus_handle().tab_stop(true),
             pending_settings_save: None,
             pending_task_command: None,
+            pending_global_task_command: None,
             pending_batch_command: None,
             batch_failure_details: None,
             batch_failure_dialog_focus: cx.focus_handle(),
@@ -591,6 +603,7 @@ impl AppShell {
             remove_submit_focus: cx.focus_handle().tab_stop(true),
             speed_popover_open: false,
             speed_popover_previous_focus: None,
+            sort_popover_open: false,
             status_notice: None,
             next_notice_id: 1,
             next_request_id: 1,
@@ -992,7 +1005,12 @@ impl AppShell {
                     TaskCommandView::SetOutputName { .. } => {
                         self.close_task_output_name(window, cx);
                     }
-                    TaskCommandView::Pause | TaskCommandView::Resume => {}
+                    TaskCommandView::Pause
+                    | TaskCommandView::Resume
+                    | TaskCommandView::MoveToQueueTop
+                    | TaskCommandView::MoveUpInQueue
+                    | TaskCommandView::MoveDownInQueue
+                    | TaskCommandView::MoveToQueueBottom => {}
                 }
             }
             CommandOutcomeView::Failure(mut error) => {
@@ -1011,6 +1029,41 @@ impl AppShell {
                 } else {
                     self.show_notice(error.summary, true, cx);
                 }
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn set_global_task_command_result(
+        &mut self,
+        result: GlobalTaskCommandResultView,
+        cx: &mut Context<Self>,
+    ) {
+        let matches_pending = self
+            .pending_global_task_command
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.request_id == result.request_id
+                    && pending.session == result.session
+                    && pending.command == result.command
+            });
+        if !matches_pending {
+            return;
+        }
+
+        self.pending_global_task_command = None;
+        match result.outcome {
+            CommandOutcomeView::Success { .. } => {
+                self.show_notice(result.command.success_label(), false, cx);
+            }
+            CommandOutcomeView::Failure(mut error) => {
+                if error.outcome_unknown() {
+                    error.summary = format!(
+                        "Command outcome is unknown; AriaDeck will not retry it automatically. {}",
+                        error.summary
+                    );
+                }
+                self.show_notice(error.summary, true, cx);
             }
         }
         cx.notify();
@@ -1341,15 +1394,54 @@ impl AppShell {
         }
     }
 
+    fn toggle_sort_popover(&mut self, cx: &mut Context<Self>) {
+        self.sort_popover_open = !self.sort_popover_open;
+        cx.notify();
+    }
+
+    fn close_sort_popover(&mut self, cx: &mut Context<Self>) {
+        if self.sort_popover_open {
+            self.sort_popover_open = false;
+            cx.notify();
+        }
+    }
+
+    /// D-014: changing the sort key or direction only changes the current
+    /// AriaDeck query and preserves identity-based selection; it never writes a
+    /// new engine priority.
+    fn set_sort_key(&mut self, key: WorkspaceSortKey, cx: &mut Context<Self>) {
+        if self.query.sort_key != key {
+            self.query.sort_key = key;
+            self.list_scroll
+                .scroll_to_item_strict(0, ScrollStrategy::Top);
+            self.emit_query(cx);
+        }
+        self.sort_popover_open = false;
+        cx.notify();
+    }
+
+    fn set_sort_direction(&mut self, direction: WorkspaceSortDirection, cx: &mut Context<Self>) {
+        if self.query.sort_direction != direction {
+            self.query.sort_direction = direction;
+            self.list_scroll
+                .scroll_to_item_strict(0, ScrollStrategy::Top);
+            self.emit_query(cx);
+        }
+        cx.notify();
+    }
+
     fn focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
         self.page = AppPage::Downloads;
         self.speed_popover_open = false;
+        self.sort_popover_open = false;
         window.focus(&self.search_input.focus_handle(cx), cx);
         cx.notify();
     }
 
     fn clear_search(&mut self, _: &ClearSearch, window: &mut Window, cx: &mut Context<Self>) {
-        if self.speed_popover_open {
+        if self.sort_popover_open {
+            self.close_sort_popover(cx);
+        } else if self.speed_popover_open {
             self.close_speed_popover(window, cx);
         } else if self.output_name_dialog.is_some() {
             self.close_task_output_name(window, cx);
@@ -2575,8 +2667,21 @@ impl AppShell {
         self.confirm_remove_selected(window, cx);
     }
 
+    /// Queue reordering is authoritative only when the visible query is the
+    /// full, unsearched, ascending queue order (D-014 Scope rule). aria2's
+    /// queue is global across active/waiting/paused tasks, so relative movement
+    /// inside a filtered, searched, reversed, or value-sorted projection would
+    /// imply a position that is not authoritative.
+    fn queue_reordering_available(&self) -> bool {
+        self.query.filter == WorkspaceFilter::All
+            && self.query.search.trim().is_empty()
+            && self.query.sort_key == WorkspaceSortKey::Queue
+            && self.query.sort_direction == WorkspaceSortDirection::Ascending
+    }
+
     fn begin_task_command(&mut self, command: TaskCommandView, cx: &mut Context<Self>) {
         if self.pending_task_command.is_some()
+            || self.pending_global_task_command.is_some()
             || self.pending_batch_command.is_some()
             || self.batch_failure_details.is_some()
         {
@@ -2589,6 +2694,12 @@ impl AppShell {
         let allowed = match command {
             TaskCommandView::Pause => task.status.can_pause(),
             TaskCommandView::Resume => task.status.can_resume(),
+            TaskCommandView::MoveToQueueTop
+            | TaskCommandView::MoveUpInQueue
+            | TaskCommandView::MoveDownInQueue
+            | TaskCommandView::MoveToQueueBottom => {
+                task.status.can_move_in_queue() && self.queue_reordering_available()
+            }
             TaskCommandView::Retry => task.status.can_retry(),
             TaskCommandView::SetOutputName { .. } => task.can_set_output_name(),
             TaskCommandView::RemoveTask | TaskCommandView::RemoveTaskAndFiles => {
@@ -2637,8 +2748,47 @@ impl AppShell {
         cx.notify();
     }
 
+    fn begin_global_task_command(
+        &mut self,
+        command: GlobalTaskCommandView,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_task_command.is_some()
+            || self.pending_global_task_command.is_some()
+            || self.pending_batch_command.is_some()
+            || self.batch_failure_details.is_some()
+        {
+            return;
+        }
+        let Some(session) = self
+            .snapshot
+            .commands_available()
+            .then(|| self.snapshot.engine_session())
+            .flatten()
+        else {
+            self.show_notice("The engine is not ready for commands.", true, cx);
+            return;
+        };
+        let request_id = self.allocate_request_id();
+        self.pending_global_task_command = Some(PendingGlobalTaskCommand {
+            request_id,
+            session: session.clone(),
+            command,
+        });
+        self.show_notice(command.progress_label(), false, cx);
+        cx.emit(AppShellEvent::GlobalTaskCommandRequested(
+            GlobalTaskCommandRequestView {
+                request_id,
+                session,
+                command,
+            },
+        ));
+        cx.notify();
+    }
+
     fn begin_batch_task_command(&mut self, command: BatchTaskCommandView, cx: &mut Context<Self>) {
         if self.pending_task_command.is_some()
+            || self.pending_global_task_command.is_some()
             || self.pending_batch_command.is_some()
             || self.batch_failure_details.is_some()
         {
@@ -3372,7 +3522,8 @@ impl AppShell {
                                             format!("{selected_count} selected")
                                         }),
                                 )
-                            }),
+                            })
+                            .child(self.render_list_controls(cx)),
                     )
                     .child(self.render_task_toolbar(cx)),
             )
@@ -3538,6 +3689,220 @@ impl AppShell {
             )
     }
 
+    /// Sort menu and engine-wide pause-all/resume-all controls (D-014).
+    fn render_list_controls(&mut self, cx: &mut Context<Self>) -> Div {
+        let colors = self.theme.colors;
+        let idle = self.pending_task_command.is_none()
+            && self.pending_global_task_command.is_none()
+            && self.pending_batch_command.is_none()
+            && self.remove_confirmation.is_none();
+        let commands_available = self.snapshot.commands_available() && idle;
+        let pending_global = self
+            .pending_global_task_command
+            .as_ref()
+            .map(|pending| pending.command);
+        let sort_label = self.query.sort_key.label();
+
+        div()
+            .ml_2()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(
+                IconButton::new("pause-all-action", IconName::Pause)
+                    .aria_label("Pause all tasks")
+                    .style(ButtonStyle::Ghost)
+                    .disabled(!commands_available)
+                    .loading(pending_global == Some(GlobalTaskCommandView::PauseAll))
+                    .tooltip(Tooltip::new("Pause all"))
+                    .render(colors)
+                    .when(commands_available, |button| {
+                        button.on_click(cx.listener(|this, _, _, cx| {
+                            this.begin_global_task_command(GlobalTaskCommandView::PauseAll, cx);
+                        }))
+                    }),
+            )
+            .child(
+                IconButton::new("resume-all-action", IconName::Play)
+                    .aria_label("Resume all tasks")
+                    .style(ButtonStyle::Ghost)
+                    .disabled(!commands_available)
+                    .loading(pending_global == Some(GlobalTaskCommandView::ResumeAll))
+                    .tooltip(Tooltip::new("Resume all"))
+                    .render(colors)
+                    .when(commands_available, |button| {
+                        button.on_click(cx.listener(|this, _, _, cx| {
+                            this.begin_global_task_command(GlobalTaskCommandView::ResumeAll, cx);
+                        }))
+                    }),
+            )
+            .child(
+                div()
+                    .id("sort-menu-trigger")
+                    .focusable()
+                    .tab_stop(true)
+                    .role(Role::Button)
+                    .aria_label(format!("Sort by {sort_label}"))
+                    .aria_expanded(self.sort_popover_open)
+                    .h(px(28.0))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .rounded_md()
+                    .text_xs()
+                    .text_color(colors.text_secondary)
+                    .cursor_pointer()
+                    .hover(|style| style.bg(colors.surface_hover))
+                    .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toggle_sort_popover(cx);
+                    }))
+                    .child(
+                        Icon::new(IconName::ArrowUpDown)
+                            .size(IconSize::Small)
+                            .color(colors.text_muted),
+                    )
+                    .child(sort_label),
+            )
+    }
+
+    fn render_sort_popover(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let colors = self.theme.colors;
+        let current_key = self.query.sort_key;
+        let current_direction = self.query.sort_direction;
+
+        let mut menu = div()
+            .id("sort-menu")
+            .absolute()
+            .right(px(12.0))
+            .top(px(96.0))
+            .w(px(220.0))
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .bg(colors.elevated_surface)
+            .border_1()
+            .border_color(colors.border)
+            .rounded_lg()
+            .p_1()
+            .flex()
+            .flex_col()
+            .gap_px()
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(colors.text_muted)
+                    .child("Sort by"),
+            );
+
+        for key in WorkspaceSortKey::ALL {
+            let selected = key == current_key;
+            menu = menu.child(
+                div()
+                    .id(SharedString::from(format!("sort-key-{}", key.key())))
+                    .role(Role::Button)
+                    .aria_label(format!("Sort by {}", key.label()))
+                    .h(px(32.0))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded_md()
+                    .text_xs()
+                    .text_color(if selected {
+                        colors.accent
+                    } else {
+                        colors.text_secondary
+                    })
+                    .cursor_pointer()
+                    .hover(|style| style.bg(colors.surface_hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_sort_key(key, cx);
+                    }))
+                    .child(div().w(px(16.0)).flex_none().when(selected, |element| {
+                        element.child(
+                            Icon::new(IconName::Check)
+                                .size(IconSize::Small)
+                                .color(colors.accent),
+                        )
+                    }))
+                    .child(div().flex_1().child(key.label())),
+            );
+        }
+
+        menu = menu.child(
+            div()
+                .mt_1()
+                .pt_1()
+                .border_t_1()
+                .border_color(colors.border)
+                .flex()
+                .flex_col()
+                .gap_px(),
+        );
+        for direction in [
+            WorkspaceSortDirection::Ascending,
+            WorkspaceSortDirection::Descending,
+        ] {
+            let selected = direction == current_direction;
+            let icon = match direction {
+                WorkspaceSortDirection::Ascending => IconName::ArrowUp,
+                WorkspaceSortDirection::Descending => IconName::ArrowDown,
+            };
+            menu = menu.child(
+                div()
+                    .id(SharedString::from(match direction {
+                        WorkspaceSortDirection::Ascending => "sort-direction-ascending",
+                        WorkspaceSortDirection::Descending => "sort-direction-descending",
+                    }))
+                    .role(Role::Button)
+                    .aria_label(format!("{} order", direction.label()))
+                    .aria_toggled(if selected {
+                        Toggled::True
+                    } else {
+                        Toggled::False
+                    })
+                    .h(px(32.0))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded_md()
+                    .text_xs()
+                    .text_color(if selected {
+                        colors.accent
+                    } else {
+                        colors.text_secondary
+                    })
+                    .cursor_pointer()
+                    .hover(|style| style.bg(colors.surface_hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_sort_direction(direction, cx);
+                    }))
+                    .child(div().w(px(16.0)).flex_none().child(
+                        Icon::new(icon).size(IconSize::Small).color(if selected {
+                            colors.accent
+                        } else {
+                            colors.text_muted
+                        }),
+                    ))
+                    .child(div().flex_1().child(direction.label())),
+            );
+        }
+
+        div()
+            .id("sort-popover-layer")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.close_sort_popover(cx);
+            }))
+            .child(menu)
+    }
+
     fn render_task_toolbar(&mut self, cx: &mut Context<Self>) -> Div {
         let visible_selected_count = self.visible_selected_task_count();
         if visible_selected_count > 1 {
@@ -3629,6 +3994,54 @@ impl AppShell {
                     }),
                 )
             })
+            .when(
+                task.status.can_move_in_queue() && self.queue_reordering_available(),
+                |element| {
+                    let queue_enabled = commands_available;
+                    element.children([
+                        queue_move_button(
+                            "queue-move-top-action",
+                            IconName::ChevronsUp,
+                            "Move to top",
+                            TaskCommandView::MoveToQueueTop,
+                            queue_enabled,
+                            pending_command.as_ref(),
+                            colors,
+                            cx,
+                        ),
+                        queue_move_button(
+                            "queue-move-up-action",
+                            IconName::ChevronUp,
+                            "Move up",
+                            TaskCommandView::MoveUpInQueue,
+                            queue_enabled,
+                            pending_command.as_ref(),
+                            colors,
+                            cx,
+                        ),
+                        queue_move_button(
+                            "queue-move-down-action",
+                            IconName::ChevronDown,
+                            "Move down",
+                            TaskCommandView::MoveDownInQueue,
+                            queue_enabled,
+                            pending_command.as_ref(),
+                            colors,
+                            cx,
+                        ),
+                        queue_move_button(
+                            "queue-move-bottom-action",
+                            IconName::ChevronsDown,
+                            "Move to bottom",
+                            TaskCommandView::MoveToQueueBottom,
+                            queue_enabled,
+                            pending_command.as_ref(),
+                            colors,
+                            cx,
+                        ),
+                    ])
+                },
+            )
             .when(task.status.can_retry(), |element| {
                 element.child(
                     toolbar_icon_button(
@@ -6030,6 +6443,10 @@ impl Render for AppShell {
             .when(self.speed_popover_open, |element| {
                 element.child(self.render_speed_popover(cx))
             })
+            .when(
+                self.sort_popover_open && self.page == AppPage::Downloads,
+                |element| element.child(self.render_sort_popover(cx)),
+            )
             .when(self.status_notice.is_some(), |element| {
                 element.child(self.render_toast(cx))
             })
@@ -6208,6 +6625,34 @@ fn toolbar_icon_button(
         .loading(loading)
         .tooltip(tooltip)
         .render(colors)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn queue_move_button(
+    id: &'static str,
+    icon: IconName,
+    label: &'static str,
+    command: TaskCommandView,
+    enabled: bool,
+    pending_command: Option<&TaskCommandView>,
+    colors: crate::ThemeColors,
+    cx: &mut Context<AppShell>,
+) -> Stateful<Div> {
+    let loading = pending_command == Some(&command);
+    toolbar_icon_button(
+        id,
+        icon,
+        label,
+        ToolbarButtonState::from_flags(enabled, loading),
+        false,
+        None,
+        colors,
+    )
+    .when(enabled, move |button| {
+        button.on_click(cx.listener(move |this, _, _window, cx| {
+            this.begin_task_command(command.clone(), cx);
+        }))
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -6683,6 +7128,10 @@ fn task_command_label(command: &TaskCommandView) -> &'static str {
     match command {
         TaskCommandView::Pause => "Pause",
         TaskCommandView::Resume => "Resume",
+        TaskCommandView::MoveToQueueTop => "Move to top",
+        TaskCommandView::MoveUpInQueue => "Move up",
+        TaskCommandView::MoveDownInQueue => "Move down",
+        TaskCommandView::MoveToQueueBottom => "Move to bottom",
         TaskCommandView::Retry => "Retry",
         TaskCommandView::SetOutputName { .. } => "Change output name",
         TaskCommandView::RemoveTask | TaskCommandView::RemoveTaskAndFiles => "Remove",
@@ -7354,6 +7803,192 @@ mod tests {
             );
             assert_eq!(shell.next_request_id, first.get() + 1);
         });
+    }
+
+    #[gpui::test]
+    fn queue_reordering_is_authoritative_only_for_the_unfiltered_ascending_queue(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+
+        view.read_with(cx, |shell, _| {
+            assert!(
+                shell.queue_reordering_available(),
+                "default query is All / no search / Queue / Ascending"
+            );
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.set_sort_key(WorkspaceSortKey::Progress, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(
+                !shell.queue_reordering_available(),
+                "a value sort is not an authoritative queue position"
+            );
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.set_sort_key(WorkspaceSortKey::Queue, cx);
+            shell.set_sort_direction(WorkspaceSortDirection::Descending, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(
+                !shell.queue_reordering_available(),
+                "a reversed queue is not an authoritative position"
+            );
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.set_sort_direction(WorkspaceSortDirection::Ascending, cx);
+            shell.set_filter(WorkspaceFilter::Active, window, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(
+                !shell.queue_reordering_available(),
+                "a filtered projection hides the global queue position"
+            );
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.set_filter(WorkspaceFilter::All, window, cx);
+            shell.search_input.update(cx, |input, cx| {
+                input.set_text("archive", cx);
+            });
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(
+                !shell.queue_reordering_available(),
+                "a searched projection hides the global queue position"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn changing_the_sort_preserves_selection_and_emits_the_query(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(3);
+            shell
+        });
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = view.update(cx, |_, cx| {
+            cx.subscribe(&view, move |_, _, event: &AppShellEvent, _| {
+                if let AppShellEvent::QueryChanged(query) = event {
+                    sink.lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(query.clone());
+                }
+            })
+        });
+
+        let selected = view.update(cx, |shell, _| {
+            let identity = shell.snapshot.tasks[1].identity.clone();
+            shell.selected = Some(identity.clone());
+            shell.selected_tasks.insert(identity.clone());
+            identity
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.set_sort_key(WorkspaceSortKey::Size, cx);
+        });
+
+        view.read_with(cx, |shell, _| {
+            assert_eq!(shell.query.sort_key, WorkspaceSortKey::Size);
+            assert!(
+                shell.selected_tasks.contains(&selected),
+                "sort changes must preserve identity-based selection (D-014)"
+            );
+            assert_eq!(shell.selected.as_ref(), Some(&selected));
+        });
+        let captured = events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            captured
+                .iter()
+                .any(|query| query.sort_key == WorkspaceSortKey::Size),
+            "changing the sort key must emit a QueryChanged event"
+        );
+    }
+
+    #[gpui::test]
+    fn queue_priority_command_is_blocked_outside_the_authoritative_queue(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(2);
+            shell.snapshot.tasks[0].status = TaskStatusView::Waiting;
+            shell.selected = Some(shell.snapshot.tasks[0].identity.clone());
+            shell
+        });
+
+        // Reversed queue: priority movement is not authoritative and is rejected.
+        view.update(cx, |shell, cx| {
+            shell.set_sort_direction(WorkspaceSortDirection::Descending, cx);
+            shell.begin_task_command(TaskCommandView::MoveUpInQueue, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(
+                shell.pending_task_command.is_none(),
+                "queue movement must not start while the query is reversed"
+            );
+            assert!(
+                shell
+                    .status_notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.is_error)
+            );
+        });
+
+        // Restore the authoritative queue: the command now becomes pending.
+        view.update(cx, |shell, cx| {
+            shell.set_sort_direction(WorkspaceSortDirection::Ascending, cx);
+            shell.begin_task_command(TaskCommandView::MoveToQueueTop, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            let pending = shell
+                .pending_task_command
+                .as_ref()
+                .expect("queue movement must be pending in the authoritative queue");
+            assert_eq!(pending.command, TaskCommandView::MoveToQueueTop);
+        });
+    }
+
+    #[gpui::test]
+    fn global_pause_all_becomes_pending_and_emits_the_engine_wide_command(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(2);
+            shell
+        });
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = view.update(cx, |_, cx| {
+            cx.subscribe(&view, move |_, _, event: &AppShellEvent, _| {
+                if let AppShellEvent::GlobalTaskCommandRequested(request) = event {
+                    sink.lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(request.command);
+                }
+            })
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.begin_global_task_command(GlobalTaskCommandView::PauseAll, cx);
+        });
+
+        view.read_with(cx, |shell, _| {
+            let pending = shell
+                .pending_global_task_command
+                .as_ref()
+                .expect("pause-all must become pending");
+            assert_eq!(pending.command, GlobalTaskCommandView::PauseAll);
+        });
+        let captured = events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(captured.as_slice(), &[GlobalTaskCommandView::PauseAll]);
     }
 
     #[test]

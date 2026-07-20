@@ -90,6 +90,14 @@ impl TaskStatusView {
     }
 
     #[must_use]
+    pub const fn can_move_in_queue(self) -> bool {
+        matches!(
+            self,
+            Self::Active | Self::Waiting | Self::Paused | Self::Verifying
+        )
+    }
+
+    #[must_use]
     pub const fn is_terminal(self) -> bool {
         matches!(self, Self::Complete | Self::Failed | Self::Removed)
     }
@@ -316,10 +324,38 @@ impl RequestId {
 pub enum TaskCommandView {
     Pause,
     Resume,
+    MoveToQueueTop,
+    MoveUpInQueue,
+    MoveDownInQueue,
+    MoveToQueueBottom,
     Retry,
     SetOutputName { output_name: String },
     RemoveTask,
     RemoveTaskAndFiles,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum GlobalTaskCommandView {
+    PauseAll,
+    ResumeAll,
+}
+
+impl GlobalTaskCommandView {
+    #[must_use]
+    pub const fn progress_label(self) -> &'static str {
+        match self {
+            Self::PauseAll => "Pausing all tasks...",
+            Self::ResumeAll => "Resuming all tasks...",
+        }
+    }
+
+    #[must_use]
+    pub const fn success_label(self) -> &'static str {
+        match self {
+            Self::PauseAll => "All eligible tasks paused.",
+            Self::ResumeAll => "All paused tasks resumed.",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -363,6 +399,10 @@ impl TaskCommandView {
         match self {
             Self::Pause => "Pausing task...",
             Self::Resume => "Resuming task...",
+            Self::MoveToQueueTop => "Moving task to the top of the queue...",
+            Self::MoveUpInQueue => "Moving task up in the queue...",
+            Self::MoveDownInQueue => "Moving task down in the queue...",
+            Self::MoveToQueueBottom => "Moving task to the bottom of the queue...",
             Self::Retry => "Creating a new task from the failed source...",
             Self::SetOutputName { .. } => "Updating output name...",
             Self::RemoveTask => "Removing task...",
@@ -377,6 +417,10 @@ impl TaskCommandView {
         match self {
             Self::Pause => "Task paused.",
             Self::Resume => "Task resumed.",
+            Self::MoveToQueueTop => "Task moved to the top of the queue.",
+            Self::MoveUpInQueue => "Task moved up in the queue.",
+            Self::MoveDownInQueue => "Task moved down in the queue.",
+            Self::MoveToQueueBottom => "Task moved to the bottom of the queue.",
             Self::Retry => "New retry task created; the failed result was kept.",
             Self::SetOutputName { .. } => "Output name updated.",
             Self::RemoveTask => "Task removed from aria2; downloaded files were kept.",
@@ -544,6 +588,13 @@ pub struct TaskCommandRequestView {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GlobalTaskCommandRequestView {
+    pub request_id: RequestId,
+    pub session: EngineSessionView,
+    pub command: GlobalTaskCommandView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchTaskCommandRequestView {
     pub request_id: RequestId,
     pub session: EngineSessionView,
@@ -617,6 +668,14 @@ pub struct TaskCommandResultView {
     pub session: EngineSessionView,
     pub identity: TaskIdentity,
     pub command: TaskCommandView,
+    pub outcome: CommandOutcomeView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GlobalTaskCommandResultView {
+    pub request_id: RequestId,
+    pub session: EngineSessionView,
+    pub command: GlobalTaskCommandView,
     pub outcome: CommandOutcomeView,
 }
 
@@ -774,6 +833,77 @@ pub enum WorkspaceFilter {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum WorkspaceSortKey {
+    #[default]
+    Queue,
+    Name,
+    Status,
+    Progress,
+    DownloadSpeed,
+    Size,
+}
+
+impl WorkspaceSortKey {
+    pub const ALL: [Self; 6] = [
+        Self::Queue,
+        Self::Name,
+        Self::Status,
+        Self::Progress,
+        Self::DownloadSpeed,
+        Self::Size,
+    ];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Queue => "Queue",
+            Self::Name => "Name",
+            Self::Status => "Status",
+            Self::Progress => "Progress",
+            Self::DownloadSpeed => "Download speed",
+            Self::Size => "Size",
+        }
+    }
+
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Queue => "queue",
+            Self::Name => "name",
+            Self::Status => "status",
+            Self::Progress => "progress",
+            Self::DownloadSpeed => "download-speed",
+            Self::Size => "size",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum WorkspaceSortDirection {
+    #[default]
+    Ascending,
+    Descending,
+}
+
+impl WorkspaceSortDirection {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Ascending => "Ascending",
+            Self::Descending => "Descending",
+        }
+    }
+
+    #[must_use]
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::Ascending => Self::Descending,
+            Self::Descending => Self::Ascending,
+        }
+    }
+}
+
 impl WorkspaceFilter {
     pub const ALL: [Self; 6] = [
         Self::All,
@@ -837,6 +967,8 @@ impl WorkspaceFilter {
 pub struct WorkspaceQuery {
     pub filter: WorkspaceFilter,
     pub search: String,
+    pub sort_key: WorkspaceSortKey,
+    pub sort_direction: WorkspaceSortDirection,
 }
 
 #[must_use]

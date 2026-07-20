@@ -12,9 +12,9 @@ use std::{
 
 use ariadeck_application::{
     AddDownloadRequest, AddDownloadSource, AppCommand, CommandItem, CommandOutcome,
-    CoordinatorConfig, DownloadProxyConfig, DownloadProxyMode, PollIntervals, ReconnectPolicy,
-    RefreshPolicy, RemoveTasksRequest, SetTaskOutputNameRequest, StoreSnapshot, SyncHandle,
-    TaskListQuery, TaskRemovalScope, spawn_sync_coordinator,
+    CoordinatorConfig, DownloadProxyConfig, DownloadProxyMode, PollIntervals, QueueMove,
+    ReconnectPolicy, RefreshPolicy, RemoveTasksRequest, SetTaskOutputNameRequest, StoreSnapshot,
+    SyncHandle, TaskListQuery, TaskRemovalScope, spawn_sync_coordinator,
 };
 use ariadeck_domain::{
     ConnectionState, DownloadStatus, EnginePath, ProfileId, TaskIdentity, TaskSourceKind,
@@ -121,6 +121,79 @@ async fn authenticates_and_reads_live_aria2_state() -> Result<(), TestError> {
     assert!(active.is_empty());
     assert!(waiting.is_empty());
     assert!(stopped.is_empty());
+
+    client.shutdown().await?;
+    transport.close().await;
+    let status = process.wait_for_exit(Duration::from_secs(5))?;
+    assert!(status.success());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires ARIA2C_PATH and launches a real local aria2 process"]
+async fn reorders_queue_and_applies_global_pause_resume_on_live_aria2() -> Result<(), TestError> {
+    let executable = env::var("ARIA2C_PATH")?;
+    let data_dir = TempDir::new()?;
+    let port = reserve_loopback_port()?;
+    let secret = Uuid::new_v4().simple().to_string();
+    let mut process = ChildGuard::spawn(Path::new(&executable), data_dir.path(), port, &secret)?;
+    let endpoint = Url::parse(&format!("ws://127.0.0.1:{port}/jsonrpc"))?;
+    let transport = connect_with_retry(endpoint, Duration::from_secs(5)).await?;
+    let authenticated =
+        AuthenticatedTransport::new(transport.clone(), Some(RpcSecret::new(secret)));
+    let client = Aria2Client::new(authenticated);
+
+    // Add three paused tasks so they populate the waiting queue in submit order
+    // without downloading. aria2's changePosition operates on this queue.
+    let mut gids = Vec::new();
+    for index in 0..3 {
+        let request = AddDownloadRequest {
+            source: AddDownloadSource::Uris(vec![format!("http://127.0.0.1:9/queued-{index}.bin")]),
+            destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
+            file_conflict: ariadeck_application::FileConflictPolicy::default(),
+            selected_file_indices: None,
+            options: vec![("pause".into(), "true".into())],
+        };
+        gids.push(client.add_uri(&request).await?);
+    }
+
+    let queue_order = |waiting: &[ariadeck_domain::TaskSnapshot]| {
+        waiting.iter().map(|task| task.gid).collect::<Vec<_>>()
+    };
+    let waiting = client.tell_waiting(0, 10, TaskKey::LIST_PROJECTION).await?;
+    assert_eq!(
+        queue_order(&waiting),
+        gids,
+        "paused tasks should queue in submit order"
+    );
+
+    // Move the last task to the top of the queue.
+    client.move_in_queue(gids[2], QueueMove::Top).await?;
+    let waiting = client.tell_waiting(0, 10, TaskKey::LIST_PROJECTION).await?;
+    assert_eq!(
+        queue_order(&waiting),
+        vec![gids[2], gids[0], gids[1]],
+        "move-to-top must place the task first in the authoritative queue"
+    );
+
+    // Move that same task to the bottom.
+    client.move_in_queue(gids[2], QueueMove::Bottom).await?;
+    let waiting = client.tell_waiting(0, 10, TaskKey::LIST_PROJECTION).await?;
+    assert_eq!(
+        queue_order(&waiting),
+        vec![gids[0], gids[1], gids[2]],
+        "move-to-bottom must place the task last in the authoritative queue"
+    );
+
+    // Engine-wide resume then pause must not error against a real aria2.
+    client.resume_all().await?;
+    client.pause_all().await?;
+
+    // Clean up the queued tasks.
+    for gid in &gids {
+        client.remove(*gid).await.ok();
+        client.remove_download_result(*gid).await.ok();
+    }
 
     client.shutdown().await?;
     transport.close().await;
