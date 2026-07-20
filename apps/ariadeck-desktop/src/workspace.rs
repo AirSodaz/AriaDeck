@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
+    io::Read,
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
@@ -8,12 +9,12 @@ use std::{
 };
 
 use ariadeck_application::{
-    AddDownloadRequest, AppCommand, ApplicationError, ApplicationErrorCode, CommandItem,
-    CommandOutcome, CoordinatorConfig, DownloadDestinationGateway, DownloadDestinationRequest,
-    DownloadProxyConfig, DownloadProxyMode as ApplicationProxyMode, FileConflictPolicy,
-    ItemFailure, ReconnectPolicy, RemoveTasksRequest, SetTaskOutputNameRequest, StoreSnapshot,
-    SyncHandle, TaskFileGateway, TaskFileRemovalRequest, TaskListQuery, TaskRemovalScope,
-    spawn_sync_coordinator,
+    AddDownloadRequest, AddDownloadSource, AppCommand, ApplicationError, ApplicationErrorCode,
+    CommandItem, CommandOutcome, CoordinatorConfig, DownloadDestinationGateway,
+    DownloadDestinationRequest, DownloadProxyConfig, DownloadProxyMode as ApplicationProxyMode,
+    FileConflictPolicy, ItemFailure, ReconnectPolicy, RemoveTasksRequest, SetTaskOutputNameRequest,
+    StoreSnapshot, SyncHandle, TaskFileGateway, TaskFileRemovalRequest, TaskListQuery,
+    TaskRemovalScope, spawn_sync_coordinator,
 };
 use ariadeck_domain::{
     ConnectionState, DownloadFilter, DownloadStatus, DownloadTask, EnginePath, EngineSession,
@@ -34,17 +35,18 @@ use ariadeck_settings::{
     ProxyCredentialRef, ProxyCredentialStore, SystemProxyCredentialStore,
 };
 use ariadeck_ui::{
-    AddDownloadItemResultView, AddDownloadModeView, AddDownloadRequestView, AddDownloadResultView,
-    AddDownloadSourceView, AppShell, AppShellEvent, BatchCommandOutcomeView,
-    BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
-    BatchTaskFailureView, ColorSchemeView, CommandOutcomeView, ConnectionView,
-    DownloadProxySettingsView, DownloadRowView, EngineHealthView, EngineSessionView,
-    FileConflictPolicyView, OperationErrorView, ProxyModeView, ProxyPasswordUpdateView,
-    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    SpeedSampleView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
-    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
-    TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
-    TaskSourceKindView, TaskStatusView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
+    AddDownloadItemResultView, AddDownloadMetadataKindView, AddDownloadModeView,
+    AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView, AppShell, AppShellEvent,
+    BatchCommandOutcomeView, BatchTaskCommandRequestView, BatchTaskCommandResultView,
+    BatchTaskCommandView, BatchTaskFailureView, ColorSchemeView, CommandOutcomeView,
+    ConnectionView, DownloadProxySettingsView, DownloadRowView, EngineHealthView,
+    EngineSessionView, FileConflictPolicyView, OperationErrorView, ProxyModeView,
+    ProxyPasswordUpdateView, SettingsSaveOutcomeView, SettingsSaveRequestView,
+    SettingsSaveResultView, SettingsView, SpeedSampleView, TaskCommandRequestView,
+    TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
+    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
+    TaskIdentity, TaskNameStateView, TaskSourceKindView, TaskStatusView, WorkspaceFilter,
+    WorkspaceQuery, WorkspaceSnapshot,
 };
 use data_encoding::BASE32_NOPAD;
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
@@ -517,7 +519,7 @@ async fn execute_add_download(
         let duplicate = mode == AddDownloadModeView::SeparateTasks
             && group
                 .first()
-                .is_some_and(|source| !seen.insert(normalize_add_uri_key(source.uri.as_str())));
+                .is_some_and(|source| !seen.insert(add_source_submission_key(source)));
         let outcome = if duplicate {
             CommandOutcomeView::Failure(OperationErrorView {
                 code: ApplicationErrorCode::Validation.as_str().into(),
@@ -530,31 +532,42 @@ async fn execute_add_download(
         } else {
             match (&sync, &mapped_session) {
                 (Some(handle), Ok(engine_session)) => {
-                    let request = map_add_download_request(
-                        group.iter().map(|source| source.uri.clone()).collect(),
+                    let request = prepare_add_download_request(
+                        &runtime,
+                        &group,
                         destination.clone(),
                         file_conflict,
-                    );
-                    let outcome = handle
-                        .execute(*engine_session, AppCommand::AddDownload(request))
-                        .await;
-                    if command_outcome_is_unknown(&outcome) {
-                        reconcile_unknown_add(
-                            handle,
-                            &group,
-                            &mut known_gids,
-                            map_command_outcome(outcome),
-                        )
-                        .await
-                    } else {
-                        let mapped = map_command_outcome(outcome);
-                        if let CommandOutcomeView::Success { task: Some(task) } = &mapped
-                            && let (Some(known), Ok(identity)) =
-                                (&mut known_gids, map_task_identity(task))
-                        {
-                            known.insert(identity.gid);
+                    )
+                    .await;
+                    match request {
+                        Ok(request) => {
+                            let outcome = handle
+                                .execute(*engine_session, AppCommand::AddDownload(request))
+                                .await;
+                            if command_outcome_is_unknown(&outcome) && add_sources_are_uris(&group)
+                            {
+                                reconcile_unknown_add(
+                                    handle,
+                                    &group,
+                                    &mut known_gids,
+                                    map_command_outcome(outcome),
+                                )
+                                .await
+                            } else {
+                                let mapped = map_command_outcome(outcome);
+                                if let CommandOutcomeView::Success { tasks } = &mapped
+                                    && let Some(known) = &mut known_gids
+                                {
+                                    for task in tasks {
+                                        if let Ok(identity) = map_task_identity(task) {
+                                            known.insert(identity.gid);
+                                        }
+                                    }
+                                }
+                                mapped
+                            }
                         }
-                        mapped
+                        Err(error) => CommandOutcomeView::Failure(map_application_error(error)),
                     }
                 }
                 (None, _) => CommandOutcomeView::Failure(unavailable_operation_error()),
@@ -579,20 +592,193 @@ async fn execute_add_download(
     }
 }
 
-fn map_add_download_request(
-    uris: Vec<String>,
+const MAX_METADATA_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
+async fn prepare_add_download_request(
+    runtime: &tokio::runtime::Handle,
+    sources: &[AddDownloadSourceView],
     destination: Option<String>,
     file_conflict: FileConflictPolicyView,
-) -> AddDownloadRequest {
-    AddDownloadRequest {
-        uris,
-        destination: destination.map(EnginePath::new),
-        file_conflict: match file_conflict {
+) -> Result<AddDownloadRequest, ApplicationError> {
+    let source = match sources {
+        [AddDownloadSourceView::MetadataFile { path, kind }] => {
+            let path = path.clone();
+            let kind = *kind;
+            runtime
+                .spawn_blocking(move || read_metadata_source(&path, kind))
+                .await
+                .map_err(|error| {
+                    ApplicationError::new(
+                        ApplicationErrorCode::Internal,
+                        format!("Metadata file reader stopped unexpectedly: {error}"),
+                        true,
+                    )
+                })??
+        }
+        [] => {
+            return Err(ApplicationError::new(
+                ApplicationErrorCode::Validation,
+                "At least one download source is required.",
+                false,
+            ));
+        }
+        sources
+            if sources
+                .iter()
+                .all(|source| matches!(source, AddDownloadSourceView::Uri { .. })) =>
+        {
+            AddDownloadSource::Uris(
+                sources
+                    .iter()
+                    .filter_map(|source| match source {
+                        AddDownloadSourceView::Uri { uri, .. } => Some(uri.clone()),
+                        AddDownloadSourceView::MetadataFile { .. } => None,
+                    })
+                    .collect(),
+            )
+        }
+        _ => {
+            return Err(ApplicationError::new(
+                ApplicationErrorCode::Validation,
+                "Torrent and Metalink files must be submitted one file at a time, separately from links.",
+                false,
+            ));
+        }
+    };
+    let file_conflict = if matches!(source, AddDownloadSource::Uris(_)) {
+        match file_conflict {
             FileConflictPolicyView::AutoRename => FileConflictPolicy::AutoRename,
             FileConflictPolicyView::Reject => FileConflictPolicy::Reject,
             FileConflictPolicyView::Overwrite => FileConflictPolicy::Overwrite,
-        },
+        }
+    } else {
+        FileConflictPolicy::Reject
+    };
+    Ok(AddDownloadRequest {
+        source,
+        destination: destination.map(EnginePath::new),
+        file_conflict,
         options: Vec::new(),
+    })
+}
+
+fn read_metadata_source(
+    path: &Path,
+    requested_kind: AddDownloadMetadataKindView,
+) -> Result<AddDownloadSource, ApplicationError> {
+    let detected_kind = metadata_kind_from_path(path).ok_or_else(|| {
+        ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            format!("Unsupported metadata file extension: {}", path.display()),
+            false,
+        )
+    })?;
+    if detected_kind != requested_kind {
+        return Err(ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            format!(
+                "Metadata file type changed before it could be read: {}",
+                path.display()
+            ),
+            false,
+        ));
+    }
+
+    let file = fs::File::open(path).map_err(|error| metadata_filesystem_error(path, error))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| metadata_filesystem_error(path, error))?;
+    if !metadata.is_file() {
+        return Err(ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            format!("Metadata source is not a regular file: {}", path.display()),
+            false,
+        ));
+    }
+    if metadata.len() == 0 {
+        return Err(ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            format!("Metadata file is empty: {}", path.display()),
+            false,
+        ));
+    }
+    if metadata.len() > MAX_METADATA_FILE_BYTES {
+        return Err(metadata_file_too_large(path));
+    }
+
+    let mut content = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_METADATA_FILE_BYTES + 1)
+        .read_to_end(&mut content)
+        .map_err(|error| metadata_filesystem_error(path, error))?;
+    if content.is_empty() {
+        return Err(ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            format!("Metadata file is empty: {}", path.display()),
+            false,
+        ));
+    }
+    if content.len() as u64 > MAX_METADATA_FILE_BYTES {
+        return Err(metadata_file_too_large(path));
+    }
+    let content = Arc::<[u8]>::from(content);
+    Ok(match detected_kind {
+        AddDownloadMetadataKindView::Torrent => AddDownloadSource::Torrent(content),
+        AddDownloadMetadataKindView::Metalink => AddDownloadSource::Metalink(content),
+    })
+}
+
+fn metadata_kind_from_path(path: &Path) -> Option<AddDownloadMetadataKindView> {
+    let extension = path.extension()?.to_string_lossy();
+    if extension.eq_ignore_ascii_case("torrent") {
+        Some(AddDownloadMetadataKindView::Torrent)
+    } else if extension.eq_ignore_ascii_case("metalink") || extension.eq_ignore_ascii_case("meta4")
+    {
+        Some(AddDownloadMetadataKindView::Metalink)
+    } else {
+        None
+    }
+}
+
+fn metadata_filesystem_error(path: &Path, error: std::io::Error) -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorCode::Filesystem,
+        format!("Failed to read metadata file {}: {error}", path.display()),
+        true,
+    )
+}
+
+fn metadata_file_too_large(path: &Path) -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorCode::Validation,
+        format!(
+            "Metadata file exceeds the 16 MiB upload limit: {}",
+            path.display()
+        ),
+        false,
+    )
+}
+
+fn add_sources_are_uris(sources: &[AddDownloadSourceView]) -> bool {
+    !sources.is_empty()
+        && sources
+            .iter()
+            .all(|source| matches!(source, AddDownloadSourceView::Uri { .. }))
+}
+
+fn add_source_submission_key(source: &AddDownloadSourceView) -> String {
+    match source {
+        AddDownloadSourceView::Uri { uri, .. } => {
+            format!("uri:{}", normalize_add_uri_key(uri))
+        }
+        AddDownloadSourceView::MetadataFile { path, .. } => {
+            let path = path.to_string_lossy().replace('\\', "/");
+            let path = if cfg!(windows) {
+                path.to_ascii_lowercase()
+            } else {
+                path
+            };
+            format!("metadata:{path}")
+        }
     }
 }
 
@@ -629,10 +815,10 @@ async fn reconcile_unknown_add(
     if let Some(task) = find_new_matching_add_task(&snapshot.tasks, sources, known) {
         known.insert(task.gid);
         return CommandOutcomeView::Success {
-            task: Some(TaskIdentity {
+            tasks: vec![TaskIdentity {
                 profile_id: snapshot.session.profile_id.to_string(),
                 gid: task.gid.to_string(),
-            }),
+            }],
         };
     }
     CommandOutcomeView::Failure(map_application_error(ApplicationError::new(
@@ -656,16 +842,22 @@ fn task_matches_add_sources(task: &DownloadTask, sources: &[AddDownloadSourceVie
     if let Some(primary_uri) = task.metadata.primary_uri.as_deref()
         && sources
             .iter()
-            .any(|source| add_uris_equal(primary_uri, source.uri.as_str()))
+            .filter_map(|source| match source {
+                AddDownloadSourceView::Uri { uri, .. } => Some(uri.as_str()),
+                AddDownloadSourceView::MetadataFile { .. } => None,
+            })
+            .any(|uri| add_uris_equal(primary_uri, uri))
     {
         return true;
     }
     let Some(info_hash) = task.metadata.info_hash.as_deref() else {
         return false;
     };
-    sources.iter().any(|source| {
-        magnet_info_hash(source.uri.as_str())
-            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(info_hash))
+    sources.iter().any(|source| match source {
+        AddDownloadSourceView::Uri { uri, .. } => {
+            magnet_info_hash(uri).is_some_and(|candidate| candidate.eq_ignore_ascii_case(info_hash))
+        }
+        AddDownloadSourceView::MetadataFile { .. } => false,
     })
 }
 
@@ -1366,13 +1558,10 @@ fn map_task_identity(identity: &TaskIdentity) -> Result<DomainTaskIdentity, Appl
 fn map_command_outcome(outcome: CommandOutcome) -> CommandOutcomeView {
     match outcome {
         CommandOutcome::Success { succeeded } => CommandOutcomeView::Success {
-            task: succeeded.into_iter().next().map(map_command_item),
+            tasks: succeeded.into_iter().map(map_command_item).collect(),
         },
-        CommandOutcome::PartialSuccess {
-            mut succeeded,
-            failed,
-        } => succeeded.pop().map_or_else(
-            || {
+        CommandOutcome::PartialSuccess { succeeded, failed } => {
+            if succeeded.is_empty() {
                 CommandOutcomeView::Failure(
                     failed
                         .into_iter()
@@ -1380,11 +1569,12 @@ fn map_command_outcome(outcome: CommandOutcome) -> CommandOutcomeView {
                         .map(|failure| map_application_error(failure.error))
                         .unwrap_or_else(internal_operation_error),
                 )
-            },
-            |item| CommandOutcomeView::Success {
-                task: Some(map_command_item(item)),
-            },
-        ),
+            } else {
+                CommandOutcomeView::Success {
+                    tasks: succeeded.into_iter().map(map_command_item).collect(),
+                }
+            }
+        }
         CommandOutcome::Failure { failed } => CommandOutcomeView::Failure(
             failed
                 .into_iter()
@@ -2515,7 +2705,10 @@ mod tests {
 
     #[async_trait]
     impl DownloadEngineGateway for UnknownAcceptedAddGateway {
-        async fn add_download(&self, _request: &AddDownloadRequest) -> Result<Gid, GatewayError> {
+        async fn add_download(
+            &self,
+            _request: &AddDownloadRequest,
+        ) -> Result<Vec<Gid>, GatewayError> {
             self.add_calls.fetch_add(1, Ordering::Relaxed);
             self.accepted.store(true, Ordering::Release);
             Err(GatewayError::new(
@@ -2657,7 +2850,10 @@ mod tests {
 
     #[async_trait]
     impl DownloadEngineGateway for UnknownAcceptedRetryGateway {
-        async fn add_download(&self, _request: &AddDownloadRequest) -> Result<Gid, GatewayError> {
+        async fn add_download(
+            &self,
+            _request: &AddDownloadRequest,
+        ) -> Result<Vec<Gid>, GatewayError> {
             Err(unsupported_test_gateway_error())
         }
 
@@ -2863,7 +3059,10 @@ mod tests {
 
     #[async_trait]
     impl DownloadEngineGateway for RemovalWorkflowGateway {
-        async fn add_download(&self, _request: &AddDownloadRequest) -> Result<Gid, GatewayError> {
+        async fn add_download(
+            &self,
+            _request: &AddDownloadRequest,
+        ) -> Result<Vec<Gid>, GatewayError> {
             Err(unsupported_test_gateway_error())
         }
 
@@ -3306,20 +3505,107 @@ mod tests {
         );
     }
 
-    #[test]
-    fn configured_destination_is_forwarded_to_the_application_command() {
-        let request = map_add_download_request(
-            vec!["https://example.test/archive.iso".into()],
+    #[tokio::test]
+    async fn configured_destination_is_forwarded_to_the_application_command() {
+        let request = prepare_add_download_request(
+            &tokio::runtime::Handle::current(),
+            &[AddDownloadSourceView::Uri {
+                line: 1,
+                uri: "https://example.test/archive.iso".into(),
+            }],
             Some("D:/Transfers".into()),
             FileConflictPolicyView::Reject,
-        );
+        )
+        .await
+        .expect("URI request maps");
 
-        assert_eq!(request.uris, vec!["https://example.test/archive.iso"]);
+        assert!(matches!(
+            request.source,
+            AddDownloadSource::Uris(uris) if uris == vec!["https://example.test/archive.iso"]
+        ));
         assert_eq!(
             request.destination.as_ref().map(EnginePath::as_str),
             Some("D:/Transfers")
         );
         assert_eq!(request.file_conflict, FileConflictPolicy::Reject);
+    }
+
+    #[test]
+    fn metadata_upload_reads_files_with_an_explicit_runtime_outside_tokio_context() {
+        let root = tempfile::tempdir().expect("temporary metadata directory");
+        let path = root.path().join("sample.torrent");
+        fs::write(&path, b"torrent-content").expect("write metadata fixture");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+
+        let request = futures::executor::block_on(prepare_add_download_request(
+            runtime.handle(),
+            &[AddDownloadSourceView::MetadataFile {
+                path,
+                kind: AddDownloadMetadataKindView::Torrent,
+            }],
+            Some("D:/Transfers".into()),
+            FileConflictPolicyView::Overwrite,
+        ))
+        .expect("metadata request maps");
+
+        assert_eq!(request.file_conflict, FileConflictPolicy::Reject);
+        assert_eq!(
+            request.destination.as_ref().map(EnginePath::as_str),
+            Some("D:/Transfers")
+        );
+        assert!(matches!(
+            request.source,
+            AddDownloadSource::Torrent(content) if content.as_ref() == b"torrent-content"
+        ));
+    }
+
+    #[test]
+    fn metadata_upload_rejects_invalid_extension_empty_and_oversized_files() {
+        let root = tempfile::tempdir().expect("temporary metadata directory");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let cases = [
+            (
+                "wrong.txt",
+                b"content".as_slice(),
+                AddDownloadMetadataKindView::Torrent,
+            ),
+            (
+                "empty.torrent",
+                b"".as_slice(),
+                AddDownloadMetadataKindView::Torrent,
+            ),
+        ];
+        for (name, content, kind) in cases {
+            let path = root.path().join(name);
+            fs::write(&path, content).expect("write metadata fixture");
+            let result = futures::executor::block_on(prepare_add_download_request(
+                runtime.handle(),
+                &[AddDownloadSourceView::MetadataFile { path, kind }],
+                None,
+                FileConflictPolicyView::AutoRename,
+            ));
+            assert!(result.is_err(), "invalid metadata file must be rejected");
+        }
+
+        let oversized = root.path().join("large.metalink");
+        let oversized_content = vec![b'x'; (MAX_METADATA_FILE_BYTES + 1) as usize];
+        fs::write(&oversized, oversized_content).expect("write oversized metadata fixture");
+        let result = futures::executor::block_on(prepare_add_download_request(
+            runtime.handle(),
+            &[AddDownloadSourceView::MetadataFile {
+                path: oversized,
+                kind: AddDownloadMetadataKindView::Metalink,
+            }],
+            None,
+            FileConflictPolicyView::AutoRename,
+        ));
+        assert!(result.is_err(), "oversized metadata file must be rejected");
     }
 
     #[tokio::test]
@@ -3340,7 +3626,7 @@ mod tests {
                     session_id: engine_session.session_id.to_string(),
                     generation: engine_session.generation.get(),
                 },
-                sources: vec![AddDownloadSourceView {
+                sources: vec![AddDownloadSourceView::Uri {
                     line: 1,
                     uri: "https://example.test/archive.iso".into(),
                 }],
@@ -3378,7 +3664,7 @@ mod tests {
                     session_id: engine_session.session_id.to_string(),
                     generation: engine_session.generation.get(),
                 },
-                sources: vec![AddDownloadSourceView {
+                sources: vec![AddDownloadSourceView::Uri {
                     line: 1,
                     uri: "https://example.test/archive.iso".into(),
                 }],
@@ -3399,13 +3685,16 @@ mod tests {
 
     #[test]
     fn add_reconciliation_only_matches_new_tasks_with_the_submitted_source() {
-        let source = AddDownloadSourceView {
+        let source = AddDownloadSourceView::Uri {
             line: 1,
             uri: "https://example.test/archive.iso".into(),
         };
         let mut matching =
             TaskSnapshot::new(Gid::from_u64(7), DownloadStatus::Waiting, "archive.iso");
-        matching.metadata.primary_uri = Some(source.uri.clone());
+        let AddDownloadSourceView::Uri { uri, .. } = &source else {
+            unreachable!();
+        };
+        matching.metadata.primary_uri = Some(uri.clone());
         let matching = DownloadTask::from_snapshot(matching);
         let unrelated = DownloadTask::from_snapshot(TaskSnapshot::new(
             Gid::from_u64(8),
@@ -3434,7 +3723,7 @@ mod tests {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         let encoded = BASE32_NOPAD.encode(&bytes);
-        let source = AddDownloadSourceView {
+        let source = AddDownloadSourceView::Uri {
             line: 1,
             uri: format!("magnet:?xt=URN:BTIH:{encoded}"),
         };
@@ -3466,11 +3755,11 @@ mod tests {
             generation: engine_session.generation.get(),
         };
         let sources = vec![
-            AddDownloadSourceView {
+            AddDownloadSourceView::Uri {
                 line: 1,
                 uri: "https://example.test/file".into(),
             },
-            AddDownloadSourceView {
+            AddDownloadSourceView::Uri {
                 line: 2,
                 uri: "https://example.test/file".into(),
             },
@@ -3558,7 +3847,7 @@ mod tests {
             AddDownloadRequestView {
                 request_id: ariadeck_ui::RequestId::from_u64(9),
                 session,
-                sources: vec![AddDownloadSourceView {
+                sources: vec![AddDownloadSourceView::Uri {
                     line: 1,
                     uri: "https://example.test/resolved.bin".into(),
                 }],
@@ -3573,8 +3862,8 @@ mod tests {
         assert_eq!(result.items.len(), 1);
         assert!(matches!(
             &result.items[0].outcome,
-            CommandOutcomeView::Success { task: Some(task) }
-                if task.gid == Gid::from_u64(42).to_string()
+            CommandOutcomeView::Success { tasks }
+                if tasks.iter().any(|task| task.gid == Gid::from_u64(42).to_string())
         ));
         assert_eq!(add_calls.load(Ordering::Relaxed), 1);
         handle.stop().await;
@@ -3586,8 +3875,8 @@ mod tests {
 
         assert!(matches!(
             result.outcome,
-            CommandOutcomeView::Success { task: Some(task) }
-                if task.gid == Gid::from_u64(42).to_string()
+            CommandOutcomeView::Success { tasks }
+                if tasks.iter().any(|task| task.gid == Gid::from_u64(42).to_string())
         ));
         assert_eq!(retry_calls, 1);
         assert!(

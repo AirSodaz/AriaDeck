@@ -23,11 +23,12 @@ pub use components::{
     LoadingIndicator, Segment, SegmentedControl, StatusIndicator, Toast, ToastKind, Tooltip,
 };
 pub use model::{
-    AddDownloadItemResultView, AddDownloadModeView, AddDownloadRequestView, AddDownloadResultView,
-    AddDownloadSourceView, BatchCommandOutcomeView, BatchTaskCommandRequestView,
-    BatchTaskCommandResultView, BatchTaskCommandView, BatchTaskFailureView, ColorSchemeView,
-    CommandOutcomeView, ConnectionView, DownloadProxySettingsView, DownloadRowView,
-    EngineHealthView, EngineSessionView, FileConflictPolicyView, OperationErrorView, ProxyModeView,
+    AddDownloadInputModeView, AddDownloadItemResultView, AddDownloadMetadataKindView,
+    AddDownloadModeView, AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView,
+    BatchCommandOutcomeView, BatchTaskCommandRequestView, BatchTaskCommandResultView,
+    BatchTaskCommandView, BatchTaskFailureView, ColorSchemeView, CommandOutcomeView,
+    ConnectionView, DownloadProxySettingsView, DownloadRowView, EngineHealthView,
+    EngineSessionView, FileConflictPolicyView, OperationErrorView, ProxyModeView,
     ProxyPasswordUpdateView, RequestId, SecretStringView, SettingsSaveOutcomeView,
     SettingsSaveRequestView, SettingsSaveResultView, SettingsView, SpeedSampleView,
     TaskCommandRequestView, TaskCommandResultView, TaskCommandView, TaskCountsView,

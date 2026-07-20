@@ -7,7 +7,7 @@ use crate::{AddDownloadRequest, DownloadProxyConfig};
 /// UI-independent port implemented by the aria2 RPC adapter.
 #[async_trait]
 pub trait DownloadEngineGateway: Send + Sync {
-    async fn add_download(&self, request: &AddDownloadRequest) -> Result<Gid, GatewayError>;
+    async fn add_download(&self, request: &AddDownloadRequest) -> Result<Vec<Gid>, GatewayError>;
     async fn retry_download(
         &self,
         gid: Gid,

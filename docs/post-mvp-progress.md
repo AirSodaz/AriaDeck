@@ -310,6 +310,53 @@ echoing their contents.
   https://github.com/mayswind/AriaNg/blob/d6a765377e1eecfbcc387dcb824124df114decfb/src/scripts/services/ariaNgSettingService.js
   https://github.com/mayswind/AriaNg/blob/d6a765377e1eecfbcc387dcb824124df114decfb/src/scripts/services/aria2HttpRpcService.js
 
+### D-012 - Metadata files are client uploads, not engine-side paths
+
+**Decision:** Keep link entry and Torrent/Metalink file import as separate add
+modes. The native picker and window drop target accept multiple `.torrent`,
+`.metalink`, and `.meta4` files; each metadata file is submitted independently
+so one invalid or rejected file does not hide the other results. Torrent and
+Metalink imports initially select every contained file. The preview and
+`select-file` workflow belongs to `FILE-001` rather than being implied by the
+basic import path.
+
+**Local/remote rule:** AriaDeck reads a selected file on the desktop, validates
+its type and a 16 MiB raw-content limit, and uploads only its Base64-encoded
+contents through
+`aria2.addTorrent` or `aria2.addMetalink`. Never pass a desktop path to aria2.
+This gives managed and remote engines the same behavior and avoids assuming
+that a remote daemon can see the desktop filesystem. Preserve every GID from an
+`addMetalink` result because one Metalink document can register multiple
+downloads.
+
+**Persistence rule:** Start the managed aria2 process with uploaded-metadata
+persistence enabled and a request-size limit large enough for AriaDeck's
+metadata-file limit. External profiles remain subject to their daemon's
+`rpc-max-request-size` and `rpc-save-upload-metadata` settings; a connection
+failure after submission remains outcome-unknown and is never replayed
+automatically.
+
+**Evidence:**
+
+- The aria2 manual defines `aria2.addTorrent` and `aria2.addMetalink` as Base64
+  uploads, documents the multi-GID Metalink result, and notes that uploaded
+  metadata must be saved for `--save-session` persistence. Its default
+  `rpc-max-request-size` is 2 MiB:
+  https://aria2.github.io/manual/en/html/aria2c.html
+- AriaNg at commit `d6a765377e1eecfbcc387dcb824124df114decfb`
+  reads the selected file with `FileReader`, removes the data-URL prefix, and
+  sends the Base64 content through the matching RPC method:
+  https://github.com/mayswind/AriaNg/blob/d6a765377e1eecfbcc387dcb824124df114decfb/src/scripts/services/ariaNgFileService.js
+  https://github.com/mayswind/AriaNg/blob/d6a765377e1eecfbcc387dcb824124df114decfb/src/scripts/services/aria2RpcService.js
+- Motrix at commit `7012040fec926e16fe8f6c403cf038527f5c18b9`
+  uses a dedicated drag/select surface for Torrent files, parses the metadata,
+  selects every file initially, and then emits Base64 plus selected indexes:
+  https://github.com/agalwood/Motrix/blob/7012040fec926e16fe8f6c403cf038527f5c18b9/src/renderer/components/Task/SelectTorrent.vue
+- qBittorrent at commit `bc42af9fd8fb9f39df04ed6747e82f912aff4cc0`
+  separates its add-torrent dialog and exposes explicit all/none and per-file
+  priority controls before acceptance:
+  https://github.com/qbittorrent/qBittorrent/blob/bc42af9fd8fb9f39df04ed6747e82f912aff4cc0/src/gui/addnewtorrentdialog.cpp
+
 ## Task Matrix
 
 Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
@@ -348,8 +395,9 @@ Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
 
 ### P1 - Expected Download-Manager Controls
 
-- [ ] `ADD-003` Add local/remote Torrent and Metalink files, drag/drop, and
-  native file-picker flows.
+- [x] `ADD-003` Add local/remote Torrent and Metalink files, drag/drop, and
+  native multi-file picker flows. Desktop paths are read and bounded locally;
+  only Base64 content reaches aria2, and every Metalink GID is preserved.
 - [ ] `FILE-001` Add Torrent/Metalink file selection and per-file progress.
 - [ ] `QUEUE-001` Add sorting controls, queue reordering, task priority, and
   pause-all/resume-all.
@@ -380,16 +428,18 @@ Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
 
 The filename, selection, add-outcome, retry, removal, proxy, and command-state
 slices (`FNM-001`
-through `FNM-003`, `SEL-001`, `SEL-002`, `ADD-001`, `ADD-002`, `ADD-004`,
-`RETRY-001`, `RETRY-002`, `REMOVE-001`, `NET-001`, `NET-002`, `NET-003`, and
+through `FNM-003`, `SEL-001`, `SEL-002`, `ADD-001`, `ADD-002`, `ADD-003`,
+`ADD-004`, `RETRY-001`, `RETRY-002`, `REMOVE-001`, `NET-001`, `NET-002`, `NET-003`, and
 `STATE-001`) are complete.
 The proxy slice includes schema migration, validated endpoint/bypass fields,
 masked password input, system credential storage, session-bound runtime apply,
 new-session reapply, and explicit clearing. `FILE-002` now has
 safe deletion, accumulated authorized roots, local writable-directory/space and
 known-size preflight, remote path isolation, direct-task conflict policy, and
-specific runtime disk-full errors. Its remaining Torrent/Metalink per-file
-containment/conflict slice depends on `ADD-003` and `FILE-001`. The independent
+specific runtime disk-full errors. Torrent/Metalink import now includes native
+multi-file selection, window drop, bounded desktop reads, local/remote Base64
+uploads, per-source outcomes, and complete Metalink GID handling. The remaining
+per-file containment/conflict slice depends on `FILE-001`. The independent
 P0 filename, selection, task-state, network, add/retry/removal, and direct-file
 safety slices are complete.
 
@@ -508,5 +558,8 @@ acceptance outcomes overlap.
 | 2026-07-20 | `STATE-001` live regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored --nocapture` | Pass - all 4 real aria2 flows; authenticated reads, restart/reconnect, command/removal behavior, proxy routing/bypass/disable, and cleanup remain intact |
 | 2026-07-20 | `NET-003` | `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop` | Pass - 190 tests, 7 ignored; strict endpoint/HTTP policy, timeout/reconnect parsing, terminal error mapping, URL/header redaction, local untrusted-WSS rejection, formatting, lints, and desktop build all pass |
 | 2026-07-20 | `NET-003` authentication and live regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored --nocapture` | Pass - 5 real aria2 flows; correct authentication succeeds, an incorrect secret is rejected without either credential appearing in errors, and restart, command/removal, proxy, and cleanup behavior remains intact |
+| 2026-07-20 | `ADD-003` | `cargo test --workspace` | Pass - 201 passed, 8 ignored; covers metadata validation and explicit-runtime file reads, 16 MiB bounds, extension/dedup/mode/remove/pending-drop UI behavior, Base64 RPC parameters, multi-GID propagation and result selection, empty-GID gateway rejection, managed aria2 arguments, and unknown-outcome no-replay behavior |
+| 2026-07-20 | `ADD-003` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+| 2026-07-20 | `ADD-003` live upload and regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored --nocapture` | Pass - all 6 real aria2 flows; uploaded Torrent metadata is registered as BitTorrent, every GID returned from uploaded Metalink metadata is observable, and authentication, restart, command/removal, proxy, and cleanup regressions remain green |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.

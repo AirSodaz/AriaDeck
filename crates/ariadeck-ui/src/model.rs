@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 /// Stable presentation identity for a task within one profile.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct TaskIdentity {
@@ -384,6 +386,39 @@ impl TaskCommandView {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AddDownloadInputModeView {
+    #[default]
+    Links,
+    MetadataFiles,
+}
+
+impl AddDownloadInputModeView {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Links => "Links",
+            Self::MetadataFiles => "Torrent / Metalink",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AddDownloadMetadataKindView {
+    Torrent,
+    Metalink,
+}
+
+impl AddDownloadMetadataKindView {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Torrent => "Torrent",
+            Self::Metalink => "Metalink",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum AddDownloadModeView {
     #[default]
     SeparateTasks,
@@ -420,9 +455,31 @@ impl FileConflictPolicyView {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AddDownloadSourceView {
-    pub line: usize,
-    pub uri: String,
+pub enum AddDownloadSourceView {
+    Uri {
+        line: usize,
+        uri: String,
+    },
+    MetadataFile {
+        path: PathBuf,
+        kind: AddDownloadMetadataKindView,
+    },
+}
+
+impl AddDownloadSourceView {
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::Uri { line, uri } => format!("Line {line} - {uri}"),
+            Self::MetadataFile { path, kind } => {
+                let name = path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |name| name.to_string_lossy().into(),
+                );
+                format!("{} - {name}", kind.label())
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -475,7 +532,7 @@ impl OperationErrorView {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommandOutcomeView {
-    Success { task: Option<TaskIdentity> },
+    Success { tasks: Vec<TaskIdentity> },
     Failure(OperationErrorView),
 }
 

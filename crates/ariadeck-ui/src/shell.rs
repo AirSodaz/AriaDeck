@@ -1,30 +1,37 @@
-use std::{collections::HashSet, ops::Range, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use gpui::{
-    AnyElement, App, ClickEvent, ClipboardItem, Context, Div, Entity, FocusHandle, Focusable,
-    FontFeatures, FontWeight, Hsla, IntoElement, Render, Role, ScrollStrategy, SharedString,
-    Stateful, Subscription, Toggled, UniformListScrollHandle, WeakFocusHandle, Window,
-    WindowControlArea, div, prelude::*, px, relative, uniform_list,
+    AnyElement, App, ClickEvent, ClipboardItem, Context, Div, Entity, ExternalPaths, FocusHandle,
+    Focusable, FontFeatures, FontWeight, Hsla, IntoElement, PathPromptOptions, Render, Role,
+    ScrollStrategy, SharedString, Stateful, Subscription, Toggled, UniformListScrollHandle,
+    WeakFocusHandle, Window, WindowControlArea, div, prelude::*, px, relative, uniform_list,
 };
 
 use crate::{
-    AddDownloadItemResultView, AddDownloadModeView, AddDownloadRequestView, AddDownloadResultView,
-    AddDownloadSourceView, BatchCommandOutcomeView, BatchTaskCommandRequestView,
-    BatchTaskCommandResultView, BatchTaskCommandView, BatchTaskFailureView, Button, ButtonStyle,
-    ClearSearch, CloseAddDownload, CloseBatchFailures, CloseSettings, CloseTaskOutputName,
-    ColorSchemeView, CommandOutcomeView, ConnectionView, Dialog, DownloadProxySettingsView,
-    DownloadRowView, EngineHealthView, EngineSessionView, FileConflictPolicyView, FocusNext,
-    FocusPrevious, FocusSearch, Icon, IconButton, IconName, IconSize, OpenAddDownload,
-    OpenSettings, OpenTaskDetails, OpenTaskOutputName, OperationErrorView, PauseSelectedTask,
-    ProxyModeView, ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask,
-    RetrySelectedTask, SaveSettings, SearchInputEvent, SecretStringView, Segment, SegmentedControl,
-    SelectAllTasks, SelectNextTask, SelectPreviousTask, SettingsSaveOutcomeView,
-    SettingsSaveRequestView, SettingsSaveResultView, SettingsView, SpeedSampleView,
-    StatusIndicator, SubmitAddDownload, SubmitTaskOutputName, TaskCommandRequestView,
-    TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView, TaskDetailsRequestView,
-    TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity, TaskStatusView, TextField,
-    TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Tooltip, WorkspaceFilter, WorkspaceQuery,
-    WorkspaceSnapshot, format_bytes, format_eta, format_percent, format_rate,
+    AddDownloadInputModeView, AddDownloadItemResultView, AddDownloadMetadataKindView,
+    AddDownloadModeView, AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView,
+    BatchCommandOutcomeView, BatchTaskCommandRequestView, BatchTaskCommandResultView,
+    BatchTaskCommandView, BatchTaskFailureView, Button, ButtonStyle, ClearSearch, CloseAddDownload,
+    CloseBatchFailures, CloseSettings, CloseTaskOutputName, ColorSchemeView, CommandOutcomeView,
+    ConnectionView, Dialog, DownloadProxySettingsView, DownloadRowView, EngineHealthView,
+    EngineSessionView, FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch, Icon,
+    IconButton, IconName, IconSize, OpenAddDownload, OpenSettings, OpenTaskDetails,
+    OpenTaskOutputName, OperationErrorView, PauseSelectedTask, ProxyModeView,
+    ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask,
+    SaveSettings, SearchInputEvent, SecretStringView, Segment, SegmentedControl, SelectAllTasks,
+    SelectNextTask, SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView,
+    SettingsSaveResultView, SettingsView, SpeedSampleView, StatusIndicator, SubmitAddDownload,
+    SubmitTaskOutputName, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
+    TaskFileView, TaskIdentity, TaskStatusView, TextField, TextFieldConfig, Theme, ThemeMode,
+    Toast, ToastKind, Tooltip, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, format_bytes,
+    format_eta, format_percent, format_rate,
 };
 
 const SPEED_CHART_SAMPLES: usize = 120;
@@ -89,8 +96,10 @@ struct PendingAddDownload {
 #[derive(Default)]
 struct AddDownloadDialog {
     open: bool,
+    input_mode: AddDownloadInputModeView,
     mode: AddDownloadModeView,
     file_conflict: FileConflictPolicyView,
+    metadata_files: Vec<AddDownloadSourceView>,
     previous_focus: Option<WeakFocusHandle>,
     pending: Option<PendingAddDownload>,
     error: Option<OperationErrorView>,
@@ -768,9 +777,9 @@ impl AppShell {
         let accepted = result
             .items
             .iter()
-            .filter_map(|item| match &item.outcome {
-                CommandOutcomeView::Success { task } => task.clone(),
-                CommandOutcomeView::Failure(_) => None,
+            .flat_map(|item| match &item.outcome {
+                CommandOutcomeView::Success { tasks } => tasks.clone(),
+                CommandOutcomeView::Failure(_) => Vec::new(),
             })
             .collect::<Vec<_>>();
         let failed_count = result
@@ -788,6 +797,7 @@ impl AppShell {
         if all_succeeded {
             self.add_input
                 .update(cx, |input, cx| input.set_text("", cx));
+            self.add_dialog.metadata_files.clear();
             self.show_notice(
                 format!(
                     "{} download{} accepted by aria2.",
@@ -808,17 +818,28 @@ impl AppShell {
                 CommandOutcomeView::Failure(error)
                     if error.retryable && !error.outcome_unknown() =>
                 {
-                    Some(item.sources.iter().map(|source| source.uri.as_str()))
+                    Some(item.sources.clone())
                 }
                 CommandOutcomeView::Success { .. } | CommandOutcomeView::Failure(_) => None,
             })
             .flatten()
+            .collect::<Vec<_>>();
+        let retryable_uris = retryable_sources
+            .iter()
+            .filter_map(|source| match source {
+                AddDownloadSourceView::Uri { uri, .. } => Some(uri.as_str()),
+                AddDownloadSourceView::MetadataFile { .. } => None,
+            })
             .collect::<Vec<_>>()
             .join("\n");
+        self.add_dialog.metadata_files = retryable_sources
+            .into_iter()
+            .filter(|source| matches!(source, AddDownloadSourceView::MetadataFile { .. }))
+            .collect();
         self.add_dialog.updating_input_from_result =
-            self.add_input.read(cx).text() != retryable_sources;
+            self.add_input.read(cx).text() != retryable_uris;
         self.add_input
-            .update(cx, |input, cx| input.set_text(retryable_sources, cx));
+            .update(cx, |input, cx| input.set_text(retryable_uris, cx));
         self.add_dialog.results = result.items;
         self.show_notice(
             format!(
@@ -849,7 +870,7 @@ impl AppShell {
 
         self.pending_task_command = None;
         match result.outcome {
-            CommandOutcomeView::Success { task } => {
+            CommandOutcomeView::Success { tasks } => {
                 self.show_notice(result.command.success_label(), false, cx);
                 match result.command {
                     TaskCommandView::RemoveTask | TaskCommandView::RemoveTaskAndFiles => {
@@ -860,7 +881,7 @@ impl AppShell {
                     }
                     TaskCommandView::Retry => {
                         self.selected_tasks.remove(&result.identity);
-                        if let Some(identity) = task {
+                        if let Some(identity) = tasks.into_iter().next() {
                             self.selected_tasks.insert(identity.clone());
                             self.selected = Some(identity);
                         }
@@ -1763,8 +1784,10 @@ impl AppShell {
             .update(cx, |input, cx| input.set_text("", cx));
         self.add_dialog = AddDownloadDialog {
             open: true,
+            input_mode: AddDownloadInputModeView::Links,
             mode: AddDownloadModeView::SeparateTasks,
             file_conflict: FileConflictPolicyView::AutoRename,
+            metadata_files: Vec::new(),
             previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
             pending: None,
             error: None,
@@ -1773,7 +1796,8 @@ impl AppShell {
         };
         cx.notify();
         cx.defer_in(window, |this, window, cx| {
-            if this.add_dialog.open {
+            if this.add_dialog.open && this.add_dialog.input_mode == AddDownloadInputModeView::Links
+            {
                 window.focus(&this.add_input.focus_handle(cx), cx);
             }
         });
@@ -1819,11 +1843,23 @@ impl AppShell {
         if !self.add_dialog.open || self.add_dialog.pending.is_some() {
             return;
         }
-        let sources = parse_add_download_sources(self.add_input.read(cx).text());
+        let sources = match self.add_dialog.input_mode {
+            AddDownloadInputModeView::Links => {
+                parse_add_download_sources(self.add_input.read(cx).text())
+            }
+            AddDownloadInputModeView::MetadataFiles => self.add_dialog.metadata_files.clone(),
+        };
         if sources.is_empty() {
             self.add_dialog.error = Some(OperationErrorView {
                 code: "validation.invalid_request".into(),
-                summary: "Enter at least one URL or magnet link.".into(),
+                summary: match self.add_dialog.input_mode {
+                    AddDownloadInputModeView::Links => {
+                        "Enter at least one URL or magnet link.".into()
+                    }
+                    AddDownloadInputModeView::MetadataFiles => {
+                        "Choose at least one Torrent or Metalink file.".into()
+                    }
+                },
                 retryable: false,
             });
             cx.notify();
@@ -1851,11 +1887,19 @@ impl AppShell {
                 request_id,
                 session,
                 sources,
-                mode: self.add_dialog.mode,
+                mode: if self.add_dialog.input_mode == AddDownloadInputModeView::Links {
+                    self.add_dialog.mode
+                } else {
+                    AddDownloadModeView::SeparateTasks
+                },
                 destination: (!self.settings.download_directory.is_empty())
                     .then(|| self.settings.download_directory.clone()),
                 required_bytes: None,
-                file_conflict: self.add_dialog.file_conflict,
+                file_conflict: if self.add_dialog.input_mode == AddDownloadInputModeView::Links {
+                    self.add_dialog.file_conflict
+                } else {
+                    FileConflictPolicyView::Reject
+                },
             },
         ));
         cx.notify();
@@ -1869,6 +1913,120 @@ impl AppShell {
         self.add_dialog.error = None;
         self.add_dialog.results.clear();
         cx.notify();
+    }
+
+    fn set_add_input_mode(&mut self, mode: AddDownloadInputModeView, cx: &mut Context<Self>) {
+        if self.add_dialog.pending.is_some() || self.add_dialog.input_mode == mode {
+            return;
+        }
+        self.add_dialog.input_mode = mode;
+        self.add_dialog.error = None;
+        self.add_dialog.results.clear();
+        cx.notify();
+    }
+
+    fn choose_metadata_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.add_dialog.open || self.add_dialog.pending.is_some() {
+            return;
+        }
+        let selected = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Choose Torrent or Metalink files".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let selected = selected.await;
+            let _ = this.update_in(cx, |this, window, cx| match selected {
+                Ok(Ok(Some(paths))) => this.add_metadata_paths(paths, window, cx),
+                Ok(Ok(None)) => {}
+                Ok(Err(error)) => {
+                    this.set_add_dialog_error(format!("File picker failed: {error}"), cx);
+                }
+                Err(error) => {
+                    this.set_add_dialog_error(
+                        format!("File picker closed unexpectedly: {error}"),
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn add_metadata_paths(
+        &mut self,
+        paths: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.add_dialog.open {
+            self.open_add_download(&OpenAddDownload, window, cx);
+        }
+        if !self.add_dialog.open || self.add_dialog.pending.is_some() {
+            return;
+        }
+
+        let mut known = self
+            .add_dialog
+            .metadata_files
+            .iter()
+            .filter_map(|source| match source {
+                AddDownloadSourceView::MetadataFile { path, .. } => Some(metadata_path_key(path)),
+                AddDownloadSourceView::Uri { .. } => None,
+            })
+            .collect::<HashSet<_>>();
+        let mut invalid = Vec::new();
+        for path in paths {
+            let Some(kind) = metadata_kind_from_path(&path) else {
+                invalid.push(path);
+                continue;
+            };
+            if known.insert(metadata_path_key(&path)) {
+                self.add_dialog
+                    .metadata_files
+                    .push(AddDownloadSourceView::MetadataFile { path, kind });
+            }
+        }
+        self.add_dialog.input_mode = AddDownloadInputModeView::MetadataFiles;
+        self.add_dialog.mode = AddDownloadModeView::SeparateTasks;
+        self.add_dialog.file_conflict = FileConflictPolicyView::Reject;
+        self.add_dialog.results.clear();
+        self.add_dialog.error = if invalid.is_empty() {
+            None
+        } else {
+            Some(OperationErrorView {
+                code: "validation.unsupported_metadata_file".into(),
+                summary: format!(
+                    "Skipped {} file{}; supported extensions are .torrent, .metalink, and .meta4.",
+                    invalid.len(),
+                    if invalid.len() == 1 { "" } else { "s" }
+                ),
+                retryable: false,
+            })
+        };
+        cx.notify();
+    }
+
+    fn remove_metadata_file(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.add_dialog.pending.is_some() || index >= self.add_dialog.metadata_files.len() {
+            return;
+        }
+        self.add_dialog.metadata_files.remove(index);
+        self.add_dialog.error = None;
+        self.add_dialog.results.clear();
+        cx.notify();
+    }
+
+    fn set_add_dialog_error(&mut self, summary: String, cx: &mut Context<Self>) {
+        if self.add_dialog.open {
+            self.add_dialog.error = Some(OperationErrorView {
+                code: "application.filesystem".into(),
+                summary,
+                retryable: true,
+            });
+            cx.notify();
+        }
     }
 
     fn set_file_conflict_policy(&mut self, policy: FileConflictPolicyView, cx: &mut Context<Self>) {
@@ -4048,10 +4206,32 @@ impl AppShell {
         let pending = self.add_dialog.pending.is_some();
         let error = self.add_dialog.error.clone();
         let sources = parse_add_download_sources(self.add_input.read(cx).text());
+        let input_mode = self.add_dialog.input_mode;
         let mode = self.add_dialog.mode;
         let file_conflict = self.add_dialog.file_conflict;
         let shell = cx.entity().downgrade();
+        let input_shell = shell.clone();
         let conflict_shell = shell.clone();
+        let input_mode_control = SegmentedControl::new(
+            "add-download-input-mode",
+            [
+                Segment::new(AddDownloadInputModeView::Links.label()),
+                Segment::new(AddDownloadInputModeView::MetadataFiles.label()),
+            ],
+            usize::from(input_mode == AddDownloadInputModeView::MetadataFiles),
+            self.theme,
+        )
+        .disabled(pending)
+        .on_select(move |index, _window, cx| {
+            let mode = if index == 0 {
+                AddDownloadInputModeView::Links
+            } else {
+                AddDownloadInputModeView::MetadataFiles
+            };
+            input_shell
+                .update(cx, |shell, cx| shell.set_add_input_mode(mode, cx))
+                .ok();
+        });
         let mode_control = SegmentedControl::new(
             "add-download-mode",
             [
@@ -4103,61 +4283,72 @@ impl AppShell {
             .flex()
             .flex_col()
             .gap_2()
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(colors.text_secondary)
-                    .child("URL or magnet link"),
-            )
-            .child(self.add_input.clone())
-            .child(
-                div()
+            .child(input_mode_control)
+            .child(match input_mode {
+                AddDownloadInputModeView::Links => div()
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(div().text_xs().text_color(colors.text_muted).child(
-                        if sources.is_empty() {
-                            "No sources detected".to_owned()
-                        } else {
-                            format!(
-                                "{} source{} detected",
-                                sources.len(),
-                                if sources.len() == 1 { "" } else { "s" }
-                            )
-                        },
-                    ))
-                    .child(mode_control),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
+                    .flex_col()
+                    .gap_2()
                     .child(
                         div()
                             .text_xs()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(colors.text_secondary)
-                            .child("If file exists"),
+                            .child("URL or magnet link"),
                     )
-                    .child(conflict_control),
-            )
-            .when(
-                file_conflict == FileConflictPolicyView::Overwrite,
-                |element| {
-                    element.child(
+                    .child(self.add_input.clone())
+                    .child(
                         div()
-                            .id("add-download-overwrite-warning")
-                            .role(Role::Alert)
-                            .text_xs()
-                            .text_color(colors.danger)
-                            .child("Existing destination files may be replaced."),
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_3()
+                            .child(div().text_xs().text_color(colors.text_muted).child(
+                                if sources.is_empty() {
+                                    "No sources detected".to_owned()
+                                } else {
+                                    format!(
+                                        "{} source{} detected",
+                                        sources.len(),
+                                        if sources.len() == 1 { "" } else { "s" }
+                                    )
+                                },
+                            ))
+                            .child(mode_control),
                     )
-                },
-            )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(colors.text_secondary)
+                                    .child("If file exists"),
+                            )
+                            .child(conflict_control),
+                    )
+                    .when(
+                        file_conflict == FileConflictPolicyView::Overwrite,
+                        |element| {
+                            element.child(
+                                div()
+                                    .id("add-download-overwrite-warning")
+                                    .role(Role::Alert)
+                                    .text_xs()
+                                    .text_color(colors.danger)
+                                    .child("Existing destination files may be replaced."),
+                            )
+                        },
+                    )
+                    .into_any_element(),
+                AddDownloadInputModeView::MetadataFiles => {
+                    self.render_metadata_file_picker(pending, cx)
+                }
+            })
             .when(!self.add_dialog.results.is_empty(), |element| {
                 element.child(self.render_add_result_list(colors))
             })
@@ -4207,6 +4398,139 @@ impl AppShell {
             .into_any_element()
     }
 
+    fn render_metadata_file_picker(&self, pending: bool, cx: &mut Context<Self>) -> AnyElement {
+        let colors = self.theme.colors;
+        let rows = self
+            .add_dialog
+            .metadata_files
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                let AddDownloadSourceView::MetadataFile { path, kind } = source else {
+                    return div().into_any_element();
+                };
+                let name = path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |name| name.to_string_lossy().into(),
+                );
+                let full_path = path.display().to_string();
+                div()
+                    .id(SharedString::from(format!("metadata-file-{index}")))
+                    .h(px(42.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .border_b_1()
+                    .border_color(colors.border)
+                    .child(
+                        Icon::new(IconName::Download)
+                            .size(IconSize::Small)
+                            .color(colors.accent),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().truncate().text_sm().child(name))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(colors.text_muted)
+                                    .child(format!("{} · {full_path}", kind.label())),
+                            ),
+                    )
+                    .child(
+                        IconButton::new(
+                            SharedString::from(format!("remove-metadata-file-{index}")),
+                            IconName::X,
+                        )
+                        .aria_label(format!("Remove {} file", kind.label()))
+                        .disabled(pending)
+                        .tooltip(Tooltip::new("Remove file"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.remove_metadata_file(index, cx);
+                        }))
+                        .render(colors),
+                    )
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+        let count = self.add_dialog.metadata_files.len();
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .id("metadata-file-drop-target")
+                    .role(Role::Group)
+                    .aria_label("Torrent and Metalink file drop target")
+                    .min_h(px(82.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .p_3()
+                    .border_1()
+                    .border_color(colors.border)
+                    .rounded_md()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Icon::new(IconName::Inbox)
+                                    .size(IconSize::Medium)
+                                    .color(colors.text_muted),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .child("Torrent / Metalink files")
+                                    .child(div().text_xs().text_color(colors.text_muted).child(
+                                        format!(
+                                            "{count} file{} selected",
+                                            if count == 1 { "" } else { "s" }
+                                        ),
+                                    )),
+                            ),
+                    )
+                    .child(
+                        Button::new("choose-metadata-files", "Choose files")
+                            .icon(IconName::FolderDown)
+                            .aria_label("Choose Torrent or Metalink files")
+                            .style(ButtonStyle::Secondary)
+                            .disabled(pending)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.choose_metadata_files(window, cx);
+                            }))
+                            .render(colors),
+                    ),
+            )
+            .when(!rows.is_empty(), |element| {
+                element.child(
+                    div()
+                        .id("metadata-file-list")
+                        .role(Role::List)
+                        .aria_label("Selected Torrent and Metalink files")
+                        .max_h(px(180.0))
+                        .overflow_y_scroll()
+                        .border_1()
+                        .border_color(colors.border)
+                        .rounded_md()
+                        .children(rows),
+                )
+            })
+            .into_any_element()
+    }
+
     fn render_add_result_list(&self, colors: crate::ThemeColors) -> Stateful<Div> {
         let rows = self
             .add_dialog
@@ -4217,16 +4541,17 @@ impl AppShell {
                 let source_label = item
                     .sources
                     .iter()
-                    .map(|source| format!("Line {} · {}", source.line, source.uri))
+                    .map(AddDownloadSourceView::label)
                     .collect::<Vec<_>>()
                     .join("  |  ");
                 let (icon, label, color) = match &item.outcome {
-                    CommandOutcomeView::Success { task } => (
+                    CommandOutcomeView::Success { tasks } => (
                         IconName::CircleCheck,
-                        task.as_ref().map_or_else(
-                            || "Accepted".to_owned(),
-                            |task| format!("Accepted · GID {}", task.gid),
-                        ),
+                        match tasks.as_slice() {
+                            [] => "Accepted".to_owned(),
+                            [task] => format!("Accepted · GID {}", task.gid),
+                            tasks => format!("Accepted · {} tasks", tasks.len()),
+                        },
                         colors.success,
                     ),
                     CommandOutcomeView::Failure(error) if error.outcome_unknown() => (
@@ -5127,6 +5452,7 @@ impl Focusable for AppShell {
 impl Render for AppShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = self.theme.colors;
+        let metadata_drop_enabled = self.add_dialog.pending.is_none();
         let task_layout = task_layout_mode(
             f32::from(window.viewport_size().width),
             self.details_drawer.is_some(),
@@ -5159,6 +5485,14 @@ impl Render for AppShell {
             .on_action(cx.listener(Self::remove_selected))
             .on_action(cx.listener(Self::focus_next))
             .on_action(cx.listener(Self::focus_previous))
+            .can_drop(move |value, _window, _cx| {
+                value.downcast_ref::<ExternalPaths>().is_some_and(|paths| {
+                    can_accept_metadata_drop(metadata_drop_enabled, paths.paths())
+                })
+            })
+            .on_drop::<ExternalPaths>(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.add_metadata_paths(paths.paths().to_vec(), window, cx);
+            }))
             .relative()
             .size_full()
             .flex()
@@ -5479,12 +5813,40 @@ fn parse_add_download_sources(input: &str) -> Vec<AddDownloadSourceView> {
         .enumerate()
         .filter_map(|(index, line)| {
             let uri = line.trim();
-            (!uri.is_empty()).then(|| AddDownloadSourceView {
+            (!uri.is_empty()).then(|| AddDownloadSourceView::Uri {
                 line: index + 1,
                 uri: uri.to_owned(),
             })
         })
         .collect()
+}
+
+fn metadata_kind_from_path(path: &Path) -> Option<AddDownloadMetadataKindView> {
+    let extension = path.extension()?.to_string_lossy();
+    if extension.eq_ignore_ascii_case("torrent") {
+        Some(AddDownloadMetadataKindView::Torrent)
+    } else if extension.eq_ignore_ascii_case("metalink") || extension.eq_ignore_ascii_case("meta4")
+    {
+        Some(AddDownloadMetadataKindView::Metalink)
+    } else {
+        None
+    }
+}
+
+fn can_accept_metadata_drop(enabled: bool, paths: &[PathBuf]) -> bool {
+    enabled
+        && paths
+            .iter()
+            .any(|path| metadata_kind_from_path(path).is_some())
+}
+
+fn metadata_path_key(path: &Path) -> String {
+    let key = path.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) {
+        key.to_ascii_lowercase()
+    } else {
+        key
+    }
 }
 
 fn successor_task(
@@ -6426,16 +6788,77 @@ mod tests {
         assert_eq!(
             sources,
             vec![
-                AddDownloadSourceView {
+                AddDownloadSourceView::Uri {
                     line: 1,
                     uri: "https://example.test/one".into(),
                 },
-                AddDownloadSourceView {
+                AddDownloadSourceView::Uri {
                     line: 3,
                     uri: "magnet:?xt=urn:btih:abc".into(),
                 },
             ]
         );
+    }
+
+    #[gpui::test]
+    fn metadata_paths_are_classified_deduplicated_switchable_and_removable(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.add_metadata_paths(
+                vec![
+                    PathBuf::from("sample.TORRENT"),
+                    PathBuf::from("sample.TORRENT"),
+                    PathBuf::from("bundle.meta4"),
+                    PathBuf::from("notes.txt"),
+                ],
+                window,
+                cx,
+            );
+            assert!(shell.add_dialog.open);
+            assert_eq!(
+                shell.add_dialog.input_mode,
+                AddDownloadInputModeView::MetadataFiles
+            );
+            assert_eq!(shell.add_dialog.mode, AddDownloadModeView::SeparateTasks);
+            assert_eq!(
+                shell.add_dialog.file_conflict,
+                FileConflictPolicyView::Reject
+            );
+            assert_eq!(
+                shell.add_dialog.metadata_files,
+                vec![
+                    AddDownloadSourceView::MetadataFile {
+                        path: PathBuf::from("sample.TORRENT"),
+                        kind: AddDownloadMetadataKindView::Torrent,
+                    },
+                    AddDownloadSourceView::MetadataFile {
+                        path: PathBuf::from("bundle.meta4"),
+                        kind: AddDownloadMetadataKindView::Metalink,
+                    },
+                ]
+            );
+            assert!(shell.add_dialog.error.is_some());
+
+            shell.set_add_input_mode(AddDownloadInputModeView::Links, cx);
+            assert_eq!(shell.add_dialog.input_mode, AddDownloadInputModeView::Links);
+            shell.remove_metadata_file(0, cx);
+            assert_eq!(shell.add_dialog.metadata_files.len(), 1);
+        });
+    }
+
+    #[test]
+    fn metadata_drop_is_disabled_while_an_add_request_is_pending() {
+        let paths = [PathBuf::from("sample.torrent")];
+
+        assert!(can_accept_metadata_drop(true, &paths));
+        assert!(!can_accept_metadata_drop(false, &paths));
     }
 
     #[gpui::test]
@@ -6558,6 +6981,7 @@ mod tests {
     #[gpui::test]
     fn partial_add_result_keeps_only_sources_that_are_safe_to_retry(cx: &mut TestAppContext) {
         let accepted = task(10).identity;
+        let accepted_second = task(11).identity;
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut shell = AppShell::new(Theme::dark(), window, cx);
             shell.snapshot = snapshot(1);
@@ -6583,16 +7007,16 @@ mod tests {
                     session,
                     items: vec![
                         AddDownloadItemResultView {
-                            sources: vec![AddDownloadSourceView {
+                            sources: vec![AddDownloadSourceView::Uri {
                                 line: 1,
                                 uri: "https://example.test/accepted".into(),
                             }],
                             outcome: CommandOutcomeView::Success {
-                                task: Some(accepted.clone()),
+                                tasks: vec![accepted.clone(), accepted_second.clone()],
                             },
                         },
                         AddDownloadItemResultView {
-                            sources: vec![AddDownloadSourceView {
+                            sources: vec![AddDownloadSourceView::Uri {
                                 line: 2,
                                 uri: "https://example.test/retry".into(),
                             }],
@@ -6603,7 +7027,7 @@ mod tests {
                             }),
                         },
                         AddDownloadItemResultView {
-                            sources: vec![AddDownloadSourceView {
+                            sources: vec![AddDownloadSourceView::Uri {
                                 line: 3,
                                 uri: "https://example.test/unknown".into(),
                             }],
@@ -6626,7 +7050,11 @@ mod tests {
                 shell.add_input.read(cx).text(),
                 "https://example.test/retry"
             );
-            assert_eq!(shell.selected_tasks, HashSet::from([accepted]));
+            assert_eq!(
+                shell.selected_tasks,
+                HashSet::from([accepted.clone(), accepted_second])
+            );
+            assert_eq!(shell.selected.as_ref(), Some(&accepted));
         });
     }
 
@@ -6664,7 +7092,7 @@ mod tests {
                     identity: old_identity,
                     command: TaskCommandView::Retry,
                     outcome: CommandOutcomeView::Success {
-                        task: Some(new_identity.clone()),
+                        tasks: vec![new_identity.clone()],
                     },
                 },
                 window,
@@ -6826,7 +7254,7 @@ mod tests {
                 session: pending.session.clone(),
                 identity: pending.identity.clone(),
                 command: pending.command.clone(),
-                outcome: CommandOutcomeView::Success { task: None },
+                outcome: CommandOutcomeView::Success { tasks: Vec::new() },
             }
         });
         view.update_in(cx, |shell, window, cx| {

@@ -11,10 +11,10 @@ use std::{
 };
 
 use ariadeck_application::{
-    AddDownloadRequest, AppCommand, CommandItem, CommandOutcome, CoordinatorConfig,
-    DownloadProxyConfig, DownloadProxyMode, PollIntervals, ReconnectPolicy, RefreshPolicy,
-    RemoveTasksRequest, SetTaskOutputNameRequest, StoreSnapshot, SyncHandle, TaskListQuery,
-    TaskRemovalScope, spawn_sync_coordinator,
+    AddDownloadRequest, AddDownloadSource, AppCommand, CommandItem, CommandOutcome,
+    CoordinatorConfig, DownloadProxyConfig, DownloadProxyMode, PollIntervals, ReconnectPolicy,
+    RefreshPolicy, RemoveTasksRequest, SetTaskOutputNameRequest, StoreSnapshot, SyncHandle,
+    TaskListQuery, TaskRemovalScope, spawn_sync_coordinator,
 };
 use ariadeck_domain::{
     ConnectionState, DownloadStatus, EnginePath, ProfileId, TaskIdentity, TaskSourceKind,
@@ -48,6 +48,8 @@ impl ChildGuard {
             .arg(format!("--rpc-listen-port={port}"))
             .arg(format!("--rpc-secret={secret}"))
             .arg(format!("--dir={}", data_dir.to_string_lossy()))
+            .arg("--rpc-save-upload-metadata=true")
+            .arg("--rpc-max-request-size=32M")
             .arg("--summary-interval=0")
             .arg("--console-log-level=warn")
             .arg("--enable-dht=false")
@@ -124,6 +126,81 @@ async fn authenticates_and_reads_live_aria2_state() -> Result<(), TestError> {
     transport.close().await;
     let status = process.wait_for_exit(Duration::from_secs(5))?;
     assert!(status.success());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires ARIA2C_PATH and launches a real local aria2 process"]
+async fn uploads_torrent_and_metalink_metadata_to_live_aria2() -> Result<(), TestError> {
+    let executable = env::var("ARIA2C_PATH")?;
+    let data_dir = TempDir::new()?;
+    let port = reserve_loopback_port()?;
+    let secret = Uuid::new_v4().simple().to_string();
+    let mut process = ChildGuard::spawn(Path::new(&executable), data_dir.path(), port, &secret)?;
+    let endpoint = Url::parse(&format!("ws://127.0.0.1:{port}/jsonrpc"))?;
+    let transport = connect_with_retry(endpoint, Duration::from_secs(5)).await?;
+    let client = Aria2Client::new(AuthenticatedTransport::new(
+        transport.clone(),
+        Some(RpcSecret::new(secret)),
+    ));
+
+    let torrent = b"d4:infod4:name11:fixture.bin6:lengthi1e12:piece lengthi16384e6:pieces20:00000000000000000000eee";
+    let torrent_gid = client
+        .add_torrent(&AddDownloadRequest {
+            source: AddDownloadSource::Torrent(Arc::<[u8]>::from(&torrent[..])),
+            destination: None,
+            file_conflict: ariadeck_application::FileConflictPolicy::Reject,
+            options: Vec::new(),
+        })
+        .await?;
+
+    let fixture_url = "http://127.0.0.1:9/fixture.bin";
+    let metalink = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><metalink xmlns=\"urn:ietf:params:xml:ns:metalink\" version=\"4.0\"><file name=\"fixture.bin\"><resources><url>{fixture_url}</url></resources></file></metalink>"
+    );
+    let metalink_gids = client
+        .add_metalink(&AddDownloadRequest {
+            source: AddDownloadSource::Metalink(Arc::<[u8]>::from(metalink.into_bytes())),
+            destination: None,
+            file_conflict: ariadeck_application::FileConflictPolicy::Reject,
+            options: Vec::new(),
+        })
+        .await?;
+    assert!(!metalink_gids.is_empty());
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut torrent_seen = false;
+    let mut metalink_seen = false;
+    while Instant::now() < deadline && (!torrent_seen || !metalink_seen) {
+        let mut tasks = client.tell_active(TaskKey::DISCOVERY_PROJECTION).await?;
+        tasks.extend(
+            client
+                .tell_waiting(0, 20, TaskKey::DISCOVERY_PROJECTION)
+                .await?,
+        );
+        tasks.extend(
+            client
+                .tell_stopped(0, 20, TaskKey::DISCOVERY_PROJECTION)
+                .await?,
+        );
+        torrent_seen |= tasks.iter().any(|task| {
+            task.gid == torrent_gid && task.metadata.source_kind == TaskSourceKind::BitTorrent
+        });
+        // aria2 expands a Metalink into ordinary per-file downloads, so the
+        // durable contract is that every returned GID becomes observable.
+        metalink_seen |= metalink_gids
+            .iter()
+            .all(|gid| tasks.iter().any(|task| task.gid == *gid));
+        if !torrent_seen || !metalink_seen {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    assert!(torrent_seen, "uploaded torrent task was not observed");
+    assert!(metalink_seen, "uploaded metalink task was not observed");
+
+    client.shutdown().await?;
+    transport.close().await;
+    let _status = process.wait_for_exit(Duration::from_secs(5))?;
     Ok(())
 }
 
@@ -223,7 +300,7 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
         .execute(
             connected.session,
             AppCommand::AddDownload(AddDownloadRequest {
-                uris: vec![fixture_url],
+                source: AddDownloadSource::Uris(vec![fixture_url]),
                 destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
                 file_conflict: ariadeck_application::FileConflictPolicy::default(),
                 options: vec![
@@ -253,7 +330,7 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
         .execute(
             connected.session,
             AppCommand::AddDownload(AddDownloadRequest {
-                uris: vec![conflict_url],
+                source: AddDownloadSource::Uris(vec![conflict_url]),
                 destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
                 file_conflict: ariadeck_application::FileConflictPolicy::AutoRename,
                 options: vec![
@@ -314,7 +391,9 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
         .execute(
             connected.session,
             AppCommand::AddDownload(AddDownloadRequest {
-                uris: vec!["https://example.invalid/original-live-name.bin".into()],
+                source: AddDownloadSource::Uris(vec![
+                    "https://example.invalid/original-live-name.bin".into(),
+                ]),
                 destination: None,
                 file_conflict: ariadeck_application::FileConflictPolicy::default(),
                 options: vec![("pause".into(), "true".into())],
@@ -372,10 +451,10 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
         .execute(
             connected.session,
             AppCommand::AddDownload(AddDownloadRequest {
-                uris: vec![
+                source: AddDownloadSource::Uris(vec![
                     "https://example.invalid/mirrored-live.bin".into(),
                     "https://mirror.invalid/mirrored-live.bin".into(),
-                ],
+                ]),
                 destination: None,
                 file_conflict: ariadeck_application::FileConflictPolicy::default(),
                 options: vec![("pause".into(), "true".into())],
@@ -411,7 +490,9 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
         .execute(
             connected.session,
             AppCommand::AddDownload(AddDownloadRequest {
-                uris: vec!["magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".into()],
+                source: AddDownloadSource::Uris(vec![
+                    "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".into(),
+                ]),
                 destination: None,
                 file_conflict: ariadeck_application::FileConflictPolicy::default(),
                 options: Vec::new(),
@@ -489,9 +570,9 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
         .execute(
             connected.session,
             AppCommand::AddDownload(AddDownloadRequest {
-                uris: vec![format!(
+                source: AddDownloadSource::Uris(vec![format!(
                     "http://127.0.0.1:{unavailable_port}/unreachable-test-file"
-                )],
+                )]),
                 destination: None,
                 file_conflict: ariadeck_application::FileConflictPolicy::default(),
                 options: vec![
@@ -606,7 +687,9 @@ async fn download_proxy_routes_bypasses_and_disables_live_traffic() -> Result<()
         .execute(
             connected.session,
             AppCommand::AddDownload(AddDownloadRequest {
-                uris: vec!["http://proxy-target.invalid/proxied.bin".into()],
+                source: AddDownloadSource::Uris(vec![
+                    "http://proxy-target.invalid/proxied.bin".into(),
+                ]),
                 destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
                 options: vec![
                     ("out".into(), "proxied.bin".into()),
@@ -659,7 +742,7 @@ async fn download_proxy_routes_bypasses_and_disables_live_traffic() -> Result<()
         .execute(
             connected.session,
             AppCommand::AddDownload(AddDownloadRequest {
-                uris: vec![bypass_url],
+                source: AddDownloadSource::Uris(vec![bypass_url]),
                 destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
                 options: vec![("out".into(), "bypassed.bin".into())],
                 ..AddDownloadRequest::default()
@@ -709,7 +792,7 @@ async fn download_proxy_routes_bypasses_and_disables_live_traffic() -> Result<()
         .execute(
             connected.session,
             AppCommand::AddDownload(AddDownloadRequest {
-                uris: vec![disabled_url],
+                source: AddDownloadSource::Uris(vec![disabled_url]),
                 destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
                 options: vec![("out".into(), "disabled.bin".into())],
                 ..AddDownloadRequest::default()

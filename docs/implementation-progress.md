@@ -372,8 +372,8 @@ and reconnect timing is bounded through validated startup configuration.
   now covers local directory writability/space checks, remote path isolation,
   accumulated authorized roots, known-size submission checks, direct-task
   conflict policy, and explicit runtime disk-full errors. Torrent/Metalink
-  per-file containment/conflicts remain coupled to their future import and
-  file-selection flows.
+  per-file containment/conflicts now depend on the remaining file-selection
+  flow.
 - Local process recovery and terminal failure are visible in the desktop;
   persistent engine-health history and exported diagnostic bundles are post-MVP.
 - Profile and typed settings persistence use atomic JSON documents for the
@@ -381,6 +381,11 @@ and reconnect timing is bounded through validated startup configuration.
   history, installation records, and diagnostics.
 - Add-download, task lifecycle commands, and the details drawer are implemented
   for the external WebSocket engine path.
+- `ADD-003` is complete: Torrent/Metalink metadata is read and bounded on the
+  desktop, then uploaded as Base64 for both managed and remote engines, with
+  native multi-file selection, drag/drop, per-source outcomes, and complete
+  Metalink GID handling. Per-file preview/selection remains the following
+  `FILE-001` slice.
 - Theme, download-directory, and aria2 download-proxy choices persist; proxy
   passwords remain outside JSON in the system credential manager. Window
   geometry remains session-only.

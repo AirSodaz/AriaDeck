@@ -8,10 +8,10 @@ mod sync;
 mod view;
 
 pub use commands::{
-    AddDownloadRequest, AppCommand, ApplicationError, ApplicationErrorCode, CommandItem,
-    CommandOutcome, CommandService, DownloadProxyConfig, DownloadProxyMode, FileConflictPolicy,
-    ItemFailure, RemoveTasksRequest, SetTaskOutputNameRequest, TaskCommandContext,
-    TaskRemovalScope,
+    AddDownloadRequest, AddDownloadSource, AppCommand, ApplicationError, ApplicationErrorCode,
+    CommandItem, CommandOutcome, CommandService, DownloadProxyConfig, DownloadProxyMode,
+    FileConflictPolicy, ItemFailure, RemoveTasksRequest, SetTaskOutputNameRequest,
+    TaskCommandContext, TaskRemovalScope,
 };
 pub use history::{DEFAULT_SPEED_HISTORY_CAPACITY, SpeedHistory, SpeedHistoryError, SpeedSample};
 pub use ports::{

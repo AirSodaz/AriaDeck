@@ -1629,13 +1629,13 @@ mod tests {
         async fn add_download(
             &self,
             _request: &crate::AddDownloadRequest,
-        ) -> Result<Gid, crate::GatewayError> {
+        ) -> Result<Vec<Gid>, crate::GatewayError> {
             let gid = Gid::from_u64(99);
             self.command_calls
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(("add", gid));
-            Ok(gid)
+            Ok(vec![gid])
         }
 
         async fn retry_download(
@@ -2146,7 +2146,9 @@ mod tests {
             handle.execute(
                 snapshot.session,
                 AppCommand::AddDownload(crate::AddDownloadRequest {
-                    uris: vec!["https://example.test/item".into()],
+                    source: crate::AddDownloadSource::Uris(vec![
+                        "https://example.test/item".into(),
+                    ]),
                     destination: None,
                     file_conflict: crate::FileConflictPolicy::default(),
                     options: Vec::new(),

@@ -1006,25 +1006,8 @@ fn spawn_child(
     session_path: &Path,
     log_path: &Path,
 ) -> Result<Child, EngineError> {
-    let arguments = vec![
-        "--no-conf=true".to_owned(),
-        "--enable-rpc=true".to_owned(),
-        "--rpc-listen-all=false".to_owned(),
-        format!("--rpc-listen-port={port}"),
-        format!("--rpc-secret={secret}"),
-        format!("--conf-path={}", config_path.to_string_lossy()),
-        format!("--dir={}", config.download_dir.to_string_lossy()),
-        format!("--input-file={}", session_path.to_string_lossy()),
-        format!("--save-session={}", session_path.to_string_lossy()),
-        "--save-session-interval=60".to_owned(),
-        format!("--log={}", log_path.to_string_lossy()),
-        // Keep the default local profile loopback-only. These optional
-        // peer-discovery listeners can otherwise trigger a firewall prompt
-        // before the user has configured a network profile.
-        "--enable-dht=false".to_owned(),
-        "--enable-dht6=false".to_owned(),
-        "--bt-enable-lpd=false".to_owned(),
-    ];
+    let arguments =
+        local_engine_arguments(config, port, secret, config_path, session_path, log_path);
 
     Command::new(&config.executable)
         .args(arguments)
@@ -1036,6 +1019,37 @@ fn spawn_child(
             path: config.executable.clone(),
             source,
         })
+}
+
+fn local_engine_arguments(
+    config: &LocalEngineConfig,
+    port: u16,
+    secret: &str,
+    config_path: &Path,
+    session_path: &Path,
+    log_path: &Path,
+) -> Vec<String> {
+    vec![
+        "--no-conf=true".to_owned(),
+        "--enable-rpc=true".to_owned(),
+        "--rpc-listen-all=false".to_owned(),
+        format!("--rpc-listen-port={port}"),
+        format!("--rpc-secret={secret}"),
+        format!("--conf-path={}", config_path.to_string_lossy()),
+        format!("--dir={}", config.download_dir.to_string_lossy()),
+        format!("--input-file={}", session_path.to_string_lossy()),
+        format!("--save-session={}", session_path.to_string_lossy()),
+        "--save-session-interval=60".to_owned(),
+        "--rpc-save-upload-metadata=true".to_owned(),
+        "--rpc-max-request-size=32M".to_owned(),
+        format!("--log={}", log_path.to_string_lossy()),
+        // Keep the default local profile loopback-only. These optional
+        // peer-discovery listeners can otherwise trigger a firewall prompt
+        // before the user has configured a network profile.
+        "--enable-dht=false".to_owned(),
+        "--enable-dht6=false".to_owned(),
+        "--bt-enable-lpd=false".to_owned(),
+    ]
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1448,6 +1462,24 @@ mod tests {
             root.join("data"),
             root.join("downloads"),
         )
+    }
+
+    #[test]
+    fn managed_aria2_arguments_persist_uploaded_metadata_and_allow_large_rpc_requests() {
+        let root = temporary_directory();
+        let profile = sample_profile(&root);
+        let arguments = local_engine_arguments(
+            &profile.local_config(),
+            4_321,
+            "secret",
+            &root.join("aria2.conf"),
+            &root.join("aria2.session"),
+            &root.join("aria2.log"),
+        );
+
+        assert!(arguments.contains(&"--rpc-save-upload-metadata=true".to_owned()));
+        assert!(arguments.contains(&"--rpc-max-request-size=32M".to_owned()));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[derive(Default)]

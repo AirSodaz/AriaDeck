@@ -19,6 +19,7 @@ authors = ["AriaDeck contributors"]
 
 [workspace.dependencies]
 async-trait = "0.1.89"
+base64 = "0.22.1"
 bitflags = { version = "2.10.0", features = ["serde"] }
 data-encoding = "2.11.0"
 rust-embed = "8.11.0"

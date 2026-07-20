@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    fmt,
     sync::Arc,
 };
 
@@ -11,9 +12,38 @@ use url::Url;
 
 use crate::{DownloadEngineGateway, GatewayError, GatewayErrorKind, TaskRemovalTarget};
 
+#[derive(Clone, Eq, PartialEq)]
+pub enum AddDownloadSource {
+    Uris(Vec<String>),
+    Torrent(Arc<[u8]>),
+    Metalink(Arc<[u8]>),
+}
+
+impl Default for AddDownloadSource {
+    fn default() -> Self {
+        Self::Uris(Vec::new())
+    }
+}
+
+impl fmt::Debug for AddDownloadSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Uris(uris) => formatter.debug_tuple("Uris").field(uris).finish(),
+            Self::Torrent(content) => formatter
+                .debug_struct("Torrent")
+                .field("content_bytes", &content.len())
+                .finish(),
+            Self::Metalink(content) => formatter
+                .debug_struct("Metalink")
+                .field("content_bytes", &content.len())
+                .finish(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AddDownloadRequest {
-    pub uris: Vec<String>,
+    pub source: AddDownloadSource,
     pub destination: Option<EnginePath>,
     pub file_conflict: FileConflictPolicy,
     pub options: Vec<(String, String)>,
@@ -120,7 +150,23 @@ impl DownloadProxyConfig {
 
 impl AddDownloadRequest {
     fn validate(&self) -> Result<(), ApplicationError> {
-        if self.uris.is_empty() || self.uris.iter().any(|uri| uri.trim().is_empty()) {
+        let AddDownloadSource::Uris(uris) = &self.source else {
+            let content = match &self.source {
+                AddDownloadSource::Torrent(content) | AddDownloadSource::Metalink(content) => {
+                    content
+                }
+                AddDownloadSource::Uris(_) => unreachable!(),
+            };
+            if content.is_empty() {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::Validation,
+                    "Torrent or Metalink metadata must not be empty.",
+                    false,
+                ));
+            }
+            return Ok(());
+        };
+        if uris.is_empty() || uris.iter().any(|uri| uri.trim().is_empty()) {
             return Err(ApplicationError::new(
                 ApplicationErrorCode::Validation,
                 "At least one non-empty URL or magnet link is required.",
@@ -128,7 +174,7 @@ impl AddDownloadRequest {
             ));
         }
         let mut unique = HashSet::new();
-        for uri in &self.uris {
+        for uri in uris {
             let uri = uri.trim();
             if !unique.insert(uri) {
                 return Err(ApplicationError::new(
@@ -387,8 +433,21 @@ impl CommandService {
         }
 
         match self.gateway.add_download(&request).await {
-            Ok(gid) => CommandOutcome::Success {
-                succeeded: vec![CommandItem::Task(TaskIdentity::new(self.profile_id, gid))],
+            Ok(gids) if gids.is_empty() => CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: None,
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Internal,
+                        "Download engine accepted the request without returning a task ID.",
+                        true,
+                    ),
+                }],
+            },
+            Ok(gids) => CommandOutcome::Success {
+                succeeded: gids
+                    .into_iter()
+                    .map(|gid| CommandItem::Task(TaskIdentity::new(self.profile_id, gid)))
+                    .collect(),
             },
             Err(error) => CommandOutcome::Failure {
                 failed: vec![ItemFailure {
@@ -654,7 +713,7 @@ impl CommandService {
                 continue;
             };
             let request = AddDownloadRequest {
-                uris: vec![source],
+                source: AddDownloadSource::Uris(vec![source]),
                 destination: context.metadata.directory.clone(),
                 file_conflict: FileConflictPolicy::default(),
                 options: Vec::new(),
@@ -773,6 +832,7 @@ mod tests {
     #[derive(Default)]
     struct FakeGateway {
         adds: Mutex<Vec<AddDownloadRequest>>,
+        add_gids: Mutex<Option<Vec<Gid>>>,
         retries: Mutex<Vec<(Gid, AddDownloadRequest)>>,
         calls: Mutex<Vec<(TaskOperation, Gid)>>,
         removals: Mutex<Vec<(Gid, TaskRemovalTarget)>>,
@@ -782,12 +842,20 @@ mod tests {
 
     #[async_trait]
     impl DownloadEngineGateway for FakeGateway {
-        async fn add_download(&self, request: &AddDownloadRequest) -> Result<Gid, GatewayError> {
+        async fn add_download(
+            &self,
+            request: &AddDownloadRequest,
+        ) -> Result<Vec<Gid>, GatewayError> {
             self.adds
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(request.clone());
-            Ok(Gid::from_u64(99))
+            let gids = self
+                .add_gids
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            Ok(gids.unwrap_or_else(|| vec![Gid::from_u64(99)]))
         }
 
         async fn retry_download(
@@ -854,6 +922,7 @@ mod tests {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway {
             adds: Mutex::default(),
+            add_gids: Mutex::default(),
             retries: Mutex::default(),
             calls: Mutex::default(),
             removals: Mutex::default(),
@@ -979,7 +1048,7 @@ mod tests {
         for uri in ["not a uri", "file:///tmp/item.bin", "javascript:alert(1)"] {
             let outcome = block_on(service.execute(
                 AppCommand::AddDownload(AddDownloadRequest {
-                    uris: vec![uri.into()],
+                    source: AddDownloadSource::Uris(vec![uri.into()]),
                     destination: None,
                     file_conflict: FileConflictPolicy::default(),
                     options: Vec::new(),
@@ -1001,10 +1070,10 @@ mod tests {
 
         let outcome = block_on(service.execute(
             AppCommand::AddDownload(AddDownloadRequest {
-                uris: vec![
+                source: AddDownloadSource::Uris(vec![
                     "https://example.test/archive.iso".into(),
                     "https://example.test/archive.iso".into(),
-                ],
+                ]),
                 destination: None,
                 file_conflict: FileConflictPolicy::default(),
                 options: Vec::new(),
@@ -1023,6 +1092,95 @@ mod tests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn add_download_rejects_empty_metadata_before_gateway_call() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+
+        let outcome = block_on(service.execute(
+            AppCommand::AddDownload(AddDownloadRequest {
+                source: AddDownloadSource::Metalink(Arc::<[u8]>::from(&b""[..])),
+                destination: None,
+                file_conflict: FileConflictPolicy::Reject,
+                options: Vec::new(),
+            }),
+            &HashMap::new(),
+        ));
+
+        let CommandOutcome::Failure { failed } = outcome else {
+            panic!("expected empty metadata validation failure");
+        };
+        assert_eq!(failed[0].error.code, ApplicationErrorCode::Validation);
+        assert!(
+            gateway
+                .adds
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn add_download_preserves_multiple_gateway_gids() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        *gateway
+            .add_gids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(vec![Gid::from_u64(11), Gid::from_u64(12)]);
+        let service = CommandService::new(profile_id, gateway);
+
+        let outcome = block_on(service.execute(
+            AppCommand::AddDownload(AddDownloadRequest {
+                source: AddDownloadSource::Metalink(Arc::<[u8]>::from(&b"metadata"[..])),
+                destination: None,
+                file_conflict: FileConflictPolicy::Reject,
+                options: Vec::new(),
+            }),
+            &HashMap::new(),
+        ));
+
+        let CommandOutcome::Success { succeeded } = outcome else {
+            panic!("expected metadata add success");
+        };
+        let gids = succeeded
+            .into_iter()
+            .map(|item| match item {
+                CommandItem::Task(identity) => identity.gid,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(gids, vec![Gid::from_u64(11), Gid::from_u64(12)]);
+    }
+
+    #[test]
+    fn add_download_rejects_an_empty_gateway_result() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        *gateway
+            .add_gids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Vec::new());
+        let service = CommandService::new(profile_id, gateway);
+
+        let outcome = block_on(service.execute(
+            AppCommand::AddDownload(AddDownloadRequest {
+                source: AddDownloadSource::Metalink(Arc::<[u8]>::from(&b"metadata"[..])),
+                destination: None,
+                file_conflict: FileConflictPolicy::Reject,
+                options: Vec::new(),
+            }),
+            &HashMap::new(),
+        ));
+
+        let CommandOutcome::Failure { failed } = outcome else {
+            panic!("expected empty gateway result failure");
+        };
+        assert_eq!(failed[0].error.code, ApplicationErrorCode::Internal);
+        assert!(failed[0].error.retryable);
     }
 
     #[test]
@@ -1117,7 +1275,9 @@ mod tests {
             vec![(
                 failed_task.gid,
                 AddDownloadRequest {
-                    uris: vec!["https://example.test/archive.iso".into()],
+                    source: AddDownloadSource::Uris(vec![
+                        "https://example.test/archive.iso".into(),
+                    ]),
                     destination: Some(EnginePath::new("/downloads")),
                     file_conflict: FileConflictPolicy::default(),
                     options: Vec::new(),

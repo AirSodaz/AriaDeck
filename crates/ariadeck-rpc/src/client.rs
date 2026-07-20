@@ -1,9 +1,11 @@
 use ariadeck_application::{
-    AddDownloadRequest, DownloadEngineGateway, DownloadProxyConfig, DownloadProxyMode,
-    FileConflictPolicy, GatewayError, GatewayErrorKind, TaskDetailsGateway, TaskRemovalTarget,
+    AddDownloadRequest, AddDownloadSource, DownloadEngineGateway, DownloadProxyConfig,
+    DownloadProxyMode, FileConflictPolicy, GatewayError, GatewayErrorKind, TaskDetailsGateway,
+    TaskRemovalTarget,
 };
 use ariadeck_domain::{Gid, GlobalStat, TaskDetails, TaskSnapshot};
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
@@ -89,17 +91,68 @@ where
     }
 
     pub async fn add_uri(&self, request: &AddDownloadRequest) -> Result<Gid, RpcError> {
-        let mut options = request
-            .options
-            .iter()
-            .cloned()
-            .map(|(key, value)| (key, Value::String(value)))
-            .collect::<Map<_, _>>();
-        apply_file_conflict_policy(&mut options, request.file_conflict);
-        if let Some(destination) = &request.destination {
-            options.insert("dir".into(), Value::String(destination.as_str().to_owned()));
+        let AddDownloadSource::Uris(uris) = &request.source else {
+            return Err(RpcError::Configuration(
+                "aria2.addUri requires URI sources".into(),
+            ));
+        };
+        self.add_uri_with_options(uris, request_options(request))
+            .await
+    }
+
+    pub async fn add_torrent(&self, request: &AddDownloadRequest) -> Result<Gid, RpcError> {
+        let AddDownloadSource::Torrent(content) = &request.source else {
+            return Err(RpcError::Configuration(
+                "aria2.addTorrent requires Torrent metadata".into(),
+            ));
+        };
+        self.call_gid(
+            "aria2.addTorrent",
+            vec![
+                json!(STANDARD.encode(content)),
+                json!([]),
+                Value::Object(request_options(request)),
+            ],
+        )
+        .await
+    }
+
+    pub async fn add_metalink(&self, request: &AddDownloadRequest) -> Result<Vec<Gid>, RpcError> {
+        const METHOD: &str = "aria2.addMetalink";
+        let AddDownloadSource::Metalink(content) = &request.source else {
+            return Err(RpcError::Configuration(
+                "aria2.addMetalink requires Metalink metadata".into(),
+            ));
+        };
+        let value = self
+            .transport
+            .call(
+                METHOD,
+                vec![
+                    json!(STANDARD.encode(content)),
+                    Value::Object(request_options(request)),
+                ],
+            )
+            .await?;
+        let encoded = decode::<Vec<String>>(METHOD, value)?;
+        if encoded.is_empty() {
+            return Err(RpcError::InvalidData {
+                method: METHOD.into(),
+                field: "result".into(),
+                message: "expected at least one GID".into(),
+            });
         }
-        self.add_uri_with_options(&request.uris, options).await
+        encoded
+            .into_iter()
+            .enumerate()
+            .map(|(index, gid)| {
+                gid.parse::<Gid>().map_err(|error| RpcError::InvalidData {
+                    method: METHOD.into(),
+                    field: format!("result[{index}]"),
+                    message: error.to_string(),
+                })
+            })
+            .collect()
     }
 
     async fn retry_uri(
@@ -114,7 +167,10 @@ where
             Err(error) => return Err(RetryRpcError::Query(error)),
         };
         let uris = if discovered_uris.is_empty() {
-            fallback.uris.clone()
+            match &fallback.source {
+                AddDownloadSource::Uris(uris) => uris.clone(),
+                AddDownloadSource::Torrent(_) | AddDownloadSource::Metalink(_) => Vec::new(),
+            }
         } else {
             discovered_uris
         };
@@ -474,6 +530,20 @@ fn apply_file_conflict_policy(options: &mut Map<String, Value>, policy: FileConf
     );
 }
 
+fn request_options(request: &AddDownloadRequest) -> Map<String, Value> {
+    let mut options = request
+        .options
+        .iter()
+        .cloned()
+        .map(|(key, value)| (key, Value::String(value)))
+        .collect::<Map<_, _>>();
+    apply_file_conflict_policy(&mut options, request.file_conflict);
+    if let Some(destination) = &request.destination {
+        options.insert("dir".into(), Value::String(destination.as_str().to_owned()));
+    }
+    options
+}
+
 fn next_batch_result(
     results: &mut impl Iterator<Item = Result<Value, RpcError>>,
     method: &str,
@@ -527,8 +597,13 @@ impl<T> DownloadEngineGateway for Aria2Client<T>
 where
     T: RpcTransport,
 {
-    async fn add_download(&self, request: &AddDownloadRequest) -> Result<Gid, GatewayError> {
-        self.add_uri(request).await.map_err(map_mutation_error)
+    async fn add_download(&self, request: &AddDownloadRequest) -> Result<Vec<Gid>, GatewayError> {
+        let result = match &request.source {
+            AddDownloadSource::Uris(_) => self.add_uri(request).await.map(|gid| vec![gid]),
+            AddDownloadSource::Torrent(_) => self.add_torrent(request).await.map(|gid| vec![gid]),
+            AddDownloadSource::Metalink(_) => self.add_metalink(request).await,
+        };
+        result.map_err(map_mutation_error)
     }
 
     async fn retry_download(
@@ -705,7 +780,10 @@ enum RetryRpcError {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, sync::Mutex};
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+    };
 
     use async_trait::async_trait;
     use serde_json::json;
@@ -783,10 +861,10 @@ mod tests {
         let transport = ScriptedTransport::new([Ok(json!("0000000000000009"))]);
         let client = Aria2Client::new(transport);
         let request = AddDownloadRequest {
-            uris: vec![
+            source: AddDownloadSource::Uris(vec![
                 "https://example.test/file".into(),
                 "https://mirror.test/file".into(),
-            ],
+            ]),
             destination: Some("D:/Downloads".into()),
             file_conflict: FileConflictPolicy::AutoRename,
             options: vec![("max-download-limit".into(), "1M".into())],
@@ -820,6 +898,80 @@ mod tests {
             calls[0].1[1]["auto-file-renaming"],
             Value::String("true".into())
         );
+    }
+
+    #[tokio::test]
+    async fn add_torrent_uploads_base64_content_and_options() {
+        let transport = ScriptedTransport::new([Ok(json!("0000000000000010"))]);
+        let client = Aria2Client::new(transport);
+        let request = AddDownloadRequest {
+            source: AddDownloadSource::Torrent(Arc::<[u8]>::from(&b"torrent-bytes"[..])),
+            destination: Some("/downloads".into()),
+            file_conflict: FileConflictPolicy::Reject,
+            options: vec![("max-connection-per-server".into(), "4".into())],
+        };
+
+        let gid = client
+            .add_torrent(&request)
+            .await
+            .expect("torrent upload succeeds");
+
+        assert_eq!(gid, Gid::from_u64(16));
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(calls[0].0, "aria2.addTorrent");
+        assert_eq!(calls[0].1[0], json!(STANDARD.encode(b"torrent-bytes")));
+        assert_eq!(calls[0].1[1], json!([]));
+        assert_eq!(calls[0].1[2]["dir"], json!("/downloads"));
+        assert_eq!(calls[0].1[2]["allow-overwrite"], json!("false"));
+        assert_eq!(calls[0].1[2]["auto-file-renaming"], json!("false"));
+        assert_eq!(calls[0].1[2]["max-connection-per-server"], json!("4"));
+    }
+
+    #[tokio::test]
+    async fn add_metalink_preserves_all_returned_gids() {
+        let transport =
+            ScriptedTransport::new([Ok(json!(["0000000000000011", "0000000000000012"]))]);
+        let client = Aria2Client::new(transport);
+        let request = AddDownloadRequest {
+            source: AddDownloadSource::Metalink(Arc::<[u8]>::from(&b"<metalink />"[..])),
+            destination: None,
+            file_conflict: FileConflictPolicy::Reject,
+            options: Vec::new(),
+        };
+
+        let gids = client
+            .add_metalink(&request)
+            .await
+            .expect("metalink upload succeeds");
+
+        assert_eq!(gids, vec![Gid::from_u64(17), Gid::from_u64(18)]);
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(calls[0].0, "aria2.addMetalink");
+        assert_eq!(calls[0].1[0], json!(STANDARD.encode(b"<metalink />")));
+    }
+
+    #[tokio::test]
+    async fn add_metalink_rejects_empty_or_malformed_gid_results() {
+        for result in [json!([]), json!(["not-a-gid"])] {
+            let transport = ScriptedTransport::new([Ok(result)]);
+            let client = Aria2Client::new(transport);
+            let request = AddDownloadRequest {
+                source: AddDownloadSource::Metalink(Arc::<[u8]>::from(&b"metadata"[..])),
+                destination: None,
+                file_conflict: FileConflictPolicy::Reject,
+                options: Vec::new(),
+            };
+
+            assert!(client.add_metalink(&request).await.is_err());
+        }
     }
 
     #[test]
@@ -874,7 +1026,7 @@ mod tests {
         ]);
         let client = Aria2Client::new(transport);
         let fallback = AddDownloadRequest {
-            uris: vec!["https://fallback.test/archive.iso".into()],
+            source: AddDownloadSource::Uris(vec!["https://fallback.test/archive.iso".into()]),
             destination: Some("/fallback".into()),
             file_conflict: FileConflictPolicy::default(),
             options: Vec::new(),
@@ -926,7 +1078,7 @@ mod tests {
         })]);
         let query_client = Aria2Client::new(query_failure);
         let fallback = AddDownloadRequest {
-            uris: vec!["https://example.test/archive.iso".into()],
+            source: AddDownloadSource::Uris(vec!["https://example.test/archive.iso".into()]),
             destination: None,
             file_conflict: FileConflictPolicy::default(),
             options: Vec::new(),
