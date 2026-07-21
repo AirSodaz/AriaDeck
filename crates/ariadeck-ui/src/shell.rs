@@ -4058,15 +4058,21 @@ impl AppShell {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("AriaDeck"),
             );
-        div()
+        // On Windows the caption strip must reach the physical right edge, so
+        // horizontal padding is applied only on the left (and non-Windows keeps
+        // symmetric padding for the Add action cluster).
+        let header = div()
             .h(px(TITLEBAR_HEIGHT))
             .flex_none()
             .flex()
             .items_center()
-            .px_3()
+            .pl_3()
             .border_b_1()
             .border_color(colors.border)
-            .bg(colors.toolbar_surface)
+            .bg(colors.toolbar_surface);
+        #[cfg(not(target_os = "windows"))]
+        let header = header.pr_3();
+        header
             .child(brand)
             .child(
                 div()
@@ -4084,26 +4090,35 @@ impl AppShell {
                     )
                     .child(titlebar_drag_region()),
             )
-            .child(
-                div()
-                    .w(px(TITLEBAR_SIDE_WIDTH))
+            .child({
+                // Keep chrome actions (Add) padded; Windows caption buttons are
+                // rendered outside this inset so Close can sit flush to the edge.
+                let actions = div()
                     .flex_none()
                     .flex()
                     .items_center()
                     .justify_end()
                     .gap_2()
-                    .child(self.render_add_button(cx))
-                    .when(cfg!(target_os = "windows"), |actions| {
-                        #[cfg(target_os = "windows")]
-                        {
-                            actions.child(self.render_window_controls(_window))
-                        }
-                        #[cfg(not(target_os = "windows"))]
-                        {
-                            actions
-                        }
-                    }),
-            )
+                    .when(cfg!(target_os = "windows"), |element| element.pl_2().pr_2())
+                    .when(!cfg!(target_os = "windows"), |element| {
+                        element.w(px(TITLEBAR_SIDE_WIDTH))
+                    })
+                    .child(self.render_add_button(cx));
+                #[cfg(target_os = "windows")]
+                {
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .child(actions)
+                        .child(self.render_window_controls(_window))
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    actions
+                }
+            })
     }
 
     #[cfg(target_os = "windows")]
@@ -8263,7 +8278,7 @@ fn window_control_config(kind: WindowControlKind, maximized: bool) -> WindowCont
     match kind {
         WindowControlKind::Minimize => WindowControlConfig {
             id: "window-minimize",
-            icon: IconName::Minus,
+            icon: IconName::WindowMinimize,
             label: "Minimize window",
             area: WindowControlArea::Min,
             danger: false,
@@ -8271,9 +8286,9 @@ fn window_control_config(kind: WindowControlKind, maximized: bool) -> WindowCont
         WindowControlKind::Maximize => WindowControlConfig {
             id: "window-maximize",
             icon: if maximized {
-                IconName::Copy
+                IconName::WindowRestore
             } else {
-                IconName::Square
+                IconName::WindowMaximize
             },
             label: if maximized {
                 "Restore window"
@@ -8285,13 +8300,17 @@ fn window_control_config(kind: WindowControlKind, maximized: bool) -> WindowCont
         },
         WindowControlKind::Close => WindowControlConfig {
             id: "window-close",
-            icon: IconName::X,
+            icon: IconName::WindowClose,
             label: "Close window",
             area: WindowControlArea::Close,
             danger: true,
         },
     }
 }
+
+/// Windows 11 caption button width (WinUI AppWindow title bar convention).
+#[cfg(target_os = "windows")]
+const WINDOW_CONTROL_WIDTH: f32 = 46.0;
 
 #[cfg(target_os = "windows")]
 fn window_control_button(
@@ -8302,24 +8321,50 @@ fn window_control_button(
     colors: crate::ThemeColors,
     danger: bool,
 ) -> Stateful<Div> {
-    let button = IconButton::new(id, icon)
-        .aria_label(label)
-        .tooltip(Tooltip::new(label));
-    let button = if danger {
-        button
-            .hover_background(colors.danger)
-            .active_background(colors.danger)
+    // Caption glyphs must set Icon.color explicitly: embedded SVGs use a fixed
+    // stroke and do not inherit the parent's text_color, so omitting color made
+    // them render black on the dark titlebar (invisible).
+    let idle = colors.text_primary;
+    let hover_bg = if danger {
+        colors.danger
     } else {
-        button
+        colors.surface_hover
     };
-    button
-        .render(colors)
-        .h(px(TITLEBAR_HEIGHT))
-        .w(px(46.0))
-        .min_w(px(46.0))
-        .px_0()
-        .rounded_none()
+    let active_bg = if danger {
+        colors.danger
+    } else {
+        colors.surface_active
+    };
+    // Fluent Close: red fill + light glyph. Other captions keep the idle glyph
+    // color while the fill changes (GPUI recolors SVG strokes via text_color).
+    let hover_fg = if danger {
+        Theme::light().colors.text_inverse
+    } else {
+        idle
+    };
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label)
         .window_control_area(area)
+        .focusable()
+        .tab_stop(true)
+        .h(px(TITLEBAR_HEIGHT))
+        .w(px(WINDOW_CONTROL_WIDTH))
+        .min_w(px(WINDOW_CONTROL_WIDTH))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_none()
+        .cursor_pointer()
+        .text_color(idle)
+        .hover(move |style| style.bg(hover_bg).text_color(hover_fg))
+        .active(move |style| style.bg(active_bg).text_color(hover_fg))
+        .tooltip(Tooltip::text(label, None, colors))
+        // Match toolbar IconButton optical size (Medium / 16px) so caption
+        // glyphs and chrome actions feel consistent.
+        .child(Icon::new(icon).size(IconSize::Medium).color(idle))
 }
 
 fn speed_chart_column(download_height: f32, upload_height: f32, colors: crate::ThemeColors) -> Div {
@@ -9378,22 +9423,22 @@ mod tests {
     fn window_controls_map_to_native_areas_and_accessible_labels() {
         let minimize = window_control_config(WindowControlKind::Minimize, false);
         assert_eq!(minimize.area, WindowControlArea::Min);
-        assert_eq!(minimize.icon, IconName::Minus);
+        assert_eq!(minimize.icon, IconName::WindowMinimize);
         assert_eq!(minimize.label, "Minimize window");
         assert!(!minimize.danger);
 
         let maximize = window_control_config(WindowControlKind::Maximize, false);
         assert_eq!(maximize.area, WindowControlArea::Max);
-        assert_eq!(maximize.icon, IconName::Square);
+        assert_eq!(maximize.icon, IconName::WindowMaximize);
         assert_eq!(maximize.label, "Maximize window");
 
         let restore = window_control_config(WindowControlKind::Maximize, true);
-        assert_eq!(restore.icon, IconName::Copy);
+        assert_eq!(restore.icon, IconName::WindowRestore);
         assert_eq!(restore.label, "Restore window");
 
         let close = window_control_config(WindowControlKind::Close, false);
         assert_eq!(close.area, WindowControlArea::Close);
-        assert_eq!(close.icon, IconName::X);
+        assert_eq!(close.icon, IconName::WindowClose);
         assert_eq!(close.label, "Close window");
         assert!(close.danger);
     }

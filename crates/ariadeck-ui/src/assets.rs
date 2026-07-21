@@ -40,7 +40,14 @@ mod tests {
                 .expect("settings icon should load")
                 .is_some()
         );
-        for icon in ["icons/minus.svg", "icons/square.svg"] {
+        for icon in [
+            "icons/minus.svg",
+            "icons/square.svg",
+            "icons/window-minimize.svg",
+            "icons/window-maximize.svg",
+            "icons/window-restore.svg",
+            "icons/window-close.svg",
+        ] {
             assert!(
                 Assets
                     .load(icon)

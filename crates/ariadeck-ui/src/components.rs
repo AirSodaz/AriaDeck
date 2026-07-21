@@ -60,6 +60,11 @@ pub enum IconName {
     ChevronsUp,
     ChevronsDown,
     Check,
+    /// Windows caption glyphs (thin Fluent-style strokes).
+    WindowMinimize,
+    WindowMaximize,
+    WindowRestore,
+    WindowClose,
 }
 
 impl IconName {
@@ -112,6 +117,10 @@ impl IconName {
             Self::ChevronsUp => "icons/chevrons-up.svg",
             Self::ChevronsDown => "icons/chevrons-down.svg",
             Self::Check => "icons/check.svg",
+            Self::WindowMinimize => "icons/window-minimize.svg",
+            Self::WindowMaximize => "icons/window-maximize.svg",
+            Self::WindowRestore => "icons/window-restore.svg",
+            Self::WindowClose => "icons/window-close.svg",
         }
     }
 }
@@ -431,11 +440,7 @@ impl Button {
             })
             .when(!self.loading, |button| {
                 button.when_some(self.icon, |button, icon| {
-                    button.child(
-                        Icon::new(icon)
-                            .size(IconSize::Medium)
-                            .color(foreground),
-                    )
+                    button.child(Icon::new(icon).size(IconSize::Medium).color(foreground))
                 })
             })
             .child(self.label)
@@ -1128,6 +1133,10 @@ mod tests {
             IconName::ChevronsUp,
             IconName::ChevronsDown,
             IconName::Check,
+            IconName::WindowMinimize,
+            IconName::WindowMaximize,
+            IconName::WindowRestore,
+            IconName::WindowClose,
         ] {
             assert!(icon.path().starts_with("icons/"));
             assert!(icon.path().ends_with(".svg"));
