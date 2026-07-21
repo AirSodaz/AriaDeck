@@ -1,5 +1,7 @@
 # AriaDeck
 
+<img src="apps/ariadeck-desktop/assets/icon.svg" width="80" height="80" align="right" alt="AriaDeck icon"/>
+
 AriaDeck is a native Rust desktop client for aria2. It uses GPUI for rendering
 and communicates with an independent aria2 process through JSON-RPC.
 

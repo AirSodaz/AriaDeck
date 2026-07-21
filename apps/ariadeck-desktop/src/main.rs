@@ -60,6 +60,8 @@ fn main() {
                     titlebar: Some(platform_titlebar()),
                     window_decorations: platform_window_decorations(),
                     window_min_size: Some(size(px(960.0), px(620.0))),
+                    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                    icon: window_icon(),
                     ..WindowOptions::default()
                 },
                 {
@@ -125,6 +127,21 @@ fn platform_titlebar() -> TitlebarOptions {
         title: Some("AriaDeck".into()),
         ..TitlebarOptions::default()
     }
+}
+
+/// Return the application icon for X11/Wayland window managers (Linux + FreeBSD).
+///
+/// GPUI reads this via `WindowOptions::icon` and forwards it to the platform
+/// window so the WM can show it in the taskbar or window list.
+/// On Windows the icon is embedded as a Win32 resource (handled in `build.rs`
+/// via `winres`); on macOS it lives in the `.app` bundle. Neither platform has
+/// a `WindowOptions::icon` field, so this function is cfg-gated accordingly.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn window_icon() -> Option<Arc<image::RgbaImage>> {
+    // 128×128 RGBA rendered from assets/icon.svg at build time.
+    const SIZE: u32 = 128;
+    let rgba = include_bytes!(concat!(env!("OUT_DIR"), "/window_icon.rgba"));
+    image::RgbaImage::from_raw(SIZE, SIZE, rgba.to_vec()).map(Arc::new)
 }
 
 #[cfg(target_os = "linux")]

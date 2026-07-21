@@ -125,10 +125,11 @@ fn push_unique(actions: &mut Vec<TrayAction>, action: TrayAction) {
 }
 
 fn tray_icon_image() -> Result<Icon, String> {
-    // Embedded 32×32 RGBA generated for AriaDeck (blue disk + white mark).
+    // 32×32 RGBA rendered from assets/icon.svg at build time and written to
+    // OUT_DIR by build.rs. The file is 4 096 bytes (32 × 32 × 4).
     const WIDTH: u32 = 32;
     const HEIGHT: u32 = 32;
-    let rgba = include_bytes!("../assets/tray_icon.rgba");
+    let rgba = include_bytes!(concat!(env!("OUT_DIR"), "/tray_icon.rgba"));
     if rgba.len() != (WIDTH * HEIGHT * 4) as usize {
         return Err("embedded tray icon has unexpected size".into());
     }

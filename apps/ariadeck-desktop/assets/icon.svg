@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0891b2"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded square background: teal (#0891b2) → blue (#2563eb) -->
+  <rect width="512" height="512" rx="88" fill="url(#bg)"/>
+
+  <!-- Bold "A" letterform: outer triangle with inner cutout (evenodd).
+       Outer: apex (256,76) → bottom-right (416,298) → bottom-left (96,298).
+       Inner: apex (256,168) → bottom-left (168,298) → bottom-right (344,298).
+       Arm thickness at base ≈ 72 px each side. -->
+  <path
+    fill-rule="evenodd"
+    fill="white"
+    d="M 256 76 L 416 298 L 96 298 Z
+       M 256 168 L 168 298 L 344 298 Z"/>
+
+  <!-- Deck bars — represent stacked layers / the "Deck" in AriaDeck.
+       Bar 1 (full width) sits flush beneath the A base.
+       Bar 2 (narrower) is indented on both sides, suggesting depth/stack. -->
+  <rect x="116" y="320" width="280" height="38" rx="19" fill="white"/>
+  <rect x="156" y="374" width="200" height="38" rx="19" fill="white" opacity="0.72"/>
+</svg>
