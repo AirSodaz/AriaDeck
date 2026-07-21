@@ -35,8 +35,8 @@ use ariadeck_rpc::{
 };
 use ariadeck_settings::{
     AppSettings, ColorScheme, DownloadProxyMode, DownloadProxySettings, FileAllocationSetting,
-    JsonSettingsStore, ProxyCredentialRef, ProxyCredentialStore, SpeedLimitSettings,
-    SystemProxyCredentialStore, TransferPolicySettings,
+    JsonSettingsStore, NotificationSettings, NotificationVolume, ProxyCredentialRef,
+    ProxyCredentialStore, SpeedLimitSettings, SystemProxyCredentialStore, TransferPolicySettings,
 };
 use ariadeck_ui::{
     AddDownloadAdvancedOptionsView, AddDownloadItemResultView, AddDownloadMetadataFileView,
@@ -48,17 +48,17 @@ use ariadeck_ui::{
     BatchTaskCommandView, BatchTaskFailureView, ColorSchemeView, CommandOutcomeView,
     ConnectionView, DownloadProxySettingsView, DownloadRowView, EngineHealthView,
     EngineSessionView, FileAllocationView, FileConflictPolicyView, GlobalTaskCommandRequestView,
-    GlobalTaskCommandResultView, GlobalTaskCommandView, OperationErrorView, ProxyModeView,
-    ProxyPasswordUpdateView, SettingsSaveOutcomeView, SettingsSaveRequestView,
-    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView,
-    StoppedHistoryView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
-    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
-    TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
-    TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
-    TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
-    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TransferPolicySettingsView,
-    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
-    format_speed_limit_field,
+    GlobalTaskCommandResultView, GlobalTaskCommandView, NotificationSettingsView,
+    NotificationVolumeView, OperationErrorView, ProxyModeView, ProxyPasswordUpdateView,
+    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
+    SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView, TaskCommandRequestView,
+    TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
+    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
+    TaskIdentity, TaskNameStateView, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
+    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
+    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
+    TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
+    WorkspaceSortDirection, WorkspaceSortKey, format_speed_limit_field,
 };
 use data_encoding::BASE32_NOPAD;
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
@@ -2774,6 +2774,16 @@ fn map_settings(settings: &AppSettings) -> SettingsView {
             },
             check_integrity: settings.transfer_policy.check_integrity,
         },
+        notifications: NotificationSettingsView {
+            volume: match settings.notifications.volume {
+                NotificationVolume::Normal => NotificationVolumeView::Normal,
+                NotificationVolume::Quiet => NotificationVolumeView::Quiet,
+                NotificationVolume::Silent => NotificationVolumeView::Silent,
+            },
+            notify_on_completion: settings.notifications.notify_on_completion,
+            notify_on_error: settings.notifications.notify_on_error,
+            notify_on_engine_events: settings.notifications.notify_on_engine_events,
+        },
     }
 }
 
@@ -2862,6 +2872,16 @@ fn map_settings_request(
                 FileAllocationView::Falloc => FileAllocationSetting::Falloc,
             },
             check_integrity: settings.transfer_policy.check_integrity,
+        },
+        notifications: NotificationSettings {
+            volume: match settings.notifications.volume {
+                NotificationVolumeView::Normal => NotificationVolume::Normal,
+                NotificationVolumeView::Quiet => NotificationVolume::Quiet,
+                NotificationVolumeView::Silent => NotificationVolume::Silent,
+            },
+            notify_on_completion: settings.notifications.notify_on_completion,
+            notify_on_error: settings.notifications.notify_on_error,
+            notify_on_engine_events: settings.notifications.notify_on_engine_events,
         },
     };
     mapped.validate().map_err(|error| error.to_string())?;
@@ -5734,6 +5754,7 @@ Accept: */*"
             },
             speed_limits: SpeedLimitSettingsView::default(),
             transfer_policy: TransferPolicySettingsView::default(),
+            notifications: NotificationSettingsView::default(),
         };
 
         let (mapped, password) = map_settings_request(
@@ -5867,6 +5888,7 @@ Accept: */*"
             download_proxy: DownloadProxySettings::default(),
             speed_limits: SpeedLimitSettings::default(),
             transfer_policy: TransferPolicySettings::default(),
+            notifications: NotificationSettings::default(),
         };
         let second = AppSettings {
             color_scheme: ColorScheme::Light,
@@ -5874,6 +5896,7 @@ Accept: */*"
             download_proxy: DownloadProxySettings::default(),
             speed_limits: SpeedLimitSettings::default(),
             transfer_policy: TransferPolicySettings::default(),
+            notifications: NotificationSettings::default(),
         };
         sender
             .send(SettingsPersistenceRequest {
@@ -5933,6 +5956,7 @@ Accept: */*"
             download_proxy: DownloadProxySettings::default(),
             speed_limits: SpeedLimitSettings::default(),
             transfer_policy: TransferPolicySettings::default(),
+            notifications: NotificationSettings::default(),
         };
 
         persist_settings(&store, &settings, None).expect("persist external engine path");

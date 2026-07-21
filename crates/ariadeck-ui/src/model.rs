@@ -1237,6 +1237,90 @@ pub enum ProxyPasswordUpdateView {
     Set(SecretStringView),
 }
 
+/// How loudly automatic completion/error surfaces appear.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum NotificationVolumeView {
+    #[default]
+    Normal,
+    Quiet,
+    Silent,
+}
+
+impl NotificationVolumeView {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "Normal",
+            Self::Quiet => "Quiet",
+            Self::Silent => "Silent",
+        }
+    }
+
+    #[must_use]
+    pub const fn all() -> [Self; 3] {
+        [Self::Normal, Self::Quiet, Self::Silent]
+    }
+}
+
+/// Notification preferences for automatic task/engine surfaces (OBS-001).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NotificationSettingsView {
+    pub volume: NotificationVolumeView,
+    pub notify_on_completion: bool,
+    pub notify_on_error: bool,
+    pub notify_on_engine_events: bool,
+}
+
+impl Default for NotificationSettingsView {
+    fn default() -> Self {
+        Self {
+            volume: NotificationVolumeView::Normal,
+            notify_on_completion: true,
+            notify_on_error: true,
+            notify_on_engine_events: true,
+        }
+    }
+}
+
+/// Kind of in-app activity/history entry.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ActivityKindView {
+    Completion,
+    Error,
+    Engine,
+    Command,
+    Info,
+}
+
+impl ActivityKindView {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Completion => "Completed",
+            Self::Error => "Error",
+            Self::Engine => "Engine",
+            Self::Command => "Command",
+            Self::Info => "Info",
+        }
+    }
+
+    #[must_use]
+    pub const fn is_error(self) -> bool {
+        matches!(self, Self::Error | Self::Engine)
+    }
+}
+
+/// One in-session activity/history row (not persisted across restarts).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActivityEntryView {
+    pub id: u64,
+    pub kind: ActivityKindView,
+    pub summary: String,
+    pub detail: Option<String>,
+    pub task: Option<TaskIdentity>,
+    pub count: u32,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SettingsView {
     pub color_scheme: ColorSchemeView,
@@ -1244,6 +1328,7 @@ pub struct SettingsView {
     pub download_proxy: DownloadProxySettingsView,
     pub speed_limits: SpeedLimitSettingsView,
     pub transfer_policy: TransferPolicySettingsView,
+    pub notifications: NotificationSettingsView,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

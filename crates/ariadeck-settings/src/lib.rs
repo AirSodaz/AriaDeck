@@ -12,7 +12,7 @@ use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 4;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -255,6 +255,41 @@ impl TransferPolicySettings {
     }
 }
 
+/// How loudly AriaDeck surfaces completion/error events.
+///
+/// Quiet still records activity history and keeps command-feedback toasts, but
+/// suppresses automatic completion/error toast surfaces. Defaults favor visible
+/// completions and errors without OS-native notification spam (deferred).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationVolume {
+    #[default]
+    Normal,
+    Quiet,
+    Silent,
+}
+
+/// Persisted notification preferences for grouped completion/error surfaces.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationSettings {
+    pub volume: NotificationVolume,
+    pub notify_on_completion: bool,
+    pub notify_on_error: bool,
+    pub notify_on_engine_events: bool,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            volume: NotificationVolume::Normal,
+            notify_on_completion: true,
+            notify_on_error: true,
+            notify_on_engine_events: true,
+        }
+    }
+}
+
 impl DownloadProxySettings {
     pub fn validate(&self) -> Result<(), SettingsError> {
         for (label, endpoint) in [
@@ -292,6 +327,7 @@ pub struct AppSettings {
     pub download_proxy: DownloadProxySettings,
     pub speed_limits: SpeedLimitSettings,
     pub transfer_policy: TransferPolicySettings,
+    pub notifications: NotificationSettings,
 }
 
 impl AppSettings {
@@ -303,6 +339,7 @@ impl AppSettings {
             download_proxy: DownloadProxySettings::default(),
             speed_limits: SpeedLimitSettings::default(),
             transfer_policy: TransferPolicySettings::default(),
+            notifications: NotificationSettings::default(),
         }
     }
 
@@ -472,6 +509,17 @@ struct SettingsDocumentV3 {
     speed_limits: SpeedLimitSettings,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsDocumentV4 {
+    schema_version: u32,
+    color_scheme: ColorScheme,
+    download_directory: PathBuf,
+    download_proxy: DownloadProxySettings,
+    speed_limits: SpeedLimitSettings,
+    transfer_policy: TransferPolicySettings,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SettingsDocument {
@@ -481,6 +529,7 @@ struct SettingsDocument {
     download_proxy: DownloadProxySettings,
     speed_limits: SpeedLimitSettings,
     transfer_policy: TransferPolicySettings,
+    notifications: NotificationSettings,
 }
 
 impl From<&AppSettings> for SettingsDocument {
@@ -492,6 +541,7 @@ impl From<&AppSettings> for SettingsDocument {
             download_proxy: settings.download_proxy.clone(),
             speed_limits: settings.speed_limits,
             transfer_policy: settings.transfer_policy,
+            notifications: settings.notifications,
         }
     }
 }
@@ -512,6 +562,7 @@ impl TryFrom<SettingsDocument> for AppSettings {
             download_proxy: document.download_proxy,
             speed_limits: document.speed_limits,
             transfer_policy: document.transfer_policy,
+            notifications: document.notifications,
         };
         settings.validate()?;
         Ok(settings)
@@ -562,6 +613,7 @@ impl JsonSettingsStore {
                     download_proxy: DownloadProxySettings::default(),
                     speed_limits: SpeedLimitSettings::default(),
                     transfer_policy: TransferPolicySettings::default(),
+                    notifications: NotificationSettings::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -581,6 +633,7 @@ impl JsonSettingsStore {
                     download_proxy: document.download_proxy,
                     speed_limits: SpeedLimitSettings::default(),
                     transfer_policy: TransferPolicySettings::default(),
+                    notifications: NotificationSettings::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -600,6 +653,27 @@ impl JsonSettingsStore {
                     download_proxy: document.download_proxy,
                     speed_limits: document.speed_limits,
                     transfer_policy: TransferPolicySettings::default(),
+                    notifications: NotificationSettings::default(),
+                };
+                settings.validate()?;
+                Ok((settings, true))
+            }
+            4 => {
+                let document: SettingsDocumentV4 =
+                    serde_json::from_slice(&bytes).map_err(malformed)?;
+                if document.schema_version != 4 {
+                    return Err(SettingsError::UnsupportedSchemaVersion {
+                        found: document.schema_version,
+                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
+                    });
+                }
+                let settings = AppSettings {
+                    color_scheme: document.color_scheme,
+                    download_directory: document.download_directory,
+                    download_proxy: document.download_proxy,
+                    speed_limits: document.speed_limits,
+                    transfer_policy: document.transfer_policy,
+                    notifications: NotificationSettings::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -768,6 +842,7 @@ mod tests {
             download_proxy: DownloadProxySettings::default(),
             speed_limits: SpeedLimitSettings::default(),
             transfer_policy: TransferPolicySettings::default(),
+            notifications: NotificationSettings::default(),
         }
     }
 
@@ -785,8 +860,9 @@ mod tests {
         assert_eq!(store.load().expect("load settings"), expected);
 
         let document = fs::read_to_string(store.path()).expect("read settings JSON");
-        assert!(document.contains("\"schema_version\": 4"));
+        assert!(document.contains("\"schema_version\": 5"));
         assert!(document.contains("\"transfer_policy\""));
+        assert!(document.contains("\"notifications\""));
         assert!(document.ends_with('\n'));
     }
 
@@ -813,12 +889,17 @@ mod tests {
             loaded.settings.transfer_policy,
             TransferPolicySettings::default()
         );
+        assert_eq!(
+            loaded.settings.notifications,
+            NotificationSettings::default()
+        );
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 4"));
+        assert!(migrated.contains("\"schema_version\": 5"));
         assert!(migrated.contains("\"download_proxy\""));
         assert!(migrated.contains("\"speed_limits\""));
         assert!(migrated.contains("\"transfer_policy\""));
+        assert!(migrated.contains("\"notifications\""));
     }
 
     #[test]
@@ -840,11 +921,16 @@ mod tests {
             loaded.settings.transfer_policy,
             TransferPolicySettings::default()
         );
+        assert_eq!(
+            loaded.settings.notifications,
+            NotificationSettings::default()
+        );
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 4"));
+        assert!(migrated.contains("\"schema_version\": 5"));
         assert!(migrated.contains("\"speed_limits\""));
         assert!(migrated.contains("\"transfer_policy\""));
+        assert!(migrated.contains("\"notifications\""));
     }
 
     #[test]
@@ -872,11 +958,45 @@ mod tests {
             loaded.settings.transfer_policy,
             TransferPolicySettings::default()
         );
+        assert_eq!(
+            loaded.settings.notifications,
+            NotificationSettings::default()
+        );
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 4"));
+        assert!(migrated.contains("\"schema_version\": 5"));
         assert!(migrated.contains("\"transfer_policy\""));
         assert!(migrated.contains("\"max_concurrent_downloads\""));
+        assert!(migrated.contains("\"notifications\""));
+    }
+
+    #[test]
+    fn version_four_document_is_migrated_with_default_notifications() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        fs::write(
+            store.path(),
+            r#"{"schema_version":4,"color_scheme":"dark","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false}}"#,
+        )
+        .expect("seed version four settings");
+
+        let loaded = store
+            .load_or_initialize(&settings(root.path()))
+            .expect("migrate version four settings");
+
+        assert_eq!(
+            loaded.settings.transfer_policy,
+            TransferPolicySettings::default()
+        );
+        assert_eq!(
+            loaded.settings.notifications,
+            NotificationSettings::default()
+        );
+        assert!(loaded.recovery.is_none());
+        let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
+        assert!(migrated.contains("\"schema_version\": 5"));
+        assert!(migrated.contains("\"notifications\""));
+        assert!(migrated.contains("\"notify_on_completion\""));
     }
 
     #[test]

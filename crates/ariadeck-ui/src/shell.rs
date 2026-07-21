@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
@@ -15,8 +15,8 @@ use gpui::{
 };
 
 use crate::{
-    AddDownloadAdvancedOptionsView, AddDownloadInputModeView, AddDownloadItemResultView,
-    AddDownloadMetadataKindView, AddDownloadMetadataPreviewOutcomeView,
+    ActivityEntryView, ActivityKindView, AddDownloadAdvancedOptionsView, AddDownloadInputModeView,
+    AddDownloadItemResultView, AddDownloadMetadataKindView, AddDownloadMetadataPreviewOutcomeView,
     AddDownloadMetadataPreviewRequestView, AddDownloadMetadataPreviewResultView,
     AddDownloadMetadataPreviewView, AddDownloadModeView, AddDownloadRequestView,
     AddDownloadResultView, AddDownloadSourceView, BatchCommandOutcomeView,
@@ -27,21 +27,21 @@ use crate::{
     EngineSessionView, FileAllocationView, FileConflictPolicyView, FocusNext, FocusPrevious,
     FocusSearch, GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView,
     Icon, IconButton, IconName, IconSize, MoveTaskDownInQueue, MoveTaskToQueueBottom,
-    MoveTaskToQueueTop, MoveTaskUpInQueue, OpenAddDownload, OpenSettings, OpenTaskDetails,
-    OpenTaskOutputName, OpenTaskSpeedLimit, OperationErrorView, PauseSelectedTask, ProxyModeView,
-    ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask,
-    SaveSettings, SearchInputEvent, SecretStringView, Segment, SegmentedControl, SelectAllTasks,
-    SelectNextTask, SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView,
-    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator,
-    SubmitAddDownload, SubmitTaskOutputName, SubmitTaskSpeedLimit, TaskCommandRequestView,
-    TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView, TaskDetailsRequestView,
-    TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity, TaskOpenOutcomeView,
-    TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView, TaskOptionView,
-    TaskPathValidationView, TaskPeerView, TaskServerView, TaskStatusView, TaskTrackerView,
-    TaskUriView, TextField, TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Tooltip,
-    TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
-    WorkspaceSortDirection, WorkspaceSortKey, format_bytes, format_eta, format_percent,
-    format_rate, format_share_ratio,
+    MoveTaskToQueueTop, MoveTaskUpInQueue, NotificationSettingsView, NotificationVolumeView,
+    OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit,
+    OperationErrorView, PauseSelectedTask, ProxyModeView, ProxyPasswordUpdateView,
+    RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask, SaveSettings,
+    SearchInputEvent, SecretStringView, Segment, SegmentedControl, SelectAllTasks, SelectNextTask,
+    SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
+    SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator, SubmitAddDownload,
+    SubmitTaskOutputName, SubmitTaskSpeedLimit, TaskCommandRequestView, TaskCommandResultView,
+    TaskCommandView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
+    TaskDetailsView, TaskFileView, TaskIdentity, TaskOpenOutcomeView, TaskOpenRequestView,
+    TaskOpenResultView, TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView,
+    TaskServerView, TaskStatusView, TaskTrackerView, TaskUriView, TextField, TextFieldConfig,
+    Theme, ThemeMode, Toast, ToastKind, Tooltip, TransferPolicySettingsView, WorkspaceFilter,
+    WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, format_bytes,
+    format_eta, format_percent, format_rate, format_share_ratio,
 };
 
 const SPEED_CHART_SAMPLES: usize = 120;
@@ -53,6 +53,8 @@ const SIDEBAR_WIDTH: f32 = 208.0;
 const DETAILS_DRAWER_WIDTH: f32 = 360.0;
 const TASK_LAYOUT_WIDE_MIN_WIDTH: f32 = 820.0;
 const TASK_ROW_HEIGHT: f32 = 68.0;
+const ACTIVITY_HISTORY_LIMIT: usize = 100;
+const ACTIVITY_PANEL_WIDTH: f32 = 360.0;
 
 #[cfg(target_os = "macos")]
 const TITLEBAR_BRAND_INSET: f32 = 52.0;
@@ -200,6 +202,9 @@ struct StatusNotice {
     id: u64,
     message: String,
     is_error: bool,
+    /// When false, this is command feedback that Quiet mode still shows.
+    #[allow(dead_code)]
+    automatic: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -216,6 +221,10 @@ struct SettingsPage {
     draft_proxy_mode: ProxyModeView,
     draft_file_allocation: FileAllocationView,
     draft_check_integrity: bool,
+    draft_notification_volume: NotificationVolumeView,
+    draft_notify_on_completion: bool,
+    draft_notify_on_error: bool,
+    draft_notify_on_engine_events: bool,
     clear_proxy_password: bool,
     error: Option<OperationErrorView>,
 }
@@ -227,6 +236,7 @@ enum SettingsSaveSource {
     Proxy,
     SpeedLimit,
     TransferPolicy,
+    Notifications,
 }
 
 struct PendingSettingsSave {
@@ -354,6 +364,10 @@ pub struct AppShell {
     context_menu: Option<TaskContextMenu>,
     status_notice: Option<StatusNotice>,
     next_notice_id: u64,
+    activity_log: Vec<ActivityEntryView>,
+    next_activity_id: u64,
+    activity_panel_open: bool,
+    known_task_status: HashMap<TaskIdentity, TaskStatusView>,
     next_request_id: u64,
     list_scroll: UniformListScrollHandle,
     metadata_file_scroll: UniformListScrollHandle,
@@ -1025,6 +1039,10 @@ impl AppShell {
             context_menu: None,
             status_notice: None,
             next_notice_id: 1,
+            activity_log: Vec::new(),
+            next_activity_id: 1,
+            activity_panel_open: false,
+            known_task_status: HashMap::new(),
             next_request_id: 1,
             list_scroll: UniformListScrollHandle::new(),
             metadata_file_scroll: UniformListScrollHandle::new(),
@@ -1133,8 +1151,9 @@ impl AppShell {
             }
         }
 
-        self.snapshot = snapshot;
+        let previous_snapshot = std::mem::replace(&mut self.snapshot, snapshot);
         let followed_task = selected_successor.is_some() || drawer_successor.is_some();
+        self.observe_task_status_transitions(&previous_snapshot, cx);
 
         for (previous, successor) in selection_migrations {
             self.selected_tasks.remove(&previous);
@@ -1210,19 +1229,19 @@ impl AppShell {
         }
         self.engine_health = health;
         match &self.engine_health {
-            EngineHealthView::Running { restarts } if *restarts > 0 => self.show_notice(
-                format!(
+            EngineHealthView::Running { restarts } if *restarts > 0 => {
+                let message = format!(
                     "Local aria2 recovered after {restarts} restart attempt{}.",
                     if *restarts == 1 { "" } else { "s" }
-                ),
-                false,
-                cx,
-            ),
-            EngineHealthView::Failed { summary } => self.show_notice(
-                format!("Local aria2 could not be restarted: {summary}"),
-                true,
-                cx,
-            ),
+                );
+                self.record_activity(ActivityKindView::Engine, message.clone(), None, None, 1, cx);
+                self.show_automatic_notice(message, false, true, cx);
+            }
+            EngineHealthView::Failed { summary } => {
+                let message = format!("Local aria2 could not be restarted: {summary}");
+                self.record_activity(ActivityKindView::Engine, message.clone(), None, None, 1, cx);
+                self.show_automatic_notice(message, true, true, cx);
+            }
             _ => cx.notify(),
         }
     }
@@ -1872,6 +1891,7 @@ impl AppShell {
                         });
                         "Transfer policy saved."
                     }
+                    SettingsSaveSource::Notifications => "Notification preferences saved.",
                 };
                 self.show_notice(message, false, cx);
             }
@@ -1991,6 +2011,8 @@ impl AppShell {
     fn clear_search(&mut self, _: &ClearSearch, window: &mut Window, cx: &mut Context<Self>) {
         if self.context_menu.take().is_some() {
             cx.notify();
+        } else if self.activity_panel_open {
+            self.close_activity_panel(window, cx);
         } else if self.sort_popover_open {
             self.close_sort_popover(cx);
         } else if self.speed_popover_open {
@@ -2194,6 +2216,11 @@ impl AppShell {
         self.settings_page.draft_color_scheme = settings.color_scheme;
         self.settings_page.draft_file_allocation = settings.transfer_policy.file_allocation;
         self.settings_page.draft_check_integrity = settings.transfer_policy.check_integrity;
+        self.settings_page.draft_notification_volume = settings.notifications.volume;
+        self.settings_page.draft_notify_on_completion = settings.notifications.notify_on_completion;
+        self.settings_page.draft_notify_on_error = settings.notifications.notify_on_error;
+        self.settings_page.draft_notify_on_engine_events =
+            settings.notifications.notify_on_engine_events;
         self.search_input
             .update(cx, |input, cx| input.set_theme(self.theme, cx));
         self.add_input
@@ -2329,12 +2356,17 @@ impl AppShell {
         self.page = AppPage::Settings;
         self.details_drawer = None;
         self.speed_popover_open = false;
+        self.activity_panel_open = false;
         self.settings_page = SettingsPage {
             previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
             draft_color_scheme: self.settings.color_scheme,
             draft_proxy_mode: proxy.mode,
             draft_file_allocation: transfer_policy.file_allocation,
             draft_check_integrity: transfer_policy.check_integrity,
+            draft_notification_volume: self.settings.notifications.volume,
+            draft_notify_on_completion: self.settings.notifications.notify_on_completion,
+            draft_notify_on_error: self.settings.notifications.notify_on_error,
+            draft_notify_on_engine_events: self.settings.notifications.notify_on_engine_events,
             clear_proxy_password: false,
             error: None,
         };
@@ -2598,6 +2630,74 @@ impl AppShell {
         cx.notify();
     }
 
+    fn submit_notifications(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        let draft = NotificationSettingsView {
+            volume: self.settings_page.draft_notification_volume,
+            notify_on_completion: self.settings_page.draft_notify_on_completion,
+            notify_on_error: self.settings_page.draft_notify_on_error,
+            notify_on_engine_events: self.settings_page.draft_notify_on_engine_events,
+        };
+        if draft == self.settings.notifications {
+            return;
+        }
+        let mut settings = self.settings.clone();
+        settings.notifications = draft;
+        self.request_settings_save(
+            settings,
+            ProxyPasswordUpdateView::Unchanged,
+            SettingsSaveSource::Notifications,
+            cx,
+        );
+    }
+
+    fn select_notification_volume(
+        &mut self,
+        volume: NotificationVolumeView,
+        cx: &mut Context<Self>,
+    ) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        if self.settings_page.draft_notification_volume == volume {
+            return;
+        }
+        self.settings_page.draft_notification_volume = volume;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    fn toggle_notify_on_completion(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        self.settings_page.draft_notify_on_completion =
+            !self.settings_page.draft_notify_on_completion;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    fn toggle_notify_on_error(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        self.settings_page.draft_notify_on_error = !self.settings_page.draft_notify_on_error;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    fn toggle_notify_on_engine_events(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        self.settings_page.draft_notify_on_engine_events =
+            !self.settings_page.draft_notify_on_engine_events;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
     fn request_settings_save(
         &mut self,
         settings: SettingsView,
@@ -2659,12 +2759,57 @@ impl AppShell {
     }
 
     fn show_notice(&mut self, message: impl Into<String>, is_error: bool, cx: &mut Context<Self>) {
+        // Command/action feedback always surfaces unless Silent is selected.
+        self.show_notice_inner(message, is_error, false, cx);
+    }
+
+    fn show_automatic_notice(
+        &mut self,
+        message: impl Into<String>,
+        is_error: bool,
+        engine_event: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let prefs = self.settings.notifications;
+        if prefs.volume == NotificationVolumeView::Silent {
+            return;
+        }
+        if prefs.volume == NotificationVolumeView::Quiet {
+            return;
+        }
+        if engine_event && !prefs.notify_on_engine_events {
+            return;
+        }
+        if !engine_event && is_error && !prefs.notify_on_error {
+            return;
+        }
+        if !engine_event && !is_error && !prefs.notify_on_completion {
+            return;
+        }
+        self.show_notice_inner(message, is_error, true, cx);
+    }
+
+    fn show_notice_inner(
+        &mut self,
+        message: impl Into<String>,
+        is_error: bool,
+        automatic: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.notifications.volume == NotificationVolumeView::Silent {
+            // Silent still records history but suppresses every toast surface.
+            return;
+        }
+        if automatic && self.settings.notifications.volume == NotificationVolumeView::Quiet {
+            return;
+        }
         let id = self.next_notice_id;
         self.next_notice_id = self.next_notice_id.checked_add(1).unwrap_or(1);
         self.status_notice = Some(StatusNotice {
             id,
             message: message.into(),
             is_error,
+            automatic,
         });
         cx.notify();
         if !is_error {
@@ -2677,6 +2822,191 @@ impl AppShell {
             })
             .detach();
         }
+    }
+
+    fn record_activity(
+        &mut self,
+        kind: ActivityKindView,
+        summary: impl Into<String>,
+        detail: Option<String>,
+        task: Option<TaskIdentity>,
+        count: u32,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.next_activity_id;
+        self.next_activity_id = self.next_activity_id.checked_add(1).unwrap_or(1);
+        self.activity_log.insert(
+            0,
+            ActivityEntryView {
+                id,
+                kind,
+                summary: summary.into(),
+                detail,
+                task,
+                count: count.max(1),
+            },
+        );
+        if self.activity_log.len() > ACTIVITY_HISTORY_LIMIT {
+            self.activity_log.truncate(ACTIVITY_HISTORY_LIMIT);
+        }
+        cx.notify();
+    }
+
+    fn observe_task_status_transitions(
+        &mut self,
+        previous: &WorkspaceSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        // First connected snapshot after connect/session change only seeds the map.
+        let seed_only = previous.profile_id != self.snapshot.profile_id
+            || previous.session_id != self.snapshot.session_id
+            || previous.generation != self.snapshot.generation
+            || self.known_task_status.is_empty();
+
+        let mut completed: Vec<(TaskIdentity, String)> = Vec::new();
+        let mut failed: Vec<(TaskIdentity, String, Option<String>)> = Vec::new();
+
+        for task in &self.snapshot.tasks {
+            let previous_status = self.known_task_status.get(&task.identity).copied();
+            self.known_task_status
+                .insert(task.identity.clone(), task.status);
+            if seed_only {
+                continue;
+            }
+            let Some(previous_status) = previous_status else {
+                // First sighting of a task is not a transition event.
+                continue;
+            };
+            if previous_status == task.status || previous_status.is_terminal() {
+                continue;
+            }
+            match task.status {
+                TaskStatusView::Complete => {
+                    completed.push((task.identity.clone(), task_display_name(task)));
+                }
+                TaskStatusView::Failed => {
+                    let detail = task.error.as_ref().map(|error| {
+                        if let Some(details) = error.details.as_ref() {
+                            format!("{} ({details})", error.summary)
+                        } else {
+                            error.summary.clone()
+                        }
+                    });
+                    failed.push((task.identity.clone(), task_display_name(task), detail));
+                }
+                _ => {}
+            }
+        }
+
+        // Drop identities that left the loaded workspace to bound memory.
+        self.known_task_status.retain(|identity, _| {
+            self.snapshot
+                .tasks
+                .iter()
+                .any(|task| &task.identity == identity)
+        });
+
+        if seed_only {
+            return;
+        }
+
+        if !completed.is_empty() {
+            let count = completed.len() as u32;
+            let summary = if count == 1 {
+                format!("{} finished downloading.", completed[0].1)
+            } else {
+                format!("{count} downloads finished.")
+            };
+            let detail = if count == 1 {
+                None
+            } else {
+                let listed = completed
+                    .iter()
+                    .take(5)
+                    .map(|(_, name)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Some(if count > 5 {
+                    format!("{listed}, …")
+                } else {
+                    listed
+                })
+            };
+            let task = (count == 1).then(|| completed[0].0.clone());
+            self.record_activity(
+                ActivityKindView::Completion,
+                summary.clone(),
+                detail,
+                task,
+                count,
+                cx,
+            );
+            self.show_automatic_notice(summary, false, false, cx);
+        }
+
+        if !failed.is_empty() {
+            let count = failed.len() as u32;
+            let summary = if count == 1 {
+                format!("{} failed.", failed[0].1)
+            } else {
+                format!("{count} downloads failed.")
+            };
+            let detail = if count == 1 {
+                failed[0].2.clone()
+            } else {
+                let listed = failed
+                    .iter()
+                    .take(5)
+                    .map(|(_, name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Some(if count > 5 {
+                    format!("{listed}, …")
+                } else {
+                    listed
+                })
+            };
+            let task = (count == 1).then(|| failed[0].0.clone());
+            self.record_activity(
+                ActivityKindView::Error,
+                summary.clone(),
+                detail,
+                task,
+                count,
+                cx,
+            );
+            self.show_automatic_notice(summary, true, false, cx);
+        }
+    }
+
+    fn toggle_activity_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.activity_panel_open {
+            self.close_activity_panel(window, cx);
+            return;
+        }
+        self.speed_popover_open = false;
+        self.sort_popover_open = false;
+        self.context_menu = None;
+        self.activity_panel_open = true;
+        cx.notify();
+        let _ = window;
+    }
+
+    fn close_activity_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.activity_panel_open {
+            return;
+        }
+        self.activity_panel_open = false;
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    fn clear_activity_log(&mut self, cx: &mut Context<Self>) {
+        if self.activity_log.is_empty() {
+            return;
+        }
+        self.activity_log.clear();
+        cx.notify();
     }
 
     fn expire_notice(&mut self, id: u64, cx: &mut Context<Self>) {
@@ -5019,6 +5349,51 @@ impl AppShell {
                     )
                 },
             )
+            .child({
+                let activity_count = self.activity_log.len();
+                let activity_label = if activity_count == 0 {
+                    "Activity history".to_owned()
+                } else {
+                    format!("Activity history, {activity_count} recent events")
+                };
+                div()
+                    .id("activity-status")
+                    .focusable()
+                    .tab_stop(true)
+                    .role(Role::Button)
+                    .aria_label(activity_label)
+                    .aria_expanded(self.activity_panel_open)
+                    .ml_auto()
+                    .h_full()
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(if self.activity_panel_open {
+                        colors.text_primary
+                    } else {
+                        colors.text_muted
+                    })
+                    .cursor_pointer()
+                    .hover(|style| style.bg(colors.surface_hover))
+                    .focus_visible(|style| style.bg(colors.surface_active))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_activity_panel(window, cx);
+                    }))
+                    .child(Icon::new(IconName::Activity).size(IconSize::XSmall).color(
+                        if self.activity_panel_open {
+                            colors.information
+                        } else {
+                            colors.text_muted
+                        },
+                    ))
+                    .child(if activity_count == 0 {
+                        "Activity".to_owned()
+                    } else {
+                        format!("Activity · {activity_count}")
+                    })
+            })
             .child(
                 div()
                     .id("transfer-status")
@@ -5031,7 +5406,6 @@ impl AppShell {
                         format_rate(self.snapshot.upload_rate)
                     ))
                     .aria_expanded(self.speed_popover_open)
-                    .ml_auto()
                     .h_full()
                     .px_2()
                     .flex()
@@ -6231,7 +6605,6 @@ impl AppShell {
                         .id("task-details-info-scroll")
                         .flex_1()
                         .min_h_0()
-                        .overflow_y_scroll()
                         .p_4()
                         .flex()
                         .flex_col()
@@ -6422,7 +6795,6 @@ impl AppShell {
                         .id("task-details-network-scroll")
                         .flex_1()
                         .min_h_0()
-                        .overflow_y_scroll()
                         .p_4()
                         .flex()
                         .flex_col()
@@ -6475,7 +6847,6 @@ impl AppShell {
                     .id("task-details-options-scroll")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
                     .p_4()
                     .into_any_element(),
                 };
@@ -7516,7 +7887,6 @@ impl AppShell {
                         .role(Role::List)
                         .aria_label("Selected Torrent and Metalink files")
                         .max_h(px(112.0))
-                        .overflow_y_scroll()
                         .border_1()
                         .border_color(colors.border)
                         .rounded_md()
@@ -7633,7 +8003,6 @@ impl AppShell {
             .role(Role::List)
             .aria_label("Add download results")
             .max_h(px(220.0))
-            .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap_2()
@@ -7751,6 +8120,21 @@ impl AppShell {
         };
         let transfer_policy_dirty = transfer_policy_draft != self.settings.transfer_policy;
         let transfer_policy_valid = transfer_policy_draft.is_valid();
+        let notifications_saving = self
+            .pending_settings_save
+            .as_ref()
+            .is_some_and(|pending| pending.source == SettingsSaveSource::Notifications);
+        let notifications_draft = NotificationSettingsView {
+            volume: self.settings_page.draft_notification_volume,
+            notify_on_completion: self.settings_page.draft_notify_on_completion,
+            notify_on_error: self.settings_page.draft_notify_on_error,
+            notify_on_engine_events: self.settings_page.draft_notify_on_engine_events,
+        };
+        let notifications_dirty = notifications_draft != self.settings.notifications;
+        let volume_selected = NotificationVolumeView::all()
+            .iter()
+            .position(|volume| *volume == self.settings_page.draft_notification_volume)
+            .unwrap_or(0);
         let allocation_selected = FileAllocationView::all()
             .iter()
             .position(|method| *method == self.settings_page.draft_file_allocation)
@@ -7832,7 +8216,7 @@ impl AppShell {
                     ),
             )
             .child(
-                div().id("settings-scroll").flex_1().min_h_0().overflow_y_scroll().px_6().py_5().child(
+                div().id("settings-scroll").flex_1().min_h_0().px_6().py_5().child(
                     div()
                         .max_w(px(720.0))
                         .flex()
@@ -8275,6 +8659,157 @@ impl AppShell {
                                     ),
                             )
                         })
+                        .child({
+                            let volume_shell = cx.entity().downgrade();
+                            let volume_control = SegmentedControl::new(
+                                "settings-notification-volume",
+                                NotificationVolumeView::all()
+                                    .map(|volume| Segment::new(volume.label())),
+                                volume_selected,
+                                self.theme,
+                            )
+                            .disabled(pending)
+                            .on_select(move |index, _window, cx| {
+                                let volume = NotificationVolumeView::all()
+                                    .get(index)
+                                    .copied()
+                                    .unwrap_or_default();
+                                volume_shell
+                                    .update(cx, |shell, cx| {
+                                        shell.select_notification_volume(volume, cx)
+                                    })
+                                    .ok();
+                            });
+                            settings_section(
+                                "Notifications",
+                                "Grouped completion and error surfaces stay in-app. Quiet keeps command feedback but hides automatic completion/error toasts; Silent suppresses all toasts while activity history continues.",
+                                colors,
+                            )
+                            .child(
+                                div()
+                                    .mt_4()
+                                    .max_w(px(620.0))
+                                    .flex()
+                                    .flex_col()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(colors.text_muted)
+                                                    .child("Volume"),
+                                            )
+                                            .child(volume_control),
+                                    )
+                                    .child(
+                                        Button::new(
+                                            "toggle-notify-completion",
+                                            if self.settings_page.draft_notify_on_completion {
+                                                "Download completed: On"
+                                            } else {
+                                                "Download completed: Off"
+                                            },
+                                        )
+                                        .aria_label(
+                                            if self.settings_page.draft_notify_on_completion {
+                                                "Disable completion notices"
+                                            } else {
+                                                "Enable completion notices"
+                                            },
+                                        )
+                                        .style(ButtonStyle::Secondary)
+                                        .disabled(pending)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_notify_on_completion(cx);
+                                        }))
+                                        .render(colors),
+                                    )
+                                    .child(
+                                        Button::new(
+                                            "toggle-notify-error",
+                                            if self.settings_page.draft_notify_on_error {
+                                                "Download failed: On"
+                                            } else {
+                                                "Download failed: Off"
+                                            },
+                                        )
+                                        .aria_label(if self.settings_page.draft_notify_on_error {
+                                            "Disable error notices"
+                                        } else {
+                                            "Enable error notices"
+                                        })
+                                        .style(ButtonStyle::Secondary)
+                                        .disabled(pending)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_notify_on_error(cx);
+                                        }))
+                                        .render(colors),
+                                    )
+                                    .child(
+                                        Button::new(
+                                            "toggle-notify-engine",
+                                            if self.settings_page.draft_notify_on_engine_events {
+                                                "Engine events: On"
+                                            } else {
+                                                "Engine events: Off"
+                                            },
+                                        )
+                                        .aria_label(
+                                            if self.settings_page.draft_notify_on_engine_events {
+                                                "Disable engine event notices"
+                                            } else {
+                                                "Enable engine event notices"
+                                            },
+                                        )
+                                        .style(ButtonStyle::Secondary)
+                                        .disabled(pending)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_notify_on_engine_events(cx);
+                                        }))
+                                        .render(colors),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(colors.text_muted)
+                                            .child(
+                                                "Batch completions and failures collapse into one notice per snapshot. Open Activity from the status bar for the recent history.",
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .mt_4()
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        Button::new(
+                                            "save-notifications",
+                                            if notifications_saving {
+                                                "Saving..."
+                                            } else {
+                                                "Save notification preferences"
+                                            },
+                                        )
+                                        .aria_label(if notifications_saving {
+                                            "Saving notification preferences"
+                                        } else {
+                                            "Save notification preferences"
+                                        })
+                                        .style(ButtonStyle::Primary)
+                                        .disabled(pending || !notifications_dirty)
+                                        .loading(notifications_saving)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.submit_notifications(cx);
+                                        }))
+                                        .render(colors),
+                                    ),
+                            )
+                        })
                         .when_some(error, |element, error| {
                             element.child(
                                 div()
@@ -8509,7 +9044,6 @@ impl AppShell {
                     .role(Role::List)
                     .aria_label(format!("Failed {command} tasks"))
                     .max_h(px(360.0))
-                    .overflow_y_scroll()
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -8825,6 +9359,178 @@ impl AppShell {
             .into_any_element()
     }
 
+    fn render_activity_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = self.theme.colors;
+        let entries = self.activity_log.clone();
+        div()
+            .id("activity-panel-layer")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.close_activity_panel(window, cx);
+                }),
+            )
+            .child(
+                div()
+                    .id("activity-panel")
+                    .absolute()
+                    .right(px(8.0))
+                    .bottom(px(36.0))
+                    .w(px(ACTIVITY_PANEL_WIDTH))
+                    .max_h(px(420.0))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .p_3()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.elevated_surface)
+                    .shadow_lg()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        Icon::new(IconName::Activity)
+                                            .size(IconSize::Small)
+                                            .color(colors.information),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(colors.text_primary)
+                                            .child("Activity"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        Button::new("clear-activity-log", "Clear")
+                                            .aria_label("Clear activity history")
+                                            .style(ButtonStyle::Secondary)
+                                            .disabled(entries.is_empty())
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.clear_activity_log(cx);
+                                            }))
+                                            .render(colors),
+                                    )
+                                    .child(
+                                        IconButton::new("close-activity-panel", IconName::X)
+                                            .aria_label("Close activity history")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.close_activity_panel(window, cx);
+                                            }))
+                                            .render(colors),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(
+                                "Recent completion, error, and engine events for this session. Grouped when many finish together.",
+                            ),
+                    )
+                    .child(if entries.is_empty() {
+                        div()
+                            .flex_1()
+                            .py_6()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child("No activity yet.")
+                            .into_any_element()
+                    } else {
+                        div()
+                            .flex_1()
+                            .min_h_0()
+
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .children(entries.into_iter().map(|entry| {
+                                let kind_color = match entry.kind {
+                                    ActivityKindView::Completion => colors.success,
+                                    ActivityKindView::Error => colors.danger,
+                                    ActivityKindView::Engine => colors.warning,
+                                    ActivityKindView::Command => colors.information,
+                                    ActivityKindView::Info => colors.text_muted,
+                                };
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "activity-entry-{}",
+                                        entry.id
+                                    )))
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .p_2()
+                                    .rounded_md()
+                                    .bg(colors.surface)
+                                    .border_1()
+                                    .border_color(colors.border)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(StatusIndicator::new(kind_color))
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(colors.text_muted)
+                                                    .child(entry.kind.label()),
+                                            )
+                                            .when(entry.count > 1, |element| {
+                                                element.child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(colors.text_muted)
+                                                        .child(format!("x{}", entry.count)),
+                                                )
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(colors.text_primary)
+                                            .child(entry.summary.clone()),
+                                    )
+                                    .when_some(entry.detail.clone(), |element, detail| {
+                                        element.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(colors.text_muted)
+                                                .child(detail),
+                                        )
+                                    })
+                            }))
+                            .into_any_element()
+                    }),
+            )
+            .into_any_element()
+    }
+
     fn render_toast(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let Some(notice) = self.status_notice.as_ref() else {
             return div().into_any_element();
@@ -9054,6 +9760,9 @@ impl Render for AppShell {
             })
             .when(self.speed_popover_open, |element| {
                 element.child(self.render_speed_popover(cx))
+            })
+            .when(self.activity_panel_open, |element| {
+                element.child(self.render_activity_panel(cx))
             })
             .when(self.context_menu.is_some(), |element| {
                 element.child(self.render_task_context_menu(cx))
@@ -11960,6 +12669,7 @@ mod tests {
             },
             speed_limits: SpeedLimitSettingsView::default(),
             transfer_policy: TransferPolicySettingsView::default(),
+            notifications: NotificationSettingsView::default(),
         };
         let (view, cx) =
             cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
@@ -12604,32 +13314,130 @@ mod tests {
     }
 
     #[gpui::test]
-    fn notice_expiration_only_removes_the_matching_success(cx: &mut TestAppContext) {
-        let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+    #[gpui::test]
+    fn task_status_transitions_group_completions_into_one_notice(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            let mut initial = snapshot(3);
+            for task in &mut initial.tasks {
+                task.status = TaskStatusView::Active;
+            }
+            // Seed known statuses without treating the first snapshot as transitions.
+            shell.set_snapshot(initial, cx);
+            shell
+        });
 
-        let first_id = view.update(cx, |shell, cx| {
-            shell.show_notice("Saved.", false, cx);
-            shell.status_notice.as_ref().expect("success notice").id
-        });
-        let error_id = view.update(cx, |shell, cx| {
-            shell.show_notice("Failed.", true, cx);
-            shell.status_notice.as_ref().expect("error notice").id
-        });
-        view.update(cx, |shell, cx| shell.expire_notice(first_id, cx));
-        view.read_with(cx, |shell, _| {
+        view.update(cx, |shell, cx| {
+            let mut next = shell.snapshot.clone();
+            next.tasks[0].status = TaskStatusView::Complete;
+            next.tasks[1].status = TaskStatusView::Complete;
+            next.tasks[2].status = TaskStatusView::Failed;
+            next.tasks[2].error = Some(crate::TaskErrorView {
+                code: Some(1),
+                summary: "Network failed".into(),
+                details: None,
+            });
+            shell.set_snapshot(next, cx);
+            assert_eq!(
+                shell.activity_log.len(),
+                2,
+                "one completion group + one failure"
+            );
+            assert_eq!(shell.activity_log[0].kind, ActivityKindView::Error);
+            assert_eq!(shell.activity_log[0].count, 1);
+            assert_eq!(shell.activity_log[1].kind, ActivityKindView::Completion);
+            assert_eq!(shell.activity_log[1].count, 2);
             assert!(
                 shell
                     .status_notice
                     .as_ref()
-                    .is_some_and(|notice| notice.is_error)
+                    .is_some_and(|notice| notice.is_error && notice.message.contains("failed")),
+                "latest automatic notice should be the failure group"
             );
         });
-        view.update(cx, |shell, cx| shell.expire_notice(error_id, cx));
-        view.read_with(cx, |shell, _| {
+    }
+
+    #[gpui::test]
+    fn quiet_volume_suppresses_automatic_toasts_but_keeps_history(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.settings.notifications.volume = NotificationVolumeView::Quiet;
+            let mut initial = snapshot(1);
+            initial.tasks[0].status = TaskStatusView::Active;
+            shell.set_snapshot(initial, cx);
+            shell
+        });
+
+        view.update(cx, |shell, cx| {
+            let mut next = shell.snapshot.clone();
+            next.tasks[0].status = TaskStatusView::Complete;
+            shell.set_snapshot(next, cx);
+            assert_eq!(shell.activity_log.len(), 1);
             assert!(
-                shell.status_notice.is_some(),
-                "errors require explicit dismissal"
+                shell.status_notice.is_none(),
+                "Quiet must hide automatic completion toasts"
             );
+            // Command feedback still surfaces in Quiet.
+            shell.show_notice("Copied.", false, cx);
+            assert!(shell.status_notice.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn silent_volume_suppresses_all_toasts(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.settings.notifications.volume = NotificationVolumeView::Silent;
+            shell
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.show_notice("Command feedback.", false, cx);
+            assert!(shell.status_notice.is_none());
+            shell.record_activity(ActivityKindView::Info, "Still recorded", None, None, 1, cx);
+            assert_eq!(shell.activity_log.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn notification_preferences_save_emits_settings_request(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+        view.update_in(cx, |shell, window, cx| {
+            shell.open_settings(&OpenSettings, window, cx);
+            shell.select_notification_volume(NotificationVolumeView::Quiet, cx);
+            shell.toggle_notify_on_completion(cx);
+            shell.submit_notifications(cx);
+            let pending = shell
+                .pending_settings_save
+                .as_ref()
+                .expect("notification save pending");
+            assert_eq!(pending.source, SettingsSaveSource::Notifications);
+            assert_eq!(
+                pending.settings.notifications.volume,
+                NotificationVolumeView::Quiet
+            );
+            assert!(!pending.settings.notifications.notify_on_completion);
+        });
+    }
+
+    #[gpui::test]
+    fn activity_panel_toggles_and_clears(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+        view.update_in(cx, |shell, window, cx| {
+            shell.record_activity(
+                ActivityKindView::Completion,
+                "One finished.",
+                None,
+                None,
+                1,
+                cx,
+            );
+            shell.toggle_activity_panel(window, cx);
+            assert!(shell.activity_panel_open);
+            shell.clear_activity_log(cx);
+            assert!(shell.activity_log.is_empty());
+            shell.close_activity_panel(window, cx);
+            assert!(!shell.activity_panel_open);
         });
     }
 }

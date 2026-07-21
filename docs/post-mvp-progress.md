@@ -789,6 +789,35 @@ clear and keyboard focus returns to the task list so the user can continue.
   mixed-state batch eligibility, and confirmation/Trash removal recovery; this
   decision adds context-menu parity and queue shortcut wiring on top.
 
+### D-025 - Observability is grouped, preference-gated, and session-local
+
+**Decision:** `OBS-001` surfaces completion/error/engine events as in-app toasts
+plus a session-local activity history. Transitions are detected in the UI from
+successive workspace snapshots (seed on first/session change; group same-kind
+transitions within one snapshot). Batch completions and failures collapse into
+one notice and one history row per kind per refresh, never one toast per task.
+
+**Volume rule:** Settings schema v5 adds `notifications` with volume
+Normal/Quiet/Silent and toggles for completion, error, and engine events.
+Normal shows automatic toasts according to the toggles. Quiet still records
+activity history and shows command-feedback toasts, but suppresses automatic
+completion/error/engine toasts. Silent suppresses all toasts while history
+continues. Command feedback is never treated as an automatic surface.
+
+**History rule:** Activity history is in-session only (bounded, newest-first),
+opened from the status bar. It is not a durable audit log and does not replace
+stopped-task history (HISTORY-001). OS-native notifications and low-disk
+surfaces remain deferred.
+
+**Evidence:**
+
+- design.md section 28 requires configurable volume and grouped batch completions.
+- qBittorrent separates options for completed/error notifications and keeps an
+  execution log; Motrix exposes completion/error toggles without per-task spam
+  controls.
+- AriaDeck already had single-flight batch command summaries; this decision
+  extends the same grouping rule to passive status transitions.
+
 ## Task Matrix
 
 Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
@@ -913,7 +942,7 @@ details show sanitized source/directory/output fields, exact local-path
 validation, aria2 codes 9-18 with raw details, and managed-local Open download/
 Open folder actions that refetch exact-session details before touching the
 filesystem. External profiles expose the capability as unavailable rather than
-assuming their paths are local. `RPC-001` is now complete: force pause/remove (and force-pause-all) sit on the shared gateway with capability-safe Unsupported defaults; `system.multicall` batches on-demand URI/option/peer/server projections with nested-only authentication; `system.listMethods` feeds `EngineCapabilities.methods`; and the typed task-option editor applies seed-ratio/seed-time through `changeOption` with the same outcome-unknown reconciliation as other mutations. `HISTORY-001` is now complete: stopped-history state exposes loaded/total/next-offset, SyncHandle.load_more_stopped appends pages without dropping earlier ones, the status bar shows History loaded/total with single-flight Load more, and managed aria2 keeps 5000 terminal results in memory. `ADD-005` is now complete: typed advanced add controls cover referer, user-agent, custom headers, cookie, HTTP auth, and checksum for direct URL tasks; secrets stay redacted; multi-value headers collapse at the RPC boundary. `RATE-002` is now complete: typed transfer policy covers max concurrent downloads, connections per server, split, min-split size, file allocation, and integrity check with schema v4 persistence, session-bound apply/reapply/rollback, scope-labeled settings UI, and per-task connection-policy command surface (D-023). Pause/resume scheduling remains deferred. `UI-002` is now complete: right-click task context menu mirrors toolbar/details actions while preserving multi-selection, queue-move shortcuts are workspace-bound, remove restores list focus, and existing sort/hidden-selection/mixed-state batch paths remain the authority (D-024). Remaining P1 audit items and P2 platform work are next.
+assuming their paths are local. `RPC-001` is now complete: force pause/remove (and force-pause-all) sit on the shared gateway with capability-safe Unsupported defaults; `system.multicall` batches on-demand URI/option/peer/server projections with nested-only authentication; `system.listMethods` feeds `EngineCapabilities.methods`; and the typed task-option editor applies seed-ratio/seed-time through `changeOption` with the same outcome-unknown reconciliation as other mutations. `HISTORY-001` is now complete: stopped-history state exposes loaded/total/next-offset, SyncHandle.load_more_stopped appends pages without dropping earlier ones, the status bar shows History loaded/total with single-flight Load more, and managed aria2 keeps 5000 terminal results in memory. `ADD-005` is now complete: typed advanced add controls cover referer, user-agent, custom headers, cookie, HTTP auth, and checksum for direct URL tasks; secrets stay redacted; multi-value headers collapse at the RPC boundary. `RATE-002` is now complete: typed transfer policy covers max concurrent downloads, connections per server, split, min-split size, file allocation, and integrity check with schema v4 persistence, session-bound apply/reapply/rollback, scope-labeled settings UI, and per-task connection-policy command surface (D-023). Pause/resume scheduling remains deferred. `UI-002` is now complete: right-click task context menu mirrors toolbar/details actions while preserving multi-selection, queue-move shortcuts are workspace-bound, remove restores list focus, and existing sort/hidden-selection/mixed-state batch paths remain the authority (D-024). `OBS-001` is now complete: snapshot-diff completion/error grouping, schema v5 notification preferences (Normal/Quiet/Silent + category toggles), session activity history panel, and preference-gated automatic toasts (D-025). OS-native notifications remain deferred. Remaining P1 audit items and P2 platform work are next.
 The proxy slice includes schema migration, validated endpoint/bypass fields,
 masked password input, system credential storage, session-bound runtime apply,
 new-session reapply, and explicit clearing. `FILE-002` now has
@@ -989,9 +1018,10 @@ several can be shared by more than one feature.
   right-click context-menu parity with toolbar/details actions, queue-move
   keyboard shortcuts, focus restoration after remove, and confirmation/Trash
   recovery for accidental removal (D-024). No second in-app undo stack.
-- [ ] `OBS-001` Add grouped completion/error notifications and a task activity
-  or error history. Batch completions must not produce one notification per
-  item, and notification volume/quiet behavior must be configurable.
+- [x] `OBS-001` Add grouped completion/error notifications and a task activity
+  history. Status transitions are grouped per snapshot; volume is Normal/Quiet/
+  Silent with completion/error/engine toggles (schema v5); session activity
+  panel is status-bar accessible (D-025). OS-native notifications deferred.
 - [ ] `PROFILE-002` Define profile switching and startup recovery behavior:
   profile identity verification, running-engine ownership on close, session
   corruption recovery, endpoint changes, and a safe handoff when another aria2
@@ -1095,5 +1125,8 @@ acceptance outcomes overlap.
 
 | 2026-07-21 | `UI-002` | `cargo test --workspace --no-fail-fast` | Pass - 276 passed, 13 ignored; adds right-click context menu with toolbar/details parity, multi-selection-preserving open, copy source/GID against the right-clicked identity, queue-move keyboard wiring (Cmd/Ctrl+Shift+Home/Up/Down/End), and remove focus restoration |
 | 2026-07-21 | `UI-002` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+
+| 2026-07-21 | `OBS-001` | `cargo test --workspace --no-fail-fast` | Pass - 282 passed, 13 ignored; adds schema v5 notification preferences, snapshot-diff grouped completion/error notices, Quiet/Silent volume behavior, settings-UI notification section, and status-bar activity history panel |
+| 2026-07-21 | `OBS-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.
