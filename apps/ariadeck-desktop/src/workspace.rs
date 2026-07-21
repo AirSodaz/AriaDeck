@@ -54,18 +54,18 @@ use ariadeck_ui::{
     EngineSessionView, FileAllocationView, FileConflictPolicyView, GlobalTaskCommandRequestView,
     GlobalTaskCommandResultView, GlobalTaskCommandView, NotificationSettingsView,
     NotificationVolumeView, OperationErrorView, ProfileCatalogView, ProfileEntryView,
-    ProfileKindView, ProxyModeView, ProxyPasswordUpdateView, SaveProfileCatalogOutcomeView,
-    SaveProfileCatalogRequestView, SaveProfileCatalogResultView, SettingsSaveOutcomeView,
-    SettingsSaveRequestView, SettingsSaveResultView, SettingsView, SpeedLimitSettingsView,
-    SpeedSampleView, StoppedHistoryView, SwitchProfileOutcomeView, SwitchProfileRequestView,
-    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
-    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
-    TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
-    TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
-    TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
-    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TransferPolicySettingsView,
-    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
-    format_speed_limit_field,
+    ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView, ProxyPasswordUpdateView,
+    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
+    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
+    SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView, SwitchProfileOutcomeView,
+    SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
+    TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
+    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
+    TaskIdentity, TaskNameStateView, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
+    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
+    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
+    TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
+    WorkspaceSortDirection, WorkspaceSortKey, format_speed_limit_field,
 };
 use data_encoding::BASE32_NOPAD;
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
@@ -737,8 +737,23 @@ impl DesktopRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match map_profile_catalog_request(&request.catalog, &self.data_dir, &self.settings) {
+        match map_profile_catalog_request(
+            &request.catalog,
+            &request.secret_updates,
+            &self.profile_catalog,
+            &self.data_dir,
+            &self.settings,
+        ) {
             Ok(catalog) => {
+                if let Err(error) = apply_profile_secret_updates(
+                    &catalog,
+                    &request.catalog,
+                    &request.secret_updates,
+                    &self.profile_catalog,
+                ) {
+                    self.deliver_save_profile_error(&request, error, window, cx);
+                    return;
+                }
                 if let Err(error) = self.profile_store.save_catalog(&catalog) {
                     self.deliver_save_profile_error(
                         &request,
@@ -748,6 +763,8 @@ impl DesktopRoot {
                     );
                     return;
                 }
+                // Drop secrets for profiles removed from the catalog.
+                cleanup_removed_profile_secrets(&self.profile_catalog, &catalog);
                 self.profile_catalog = catalog;
                 let view = map_profile_catalog(&self.profile_catalog);
                 self.workspace.update(cx, |shell, cx| {
@@ -3012,6 +3029,96 @@ fn load_profile_rpc_secret(entry: &ProfileEntry) -> Result<Option<RpcSecret>, St
     }
 }
 
+fn rpc_secret_store() -> SystemProxyCredentialStore {
+    SystemProxyCredentialStore::new("AriaDeck rpc secret")
+}
+
+/// Persist Set/Clear secret mutations against the keyring using catalog secret_ref values.
+fn apply_profile_secret_updates(
+    catalog: &ProfileCatalog,
+    view: &ProfileCatalogView,
+    secret_updates: &std::collections::HashMap<String, ProfileRpcSecretUpdateView>,
+    previous: &ProfileCatalog,
+) -> Result<(), String> {
+    if secret_updates.is_empty() {
+        return Ok(());
+    }
+    let store = rpc_secret_store();
+    for entry in &view.profiles {
+        let Some(update) = secret_updates.get(&entry.profile_id) else {
+            continue;
+        };
+        // Resolve the catalog entry for this view row (draft ids already mapped to UUIDs).
+        let profile = catalog
+            .profiles
+            .iter()
+            .find(|profile| {
+                entry.profile_id.parse::<ProfileId>().ok() == Some(profile.profile_id)
+                    || profile.name == entry.name.trim()
+            })
+            .or_else(|| {
+                // Fallback: match by endpoint for remotes.
+                catalog.profiles.iter().find(|profile| {
+                    profile.kind == ProfileKind::RemoteRpc
+                        && profile.endpoint.as_deref() == Some(entry.endpoint.trim())
+                })
+            });
+        match update {
+            ProfileRpcSecretUpdateView::Unchanged => {}
+            ProfileRpcSecretUpdateView::Clear => {
+                let refs = previous
+                    .profiles
+                    .iter()
+                    .filter(|profile| {
+                        entry.profile_id.parse::<ProfileId>().ok() == Some(profile.profile_id)
+                            || profile
+                                .endpoint
+                                .as_deref()
+                                .is_some_and(|endpoint| endpoint == entry.endpoint.trim())
+                    })
+                    .filter_map(|profile| profile.secret_ref);
+                for secret_ref in refs {
+                    let credential = ProxyCredentialRef::from_uuid(secret_ref.as_uuid());
+                    let _ = store.delete(credential);
+                }
+            }
+            ProfileRpcSecretUpdateView::Set(password) => {
+                let secret_ref = profile.and_then(|profile| profile.secret_ref).ok_or_else(
+                    || {
+                        format!(
+                            "Remote profile {} is missing a secret reference after save mapping.",
+                            entry.name
+                        )
+                    },
+                )?;
+                let credential = ProxyCredentialRef::from_uuid(secret_ref.as_uuid());
+                let secret = SecretString::new(password.clone().into_inner());
+                store
+                    .save(credential, &secret)
+                    .map_err(|error| format!("Failed to store RPC secret: {error}"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_removed_profile_secrets(previous: &ProfileCatalog, next: &ProfileCatalog) {
+    let store = rpc_secret_store();
+    let remaining: std::collections::HashSet<_> = next
+        .profiles
+        .iter()
+        .filter_map(|profile| profile.secret_ref.map(|secret_ref| secret_ref.as_uuid()))
+        .collect();
+    for profile in &previous.profiles {
+        if let Some(secret_ref) = profile.secret_ref
+            && !remaining.contains(&secret_ref.as_uuid())
+        {
+            let credential = ProxyCredentialRef::from_uuid(secret_ref.as_uuid());
+            let _ = store.delete(credential);
+        }
+    }
+}
+
 async fn request_local_engine_shutdown(process: &LocalEngineSupervisor) -> Result<(), String> {
     let mut websocket = WebSocketConfig::new(process.endpoint().clone());
     websocket.connect_timeout = Duration::from_millis(500);
@@ -3151,6 +3258,8 @@ fn map_profile_entry(entry: &ProfileEntry) -> ProfileEntryView {
 
 fn map_profile_catalog_request(
     view: &ProfileCatalogView,
+    secret_updates: &std::collections::HashMap<String, ProfileRpcSecretUpdateView>,
+    existing: &ProfileCatalog,
     data_dir: &Path,
     settings: &AppSettings,
 ) -> Result<ProfileCatalog, String> {
@@ -3172,6 +3281,13 @@ fn map_profile_catalog_request(
         if name.is_empty() {
             return Err("Profile name cannot be empty.".into());
         }
+        // Preserve secret_ref from the existing catalog entry when ids match.
+        let previous = entry
+            .profile_id
+            .parse::<ProfileId>()
+            .ok()
+            .and_then(|id| existing.get(id).cloned())
+            .or_else(|| existing.get(profile_id).cloned());
         let mapped = match entry.kind {
             ProfileKindView::LocalManaged => {
                 // Empty executable = use active managed core / discovery at spawn.
@@ -3196,6 +3312,8 @@ fn map_profile_catalog_request(
                 if executable.is_empty() {
                     profile.executable = None;
                 }
+                profile.has_secret = false;
+                profile.secret_ref = None;
                 profile
             }
             ProfileKindView::RemoteRpc => {
@@ -3209,8 +3327,32 @@ fn map_profile_catalog_request(
                 } else {
                     PathBuf::from(download_dir)
                 };
-                ProfileEntry::remote_rpc(profile_id, name, endpoint, download_dir, None)
-                    .map_err(|error| error.to_string())?
+                let secret_update = secret_updates
+                    .get(&entry.profile_id)
+                    .cloned()
+                    .unwrap_or(ProfileRpcSecretUpdateView::Unchanged);
+                let secret_ref = match secret_update {
+                    ProfileRpcSecretUpdateView::Clear => None,
+                    ProfileRpcSecretUpdateView::Set(_) => {
+                        // Keep previous ref if present so we overwrite the same keyring entry;
+                        // otherwise mint a new ref (applied in apply_profile_secret_updates).
+                        Some(
+                            previous
+                                .as_ref()
+                                .and_then(|profile| profile.secret_ref)
+                                .unwrap_or_else(ariadeck_engine::RpcSecretRef::new),
+                        )
+                    }
+                    ProfileRpcSecretUpdateView::Unchanged => {
+                        previous.as_ref().and_then(|profile| profile.secret_ref)
+                    }
+                };
+                let mut profile =
+                    ProfileEntry::remote_rpc(profile_id, name, endpoint, download_dir, secret_ref)
+                        .map_err(|error| error.to_string())?;
+                // has_secret is derived from secret_ref in remote_rpc ctor.
+                let _ = &mut profile;
+                profile
             }
         };
         profiles.push(mapped);
@@ -6515,5 +6657,77 @@ Accept: */*"
                 summary: "restart budget exhausted".into(),
             }
         );
+    }
+
+    #[test]
+    fn profile_catalog_save_preserves_remote_secret_ref_when_unchanged() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let data_dir = root.path().to_path_buf();
+        let settings = AppSettings::new(data_dir.join("downloads"));
+        let secret_ref = ariadeck_engine::RpcSecretRef::new();
+        let remote = ProfileEntry::remote_rpc(
+            ProfileId::new(),
+            "NAS",
+            "wss://nas.example/jsonrpc",
+            data_dir.join("downloads"),
+            Some(secret_ref),
+        )
+        .expect("remote profile");
+        let local = ProfileEntry::local_managed(
+            ProfileId::new(),
+            "Local",
+            PathBuf::from("aria2c"),
+            data_dir.clone(),
+            data_dir.join("downloads"),
+        );
+        let existing = ProfileCatalog {
+            schema_version: ariadeck_engine::PROFILE_CATALOG_SCHEMA_VERSION,
+            active_profile_id: local.profile_id,
+            profiles: vec![local.clone(), remote.clone()],
+        };
+        let view = ProfileCatalogView {
+            active_profile_id: local.profile_id.to_string(),
+            profiles: vec![
+                ProfileEntryView {
+                    profile_id: local.profile_id.to_string(),
+                    name: "Local".into(),
+                    kind: ProfileKindView::LocalManaged,
+                    executable: String::new(), // managed-core opt-in
+                    download_dir: data_dir.join("downloads").to_string_lossy().into_owned(),
+                    endpoint: String::new(),
+                    has_secret: false,
+                },
+                ProfileEntryView {
+                    profile_id: remote.profile_id.to_string(),
+                    name: "NAS".into(),
+                    kind: ProfileKindView::RemoteRpc,
+                    executable: String::new(),
+                    download_dir: data_dir.join("downloads").to_string_lossy().into_owned(),
+                    endpoint: "wss://nas.example/jsonrpc".into(),
+                    has_secret: true,
+                },
+            ],
+        };
+        let mapped = map_profile_catalog_request(
+            &view,
+            &std::collections::HashMap::new(),
+            &existing,
+            &data_dir,
+            &settings,
+        )
+        .expect("map catalog");
+        let mapped_remote = mapped
+            .profiles
+            .iter()
+            .find(|profile| profile.profile_id == remote.profile_id)
+            .expect("remote retained");
+        assert_eq!(mapped_remote.secret_ref, Some(secret_ref));
+        assert!(mapped_remote.has_secret);
+        let mapped_local = mapped
+            .profiles
+            .iter()
+            .find(|profile| profile.profile_id == local.profile_id)
+            .expect("local retained");
+        assert!(mapped_local.uses_managed_core());
     }
 }

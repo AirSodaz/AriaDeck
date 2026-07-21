@@ -39,7 +39,7 @@ pub use model::{
     EngineSessionView, FileAllocationView, FileConflictPolicyView, GlobalTaskCommandRequestView,
     GlobalTaskCommandResultView, GlobalTaskCommandView, NotificationSettingsView,
     NotificationVolumeView, OperationErrorView, ProfileCatalogView, ProfileEntryView,
-    ProfileKindView, ProxyModeView, ProxyPasswordUpdateView, RequestId,
+    ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView, ProxyPasswordUpdateView, RequestId,
     SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
     SecretStringView, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
     SettingsView, SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView,

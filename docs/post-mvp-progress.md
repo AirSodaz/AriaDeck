@@ -934,9 +934,12 @@ session files stay under each local profile directory.
 
 **Polish (edit/delete / managed-core opt-in):** Settings Profiles now supports
 inline Edit (name/kind/executable-or-endpoint/download dir) and Delete (refuses
-the last profile; auto-saves). Local profiles may leave Executable empty to use
-the Active managed core from Settings → Engine. Spawn resolution is env → pinned
-path → managed core → discovery. Draft catalog rows mint UUIDs on save.
+the last profile; confirm then auto-saves). Local profiles may leave Executable
+empty to use the Active managed core from Settings → Engine. Spawn resolution is
+env → pinned path → managed core → discovery. Draft catalog rows mint UUIDs on
+save. Remote RPC secrets use opaque credential refs: catalog save preserves
+existing refs by default, and the editor can set/clear a secret without writing
+plaintext into profiles.json.
 
 ### D-029 - Managed aria2 core registry with local import (no network channel yet)
 
@@ -1286,5 +1289,7 @@ acceptance outcomes overlap.
 | 2026-07-21 | `CORE-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 | 2026-07-21 | Profile polish | `cargo test --workspace --no-fail-fast` | Pass - 300 passed, 13 ignored; profile edit/delete UI, empty executable managed-core opt-in, draft UUID on save, clearer Profiles vs Engine copy |
 | 2026-07-21 | Profile polish | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+| 2026-07-21 | Profile polish 2 | `cargo test --workspace --no-fail-fast` | Pass - 301 passed, 13 ignored; remote RPC secret preserve/set/clear on catalog save, delete confirmation, editor secret field |
+| 2026-07-21 | Profile polish 2 | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.

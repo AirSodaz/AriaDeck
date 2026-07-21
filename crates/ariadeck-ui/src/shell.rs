@@ -31,21 +31,22 @@ use crate::{
     MoveTaskToQueueBottom, MoveTaskToQueueTop, MoveTaskUpInQueue, NotificationSettingsView,
     NotificationVolumeView, OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName,
     OpenTaskSpeedLimit, OperationErrorView, PauseSelectedTask, ProfileCatalogView,
-    ProfileEntryView, ProfileKindView, ProxyModeView, ProxyPasswordUpdateView, RemoveSelectedTask,
-    RequestId, ResumeSelectedTask, RetrySelectedTask, SaveProfileCatalogOutcomeView,
-    SaveProfileCatalogRequestView, SaveProfileCatalogResultView, SaveSettings, SearchInputEvent,
-    SecretStringView, Segment, SegmentedControl, SelectAllTasks, SelectNextTask,
-    SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
-    SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator, SubmitAddDownload,
-    SubmitTaskOutputName, SubmitTaskSpeedLimit, SwitchProfileOutcomeView, SwitchProfileRequestView,
-    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
-    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
-    TaskFileView, TaskIdentity, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
-    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
-    TaskStatusView, TaskTrackerView, TaskUriView, TextField, TextFieldConfig, Theme, ThemeMode,
-    Toast, ToastKind, Tooltip, TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery,
-    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, format_bytes, format_eta,
-    format_percent, format_rate, format_share_ratio,
+    ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView,
+    ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask,
+    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
+    SaveSettings, SearchInputEvent, SecretStringView, Segment, SegmentedControl, SelectAllTasks,
+    SelectNextTask, SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView,
+    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator,
+    SubmitAddDownload, SubmitTaskOutputName, SubmitTaskSpeedLimit, SwitchProfileOutcomeView,
+    SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
+    TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView, TaskDetailsRequestView,
+    TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity, TaskOpenOutcomeView,
+    TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView, TaskOptionView,
+    TaskPathValidationView, TaskPeerView, TaskServerView, TaskStatusView, TaskTrackerView,
+    TaskUriView, TextField, TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Tooltip,
+    TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
+    WorkspaceSortDirection, WorkspaceSortKey, format_bytes, format_eta, format_percent,
+    format_rate, format_share_ratio,
 };
 
 const SPEED_CHART_SAMPLES: usize = 120;
@@ -236,7 +237,17 @@ struct SettingsPage {
     /// Profile id currently open in the inline editor (Settings → Profiles).
     editing_profile_id: Option<String>,
     draft_profile_kind: ProfileKindView,
+    /// Pending remote RPC secret mutations (keyed by draft profile_id).
+    profile_secret_updates: std::collections::HashMap<String, ProfileRpcSecretUpdateView>,
+    /// Pending profile delete confirmation.
+    pending_profile_delete: Option<PendingProfileDelete>,
+    clear_profile_rpc_secret: bool,
     error: Option<OperationErrorView>,
+}
+
+struct PendingProfileDelete {
+    profile_id: String,
+    name: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -327,6 +338,7 @@ pub struct AppShell {
     settings_profile_executable_input: Entity<TextField>,
     settings_profile_endpoint_input: Entity<TextField>,
     settings_profile_download_input: Entity<TextField>,
+    settings_profile_secret_input: Entity<TextField>,
     settings_all_proxy_input: Entity<TextField>,
     settings_http_proxy_input: Entity<TextField>,
     settings_https_proxy_input: Entity<TextField>,
@@ -860,6 +872,23 @@ impl AppShell {
                 cx,
             )
         });
+        let settings_profile_secret_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "settings-profile-secret".into(),
+                    key_context: "SettingsProfileSecretInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "Remote aria2 RPC secret".into(),
+                    placeholder: "Leave blank to keep the saved secret".into(),
+                    leading_icon: Some(IconName::Wifi),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: true,
+                },
+                theme,
+                cx,
+            )
+        });
         let settings_all_proxy_input = cx.new(|cx| {
             TextField::new_with_config(
                 settings_input_config(
@@ -1100,6 +1129,7 @@ impl AppShell {
             settings_profile_executable_input,
             settings_profile_endpoint_input,
             settings_profile_download_input,
+            settings_profile_secret_input,
             settings_all_proxy_input,
             settings_http_proxy_input,
             settings_https_proxy_input,
@@ -2074,7 +2104,11 @@ impl AppShell {
         match result.outcome {
             SwitchProfileOutcomeView::Success => {
                 self.profiles = result.catalog;
-                self.show_notice("Profile switched.", false, cx);
+                self.show_notice(
+                    "Active profile updated. Restart AriaDeck to reconnect.",
+                    false,
+                    cx,
+                );
             }
             SwitchProfileOutcomeView::Failure(error) => {
                 self.show_notice(error.summary, true, cx);
@@ -2101,11 +2135,13 @@ impl AppShell {
             return;
         }
         let request_id = self.allocate_request_id();
+        let secret_updates = self.settings_page.profile_secret_updates.clone();
         self.show_notice("Saving profiles...", false, cx);
         cx.emit(AppShellEvent::SaveProfileCatalogRequested(
             SaveProfileCatalogRequestView {
                 request_id,
                 catalog,
+                secret_updates,
             },
         ));
         cx.notify();
@@ -2119,6 +2155,11 @@ impl AppShell {
         match result.outcome {
             SaveProfileCatalogOutcomeView::Success => {
                 self.profiles = result.catalog;
+                self.settings_page.profile_secret_updates.clear();
+                self.settings_page.clear_profile_rpc_secret = false;
+                self.settings_profile_secret_input.update(cx, |input, cx| {
+                    input.set_text(String::new(), cx);
+                });
                 self.show_notice("Profiles saved.", false, cx);
             }
             SaveProfileCatalogOutcomeView::Failure(error) => {
@@ -2199,11 +2240,19 @@ impl AppShell {
             .update(cx, |input, cx| {
                 input.set_text(profile.download_dir, cx);
             });
+        self.settings_profile_secret_input.update(cx, |input, cx| {
+            input.set_text(String::new(), cx);
+        });
+        self.settings_page.clear_profile_rpc_secret = false;
         cx.notify();
     }
 
     fn close_profile_editor(&mut self, cx: &mut Context<Self>) {
         self.settings_page.editing_profile_id = None;
+        self.settings_page.clear_profile_rpc_secret = false;
+        self.settings_profile_secret_input.update(cx, |input, cx| {
+            input.set_text(String::new(), cx);
+        });
         cx.notify();
     }
 
@@ -2273,13 +2322,85 @@ impl AppShell {
         } else {
             download_dir
         };
+        if kind == ProfileKindView::RemoteRpc {
+            let secret_text = self
+                .settings_profile_secret_input
+                .read(cx)
+                .text()
+                .trim()
+                .to_owned();
+            let update = if self.settings_page.clear_profile_rpc_secret {
+                ProfileRpcSecretUpdateView::Clear
+            } else if !secret_text.is_empty() {
+                ProfileRpcSecretUpdateView::Set(SecretStringView::new(secret_text))
+            } else {
+                ProfileRpcSecretUpdateView::Unchanged
+            };
+            match &update {
+                ProfileRpcSecretUpdateView::Unchanged => {}
+                ProfileRpcSecretUpdateView::Clear => {
+                    profile.has_secret = false;
+                    self.settings_page
+                        .profile_secret_updates
+                        .insert(profile_id.clone(), update);
+                }
+                ProfileRpcSecretUpdateView::Set(_) => {
+                    profile.has_secret = true;
+                    self.settings_page
+                        .profile_secret_updates
+                        .insert(profile_id.clone(), update);
+                }
+            }
+        } else {
+            profile.has_secret = false;
+            self.settings_page
+                .profile_secret_updates
+                .remove(&profile_id);
+        }
         self.settings_page.editing_profile_id = None;
+        self.settings_page.clear_profile_rpc_secret = false;
+        self.settings_profile_secret_input.update(cx, |input, cx| {
+            input.set_text(String::new(), cx);
+        });
         self.show_notice(
             "Profile updated in the draft catalog. Click Save profiles to persist.",
             false,
             cx,
         );
         cx.notify();
+    }
+
+    fn request_remove_profile(&mut self, profile_id: String, cx: &mut Context<Self>) {
+        if self.profiles.profiles.len() <= 1 {
+            self.show_notice("At least one profile must remain.", true, cx);
+            return;
+        }
+        let Some(profile) = self
+            .profiles
+            .profiles
+            .iter()
+            .find(|profile| profile.profile_id == profile_id)
+        else {
+            self.show_notice("That profile is no longer in the catalog.", true, cx);
+            return;
+        };
+        self.settings_page.pending_profile_delete = Some(PendingProfileDelete {
+            profile_id: profile.profile_id.clone(),
+            name: profile.name.clone(),
+        });
+        cx.notify();
+    }
+
+    fn cancel_remove_profile(&mut self, cx: &mut Context<Self>) {
+        self.settings_page.pending_profile_delete = None;
+        cx.notify();
+    }
+
+    fn confirm_remove_profile(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.settings_page.pending_profile_delete.take() else {
+            return;
+        };
+        self.remove_profile(pending.profile_id, cx);
     }
 
     fn remove_profile(&mut self, profile_id: String, cx: &mut Context<Self>) {
@@ -2297,6 +2418,9 @@ impl AppShell {
             return;
         };
         let removed = self.profiles.profiles.remove(index);
+        self.settings_page
+            .profile_secret_updates
+            .remove(&profile_id);
         if self.settings_page.editing_profile_id.as_deref() == Some(profile_id.as_str()) {
             self.settings_page.editing_profile_id = None;
         }
@@ -2317,8 +2441,25 @@ impl AppShell {
         self.request_save_profile_catalog(catalog, cx);
     }
 
+    fn toggle_clear_profile_rpc_secret(&mut self, cx: &mut Context<Self>) {
+        let clear = !self.settings_page.clear_profile_rpc_secret;
+        if clear {
+            self.settings_profile_secret_input.update(cx, |input, cx| {
+                input.set_text(String::new(), cx);
+            });
+        }
+        self.settings_page.clear_profile_rpc_secret = clear;
+        cx.notify();
+    }
+
     fn select_profile_editor_kind(&mut self, kind: ProfileKindView, cx: &mut Context<Self>) {
         self.settings_page.draft_profile_kind = kind;
+        if kind == ProfileKindView::LocalManaged {
+            self.settings_page.clear_profile_rpc_secret = false;
+            self.settings_profile_secret_input.update(cx, |input, cx| {
+                input.set_text(String::new(), cx);
+            });
+        }
         cx.notify();
     }
 
@@ -2871,6 +3012,9 @@ impl AppShell {
             clear_proxy_password: false,
             editing_profile_id: None,
             draft_profile_kind: ProfileKindView::LocalManaged,
+            profile_secret_updates: std::collections::HashMap::new(),
+            pending_profile_delete: None,
+            clear_profile_rpc_secret: false,
             error: None,
         };
         cx.notify();
@@ -8885,14 +9029,16 @@ impl AppShell {
                                                 }
                                             }
                                             ProfileKindView::RemoteRpc => {
-                                                format!(
-                                                    "Remote · {}",
-                                                    if profile.endpoint.is_empty() {
-                                                        "no endpoint".into()
-                                                    } else {
-                                                        profile.endpoint.clone()
-                                                    }
-                                                )
+                                                let endpoint = if profile.endpoint.is_empty() {
+                                                    "no endpoint".to_owned()
+                                                } else {
+                                                    profile.endpoint.clone()
+                                                };
+                                                if profile.has_secret {
+                                                    format!("Remote · {endpoint} · secret saved")
+                                                } else {
+                                                    format!("Remote · {endpoint}")
+                                                }
                                             }
                                         };
                                         div()
@@ -8992,7 +9138,10 @@ impl AppShell {
                                                 .style(ButtonStyle::Secondary)
                                                 .disabled(!can_remove)
                                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.remove_profile(remove_id.clone(), cx);
+                                                    this.request_remove_profile(
+                                                        remove_id.clone(),
+                                                        cx,
+                                                    );
                                                 }))
                                                 .render(colors),
                                             )
@@ -9094,18 +9243,81 @@ impl AppShell {
                                                     )
                                                     .into_any_element()
                                             } else {
+                                                let has_secret = self
+                                                    .profiles
+                                                    .profiles
+                                                    .iter()
+                                                    .find(|profile| {
+                                                        profile.profile_id == editing_id
+                                                    })
+                                                    .is_some_and(|profile| profile.has_secret);
+                                                let secret_cleared =
+                                                    self.settings_page.clear_profile_rpc_secret;
                                                 div()
                                                     .flex()
                                                     .flex_col()
-                                                    .gap_1()
+                                                    .gap_2()
                                                     .child(
                                                         div()
-                                                            .text_xs()
-                                                            .text_color(colors.text_muted)
-                                                            .child("Endpoint (ws/wss)"),
+                                                            .flex()
+                                                            .flex_col()
+                                                            .gap_1()
+                                                            .child(
+                                                                div()
+                                                                    .text_xs()
+                                                                    .text_color(colors.text_muted)
+                                                                    .child("Endpoint (ws/wss)"),
+                                                            )
+                                                            .child(
+                                                                self.settings_profile_endpoint_input
+                                                                    .clone(),
+                                                            ),
                                                     )
                                                     .child(
-                                                        self.settings_profile_endpoint_input.clone(),
+                                                        div()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .gap_1()
+                                                            .child(
+                                                                div()
+                                                                    .text_xs()
+                                                                    .text_color(colors.text_muted)
+                                                                    .child(if secret_cleared {
+                                                                        "RPC secret (will clear on Apply)"
+                                                                            .to_owned()
+                                                                    } else if has_secret {
+                                                                        "RPC secret (saved — enter a new value to replace)"
+                                                                            .to_owned()
+                                                                    } else {
+                                                                        "RPC secret (optional)"
+                                                                            .to_owned()
+                                                                    }),
+                                                            )
+                                                            .child(
+                                                                self.settings_profile_secret_input
+                                                                    .clone(),
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        Button::new(
+                                                            "toggle-clear-profile-secret",
+                                                            if secret_cleared {
+                                                                "Keep saved secret"
+                                                            } else if has_secret {
+                                                                "Clear saved secret"
+                                                            } else {
+                                                                "No saved secret"
+                                                            },
+                                                        )
+                                                        .aria_label(
+                                                            "Toggle clearing the saved RPC secret",
+                                                        )
+                                                        .style(ButtonStyle::Secondary)
+                                                        .disabled(!has_secret && !secret_cleared)
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.toggle_clear_profile_rpc_secret(cx);
+                                                        }))
+                                                        .render(colors),
                                                     )
                                                     .into_any_element()
                                             })
@@ -9191,6 +9403,81 @@ impl AppShell {
                                             }))
                                             .render(colors),
                                     ),
+                            )
+                            .when_some(
+                                self.settings_page.pending_profile_delete.as_ref().map(
+                                    |pending| (pending.profile_id.clone(), pending.name.clone()),
+                                ),
+                                |section, (delete_id, delete_name)| {
+                                    let is_active = delete_id
+                                        == self.profiles.active_profile_id;
+                                    section.child(
+                                        div()
+                                            .mt_3()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_2()
+                                            .px_3()
+                                            .py_3()
+                                            .rounded_md()
+                                            .border_1()
+                                            .border_color(colors.danger)
+                                            .bg(with_alpha(colors.danger, 0.08))
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(colors.text_primary)
+                                                    .child(format!(
+                                                        "Delete profile “{delete_name}”?"
+                                                    )),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(colors.text_muted)
+                                                    .child(if is_active {
+                                                        "This is the active profile. Another profile will become active. Local session data is not deleted from disk."
+                                                            .to_owned()
+                                                    } else {
+                                                        "Local session data is not deleted from disk. This saves the catalog immediately."
+                                                            .to_owned()
+                                                    }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_wrap()
+                                                    .gap_2()
+                                                    .child(
+                                                        Button::new(
+                                                            "confirm-delete-profile",
+                                                            "Delete profile",
+                                                        )
+                                                        .aria_label(format!(
+                                                            "Confirm delete {delete_name}"
+                                                        ))
+                                                        .style(ButtonStyle::Primary)
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.confirm_remove_profile(cx);
+                                                        }))
+                                                        .render(colors),
+                                                    )
+                                                    .child(
+                                                        Button::new(
+                                                            "cancel-delete-profile",
+                                                            "Cancel",
+                                                        )
+                                                        .aria_label("Cancel profile delete")
+                                                        .style(ButtonStyle::Secondary)
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.cancel_remove_profile(cx);
+                                                        }))
+                                                        .render(colors),
+                                                    ),
+                                            ),
+                                    )
+                                },
                             )
                         })
                         .child({
@@ -14786,10 +15073,49 @@ mod tests {
                         && profile.profile_id.starts_with("draft-remote-"))
             );
 
-            // Cannot delete when only one would remain is covered by engine; with 4, remove works.
+            // Delete requires confirmation, then persists via save request.
             let remove_id = shell.profiles.profiles[3].profile_id.clone();
-            shell.remove_profile(remove_id, cx);
+            shell.request_remove_profile(remove_id.clone(), cx);
+            assert!(shell.settings_page.pending_profile_delete.is_some());
+            shell.cancel_remove_profile(cx);
+            assert!(shell.settings_page.pending_profile_delete.is_none());
+            assert_eq!(shell.profiles.profiles.len(), 4);
+            shell.request_remove_profile(remove_id, cx);
+            shell.confirm_remove_profile(cx);
             assert_eq!(shell.profiles.profiles.len(), 3);
+
+            // Remote secret set is staged until Save profiles.
+            shell.add_draft_remote_profile(cx);
+            let remote_id = shell
+                .profiles
+                .profiles
+                .iter()
+                .find(|profile| profile.profile_id.starts_with("draft-remote-"))
+                .map(|profile| profile.profile_id.clone())
+                .expect("remote draft");
+            shell.open_profile_editor(remote_id.clone(), cx);
+            shell.settings_profile_secret_input.update(cx, |input, cx| {
+                input.set_text("s3cret", cx);
+            });
+            shell.apply_profile_editor(cx);
+            assert!(
+                shell
+                    .settings_page
+                    .profile_secret_updates
+                    .get(&remote_id)
+                    .is_some_and(|update| matches!(
+                        update,
+                        crate::ProfileRpcSecretUpdateView::Set(_)
+                    ))
+            );
+            assert!(
+                shell
+                    .profiles
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.profile_id == remote_id)
+                    .is_some_and(|profile| profile.has_secret)
+            );
 
             shell.set_switch_profile_result(
                 SwitchProfileResultView {

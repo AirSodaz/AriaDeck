@@ -1300,6 +1300,15 @@ pub enum ProxyPasswordUpdateView {
     Set(SecretStringView),
 }
 
+/// How to update a remote profile's RPC secret on catalog save.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum ProfileRpcSecretUpdateView {
+    #[default]
+    Unchanged,
+    Clear,
+    Set(SecretStringView),
+}
+
 /// How loudly automatic completion/error surfaces appear.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum NotificationVolumeView {
@@ -1473,6 +1482,8 @@ pub struct SwitchProfileResultView {
 pub struct SaveProfileCatalogRequestView {
     pub request_id: RequestId,
     pub catalog: ProfileCatalogView,
+    /// Per-profile secret mutations (keyed by profile_id string from the draft catalog).
+    pub secret_updates: std::collections::HashMap<String, ProfileRpcSecretUpdateView>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
