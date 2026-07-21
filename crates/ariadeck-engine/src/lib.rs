@@ -1,8 +1,15 @@
-//! Local external-engine lifecycle and profile persistence.
+//! Local external-engine lifecycle, managed core registry, and profile persistence.
 //!
-//! This crate deliberately owns only process and profile concerns. RPC
-//! synchronization remains in `ariadeck-rpc`, while profile identity is shared
-//! through `ariadeck-domain`.
+//! This crate deliberately owns only process, core-installation, and profile
+//! concerns. RPC synchronization remains in `ariadeck-rpc`, while profile
+//! identity is shared through `ariadeck-domain`.
+
+mod cores;
+
+pub use cores::{
+    Aria2Probe, CoreInstallStatus, CoreInstallation, CoreInstallationSummary, CoreInstallationView,
+    CoreRegistry, CoreSource, CoreStore, parse_aria2_version_output, probe_aria2,
+};
 
 use std::{
     collections::{HashSet, VecDeque},
@@ -101,6 +108,24 @@ pub enum EngineError {
     InvalidRemoteEndpoint { reason: String },
     #[error("remote profile requires a non-empty endpoint")]
     MissingRemoteEndpoint,
+    #[error("managed core {id} was not found")]
+    CoreNotFound {
+        id: ariadeck_domain::CoreInstallationId,
+    },
+    #[error("aria2 version {version} ({target}) is already installed")]
+    CoreAlreadyInstalled { version: String, target: String },
+    #[error("invalid managed core version label: {version}")]
+    InvalidCoreVersion { version: String },
+    #[error("cannot remove the active managed core {id}; activate another version first")]
+    CannotRemoveActiveCore {
+        id: ariadeck_domain::CoreInstallationId,
+    },
+    #[error("no last-working managed core is recorded for rollback")]
+    NoLastWorkingCore,
+    #[error("already running the last-working managed core {id}")]
+    AlreadyOnLastWorkingCore {
+        id: ariadeck_domain::CoreInstallationId,
+    },
 }
 
 fn io_error(operation: &'static str, path: &Path, source: io::Error) -> EngineError {

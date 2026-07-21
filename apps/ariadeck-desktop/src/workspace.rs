@@ -26,9 +26,10 @@ use ariadeck_domain::{
     TaskIdentity as DomainTaskIdentity, TaskProgress, TaskUriStatus, TransferPolicyConfig,
 };
 use ariadeck_engine::{
-    ExternalEngineProfile, JsonProfileStore, LocalDownloadDestinationGateway,
-    LocalDownloadRootRegistry, LocalEngineHealth, LocalEngineHealthHandle, LocalEngineSupervisor,
-    LocalTaskFileGateway, ProfileCatalog, ProfileEntry, ProfileKind,
+    CoreInstallStatus, CoreSource, CoreStore, ExternalEngineProfile, JsonProfileStore,
+    LocalDownloadDestinationGateway, LocalDownloadRootRegistry, LocalEngineHealth,
+    LocalEngineHealthHandle, LocalEngineSupervisor, LocalTaskFileGateway, ProfileCatalog,
+    ProfileEntry, ProfileKind,
 };
 use ariadeck_rpc::{
     Aria2Client, AuthenticatedTransport, RpcSecret, RpcSyncConnector, WebSocketConfig,
@@ -47,22 +48,24 @@ use ariadeck_ui::{
     AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView, AppShell, AppShellEvent,
     BatchCommandOutcomeView, BatchTaskCommandRequestView, BatchTaskCommandResultView,
     BatchTaskCommandView, BatchTaskFailureView, ColorSchemeView, CommandOutcomeView,
-    ConnectionView, DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView,
-    EngineHealthView, EngineSessionView, FileAllocationView, FileConflictPolicyView,
-    GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView,
-    NotificationSettingsView, NotificationVolumeView, OperationErrorView, ProfileCatalogView,
-    ProfileEntryView, ProfileKindView, ProxyModeView, ProxyPasswordUpdateView,
-    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
-    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView, SwitchProfileOutcomeView,
-    SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
-    TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
-    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
-    TaskIdentity, TaskNameStateView, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
-    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
-    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
-    TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
-    WorkspaceSortDirection, WorkspaceSortKey, format_speed_limit_field,
+    ConnectionView, CoreCommandOutcomeView, CoreCommandRequestView, CoreCommandResultView,
+    CoreCommandView, CoreInstallStatusView, CoreInstallationView, CoreRegistryView, CoreSourceView,
+    DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView, EngineHealthView,
+    EngineSessionView, FileAllocationView, FileConflictPolicyView, GlobalTaskCommandRequestView,
+    GlobalTaskCommandResultView, GlobalTaskCommandView, NotificationSettingsView,
+    NotificationVolumeView, OperationErrorView, ProfileCatalogView, ProfileEntryView,
+    ProfileKindView, ProxyModeView, ProxyPasswordUpdateView, SaveProfileCatalogOutcomeView,
+    SaveProfileCatalogRequestView, SaveProfileCatalogResultView, SettingsSaveOutcomeView,
+    SettingsSaveRequestView, SettingsSaveResultView, SettingsView, SpeedLimitSettingsView,
+    SpeedSampleView, StoppedHistoryView, SwitchProfileOutcomeView, SwitchProfileRequestView,
+    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
+    TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
+    TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
+    TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
+    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TransferPolicySettingsView,
+    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    format_speed_limit_field,
 };
 use data_encoding::BASE32_NOPAD;
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
@@ -90,6 +93,7 @@ pub struct DesktopRoot {
     data_dir: PathBuf,
     profile_store: JsonProfileStore,
     profile_catalog: ProfileCatalog,
+    core_store: CoreStore,
     _workspace_subscription: Subscription,
 }
 
@@ -159,8 +163,11 @@ impl DesktopRoot {
         }
 
         let profile_store = JsonProfileStore::new(data_dir.join("profiles.json"));
+        let core_store = CoreStore::new(&data_dir);
+        let managed_executable = core_store.resolve_active_executable().ok().flatten();
         let executable = env::var_os("ARIADECK_ARIA2C_PATH")
             .map(PathBuf::from)
+            .or(managed_executable.clone())
             .or_else(discover_aria2_executable)
             .unwrap_or_else(|| PathBuf::from("aria2c"));
         let default_profile = ExternalEngineProfile::new(
@@ -196,6 +203,7 @@ impl DesktopRoot {
                                 entry.executable = Some(
                                     env::var_os("ARIADECK_ARIA2C_PATH")
                                         .map(PathBuf::from)
+                                        .or(managed_executable.clone())
                                         .or_else(discover_aria2_executable)
                                         .unwrap_or_else(|| PathBuf::from("aria2c")),
                                 );
@@ -281,6 +289,7 @@ impl DesktopRoot {
             shell.set_snapshot(initial_snapshot, cx);
             shell.set_engine_health(initial_engine_health, cx);
             shell.set_profiles(map_profile_catalog(&profile_catalog), cx);
+            shell.set_cores(map_core_registry(&core_store), cx);
             if let Some(message) = startup_notice {
                 shell.set_startup_notice(message, true, cx);
             } else if let Some(message) = profile_notice.take() {
@@ -338,6 +347,9 @@ impl DesktopRoot {
                 AppShellEvent::SaveProfileCatalogRequested(request) => {
                     this.handle_save_profile_catalog(request.clone(), window, cx);
                 }
+                AppShellEvent::CoreCommandRequested(request) => {
+                    this.handle_core_command(request.clone(), window, cx);
+                }
             },
         );
 
@@ -374,6 +386,7 @@ impl DesktopRoot {
             data_dir: data_dir.clone(),
             profile_store,
             profile_catalog,
+            core_store,
             _workspace_subscription: workspace_subscription,
         }
     }
@@ -781,6 +794,110 @@ impl DesktopRoot {
             );
         });
         let _ = window;
+    }
+
+    fn handle_core_command(
+        &mut self,
+        request: CoreCommandRequestView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let result = self.execute_core_command(&request.command);
+        match result {
+            Ok(()) => {
+                let registry = map_core_registry(&self.core_store);
+                // Keep local profile executable aligned with active managed core when env is unset.
+                if env::var_os("ARIADECK_ARIA2C_PATH").is_none()
+                    && let Ok(Some(managed)) = self.core_store.resolve_active_executable()
+                    && let Some(entry) = self.profile_catalog.active_mut()
+                    && entry.kind == ProfileKind::LocalManaged
+                {
+                    entry.executable = Some(managed);
+                    let _ = self.profile_store.save_catalog(&self.profile_catalog);
+                    let profiles = map_profile_catalog(&self.profile_catalog);
+                    self.workspace.update(cx, |shell, cx| {
+                        shell.set_profiles(profiles, cx);
+                    });
+                }
+                self.workspace.update(cx, |shell, cx| {
+                    shell.set_core_command_result(
+                        CoreCommandResultView {
+                            request_id: request.request_id,
+                            command: request.command.clone(),
+                            registry,
+                            outcome: CoreCommandOutcomeView::Success,
+                        },
+                        cx,
+                    );
+                });
+            }
+            Err(summary) => {
+                let registry = map_core_registry(&self.core_store);
+                self.workspace.update(cx, |shell, cx| {
+                    shell.set_core_command_result(
+                        CoreCommandResultView {
+                            request_id: request.request_id,
+                            command: request.command.clone(),
+                            registry,
+                            outcome: CoreCommandOutcomeView::Failure(OperationErrorView {
+                                code: "core.command_failed".into(),
+                                summary,
+                                retryable: true,
+                            }),
+                        },
+                        cx,
+                    );
+                });
+            }
+        }
+        let _ = window;
+    }
+
+    fn execute_core_command(&self, command: &CoreCommandView) -> Result<(), String> {
+        match command {
+            CoreCommandView::Import { path } => self
+                .core_store
+                .import_executable(PathBuf::from(path))
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            CoreCommandView::Link { path } => self
+                .core_store
+                .link_executable(PathBuf::from(path))
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            CoreCommandView::Verify { core_id } => {
+                let id = core_id
+                    .parse()
+                    .map_err(|error| format!("Invalid core id: {error}"))?;
+                self.core_store
+                    .verify(id)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            }
+            CoreCommandView::Activate { core_id } => {
+                let id = core_id
+                    .parse()
+                    .map_err(|error| format!("Invalid core id: {error}"))?;
+                self.core_store
+                    .activate(id)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            }
+            CoreCommandView::Rollback => self
+                .core_store
+                .rollback_to_last_working()
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            CoreCommandView::Remove { core_id } => {
+                let id = core_id
+                    .parse()
+                    .map_err(|error| format!("Invalid core id: {error}"))?;
+                self.core_store
+                    .remove(id)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            }
+        }
     }
 }
 
@@ -2725,8 +2842,16 @@ fn create_sync_handle(
         if config.data_dir.as_os_str().is_empty() {
             config.data_dir = data_dir.to_path_buf();
         }
+        // Managed core wins when ARIADECK_ARIA2C_PATH is unset and an active core exists.
+        if env::var_os("ARIADECK_ARIA2C_PATH").is_none()
+            && let Ok(Some(managed)) = CoreStore::new(data_dir).resolve_active_executable()
+        {
+            config.executable = managed;
+        }
         let process = LocalEngineSupervisor::spawn(&config)
             .map_err(|error| format!("Failed to start local aria2: {error}"))?;
+        // Successful start: remember the active managed core as last working when present.
+        let _ = CoreStore::new(data_dir).mark_active_as_last_working();
         let mut notices = Vec::new();
         if process.session_was_recovered() {
             let notice = match process.session_recovery_backup() {
@@ -2958,6 +3083,49 @@ fn default_data_dir() -> PathBuf {
         return PathBuf::from(path).join(".local/share/ariadeck");
     }
     PathBuf::from(".ariadeck")
+}
+
+fn map_core_registry(store: &CoreStore) -> CoreRegistryView {
+    match store.list_installations() {
+        Ok(installations) => {
+            let registry = store.load_or_default().unwrap_or_default();
+            CoreRegistryView {
+                active_id: registry.active_id.map(|id| id.to_string()),
+                last_working_id: registry.last_working_id.map(|id| id.to_string()),
+                installations: installations
+                    .into_iter()
+                    .map(|core| CoreInstallationView {
+                        id: core.id.to_string(),
+                        version: core.version,
+                        target: core.target,
+                        source: match core.source {
+                            CoreSource::Imported => CoreSourceView::Imported,
+                            CoreSource::Linked => CoreSourceView::Linked,
+                            CoreSource::Managed => CoreSourceView::Managed,
+                        },
+                        executable: core.executable.to_string_lossy().into_owned(),
+                        features: core.features,
+                        is_active: core.is_active,
+                        is_last_working: core.is_last_working,
+                        validated_version: core.validated_version,
+                        status: match core.status {
+                            CoreInstallStatus::Ready => CoreInstallStatusView::Ready,
+                            CoreInstallStatus::MissingExecutable => {
+                                CoreInstallStatusView::MissingExecutable
+                            }
+                            CoreInstallStatus::MissingManifest => {
+                                CoreInstallStatusView::MissingManifest
+                            }
+                        },
+                    })
+                    .collect(),
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "failed to list managed aria2 cores");
+            CoreRegistryView::default()
+        }
+    }
 }
 
 fn map_profile_catalog(catalog: &ProfileCatalog) -> ProfileCatalogView {

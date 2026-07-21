@@ -23,20 +23,21 @@ use crate::{
     BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
     BatchTaskFailureView, Button, ButtonStyle, ClearSearch, CloseAddDownload, CloseBatchFailures,
     CloseSettings, CloseTaskOutputName, CloseTaskSpeedLimit, ColorSchemeView, CommandOutcomeView,
-    ConnectionView, Dialog, DownloadProxySettingsView, DownloadRowView, EngineHealthView,
-    EngineSessionView, FileAllocationView, FileConflictPolicyView, FocusNext, FocusPrevious,
-    FocusSearch, GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView,
-    Icon, IconButton, IconName, IconSize, MoveTaskDownInQueue, MoveTaskToQueueBottom,
-    MoveTaskToQueueTop, MoveTaskUpInQueue, NotificationSettingsView, NotificationVolumeView,
-    OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit,
-    OperationErrorView, PauseSelectedTask, ProfileCatalogView, ProfileEntryView, ProfileKindView,
-    ProxyModeView, ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask,
-    RetrySelectedTask, SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView,
-    SaveProfileCatalogResultView, SaveSettings, SearchInputEvent, SecretStringView, Segment,
-    SegmentedControl, SelectAllTasks, SelectNextTask, SelectPreviousTask, SettingsSaveOutcomeView,
-    SettingsSaveRequestView, SettingsSaveResultView, SettingsView, SpeedLimitSettingsView,
-    SpeedSampleView, StatusIndicator, SubmitAddDownload, SubmitTaskOutputName,
-    SubmitTaskSpeedLimit, SwitchProfileOutcomeView, SwitchProfileRequestView,
+    ConnectionView, CoreCommandOutcomeView, CoreCommandRequestView, CoreCommandResultView,
+    CoreCommandView, CoreRegistryView, Dialog, DownloadProxySettingsView, DownloadRowView,
+    EngineHealthView, EngineSessionView, FileAllocationView, FileConflictPolicyView, FocusNext,
+    FocusPrevious, FocusSearch, GlobalTaskCommandRequestView, GlobalTaskCommandResultView,
+    GlobalTaskCommandView, Icon, IconButton, IconName, IconSize, MoveTaskDownInQueue,
+    MoveTaskToQueueBottom, MoveTaskToQueueTop, MoveTaskUpInQueue, NotificationSettingsView,
+    NotificationVolumeView, OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName,
+    OpenTaskSpeedLimit, OperationErrorView, PauseSelectedTask, ProfileCatalogView,
+    ProfileEntryView, ProfileKindView, ProxyModeView, ProxyPasswordUpdateView, RemoveSelectedTask,
+    RequestId, ResumeSelectedTask, RetrySelectedTask, SaveProfileCatalogOutcomeView,
+    SaveProfileCatalogRequestView, SaveProfileCatalogResultView, SaveSettings, SearchInputEvent,
+    SecretStringView, Segment, SegmentedControl, SelectAllTasks, SelectNextTask,
+    SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
+    SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator, SubmitAddDownload,
+    SubmitTaskOutputName, SubmitTaskSpeedLimit, SwitchProfileOutcomeView, SwitchProfileRequestView,
     SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
     TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
     TaskFileView, TaskIdentity, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
@@ -108,6 +109,7 @@ pub enum AppShellEvent {
     SettingsSaveRequested(SettingsSaveRequestView),
     SwitchProfileRequested(SwitchProfileRequestView),
     SaveProfileCatalogRequested(SaveProfileCatalogRequestView),
+    CoreCommandRequested(CoreCommandRequestView),
 }
 
 struct PendingAddDownload {
@@ -298,6 +300,7 @@ pub struct AppShell {
     theme: Theme,
     settings: SettingsView,
     profiles: ProfileCatalogView,
+    cores: CoreRegistryView,
     page: AppPage,
     engine_health: EngineHealthView,
     snapshot: WorkspaceSnapshot,
@@ -316,6 +319,7 @@ pub struct AppShell {
     add_checksum_input: Entity<TextField>,
     output_name_input: Entity<TextField>,
     settings_directory_input: Entity<TextField>,
+    settings_core_path_input: Entity<TextField>,
     settings_all_proxy_input: Entity<TextField>,
     settings_http_proxy_input: Entity<TextField>,
     settings_https_proxy_input: Entity<TextField>,
@@ -758,6 +762,28 @@ impl AppShell {
                 cx,
             )
         });
+        let settings_core_path_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "settings-core-path".into(),
+                    key_context: "SettingsCorePathInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "Path to aria2c executable to import or link".into(),
+                    placeholder: if cfg!(windows) {
+                        "C:\\path\\to\\aria2c.exe"
+                    } else {
+                        "/usr/bin/aria2c"
+                    }
+                    .into(),
+                    leading_icon: Some(IconName::FolderDown),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: false,
+                },
+                theme,
+                cx,
+            )
+        });
         let settings_all_proxy_input = cx.new(|cx| {
             TextField::new_with_config(
                 settings_input_config(
@@ -974,6 +1000,7 @@ impl AppShell {
             theme,
             settings,
             profiles: ProfileCatalogView::default(),
+            cores: CoreRegistryView::default(),
             page: AppPage::Downloads,
             engine_health: EngineHealthView::External,
             snapshot: WorkspaceSnapshot::default(),
@@ -992,6 +1019,7 @@ impl AppShell {
             add_checksum_input,
             output_name_input,
             settings_directory_input,
+            settings_core_path_input,
             settings_all_proxy_input,
             settings_http_proxy_input,
             settings_https_proxy_input,
@@ -2058,6 +2086,92 @@ impl AppShell {
             cx,
         );
         cx.notify();
+    }
+
+    pub fn set_cores(&mut self, cores: CoreRegistryView, cx: &mut Context<Self>) {
+        self.cores = cores;
+        cx.notify();
+    }
+
+    pub fn request_core_command(&mut self, command: CoreCommandView, cx: &mut Context<Self>) {
+        let request_id = self.allocate_request_id();
+        let notice = match &command {
+            CoreCommandView::Import { .. } => "Importing aria2 core...",
+            CoreCommandView::Link { .. } => "Linking aria2 core...",
+            CoreCommandView::Verify { .. } => "Verifying aria2 core...",
+            CoreCommandView::Activate { .. } => "Activating aria2 core...",
+            CoreCommandView::Rollback => "Rolling back to last working core...",
+            CoreCommandView::Remove { .. } => "Removing aria2 core...",
+        };
+        self.show_notice(notice, false, cx);
+        cx.emit(AppShellEvent::CoreCommandRequested(
+            CoreCommandRequestView {
+                request_id,
+                command,
+            },
+        ));
+        cx.notify();
+    }
+
+    pub fn set_core_command_result(
+        &mut self,
+        result: CoreCommandResultView,
+        cx: &mut Context<Self>,
+    ) {
+        match result.outcome {
+            CoreCommandOutcomeView::Success => {
+                self.cores = result.registry;
+                let message = match result.command {
+                    CoreCommandView::Import { .. } => {
+                        "aria2 core imported. Activate it, then restart AriaDeck to use it."
+                    }
+                    CoreCommandView::Link { .. } => {
+                        "aria2 core linked. Activate it, then restart AriaDeck to use it."
+                    }
+                    CoreCommandView::Verify { .. } => "aria2 core verified.",
+                    CoreCommandView::Activate { .. } => {
+                        "Active aria2 core updated. Restart AriaDeck to start that version."
+                    }
+                    CoreCommandView::Rollback => {
+                        "Rolled back to the last working core. Restart AriaDeck to apply."
+                    }
+                    CoreCommandView::Remove { .. } => "aria2 core removed.",
+                };
+                self.show_notice(message, false, cx);
+            }
+            CoreCommandOutcomeView::Failure(error) => {
+                self.show_notice(error.summary, true, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn request_import_core_from_input(&mut self, cx: &mut Context<Self>) {
+        let path = self
+            .settings_core_path_input
+            .read(cx)
+            .text()
+            .trim()
+            .to_owned();
+        if path.is_empty() {
+            self.show_notice("Enter a path to an aria2c executable first.", true, cx);
+            return;
+        }
+        self.request_core_command(CoreCommandView::Import { path }, cx);
+    }
+
+    fn request_link_core_from_input(&mut self, cx: &mut Context<Self>) {
+        let path = self
+            .settings_core_path_input
+            .read(cx)
+            .text()
+            .trim()
+            .to_owned();
+        if path.is_empty() {
+            self.show_notice("Enter a path to an aria2c executable first.", true, cx);
+            return;
+        }
+        self.request_core_command(CoreCommandView::Link { path }, cx);
     }
 
     #[must_use]
@@ -8651,6 +8765,262 @@ impl AppShell {
                                     ),
                             )
                         })
+                        .child({
+                            let cores = self.cores.clone();
+                            let can_rollback = cores
+                                .last_working_id
+                                .as_ref()
+                                .is_some_and(|id| cores.active_id.as_ref() != Some(id));
+                            settings_section(
+                                "Engine",
+                                "Managed aria2 installations live under the app data cores directory. Import copies a local binary; Link registers a path without copying. Activate updates the registry immediately; restart AriaDeck to start that core. Network update channels are deferred.",
+                                colors,
+                            )
+                            .child(
+                                div()
+                                    .mt_3()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(colors.text_muted)
+                                            .child(if cores.installations.is_empty() {
+                                                "No managed cores yet. Import or link an aria2c executable below."
+                                                    .to_owned()
+                                            } else {
+                                                format!(
+                                                    "{} installed · active {}",
+                                                    cores.installations.len(),
+                                                    cores
+                                                        .active()
+                                                        .map(|core| core.version.as_str())
+                                                        .unwrap_or("none")
+                                                )
+                                            }),
+                                    )
+                                    .children(cores.installations.into_iter().map(|core| {
+                                        let core_id = core.id.clone();
+                                        let activate_id = core_id.clone();
+                                        let verify_id = core_id.clone();
+                                        let remove_id = core_id.clone();
+                                        let is_active = core.is_active;
+                                        div()
+                                            .id(SharedString::from(format!("core-row-{}", core.id)))
+                                            .flex()
+                                            .flex_col()
+                                            .gap_2()
+                                            .px_3()
+                                            .py_2()
+                                            .rounded_md()
+                                            .border_1()
+                                            .border_color(if is_active {
+                                                colors.accent
+                                            } else {
+                                                colors.border
+                                            })
+                                            .bg(if is_active {
+                                                with_alpha(colors.accent, 0.08)
+                                            } else {
+                                                colors.surface
+                                            })
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .min_w_0()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .gap_0p5()
+                                                            .child(
+                                                                div()
+                                                                    .text_sm()
+                                                                    .font_weight(FontWeight::MEDIUM)
+                                                                    .text_color(colors.text_primary)
+                                                                    .child(format!(
+                                                                        "aria2 {}",
+                                                                        core.version
+                                                                    )),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_xs()
+                                                                    .text_color(colors.text_muted)
+                                                                    .child(format!(
+                                                                        "{} · {} · {}{}",
+                                                                        core.source.label(),
+                                                                        core.target,
+                                                                        core.status.label(),
+                                                                        if core.is_last_working {
+                                                                            " · last working"
+                                                                        } else {
+                                                                            ""
+                                                                        }
+                                                                    )),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_xs()
+                                                                    .text_color(colors.text_muted)
+                                                                    .child(if core.executable.is_empty() {
+                                                                        "executable missing".into()
+                                                                    } else {
+                                                                        core.executable.clone()
+                                                                    }),
+                                                            ),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_wrap()
+                                                    .gap_2()
+                                                    .child(
+                                                        Button::new(
+                                                            SharedString::from(format!(
+                                                                "activate-core-{}",
+                                                                activate_id
+                                                            )),
+                                                            if is_active { "Active" } else { "Activate" },
+                                                        )
+                                                        .aria_label(if is_active {
+                                                            format!(
+                                                                "aria2 {} is active",
+                                                                core.version
+                                                            )
+                                                        } else {
+                                                            format!("Activate aria2 {}", core.version)
+                                                        })
+                                                        .style(if is_active {
+                                                            ButtonStyle::Secondary
+                                                        } else {
+                                                            ButtonStyle::Primary
+                                                        })
+                                                        .disabled(is_active)
+                                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                                            this.request_core_command(
+                                                                CoreCommandView::Activate {
+                                                                    core_id: activate_id.clone(),
+                                                                },
+                                                                cx,
+                                                            );
+                                                        }))
+                                                        .render(colors),
+                                                    )
+                                                    .child(
+                                                        Button::new(
+                                                            SharedString::from(format!(
+                                                                "verify-core-{}",
+                                                                verify_id
+                                                            )),
+                                                            "Verify",
+                                                        )
+                                                        .aria_label(format!(
+                                                            "Verify aria2 {}",
+                                                            core.version
+                                                        ))
+                                                        .style(ButtonStyle::Secondary)
+                                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                                            this.request_core_command(
+                                                                CoreCommandView::Verify {
+                                                                    core_id: verify_id.clone(),
+                                                                },
+                                                                cx,
+                                                            );
+                                                        }))
+                                                        .render(colors),
+                                                    )
+                                                    .child(
+                                                        Button::new(
+                                                            SharedString::from(format!(
+                                                                "remove-core-{}",
+                                                                remove_id
+                                                            )),
+                                                            "Remove",
+                                                        )
+                                                        .aria_label(format!(
+                                                            "Remove aria2 {}",
+                                                            core.version
+                                                        ))
+                                                        .style(ButtonStyle::Secondary)
+                                                        .disabled(is_active)
+                                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                                            this.request_core_command(
+                                                                CoreCommandView::Remove {
+                                                                    core_id: remove_id.clone(),
+                                                                },
+                                                                cx,
+                                                            );
+                                                        }))
+                                                        .render(colors),
+                                                    )
+                                            )
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .mt_3()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(colors.text_primary)
+                                            .child("Import or link local aria2c"),
+                                    )
+                                    .child(self.settings_core_path_input.clone())
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_wrap()
+                                            .gap_2()
+                                            .child(
+                                                Button::new("import-core", "Import copy")
+                                                    .aria_label(
+                                                        "Import a copy of the aria2c path into managed cores",
+                                                    )
+                                                    .style(ButtonStyle::Primary)
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.request_import_core_from_input(cx);
+                                                    }))
+                                                    .render(colors),
+                                            )
+                                            .child(
+                                                Button::new("link-core", "Link path")
+                                                    .aria_label(
+                                                        "Register the aria2c path without copying",
+                                                    )
+                                                    .style(ButtonStyle::Secondary)
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.request_link_core_from_input(cx);
+                                                    }))
+                                                    .render(colors),
+                                            )
+                                            .child(
+                                                Button::new("rollback-core", "Rollback")
+                                                    .aria_label(
+                                                        "Activate the last working managed aria2 core",
+                                                    )
+                                                    .style(ButtonStyle::Secondary)
+                                                    .disabled(!can_rollback)
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.request_core_command(
+                                                            CoreCommandView::Rollback,
+                                                            cx,
+                                                        );
+                                                    }))
+                                                    .render(colors),
+                                            ),
+                                    ),
+                            )
+                        })
                         .child(
                             settings_section(
                                 "Appearance",
@@ -11329,8 +11699,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        AddDownloadMetadataFileView, AddDownloadMetadataPreviewItemView, SpeedLimitSettingsView,
-        TaskCountsView, TaskNameStateView, TaskSourceKindView, TaskStatusView,
+        AddDownloadMetadataFileView, AddDownloadMetadataPreviewItemView, CoreInstallStatusView,
+        CoreInstallationView, CoreSourceView, SpeedLimitSettingsView, TaskCountsView,
+        TaskNameStateView, TaskSourceKindView, TaskStatusView,
     };
 
     fn task(index: usize) -> DownloadRowView {
@@ -13976,6 +14347,75 @@ mod tests {
             assert_eq!(
                 shell.profiles.active().map(|profile| profile.name.as_str()),
                 Some("NAS")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn core_registry_commands_emit_and_apply_results(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.set_cores(
+                CoreRegistryView {
+                    active_id: Some("c1".into()),
+                    last_working_id: Some("c1".into()),
+                    installations: vec![CoreInstallationView {
+                        id: "c1".into(),
+                        version: "1.36.0".into(),
+                        target: "windows-x86_64".into(),
+                        source: CoreSourceView::Imported,
+                        executable: "D:/cores/aria2c.exe".into(),
+                        features: vec!["BitTorrent".into()],
+                        is_active: true,
+                        is_last_working: true,
+                        validated_version: Some("1.36.0".into()),
+                        status: CoreInstallStatusView::Ready,
+                    }],
+                },
+                cx,
+            );
+            shell
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.request_core_command(
+                CoreCommandView::Verify {
+                    core_id: "c1".into(),
+                },
+                cx,
+            );
+            shell.set_core_command_result(
+                CoreCommandResultView {
+                    request_id: RequestId::from_u64(3),
+                    command: CoreCommandView::Verify {
+                        core_id: "c1".into(),
+                    },
+                    registry: CoreRegistryView {
+                        active_id: Some("c1".into()),
+                        last_working_id: Some("c1".into()),
+                        installations: vec![CoreInstallationView {
+                            id: "c1".into(),
+                            version: "1.36.0".into(),
+                            target: "windows-x86_64".into(),
+                            source: CoreSourceView::Imported,
+                            executable: "D:/cores/aria2c.exe".into(),
+                            features: vec!["BitTorrent".into(), "HTTPS".into()],
+                            is_active: true,
+                            is_last_working: true,
+                            validated_version: Some("1.36.0".into()),
+                            status: CoreInstallStatusView::Ready,
+                        }],
+                    },
+                    outcome: CoreCommandOutcomeView::Success,
+                },
+                cx,
+            );
+            assert_eq!(shell.cores.installations[0].features.len(), 2);
+            assert!(
+                shell
+                    .status_notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.message.contains("verified"))
             );
         });
     }

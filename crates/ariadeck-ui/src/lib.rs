@@ -33,6 +33,8 @@ pub use model::{
     AddDownloadResultView, AddDownloadSourceView, BatchCommandOutcomeView,
     BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
     BatchTaskFailureView, ColorSchemeView, CommandOutcomeView, ConnectionView,
+    CoreCommandOutcomeView, CoreCommandRequestView, CoreCommandResultView, CoreCommandView,
+    CoreInstallStatusView, CoreInstallationView, CoreRegistryView, CoreSourceView,
     DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView, EngineHealthView,
     EngineSessionView, FileAllocationView, FileConflictPolicyView, GlobalTaskCommandRequestView,
     GlobalTaskCommandResultView, GlobalTaskCommandView, NotificationSettingsView,

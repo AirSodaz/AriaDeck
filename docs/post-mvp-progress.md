@@ -930,6 +930,31 @@ session files stay under each local profile directory.
   session files across engines.
 
 
+
+### D-029 - Managed aria2 core registry with local import (no network channel yet)
+
+**Decision:** CORE-001 adds a side-by-side managed core registry under
+`data/cores/aria2/`. Installations are registered via **Import** (copy into the
+tree with SHA-256 + `--version` probe) or **Link** (absolute path without copy).
+**Activate** / **Rollback** update `cores.json` immediately; the running process
+rebinding requires restarting AriaDeck (same restart-bound model as PROFILE-001).
+
+**Resolution order for local managed profiles:** `ARIADECK_ARIA2C_PATH` env
+override, then active managed core executable, then PATH/scoop discovery, then
+the bare `aria2c` name.
+
+**Not in this slice:** signed remote manifests, update channels (Stable/Preview),
+in-app download of official packages, or hot-swap without restart. Packaging of a
+bundled first-run binary remains a release concern (RELEASE-001).
+
+**Evidence:**
+
+- design.md §9–11 managed engine ownership, cores layout, install/verify/activate/rollback.
+- Motrix/AriaNg rely on system or bundled binary without multi-version registry;
+  AriaDeck follows the design's multi-version side-by-side model without shipping
+  network installers in the first P2 cut.
+
+
 ### P0 - Correctness and Core Workflow
 
 - [x] `FNM-001` Add resolving/final/custom filename state and preserve the
@@ -1012,8 +1037,10 @@ session files stay under each local profile directory.
   activation (D-028). Per-profile proxy/limit bags deferred.
 - [ ] `UI-001` Add system theme, window geometry, localization, saved filters,
   tags/categories, and browser/file associations.
-- [ ] `CORE-001` Add managed aria2 installation, verification, switching,
-  rollback, update channels, and packaging.
+- [x] `CORE-001` Managed aria2 core registry: import/link, verify, activate,
+  rollback, remove under data/cores/aria2; Settings → Engine UI; restart-bound
+  activation; env > active core > discovery resolution (D-029). Network update
+  channels and bundled packaging deferred to RELEASE-001.
 
 ## Current Implementation Slice
 
@@ -1052,7 +1079,7 @@ details show sanitized source/directory/output fields, exact local-path
 validation, aria2 codes 9-18 with raw details, and managed-local Open download/
 Open folder actions that refetch exact-session details before touching the
 filesystem. External profiles expose the capability as unavailable rather than
-assuming their paths are local. `RPC-001` is now complete: force pause/remove (and force-pause-all) sit on the shared gateway with capability-safe Unsupported defaults; `system.multicall` batches on-demand URI/option/peer/server projections with nested-only authentication; `system.listMethods` feeds `EngineCapabilities.methods`; and the typed task-option editor applies seed-ratio/seed-time through `changeOption` with the same outcome-unknown reconciliation as other mutations. `HISTORY-001` is now complete: stopped-history state exposes loaded/total/next-offset, SyncHandle.load_more_stopped appends pages without dropping earlier ones, the status bar shows History loaded/total with single-flight Load more, and managed aria2 keeps 5000 terminal results in memory. `ADD-005` is now complete: typed advanced add controls cover referer, user-agent, custom headers, cookie, HTTP auth, and checksum for direct URL tasks; secrets stay redacted; multi-value headers collapse at the RPC boundary. `RATE-002` is now complete: typed transfer policy covers max concurrent downloads, connections per server, split, min-split size, file allocation, and integrity check with schema v4 persistence, session-bound apply/reapply/rollback, scope-labeled settings UI, and per-task connection-policy command surface (D-023). Pause/resume scheduling remains deferred. `UI-002` is now complete: right-click task context menu mirrors toolbar/details actions while preserving multi-selection, queue-move shortcuts are workspace-bound, remove restores list focus, and existing sort/hidden-selection/mixed-state batch paths remain the authority (D-024). `OBS-001` is now complete: snapshot-diff completion/error grouping, schema v5 notification preferences (Normal/Quiet/Silent + category toggles), session activity history panel, and preference-gated automatic toasts (D-025). OS-native notifications remain deferred. `PROFILE-002` is now complete: exclusive managed-profile ownership lock, corrupt session/profile recovery with backups and startup notices, preserved profile identity, and external RPC connection-only handoff (D-026). `RPC-002` is now complete: listMethods-backed EngineCapabilities gate force/queue/option controls in command preflight and UI, with empty-probe open-handed fallback and live force/proxy/multicall smoke coverage (D-027). `PROFILE-001` is now complete: multi-profile catalog (local/remote), legacy migration, settings activate/add/save, and restart-bound active-profile selection (D-028). Remaining P2 platform work is next.
+assuming their paths are local. `RPC-001` is now complete: force pause/remove (and force-pause-all) sit on the shared gateway with capability-safe Unsupported defaults; `system.multicall` batches on-demand URI/option/peer/server projections with nested-only authentication; `system.listMethods` feeds `EngineCapabilities.methods`; and the typed task-option editor applies seed-ratio/seed-time through `changeOption` with the same outcome-unknown reconciliation as other mutations. `HISTORY-001` is now complete: stopped-history state exposes loaded/total/next-offset, SyncHandle.load_more_stopped appends pages without dropping earlier ones, the status bar shows History loaded/total with single-flight Load more, and managed aria2 keeps 5000 terminal results in memory. `ADD-005` is now complete: typed advanced add controls cover referer, user-agent, custom headers, cookie, HTTP auth, and checksum for direct URL tasks; secrets stay redacted; multi-value headers collapse at the RPC boundary. `RATE-002` is now complete: typed transfer policy covers max concurrent downloads, connections per server, split, min-split size, file allocation, and integrity check with schema v4 persistence, session-bound apply/reapply/rollback, scope-labeled settings UI, and per-task connection-policy command surface (D-023). Pause/resume scheduling remains deferred. `UI-002` is now complete: right-click task context menu mirrors toolbar/details actions while preserving multi-selection, queue-move shortcuts are workspace-bound, remove restores list focus, and existing sort/hidden-selection/mixed-state batch paths remain the authority (D-024). `OBS-001` is now complete: snapshot-diff completion/error grouping, schema v5 notification preferences (Normal/Quiet/Silent + category toggles), session activity history panel, and preference-gated automatic toasts (D-025). OS-native notifications remain deferred. `PROFILE-002` is now complete: exclusive managed-profile ownership lock, corrupt session/profile recovery with backups and startup notices, preserved profile identity, and external RPC connection-only handoff (D-026). `RPC-002` is now complete: listMethods-backed EngineCapabilities gate force/queue/option controls in command preflight and UI, with empty-probe open-handed fallback and live force/proxy/multicall smoke coverage (D-027). `PROFILE-001` is now complete: multi-profile catalog (local/remote), legacy migration, settings activate/add/save, and restart-bound active-profile selection (D-028). `CORE-001` is now complete: managed core registry with import/link/verify/activate/rollback, Settings Engine UI, and restart-bound activation (D-029). Network channels and packaging remain deferred. Remaining P2 platform work is next.
 The proxy slice includes schema migration, validated endpoint/bypass fields,
 masked password input, system credential storage, session-bound runtime apply,
 new-session reapply, and explicit clearing. `FILE-002` now has
@@ -1249,5 +1276,7 @@ acceptance outcomes overlap.
 
 | 2026-07-21 | `PROFILE-001` | `cargo test --workspace --no-fail-fast` | Pass - 294 passed, 13 ignored; adds multi-profile catalog schema 2 with local/remote entries and legacy migration, desktop active-profile load/switch/save, settings Profiles section, and sidebar active-profile banner |
 | 2026-07-21 | `PROFILE-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+| 2026-07-21 | `CORE-001` | `cargo test --workspace --no-fail-fast` | Pass - 299 passed, 13 ignored; managed core registry import/link/verify/activate/rollback, Settings Engine section, and startup resolution env > active core > discovery |
+| 2026-07-21 | `CORE-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.
