@@ -818,6 +818,49 @@ surfaces remain deferred.
 - AriaDeck already had single-flight batch command summaries; this decision
   extends the same grouping rule to passive status transitions.
 
+
+### D-026 - Single-profile startup is fail-closed on ownership and recoverably corrupt state
+
+**Decision:** PROFILE-002 hardens the single active managed profile without
+shipping multi-profile switching UI (PROFILE-001 remains separate). Startup
+verifies profile identity from profiles.json, acquires exclusive ownership of
+the profile directory before spawning aria2, and recovers corrupt session or
+profile metadata by preserving originals then continuing with a safe empty
+session or reset document.
+
+**Ownership rule:** A .ariadeck-engine.lock file (JSON pid + profile id) is
+held exclusively for the managed process lifetime. A live foreign owner, a
+second acquire in the same process, or a lock file still held open fails closed
+with ProfileAlreadyOwned. Stale locks from dead pids are reclaimed. Drop of
+the managed engine releases the lock. Closing AriaDeck continues to stop the
+managed engine it owns (existing DesktopRoot Drop path).
+
+**Session rule:** Before spawn, the aria2 session file is checked for plausible
+line-oriented text. Corrupt bytes are renamed aside and replaced with an empty
+session so the engine can start; the user receives a startup notice with the
+backup path.
+
+**Endpoint handoff rule:** ARIADECK_RPC_URL remains an external/remote
+connection-only path: no managed spawn, no shared session file, no port
+contention with the local supervisor. Fixed-port takeovers of foreign aria2
+instances are out of scope for this item (ephemeral loopback ports avoid the
+classic port-collision case for managed engines).
+
+**Profile metadata rule:** Corrupt profiles.json is preserved and replaced
+via load_or_recover, preferring a still-readable profile_id so the existing
+profile directory remains addressable.
+
+**Evidence:**
+
+- design.md multi-profile strategy allows one active profile initially and
+  requires process/session identity per profile.
+- Motrix/qBittorrent treat a running engine as owned by one app instance and
+  recover session files carefully rather than sharing write paths.
+- AriaDeck already had atomic profile save, session files under profile_id, and
+  managed shutdown on drop; this decision adds exclusive ownership and corrupt
+  recovery.
+
+
 ## Task Matrix
 
 Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
@@ -942,7 +985,7 @@ details show sanitized source/directory/output fields, exact local-path
 validation, aria2 codes 9-18 with raw details, and managed-local Open download/
 Open folder actions that refetch exact-session details before touching the
 filesystem. External profiles expose the capability as unavailable rather than
-assuming their paths are local. `RPC-001` is now complete: force pause/remove (and force-pause-all) sit on the shared gateway with capability-safe Unsupported defaults; `system.multicall` batches on-demand URI/option/peer/server projections with nested-only authentication; `system.listMethods` feeds `EngineCapabilities.methods`; and the typed task-option editor applies seed-ratio/seed-time through `changeOption` with the same outcome-unknown reconciliation as other mutations. `HISTORY-001` is now complete: stopped-history state exposes loaded/total/next-offset, SyncHandle.load_more_stopped appends pages without dropping earlier ones, the status bar shows History loaded/total with single-flight Load more, and managed aria2 keeps 5000 terminal results in memory. `ADD-005` is now complete: typed advanced add controls cover referer, user-agent, custom headers, cookie, HTTP auth, and checksum for direct URL tasks; secrets stay redacted; multi-value headers collapse at the RPC boundary. `RATE-002` is now complete: typed transfer policy covers max concurrent downloads, connections per server, split, min-split size, file allocation, and integrity check with schema v4 persistence, session-bound apply/reapply/rollback, scope-labeled settings UI, and per-task connection-policy command surface (D-023). Pause/resume scheduling remains deferred. `UI-002` is now complete: right-click task context menu mirrors toolbar/details actions while preserving multi-selection, queue-move shortcuts are workspace-bound, remove restores list focus, and existing sort/hidden-selection/mixed-state batch paths remain the authority (D-024). `OBS-001` is now complete: snapshot-diff completion/error grouping, schema v5 notification preferences (Normal/Quiet/Silent + category toggles), session activity history panel, and preference-gated automatic toasts (D-025). OS-native notifications remain deferred. Remaining P1 audit items and P2 platform work are next.
+assuming their paths are local. `RPC-001` is now complete: force pause/remove (and force-pause-all) sit on the shared gateway with capability-safe Unsupported defaults; `system.multicall` batches on-demand URI/option/peer/server projections with nested-only authentication; `system.listMethods` feeds `EngineCapabilities.methods`; and the typed task-option editor applies seed-ratio/seed-time through `changeOption` with the same outcome-unknown reconciliation as other mutations. `HISTORY-001` is now complete: stopped-history state exposes loaded/total/next-offset, SyncHandle.load_more_stopped appends pages without dropping earlier ones, the status bar shows History loaded/total with single-flight Load more, and managed aria2 keeps 5000 terminal results in memory. `ADD-005` is now complete: typed advanced add controls cover referer, user-agent, custom headers, cookie, HTTP auth, and checksum for direct URL tasks; secrets stay redacted; multi-value headers collapse at the RPC boundary. `RATE-002` is now complete: typed transfer policy covers max concurrent downloads, connections per server, split, min-split size, file allocation, and integrity check with schema v4 persistence, session-bound apply/reapply/rollback, scope-labeled settings UI, and per-task connection-policy command surface (D-023). Pause/resume scheduling remains deferred. `UI-002` is now complete: right-click task context menu mirrors toolbar/details actions while preserving multi-selection, queue-move shortcuts are workspace-bound, remove restores list focus, and existing sort/hidden-selection/mixed-state batch paths remain the authority (D-024). `OBS-001` is now complete: snapshot-diff completion/error grouping, schema v5 notification preferences (Normal/Quiet/Silent + category toggles), session activity history panel, and preference-gated automatic toasts (D-025). OS-native notifications remain deferred. `PROFILE-002` is now complete: exclusive managed-profile ownership lock, corrupt session/profile recovery with backups and startup notices, preserved profile identity, and external RPC connection-only handoff (D-026). Multi-profile switching UI remains PROFILE-001. Remaining P1 audit items and P2 platform work are next.
 The proxy slice includes schema migration, validated endpoint/bypass fields,
 masked password input, system credential storage, session-bound runtime apply,
 new-session reapply, and explicit clearing. `FILE-002` now has
@@ -1022,10 +1065,11 @@ several can be shared by more than one feature.
   history. Status transitions are grouped per snapshot; volume is Normal/Quiet/
   Silent with completion/error/engine toggles (schema v5); session activity
   panel is status-bar accessible (D-025). OS-native notifications deferred.
-- [ ] `PROFILE-002` Define profile switching and startup recovery behavior:
-  profile identity verification, running-engine ownership on close, session
-  corruption recovery, endpoint changes, and a safe handoff when another aria2
-  instance already owns the configured port or session.
+- [x] `PROFILE-002` Define profile switching and startup recovery behavior:
+  stable profile identity via load_or_recover, exclusive profile-dir ownership
+  lock, corrupt session/profile metadata recovery with preserved backups,
+  managed-engine shutdown ownership on close, and external RPC endpoint handoff
+  without shared session files (D-026). Multi-profile UI remains PROFILE-001.
 - [ ] `RPC-002` Gate advanced controls by detected aria2 capabilities and add
   compatibility tests across supported versions/builds. Unsupported methods
   must become disabled explanations rather than raw RPC failures; include real
@@ -1128,5 +1172,8 @@ acceptance outcomes overlap.
 
 | 2026-07-21 | `OBS-001` | `cargo test --workspace --no-fail-fast` | Pass - 282 passed, 13 ignored; adds schema v5 notification preferences, snapshot-diff grouped completion/error notices, Quiet/Silent volume behavior, settings-UI notification section, and status-bar activity history panel |
 | 2026-07-21 | `OBS-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+
+| 2026-07-21 | `PROFILE-002` | `cargo test --workspace --no-fail-fast` | Pass - 286 passed, 13 ignored; adds profile ownership lock (fail-closed live owner, stale reclaim), session corruption recovery, profiles.json load_or_recover with identity preservation, and managed-start startup notices |
+| 2026-07-21 | `PROFILE-002` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.

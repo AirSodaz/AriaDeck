@@ -151,14 +151,14 @@ impl DesktopRoot {
             settings.download_directory = PathBuf::from(download_directory);
         }
 
-        let (sync, local_engine, mut initial_snapshot) =
+        let (sync, local_engine, mut initial_snapshot, engine_startup_notice) =
             match create_sync_handle(&runtime, &data_dir, &settings) {
-                Ok((handle, local_engine)) => {
+                Ok((handle, local_engine, engine_notice)) => {
                     let snapshot = WorkspaceSnapshot {
                         connection: ConnectionView::Connecting,
                         ..WorkspaceSnapshot::default()
                     };
-                    (Some(handle), local_engine, snapshot)
+                    (Some(handle), local_engine, snapshot, engine_notice)
                 }
                 Err(error) => {
                     tracing::error!(%error, "failed to configure aria2 synchronization");
@@ -169,7 +169,7 @@ impl DesktopRoot {
                         },
                         ..WorkspaceSnapshot::default()
                     };
-                    (None, None, snapshot)
+                    (None, None, snapshot, None)
                 }
             };
         let local_engine_health = local_engine
@@ -213,6 +213,8 @@ impl DesktopRoot {
             shell.set_snapshot(initial_snapshot, cx);
             shell.set_engine_health(initial_engine_health, cx);
             if let Some(message) = startup_notice {
+                shell.set_startup_notice(message, true, cx);
+            } else if let Some(message) = engine_startup_notice {
                 shell.set_startup_notice(message, true, cx);
             }
             shell
@@ -2454,18 +2456,21 @@ fn create_sync_handle(
     runtime: &Runtime,
     data_dir: &Path,
     settings: &AppSettings,
-) -> Result<(SyncHandle, Option<LocalEngineSupervisor>), String> {
+) -> Result<(SyncHandle, Option<LocalEngineSupervisor>, Option<String>), String> {
     let external_endpoint = env::var("ARIADECK_RPC_URL")
         .ok()
         .filter(|endpoint| !endpoint.trim().is_empty());
     let rpc_runtime =
         RpcRuntimeConfig::from_values(external_endpoint.is_some(), |name| env::var(name).ok())?;
+    let mut engine_startup_notice = None;
     let (endpoint, secret, local_engine, profile_id) = if let Some(endpoint) = external_endpoint {
         if endpoint.trim() != endpoint {
             return Err("ARIADECK_RPC_URL must not contain surrounding whitespace.".into());
         }
         let endpoint =
             Url::parse(&endpoint).map_err(|error| format!("Invalid ARIADECK_RPC_URL: {error}"))?;
+        // External/remote endpoint handoff: connect only; never spawn a managed
+        // process against a foreign session file or port.
         let profile_id = env::var("ARIADECK_PROFILE_ID")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -2476,10 +2481,30 @@ fn create_sync_handle(
             .map(RpcSecret::new);
         (endpoint, secret, None, profile_id)
     } else {
-        let config = resolve_local_engine_config(data_dir, &settings.download_directory)?;
+        let (config, profile_recovery_notice) =
+            resolve_local_engine_config(data_dir, &settings.download_directory)?;
         let profile_id = config.profile_id;
-        let process = LocalEngineSupervisor::spawn(&config)
-            .map_err(|error| format!("Failed to start local aria2: {error}"))?;
+        let process = LocalEngineSupervisor::spawn(&config).map_err(|error| {
+            // Ownership and session-path failures are fail-closed startup errors.
+            format!("Failed to start local aria2: {error}")
+        })?;
+        let mut notices = Vec::new();
+        if let Some(notice) = profile_recovery_notice {
+            tracing::warn!(%notice, "local aria2 profile metadata was recovered");
+            notices.push(notice);
+        }
+        if process.session_was_recovered() {
+            let notice = match process.session_recovery_backup() {
+                Some(backup) => format!(
+                    "Corrupt aria2 session data was reset so downloads could start; the original was preserved at {}.",
+                    backup.display()
+                ),
+                None => "Corrupt aria2 session data was reset so downloads could start.".to_owned(),
+            };
+            tracing::warn!(%notice, "local aria2 session file was recovered");
+            notices.push(notice);
+        }
+        engine_startup_notice = (!notices.is_empty()).then(|| notices.join(" "));
         let endpoint = process.endpoint().clone();
         let secret = Some(RpcSecret::new(process.secret().to_owned()));
         (endpoint, secret, Some(process), profile_id)
@@ -2505,7 +2530,11 @@ fn create_sync_handle(
         "configured external aria2 RPC profile"
     );
     let _runtime_guard = runtime.enter();
-    Ok((spawn_sync_coordinator(connector, coordinator), local_engine))
+    Ok((
+        spawn_sync_coordinator(connector, coordinator),
+        local_engine,
+        engine_startup_notice,
+    ))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2632,7 +2661,7 @@ fn parse_boolean_setting(
 fn resolve_local_engine_config(
     data_dir: &Path,
     download_dir: &Path,
-) -> Result<LocalEngineConfig, String> {
+) -> Result<(LocalEngineConfig, Option<String>), String> {
     let executable = env::var_os("ARIADECK_ARIA2C_PATH")
         .map(PathBuf::from)
         .or_else(discover_aria2_executable)
@@ -2640,28 +2669,34 @@ fn resolve_local_engine_config(
             "No aria2 executable found. Set ARIADECK_ARIA2C_PATH or ARIADECK_RPC_URL.".to_owned()
         })?;
     let profile_store = JsonProfileStore::new(data_dir.join("profiles.json"));
-    let stored = if profile_store.path().is_file() {
-        Some(
-            profile_store
-                .load()
-                .map_err(|error| format!("Failed to load local aria2 profile: {error}"))?,
-        )
-    } else {
-        None
-    };
-    let profile = ExternalEngineProfile::new(
-        stored
-            .as_ref()
-            .map_or_else(ProfileId::new, |profile| profile.profile_id),
+    let defaults = ExternalEngineProfile::new(
+        ProfileId::new(),
         env::var("ARIADECK_PROFILE_NAME").unwrap_or_else(|_| "Local aria2".into()),
-        executable,
+        executable.clone(),
         data_dir.to_path_buf(),
         download_dir.to_path_buf(),
     );
+    // Preserve profile identity across restarts; recover corrupt metadata without
+    // inventing a second active profile (PROFILE-001 multi-profile remains deferred).
+    let loaded = profile_store
+        .load_or_recover(&defaults)
+        .map_err(|error| format!("Failed to load local aria2 profile: {error}"))?;
+    let mut profile = loaded.profile;
+    // Always refresh mutable runtime paths from the current process settings.
+    profile.name = env::var("ARIADECK_PROFILE_NAME").unwrap_or_else(|_| profile.name.clone());
+    profile.executable = executable;
+    profile.data_dir = data_dir.to_path_buf();
+    profile.download_dir = download_dir.to_path_buf();
     profile_store
         .save(&profile)
         .map_err(|error| format!("Failed to save local aria2 profile: {error}"))?;
-    Ok(profile.local_config())
+    let recovery_notice = loaded.recovery.map(|recovery| {
+        format!(
+            "Invalid profile metadata was reset; the original was preserved at {}.",
+            recovery.backup_path.display()
+        )
+    });
+    Ok((profile.local_config(), recovery_notice))
 }
 
 async fn request_local_engine_shutdown(process: &LocalEngineSupervisor) -> Result<(), String> {

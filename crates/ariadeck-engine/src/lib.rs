@@ -7,7 +7,7 @@
 use std::{
     collections::{HashSet, VecDeque},
     fmt,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, Write},
     net::{Ipv4Addr, TcpListener},
     path::{Path, PathBuf},
@@ -18,7 +18,7 @@ use std::{
     },
     thread,
     thread::JoinHandle,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use ariadeck_application::{
@@ -39,6 +39,7 @@ use uuid::Uuid;
 const CONFIG_FILE_NAME: &str = "aria2.conf";
 const SESSION_FILE_NAME: &str = "aria2.session";
 const LOG_FILE_NAME: &str = "aria2.log";
+const OWNERSHIP_LOCK_FILE_NAME: &str = ".ariadeck-engine.lock";
 
 /// Errors returned by local engine lifecycle and profile storage operations.
 #[derive(Debug, Error)]
@@ -81,6 +82,15 @@ pub enum EngineError {
     },
     #[error("malformed profile JSON at {path}: {message}")]
     MalformedProfile { path: PathBuf, message: String },
+    /// Another AriaDeck instance still owns this profile directory.
+    #[error(
+        "profile {profile_id} is already owned by process {owner_pid}; close that AriaDeck instance or stop its managed aria2 before starting again"
+    )]
+    ProfileAlreadyOwned {
+        profile_id: ProfileId,
+        owner_pid: u32,
+        lock_path: PathBuf,
+    },
 }
 
 fn io_error(operation: &'static str, path: &Path, source: io::Error) -> EngineError {
@@ -978,6 +988,9 @@ pub struct LocalEngineProcess {
     session_path: PathBuf,
     log_path: PathBuf,
     port: u16,
+    /// Exclusive ownership of this profile directory for the process lifetime.
+    ownership_lock: ProfileOwnershipLock,
+    session_recovery_backup: Option<PathBuf>,
 }
 
 impl fmt::Debug for LocalEngineProcess {
@@ -993,6 +1006,14 @@ impl fmt::Debug for LocalEngineProcess {
             .field("log_path", &self.log_path)
             .field("port", &self.port)
             .field("running", &self.child.is_some())
+            .field("ownership_lock", &self.ownership_lock.path())
+            .field(
+                "session_recovery_backup",
+                &self
+                    .session_recovery_backup
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+            )
             .finish()
     }
 }
@@ -1010,11 +1031,14 @@ impl LocalEngineProcess {
             io_error("create the download directory", &config.download_dir, error)
         })?;
 
+        // Fail closed if another AriaDeck instance still owns this profile dir.
+        let ownership_lock = ProfileOwnershipLock::acquire(config.profile_id, &profile_dir)?;
+
         let config_path = profile_dir.join(CONFIG_FILE_NAME);
         let session_path = profile_dir.join(SESSION_FILE_NAME);
         let log_path = profile_dir.join(LOG_FILE_NAME);
         create_runtime_file(&config_path)?;
-        create_runtime_file(&session_path)?;
+        let session_prep = prepare_session_file(&session_path)?;
         create_runtime_file(&log_path)?;
 
         let port = reserve_loopback_port()?;
@@ -1045,6 +1069,8 @@ impl LocalEngineProcess {
             session_path,
             log_path,
             port,
+            ownership_lock,
+            session_recovery_backup: session_prep.backup_path,
         })
     }
 
@@ -1101,6 +1127,22 @@ impl LocalEngineProcess {
     #[must_use]
     pub fn log_path(&self) -> &Path {
         &self.log_path
+    }
+
+    /// True when the previous aria2 session file was corrupt and replaced.
+    #[must_use]
+    pub fn session_was_recovered(&self) -> bool {
+        self.session_recovery_backup.is_some()
+    }
+
+    #[must_use]
+    pub fn session_recovery_backup(&self) -> Option<&Path> {
+        self.session_recovery_backup.as_deref()
+    }
+
+    #[must_use]
+    pub fn ownership_lock_path(&self) -> &Path {
+        self.ownership_lock.path()
     }
 
     pub fn is_running(&mut self) -> Result<bool, EngineError> {
@@ -1380,6 +1422,26 @@ impl LocalEngineSupervisor {
         self.profile_id
     }
 
+    /// True when startup replaced a corrupt aria2 session file.
+    #[must_use]
+    pub fn session_was_recovered(&self) -> bool {
+        self.shared
+            .process
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .session_was_recovered()
+    }
+
+    #[must_use]
+    pub fn session_recovery_backup(&self) -> Option<PathBuf> {
+        self.shared
+            .process
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .session_recovery_backup()
+            .map(Path::to_path_buf)
+    }
+
     #[must_use]
     pub fn health(&self) -> LocalEngineHealth {
         self.shared
@@ -1521,6 +1583,264 @@ fn set_supervisor_health(shared: &SupervisorShared, health: LocalEngineHealth) {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = health;
 }
 
+/// Record written into `.ariadeck-engine.lock` while a managed local engine is live.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct OwnershipLockRecord {
+    profile_id: ProfileId,
+    owner_pid: u32,
+    acquired_unix_secs: u64,
+}
+
+/// Held exclusive ownership of one managed profile directory.
+///
+/// The lock file prevents two AriaDeck instances from sharing the same
+/// `--input-file` / `--save-session` path. Stale locks from crashed processes
+/// are reclaimed; live owners fail closed with [`EngineError::ProfileAlreadyOwned`].
+#[derive(Debug)]
+pub struct ProfileOwnershipLock {
+    path: PathBuf,
+    profile_id: ProfileId,
+    owner_pid: u32,
+    /// Keeps the exclusive open handle alive on platforms that honor share modes.
+    file: Option<File>,
+}
+
+impl ProfileOwnershipLock {
+    /// Acquire exclusive ownership for `profile_dir`, reclaiming a dead owner.
+    pub fn acquire(profile_id: ProfileId, profile_dir: &Path) -> Result<Self, EngineError> {
+        fs::create_dir_all(profile_dir)
+            .map_err(|error| io_error("create the profile directory", profile_dir, error))?;
+        let path = profile_dir.join(OWNERSHIP_LOCK_FILE_NAME);
+        match try_create_lock_file(&path) {
+            Ok(file) => write_lock_record(file, profile_id, &path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                reclaim_or_reject_existing_lock(profile_id, &path)
+            }
+            Err(error) => Err(io_error("create the profile ownership lock", &path, error)),
+        }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[must_use]
+    pub fn owner_pid(&self) -> u32 {
+        self.owner_pid
+    }
+
+    #[must_use]
+    pub fn profile_id(&self) -> ProfileId {
+        self.profile_id
+    }
+}
+
+impl Drop for ProfileOwnershipLock {
+    fn drop(&mut self) {
+        // Close the exclusive handle first so Windows allows unlinking.
+        drop(self.file.take());
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn try_create_lock_file(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(windows)]
+    {
+        // Deny other readers/writers while this AriaDeck instance is alive.
+        use std::os::windows::fs::OpenOptionsExt as _;
+        options.share_mode(0);
+    }
+    options.open(path)
+}
+
+fn write_lock_record(
+    mut file: File,
+    profile_id: ProfileId,
+    path: &Path,
+) -> Result<ProfileOwnershipLock, EngineError> {
+    let owner_pid = std::process::id();
+    let record = OwnershipLockRecord {
+        profile_id,
+        owner_pid,
+        acquired_unix_secs: unix_now_secs(),
+    };
+    let payload =
+        serde_json::to_vec_pretty(&record).map_err(|source| EngineError::Serialize { source })?;
+    file.set_len(0)
+        .map_err(|error| io_error("truncate the profile ownership lock", path, error))?;
+    file.write_all(&payload)
+        .map_err(|error| io_error("write the profile ownership lock", path, error))?;
+    file.write_all(b"\n")
+        .map_err(|error| io_error("finish the profile ownership lock", path, error))?;
+    file.flush()
+        .map_err(|error| io_error("flush the profile ownership lock", path, error))?;
+    Ok(ProfileOwnershipLock {
+        path: path.to_path_buf(),
+        profile_id,
+        owner_pid,
+        file: Some(file),
+    })
+}
+
+fn reclaim_or_reject_existing_lock(
+    profile_id: ProfileId,
+    path: &Path,
+) -> Result<ProfileOwnershipLock, EngineError> {
+    let existing = fs::read_to_string(path).unwrap_or_default();
+    let owner_pid = serde_json::from_str::<OwnershipLockRecord>(&existing)
+        .ok()
+        .map(|record| record.owner_pid)
+        .or_else(|| parse_legacy_lock_pid(&existing));
+    let this_pid = std::process::id();
+
+    // Live foreign owner, or a second acquire in this same process (re-entry),
+    // must fail closed. Same-pid happens when Windows exclusive share mode
+    // still holds the first lock handle open.
+    if let Some(owner_pid) = owner_pid
+        && (owner_pid == this_pid || process_appears_alive(owner_pid))
+    {
+        return Err(EngineError::ProfileAlreadyOwned {
+            profile_id,
+            owner_pid,
+            lock_path: path.to_path_buf(),
+        });
+    }
+
+    // Stale or unreadable lock: remove and recreate.
+    // If another process still has an exclusive handle, remove/create fails closed.
+    if let Err(_error) = fs::remove_file(path) {
+        return Err(EngineError::ProfileAlreadyOwned {
+            profile_id,
+            owner_pid: owner_pid.unwrap_or(this_pid),
+            lock_path: path.to_path_buf(),
+        });
+    }
+    let file = try_create_lock_file(path).map_err(|_error| EngineError::ProfileAlreadyOwned {
+        profile_id,
+        owner_pid: owner_pid.unwrap_or(this_pid),
+        lock_path: path.to_path_buf(),
+    })?;
+    write_lock_record(file, profile_id, path)
+}
+
+fn parse_legacy_lock_pid(contents: &str) -> Option<u32> {
+    contents
+        .lines()
+        .find_map(|line| line.trim().parse::<u32>().ok())
+}
+
+fn process_appears_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    // sysinfo is already a dependency for disk checks. Refresh only the target
+    // pid so startup stays cheap.
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]));
+    system.process(Pid::from_u32(pid)).is_some()
+}
+
+fn unix_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+/// Outcome of preparing the aria2 session file before spawn.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionFilePreparation {
+    pub path: PathBuf,
+    pub recovered_from_corruption: bool,
+    pub backup_path: Option<PathBuf>,
+}
+
+/// Ensure `session_path` exists and is a plausible aria2 session text file.
+///
+/// Corrupt contents are moved aside and replaced with an empty session so the
+/// managed engine can start. The original bytes are preserved for diagnosis.
+pub fn prepare_session_file(session_path: &Path) -> Result<SessionFilePreparation, EngineError> {
+    if !session_path.exists() {
+        create_runtime_file(session_path)?;
+        return Ok(SessionFilePreparation {
+            path: session_path.to_path_buf(),
+            recovered_from_corruption: false,
+            backup_path: None,
+        });
+    }
+
+    let bytes = fs::read(session_path)
+        .map_err(|error| io_error("read the aria2 session file", session_path, error))?;
+    if session_bytes_are_plausible(&bytes) {
+        return Ok(SessionFilePreparation {
+            path: session_path.to_path_buf(),
+            recovered_from_corruption: false,
+            backup_path: None,
+        });
+    }
+
+    let backup_path = backup_corrupt_file(session_path, "session")?;
+    // Replace with a fresh empty session aria2 can rewrite.
+    fs::write(session_path, b"")
+        .map_err(|error| io_error("reset the aria2 session file", session_path, error))?;
+    Ok(SessionFilePreparation {
+        path: session_path.to_path_buf(),
+        recovered_from_corruption: true,
+        backup_path: Some(backup_path),
+    })
+}
+
+fn session_bytes_are_plausible(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return true;
+    }
+    // aria2 session files are line-oriented text. Reject NULs and invalid UTF-8.
+    if bytes.contains(&0) {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    // Reject control characters other than tab/CR/LF.
+    !text.chars().any(|ch| {
+        let code = ch as u32;
+        code < 0x20 && ch != '\t' && ch != '\n' && ch != '\r'
+    })
+}
+
+fn backup_corrupt_file(path: &Path, kind: &str) -> Result<PathBuf, EngineError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(kind);
+    let backup_path = parent.join(format!("{file_name}.corrupt-{}.bak", Uuid::new_v4()));
+    fs::rename(path, &backup_path)
+        .map_err(|error| io_error("preserve the corrupt runtime file", &backup_path, error))?;
+    Ok(backup_path)
+}
+
+/// Recovery metadata when a corrupt profile document is replaced with defaults.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProfileStoreRecovery {
+    pub backup_path: PathBuf,
+    pub reason: String,
+}
+
+/// Result of loading or recovering the single-profile store.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoadedProfile {
+    pub profile: ExternalEngineProfile,
+    pub recovery: Option<ProfileStoreRecovery>,
+}
+
 fn create_runtime_file(path: &Path) -> Result<(), EngineError> {
     OpenOptions::new()
         .create(true)
@@ -1614,6 +1934,89 @@ impl JsonProfileStore {
 
     pub fn load_profile(&self) -> Result<ExternalEngineProfile, EngineError> {
         self.load()
+    }
+
+    /// Load the stored profile, or preserve a corrupt document and install defaults.
+    ///
+    /// When the corrupt document still has a readable profile_id, that identity
+    /// is preserved so existing profile directories remain addressable. Otherwise a
+    /// new id from defaults is used.
+    pub fn load_or_recover(
+        &self,
+        defaults: &ExternalEngineProfile,
+    ) -> Result<LoadedProfile, EngineError> {
+        if !self.path.exists() {
+            self.save(defaults)?;
+            return Ok(LoadedProfile {
+                profile: defaults.clone(),
+                recovery: None,
+            });
+        }
+
+        // Read raw bytes first so identity can be recovered before rename.
+        let bytes = match fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return Err(io_error("read the profile metadata", &self.path, error));
+            }
+        };
+        match serde_json::from_slice::<ExternalEngineProfile>(&bytes) {
+            Ok(profile) => Ok(LoadedProfile {
+                profile,
+                recovery: None,
+            }),
+            Err(error) => {
+                let reason = error.to_string();
+                let recovered_id = serde_json::from_slice::<serde_json::Value>(&bytes)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("profile_id")
+                            .and_then(|id| id.as_str())
+                            .and_then(|id| id.parse::<ProfileId>().ok())
+                    });
+                let backup_path = self.preserve_corrupt_document_bytes(&bytes)?;
+                let mut profile = defaults.clone();
+                if let Some(profile_id) = recovered_id {
+                    profile.profile_id = profile_id;
+                }
+                self.save(&profile)?;
+                Ok(LoadedProfile {
+                    profile,
+                    recovery: Some(ProfileStoreRecovery {
+                        backup_path,
+                        reason,
+                    }),
+                })
+            }
+        }
+    }
+
+    fn preserve_corrupt_document_bytes(&self, bytes: &[u8]) -> Result<PathBuf, EngineError> {
+        let parent = self
+            .path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)
+            .map_err(|error| io_error("create the profile store directory", parent, error))?;
+        let file_name = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("profiles.json");
+        let backup_path = parent.join(format!("{file_name}.corrupt-{}.bak", Uuid::new_v4()));
+        // Prefer rename of the live path; fall back to writing the captured bytes.
+        match fs::rename(&self.path, &backup_path) {
+            Ok(()) => Ok(backup_path),
+            Err(_) => {
+                fs::write(&backup_path, bytes).map_err(|error| {
+                    io_error("preserve the corrupt profile document", &backup_path, error)
+                })?;
+                let _ = fs::remove_file(&self.path);
+                Ok(backup_path)
+            }
+        }
     }
 }
 
@@ -2141,10 +2544,126 @@ mod tests {
 
         fs::write(store.path(), b"{ definitely not json")
             .unwrap_or_else(|error| panic!("malformed profile write failed: {error}"));
+
         assert!(matches!(
             store.load(),
             Err(EngineError::MalformedProfile { .. })
         ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prepare_session_file_recovers_corrupt_contents() {
+        let root = temporary_directory();
+        let session_path = root.join("aria2.session");
+        fs::write(&session_path, b"not\x00utf8\xff session").expect("seed corrupt session");
+
+        let prepared = prepare_session_file(&session_path)
+            .unwrap_or_else(|error| panic!("prepare failed: {error}"));
+        assert!(prepared.recovered_from_corruption);
+        let backup = prepared
+            .backup_path
+            .expect("corrupt session must be preserved");
+        assert!(backup.is_file());
+        assert_eq!(fs::read(&session_path).expect("read reset session"), b"");
+
+        let clean = prepare_session_file(&session_path)
+            .unwrap_or_else(|error| panic!("second prepare failed: {error}"));
+        assert!(!clean.recovered_from_corruption);
+        assert!(clean.backup_path.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prepare_session_file_accepts_plausible_text() {
+        let root = temporary_directory();
+        let session_path = root.join("aria2.session");
+        fs::write(
+            &session_path,
+            b"http://example.invalid/file\n\tout=file.bin\n",
+        )
+        .expect("seed session");
+        let prepared = prepare_session_file(&session_path)
+            .unwrap_or_else(|error| panic!("prepare failed: {error}"));
+        assert!(!prepared.recovered_from_corruption);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn profile_ownership_lock_is_exclusive_and_reclaims_stale_pid() {
+        let root = temporary_directory();
+        let profile_id = ProfileId::new();
+        let profile_dir = root.join(profile_id.to_string());
+        fs::create_dir_all(&profile_dir).expect("profile dir");
+
+        let first = ProfileOwnershipLock::acquire(profile_id, &profile_dir)
+            .unwrap_or_else(|error| panic!("first lock failed: {error}"));
+        assert!(first.path().is_file());
+        assert_eq!(first.owner_pid(), std::process::id());
+
+        let second = ProfileOwnershipLock::acquire(profile_id, &profile_dir);
+        assert!(
+            matches!(
+                second,
+                Err(EngineError::ProfileAlreadyOwned {
+                    owner_pid,
+                    ..
+                }) if owner_pid == std::process::id()
+            ),
+            "live owner must fail closed: {second:?}"
+        );
+
+        drop(first);
+        // Stale lock file with a dead pid should be reclaimable.
+        let stale_path = profile_dir.join(".ariadeck-engine.lock");
+        fs::write(
+            &stale_path,
+            format!(
+                "{{\"profile_id\":\"{profile_id}\",\"owner_pid\":1,\"acquired_unix_secs\":0}}\n"
+            ),
+        )
+        .expect("seed stale lock");
+        let reclaimed = ProfileOwnershipLock::acquire(profile_id, &profile_dir)
+            .unwrap_or_else(|error| panic!("stale reclaim failed: {error}"));
+        assert_eq!(reclaimed.owner_pid(), std::process::id());
+        drop(reclaimed);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn profile_store_load_or_recover_preserves_identity_from_corrupt_document() {
+        let root = temporary_directory();
+        let profile_id = ProfileId::new();
+        let store = JsonProfileStore::new(root.join("profiles.json"));
+        let defaults = ExternalEngineProfile::new(
+            ProfileId::new(),
+            "Recovered",
+            std::env::current_exe().expect("exe"),
+            root.join("data"),
+            root.join("downloads"),
+        );
+        fs::write(
+            store.path(),
+            format!(
+                "{{\"profile_id\":\"{profile_id}\",\"name\":true,\"executable\":\"x\",\"data_dir\":\"y\",\"download_dir\":\"z\"}}"
+            ),
+        )
+        .expect("seed corrupt profile");
+
+        let loaded = store
+            .load_or_recover(&defaults)
+            .unwrap_or_else(|error| panic!("recover failed: {error}"));
+        assert_eq!(loaded.profile.profile_id, profile_id);
+        assert_eq!(loaded.profile.name, "Recovered");
+        let recovery = loaded.recovery.expect("recovery metadata");
+        assert!(recovery.backup_path.is_file());
+        assert_eq!(
+            store
+                .load()
+                .unwrap_or_else(|error| panic!("load recovered failed: {error}"))
+                .profile_id,
+            profile_id
+        );
         let _ = fs::remove_dir_all(root);
     }
 }
