@@ -8,9 +8,10 @@ use std::{
 
 use gpui::{
     AnyElement, App, ClickEvent, ClipboardItem, Context, Div, Entity, ExternalPaths, FocusHandle,
-    Focusable, FontFeatures, FontWeight, Hsla, IntoElement, PathPromptOptions, Render, Role,
-    ScrollStrategy, SharedString, Stateful, Subscription, Toggled, UniformListScrollHandle,
-    WeakFocusHandle, Window, WindowControlArea, div, prelude::*, px, relative, uniform_list,
+    Focusable, FontFeatures, FontWeight, Hsla, IntoElement, MouseButton, PathPromptOptions, Pixels,
+    Point, Render, Role, ScrollStrategy, SharedString, Stateful, Subscription, Toggled,
+    UniformListScrollHandle, WeakFocusHandle, Window, WindowControlArea, div, prelude::*, px,
+    relative, uniform_list,
 };
 
 use crate::{
@@ -25,7 +26,8 @@ use crate::{
     ConnectionView, Dialog, DownloadProxySettingsView, DownloadRowView, EngineHealthView,
     EngineSessionView, FileAllocationView, FileConflictPolicyView, FocusNext, FocusPrevious,
     FocusSearch, GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView,
-    Icon, IconButton, IconName, IconSize, OpenAddDownload, OpenSettings, OpenTaskDetails,
+    Icon, IconButton, IconName, IconSize, MoveTaskDownInQueue, MoveTaskToQueueBottom,
+    MoveTaskToQueueTop, MoveTaskUpInQueue, OpenAddDownload, OpenSettings, OpenTaskDetails,
     OpenTaskOutputName, OpenTaskSpeedLimit, OperationErrorView, PauseSelectedTask, ProxyModeView,
     ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask,
     SaveSettings, SearchInputEvent, SecretStringView, Segment, SegmentedControl, SelectAllTasks,
@@ -265,6 +267,12 @@ struct TaskOptionsDialog {
     error: Option<OperationErrorView>,
 }
 
+/// Right-click menu for one focused task row (D-024).
+struct TaskContextMenu {
+    identity: TaskIdentity,
+    position: Point<Pixels>,
+}
+
 struct BatchFailureDetails {
     command: BatchTaskCommandView,
     failures: Vec<BatchTaskFailureView>,
@@ -343,6 +351,7 @@ pub struct AppShell {
     speed_popover_open: bool,
     speed_popover_previous_focus: Option<WeakFocusHandle>,
     sort_popover_open: bool,
+    context_menu: Option<TaskContextMenu>,
     status_notice: Option<StatusNotice>,
     next_notice_id: u64,
     next_request_id: u64,
@@ -1013,6 +1022,7 @@ impl AppShell {
             speed_popover_open: false,
             speed_popover_previous_focus: None,
             sort_popover_open: false,
+            context_menu: None,
             status_notice: None,
             next_notice_id: 1,
             next_request_id: 1,
@@ -1444,6 +1454,10 @@ impl AppShell {
                         self.range_anchor = None;
                         self.selected = None;
                         self.details_drawer = None;
+                        self.context_menu = None;
+                        // Recovery path: files stay on disk or in Trash (see
+                        // success_label). Restore list focus for continued work.
+                        window.focus(&self.focus_handle, cx);
                     }
                     TaskCommandView::Retry => {
                         self.selected_tasks.remove(&result.identity);
@@ -1708,6 +1722,7 @@ impl AppShell {
         }) {
             self.selected = self.selected_tasks.iter().next().cloned();
             self.details_drawer = None;
+            self.context_menu = None;
         }
         if self.selected_tasks.is_empty() {
             self.range_anchor = None;
@@ -1974,7 +1989,9 @@ impl AppShell {
     }
 
     fn clear_search(&mut self, _: &ClearSearch, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sort_popover_open {
+        if self.context_menu.take().is_some() {
+            cx.notify();
+        } else if self.sort_popover_open {
             self.close_sort_popover(cx);
         } else if self.speed_popover_open {
             self.close_speed_popover(window, cx);
@@ -3830,6 +3847,160 @@ impl AppShell {
         self.confirm_remove_selected(window, cx);
     }
 
+    fn move_selected_to_queue_top(
+        &mut self,
+        _: &MoveTaskToQueueTop,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_task_context_menu(cx);
+        self.begin_task_command(TaskCommandView::MoveToQueueTop, cx);
+    }
+
+    fn move_selected_up_in_queue(
+        &mut self,
+        _: &MoveTaskUpInQueue,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_task_context_menu(cx);
+        self.begin_task_command(TaskCommandView::MoveUpInQueue, cx);
+    }
+
+    fn move_selected_down_in_queue(
+        &mut self,
+        _: &MoveTaskDownInQueue,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_task_context_menu(cx);
+        self.begin_task_command(TaskCommandView::MoveDownInQueue, cx);
+    }
+
+    fn move_selected_to_queue_bottom(
+        &mut self,
+        _: &MoveTaskToQueueBottom,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_task_context_menu(cx);
+        self.begin_task_command(TaskCommandView::MoveToQueueBottom, cx);
+    }
+
+    fn open_task_context_menu(
+        &mut self,
+        index: usize,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.page != AppPage::Downloads
+            || self.add_dialog.open
+            || self.output_name_dialog.is_some()
+            || self.task_speed_limit_dialog.is_some()
+            || self.task_options_dialog.is_some()
+            || self.remove_confirmation.is_some()
+            || self.batch_failure_details.is_some()
+        {
+            return;
+        }
+        let Some(task) = self.snapshot.tasks.get(index).cloned() else {
+            return;
+        };
+        // Right-click focuses the row without clearing a multi-selection that
+        // already includes it (qBittorrent/Motrix parity).
+        if !self.selected_tasks.contains(&task.identity) {
+            self.select_at_with_modifiers(index, false, false, window, cx);
+        } else {
+            self.selected = Some(task.identity.clone());
+        }
+        self.sort_popover_open = false;
+        self.speed_popover_open = false;
+        self.context_menu = Some(TaskContextMenu {
+            identity: task.identity,
+            position,
+        });
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    fn close_task_context_menu(&mut self, cx: &mut Context<Self>) {
+        if self.context_menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Prefer the right-clicked menu identity so multi-selection still has a
+    /// single authoritative target for copy/open/details actions.
+    fn context_menu_task_view(&self) -> Option<DownloadRowView> {
+        if let Some(menu) = self.context_menu.as_ref()
+            && let Some(task) = self
+                .snapshot
+                .tasks
+                .iter()
+                .find(|task| task.identity == menu.identity)
+        {
+            return Some(task.clone());
+        }
+        self.selected_task_view()
+            .or_else(|| self.command_target_task_view())
+    }
+
+    fn copy_task_source(&mut self, task: &DownloadRowView, cx: &mut Context<Self>) {
+        let source = task
+            .primary_source
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or("");
+        if source.is_empty() {
+            self.show_notice("This task has no copyable source.", true, cx);
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(source.to_owned()));
+        self.show_notice("Source copied to the clipboard.", false, cx);
+    }
+
+    fn copy_task_gid(&mut self, task: &DownloadRowView, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(task.identity.gid.clone()));
+        self.show_notice("Task GID copied to the clipboard.", false, cx);
+    }
+
+    /// Open a local path for the command-target task without requiring the
+    /// details drawer (used by the task context menu).
+    fn request_task_open_for_selection(
+        &mut self,
+        target: TaskOpenTargetView,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.snapshot.commands_available() || !self.snapshot.local_path_actions_available {
+            self.show_notice(
+                "Opening task paths is available only for the managed local engine.",
+                true,
+                cx,
+            );
+            return;
+        }
+        let Some(session) = self.snapshot.engine_session() else {
+            return;
+        };
+        let Some(task) = self.context_menu_task_view() else {
+            self.show_notice("Select a visible task first.", true, cx);
+            return;
+        };
+        if task.identity.profile_id != session.profile_id {
+            return;
+        }
+        let request_id = self.allocate_request_id();
+        cx.emit(AppShellEvent::TaskOpenRequested(TaskOpenRequestView {
+            request_id,
+            session,
+            identity: task.identity,
+            target,
+        }));
+        self.show_notice("Opening local path...", false, cx);
+        cx.notify();
+    }
+
     /// Queue reordering is authoritative only when the visible query is the
     /// full, unsearched, ascending queue order (D-014 Scope rule). aria2's
     /// queue is global across active/waiting/paused tasks, so relative movement
@@ -4912,6 +5083,295 @@ impl AppShell {
             )
     }
 
+    fn render_task_context_menu(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = self.theme.colors;
+        let Some(menu) = self.context_menu.as_ref() else {
+            return div().into_any_element();
+        };
+        let identity = menu.identity.clone();
+        let position = menu.position;
+        let Some(task) = self
+            .snapshot
+            .tasks
+            .iter()
+            .find(|task| task.identity == identity)
+            .cloned()
+        else {
+            return div().into_any_element();
+        };
+        let idle = self.pending_task_command.is_none()
+            && self.pending_batch_command.is_none()
+            && self.remove_confirmation.is_none()
+            && self.output_name_dialog.is_none()
+            && self.task_speed_limit_dialog.is_none()
+            && self.task_options_dialog.is_none();
+        let commands_available = self.snapshot.commands_available() && idle;
+        let path_actions = commands_available && self.snapshot.local_path_actions_available;
+        let can_pause = commands_available && task.status.can_pause();
+        let can_resume = commands_available && task.status.can_resume();
+        let can_retry = commands_available && task.status.can_retry();
+        let can_remove = commands_available && task.status.can_remove();
+        let can_queue = commands_available
+            && task.status.can_move_in_queue()
+            && self.queue_reordering_available();
+        let can_output = commands_available && task.can_set_output_name();
+        let can_speed = commands_available && task.status.can_set_speed_limit();
+        let has_source = task
+            .primary_source
+            .as_deref()
+            .is_some_and(|value| !value.is_empty());
+
+        let mut entries: Vec<(
+            ContextMenuAction,
+            &'static str,
+            Option<&'static str>,
+            bool,
+            bool,
+        )> = vec![
+            (
+                ContextMenuAction::Details,
+                "Details",
+                Some("Enter"),
+                true,
+                false,
+            ),
+            (
+                ContextMenuAction::OpenDownload,
+                "Open download",
+                None,
+                path_actions,
+                false,
+            ),
+            (
+                ContextMenuAction::OpenFolder,
+                "Open folder",
+                None,
+                path_actions,
+                false,
+            ),
+            (
+                ContextMenuAction::CopySource,
+                "Copy source",
+                None,
+                has_source,
+                false,
+            ),
+            (ContextMenuAction::CopyGid, "Copy GID", None, true, false),
+        ];
+        if task.status.can_pause() {
+            entries.push((
+                ContextMenuAction::Pause,
+                "Pause",
+                Some("Cmd+Shift+P"),
+                can_pause,
+                false,
+            ));
+            entries.push((
+                ContextMenuAction::ForcePause,
+                "Force pause",
+                None,
+                can_pause,
+                false,
+            ));
+        }
+        if task.status.can_resume() {
+            entries.push((
+                ContextMenuAction::Resume,
+                "Resume",
+                Some("Cmd+Shift+R"),
+                can_resume,
+                false,
+            ));
+        }
+        if task.status.can_retry() {
+            entries.push((
+                ContextMenuAction::Retry,
+                "Retry",
+                Some("Cmd+Alt+R"),
+                can_retry,
+                false,
+            ));
+        }
+        if task.status.can_move_in_queue() {
+            entries.push((
+                ContextMenuAction::MoveTop,
+                "Move to top",
+                Some("Cmd+Shift+Home"),
+                can_queue,
+                false,
+            ));
+            entries.push((
+                ContextMenuAction::MoveUp,
+                "Move up",
+                Some("Cmd+Shift+Up"),
+                can_queue,
+                false,
+            ));
+            entries.push((
+                ContextMenuAction::MoveDown,
+                "Move down",
+                Some("Cmd+Shift+Down"),
+                can_queue,
+                false,
+            ));
+            entries.push((
+                ContextMenuAction::MoveBottom,
+                "Move to bottom",
+                Some("Cmd+Shift+End"),
+                can_queue,
+                false,
+            ));
+        }
+        if task.can_set_output_name() {
+            entries.push((
+                ContextMenuAction::OutputName,
+                "Change output name",
+                Some("F2"),
+                can_output,
+                false,
+            ));
+        }
+        if task.status.can_set_speed_limit() {
+            entries.push((
+                ContextMenuAction::SpeedLimit,
+                "Set speed limits",
+                None,
+                can_speed,
+                false,
+            ));
+            entries.push((
+                ContextMenuAction::TaskOptions,
+                "Edit task options",
+                None,
+                can_speed,
+                false,
+            ));
+        }
+        entries.push((
+            ContextMenuAction::Remove,
+            "Remove",
+            Some("Delete"),
+            can_remove,
+            true,
+        ));
+
+        let left = f32::from(position.x).max(8.0);
+        let top = f32::from(position.y).max(8.0);
+        let display_name = task_display_name(&task);
+
+        div()
+            .id("task-context-menu-layer")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.close_task_context_menu(cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, _, cx| this.close_task_context_menu(cx)),
+            )
+            .child(
+                div()
+                    .id("task-context-menu")
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .w(px(260.0))
+                    .py_1()
+                    .px_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.elevated_surface)
+                    .shadow_md()
+                    .role(Role::Menu)
+                    .aria_label(format!("Actions for {display_name}"))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .flex()
+                    .flex_col()
+                    .children(entries.into_iter().map(
+                        |(action, label, shortcut, enabled, destructive)| {
+                            context_menu_item(
+                                action,
+                                label,
+                                shortcut,
+                                enabled,
+                                destructive,
+                                colors,
+                                cx,
+                            )
+                        },
+                    )),
+            )
+            .into_any_element()
+    }
+
+    fn activate_context_menu_action(
+        &mut self,
+        action: ContextMenuAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Capture the right-clicked task before closing so multi-select still
+        // has a single authoritative target for details/copy/open.
+        let menu_task = self.context_menu_task_view();
+        self.close_task_context_menu(cx);
+        match action {
+            ContextMenuAction::Details => {
+                if let Some(task) = menu_task.or_else(|| self.selected_task_view()) {
+                    self.open_details_for(task, cx);
+                }
+            }
+            ContextMenuAction::OpenDownload => {
+                self.request_task_open_for_selection(TaskOpenTargetView::Download, cx);
+            }
+            ContextMenuAction::OpenFolder => {
+                self.request_task_open_for_selection(TaskOpenTargetView::Folder, cx);
+            }
+            ContextMenuAction::CopySource => {
+                if let Some(task) = menu_task.or_else(|| self.selected_task_view()) {
+                    self.copy_task_source(&task, cx);
+                }
+            }
+            ContextMenuAction::CopyGid => {
+                if let Some(task) = menu_task.or_else(|| self.selected_task_view()) {
+                    self.copy_task_gid(&task, cx);
+                }
+            }
+            ContextMenuAction::Pause => {
+                self.begin_task_command(TaskCommandView::Pause, cx);
+            }
+            ContextMenuAction::ForcePause => {
+                self.begin_task_command(TaskCommandView::ForcePause, cx);
+            }
+            ContextMenuAction::Resume => {
+                self.begin_task_command(TaskCommandView::Resume, cx);
+            }
+            ContextMenuAction::Retry => {
+                self.begin_task_command(TaskCommandView::Retry, cx);
+            }
+            ContextMenuAction::MoveTop => {
+                self.begin_task_command(TaskCommandView::MoveToQueueTop, cx);
+            }
+            ContextMenuAction::MoveUp => {
+                self.begin_task_command(TaskCommandView::MoveUpInQueue, cx);
+            }
+            ContextMenuAction::MoveDown => {
+                self.begin_task_command(TaskCommandView::MoveDownInQueue, cx);
+            }
+            ContextMenuAction::MoveBottom => {
+                self.begin_task_command(TaskCommandView::MoveToQueueBottom, cx);
+            }
+            ContextMenuAction::OutputName => self.open_task_output_name(window, cx),
+            ContextMenuAction::SpeedLimit => self.open_task_speed_limit(window, cx),
+            ContextMenuAction::TaskOptions => self.open_task_options(window, cx),
+            ContextMenuAction::Remove => self.confirm_remove_selected(window, cx),
+        }
+    }
+
     /// Sort menu and engine-wide pause-all/resume-all controls (D-014).
     fn render_list_controls(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
@@ -5266,6 +5726,7 @@ impl AppShell {
                             TaskCommandView::MoveToQueueTop,
                             queue_enabled,
                             pending_command.as_ref(),
+                            Some("Cmd+Shift+Home"),
                             colors,
                             cx,
                         ),
@@ -5276,6 +5737,7 @@ impl AppShell {
                             TaskCommandView::MoveUpInQueue,
                             queue_enabled,
                             pending_command.as_ref(),
+                            Some("Cmd+Shift+Up"),
                             colors,
                             cx,
                         ),
@@ -5286,6 +5748,7 @@ impl AppShell {
                             TaskCommandView::MoveDownInQueue,
                             queue_enabled,
                             pending_command.as_ref(),
+                            Some("Cmd+Shift+Down"),
                             colors,
                             cx,
                         ),
@@ -5296,6 +5759,7 @@ impl AppShell {
                             TaskCommandView::MoveToQueueBottom,
                             queue_enabled,
                             pending_command.as_ref(),
+                            Some("Cmd+Shift+End"),
                             colors,
                             cx,
                         ),
@@ -6247,6 +6711,13 @@ impl AppShell {
             .hover(|style| style.bg(colors.surface_hover))
             .cursor_pointer()
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                if event.is_right_click() {
+                    this.open_task_context_menu(index, event.position(), window, cx);
+                    return;
+                }
+                if !event.standard_click() {
+                    return;
+                }
                 let modifiers = event.modifiers();
                 this.select_at_with_modifiers(
                     index,
@@ -8525,6 +8996,10 @@ impl Render for AppShell {
             .on_action(cx.listener(Self::pause_selected))
             .on_action(cx.listener(Self::resume_selected))
             .on_action(cx.listener(Self::retry_selected))
+            .on_action(cx.listener(Self::move_selected_to_queue_top))
+            .on_action(cx.listener(Self::move_selected_up_in_queue))
+            .on_action(cx.listener(Self::move_selected_down_in_queue))
+            .on_action(cx.listener(Self::move_selected_to_queue_bottom))
             .on_action(cx.listener(Self::open_task_output_name_action))
             .on_action(cx.listener(Self::close_task_output_name_action))
             .on_action(cx.listener(Self::submit_task_output_name_action))
@@ -8579,6 +9054,9 @@ impl Render for AppShell {
             })
             .when(self.speed_popover_open, |element| {
                 element.child(self.render_speed_popover(cx))
+            })
+            .when(self.context_menu.is_some(), |element| {
+                element.child(self.render_task_context_menu(cx))
             })
             .when(
                 self.sort_popover_open && self.page == AppPage::Downloads,
@@ -8802,6 +9280,7 @@ fn queue_move_button(
     command: TaskCommandView,
     enabled: bool,
     pending_command: Option<&TaskCommandView>,
+    shortcut: Option<&'static str>,
     colors: crate::ThemeColors,
     cx: &mut Context<AppShell>,
 ) -> Stateful<Div> {
@@ -8812,7 +9291,7 @@ fn queue_move_button(
         label,
         ToolbarButtonState::from_flags(enabled, loading),
         false,
-        None,
+        shortcut,
         colors,
     )
     .when(enabled, move |button| {
@@ -8820,6 +9299,76 @@ fn queue_move_button(
             this.begin_task_command(command.clone(), cx);
         }))
     })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContextMenuAction {
+    Details,
+    OpenDownload,
+    OpenFolder,
+    CopySource,
+    CopyGid,
+    Pause,
+    ForcePause,
+    Resume,
+    Retry,
+    MoveTop,
+    MoveUp,
+    MoveDown,
+    MoveBottom,
+    OutputName,
+    SpeedLimit,
+    TaskOptions,
+    Remove,
+}
+
+fn context_menu_item(
+    action: ContextMenuAction,
+    label: &'static str,
+    shortcut: Option<&'static str>,
+    enabled: bool,
+    destructive: bool,
+    colors: crate::ThemeColors,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    div()
+        .id(SharedString::from(format!("ctx-menu-{label}")))
+        .role(Role::MenuItem)
+        .aria_label(label)
+        .w_full()
+        .h(px(32.0))
+        .px_3()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_3()
+        .rounded_sm()
+        .cursor_pointer()
+        .text_sm()
+        .text_color(if !enabled {
+            colors.text_muted
+        } else if destructive {
+            colors.danger
+        } else {
+            colors.text_primary
+        })
+        .when(enabled, |element| {
+            element
+                .hover(|style| style.bg(colors.surface_hover))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.activate_context_menu_action(action, window, cx);
+                }))
+        })
+        .child(label)
+        .when_some(shortcut, |element, shortcut| {
+            element.child(
+                div()
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(shortcut),
+            )
+        })
+        .into_any_element()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -9958,6 +10507,77 @@ mod tests {
             assert_eq!(shell.visible_selected_task_count(), 4);
             assert_eq!(shell.selected_task_count(), 4);
             assert_eq!(shell.selected, Some(task(0).identity));
+        });
+    }
+
+    #[gpui::test]
+    fn context_menu_opens_from_right_click_and_preserves_multi_selection(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(3);
+            shell.selected = Some(task(0).identity);
+            shell.selected_tasks = HashSet::from([task(0).identity, task(1).identity]);
+            shell
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.open_task_context_menu(
+                1,
+                Point {
+                    x: px(120.0),
+                    y: px(80.0),
+                },
+                window,
+                cx,
+            );
+            assert!(shell.context_menu.is_some());
+            assert_eq!(shell.selected.as_ref(), Some(&task(1).identity));
+            assert_eq!(shell.selected_tasks.len(), 2);
+            assert!(shell.selected_tasks.contains(&task(0).identity));
+            assert!(shell.selected_tasks.contains(&task(1).identity));
+
+            // Multi-select still targets the right-clicked row for copy.
+            let target = shell.context_menu_task_view().expect("menu target");
+            shell.copy_task_gid(&target, cx);
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|item| item.text()),
+                Some(task(1).identity.gid.clone()),
+            );
+
+            shell.close_task_context_menu(cx);
+            assert!(shell.context_menu.is_none());
+            // Closing the menu does not drop the multi-selection.
+            assert_eq!(shell.selected_tasks.len(), 2);
+        });
+    }
+
+    #[gpui::test]
+    fn queue_priority_keyboard_actions_are_wired_on_the_workspace(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(3);
+            // Active tasks so queue moves are status-eligible; query stays the
+            // authoritative ascending queue (All, no search, Queue/asc).
+            for task in &mut shell.snapshot.tasks {
+                task.status = TaskStatusView::Active;
+            }
+            shell.selected = Some(task(1).identity);
+            shell.selected_tasks = HashSet::from([task(1).identity]);
+            window.focus(&shell.focus_handle, cx);
+            shell
+        });
+
+        cx.simulate_keystrokes("cmd-shift-up");
+
+        view.read_with(cx, |shell, _| {
+            assert!(
+                shell.pending_task_command.as_ref().is_some_and(|pending| {
+                    matches!(pending.command, TaskCommandView::MoveUpInQueue)
+                        && pending.identity == task(1).identity
+                }),
+                "Cmd+Shift+Up should submit MoveUpInQueue for the focused task"
+            );
         });
     }
 

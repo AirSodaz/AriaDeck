@@ -751,6 +751,44 @@ splice; free-form option bags are not exposed.
 - Real aria2 1.37.0 verification accepts the RATE-002 global option set and
   echoes per-task connection/split values through `getOption`.
 
+### D-024 - List ergonomics close selection work with parity, not new engines
+
+**Decision:** `UI-002` finishes the selection-era list surface without inventing
+a second command model. Sorting remains local and identity-preserving (D-014).
+Mixed-state batch actions stay eligibility-gated (`any` eligible enables the
+control; ineligible items are skipped with per-item reporting from SEL-002).
+Hidden selection after filtering keeps the existing visible/hidden disclosure
+and dedicated clear-selection toolbar.
+
+**Context-menu rule:** Right-click opens a task context menu whose actions
+match the single-task toolbar/details surface: details, open download/folder
+(managed-local only), copy source/GID, pause/force-pause/resume/retry, queue
+moves (authoritative All/no-search/Queue/ascending only), output name, speed
+limits, task options, and remove. Right-click focuses the row without clearing
+a multi-selection that already includes it. Copy/open/details use the
+right-clicked identity as the authoritative target even when other rows remain
+selected.
+
+**Keyboard rule:** Queue move shortcuts (`Cmd/Ctrl+Shift+Home/Up/Down/End`)
+are bound on the download workspace and wired through the same single-flight
+task-command path as the toolbar. Existing pause/resume/retry/remove/select-all
+shortcuts remain.
+
+**Recovery rule:** Accidental task removal is recovered through confirmation
+before mutation and through keep-files / Recycle Bin defaults (D-005/D-007),
+not a second in-app undo stack. After a successful remove, selection/details
+clear and keyboard focus returns to the task list so the user can continue.
+
+**Evidence:**
+
+- qBittorrent exposes top/up/down/bottom queue actions and a right-click menu
+  that mirrors its toolbar, and preserves multi-selection on right-click when
+  the target is already selected.
+- Motrix/AriaNg keep sort local and separate from engine priority.
+- AriaDeck already had identity-based selection, hidden-selection disclosure,
+  mixed-state batch eligibility, and confirmation/Trash removal recovery; this
+  decision adds context-menu parity and queue shortcut wiring on top.
+
 ## Task Matrix
 
 Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
@@ -875,7 +913,7 @@ details show sanitized source/directory/output fields, exact local-path
 validation, aria2 codes 9-18 with raw details, and managed-local Open download/
 Open folder actions that refetch exact-session details before touching the
 filesystem. External profiles expose the capability as unavailable rather than
-assuming their paths are local. `RPC-001` is now complete: force pause/remove (and force-pause-all) sit on the shared gateway with capability-safe Unsupported defaults; `system.multicall` batches on-demand URI/option/peer/server projections with nested-only authentication; `system.listMethods` feeds `EngineCapabilities.methods`; and the typed task-option editor applies seed-ratio/seed-time through `changeOption` with the same outcome-unknown reconciliation as other mutations. `HISTORY-001` is now complete: stopped-history state exposes loaded/total/next-offset, SyncHandle.load_more_stopped appends pages without dropping earlier ones, the status bar shows History loaded/total with single-flight Load more, and managed aria2 keeps 5000 terminal results in memory. `ADD-005` is now complete: typed advanced add controls cover referer, user-agent, custom headers, cookie, HTTP auth, and checksum for direct URL tasks; secrets stay redacted; multi-value headers collapse at the RPC boundary. `RATE-002` is now complete: typed transfer policy covers max concurrent downloads, connections per server, split, min-split size, file allocation, and integrity check with schema v4 persistence, session-bound apply/reapply/rollback, scope-labeled settings UI, and per-task connection-policy command surface (D-023). Pause/resume scheduling remains deferred. Remaining P1 audit items and P2 platform work are next.
+assuming their paths are local. `RPC-001` is now complete: force pause/remove (and force-pause-all) sit on the shared gateway with capability-safe Unsupported defaults; `system.multicall` batches on-demand URI/option/peer/server projections with nested-only authentication; `system.listMethods` feeds `EngineCapabilities.methods`; and the typed task-option editor applies seed-ratio/seed-time through `changeOption` with the same outcome-unknown reconciliation as other mutations. `HISTORY-001` is now complete: stopped-history state exposes loaded/total/next-offset, SyncHandle.load_more_stopped appends pages without dropping earlier ones, the status bar shows History loaded/total with single-flight Load more, and managed aria2 keeps 5000 terminal results in memory. `ADD-005` is now complete: typed advanced add controls cover referer, user-agent, custom headers, cookie, HTTP auth, and checksum for direct URL tasks; secrets stay redacted; multi-value headers collapse at the RPC boundary. `RATE-002` is now complete: typed transfer policy covers max concurrent downloads, connections per server, split, min-split size, file allocation, and integrity check with schema v4 persistence, session-bound apply/reapply/rollback, scope-labeled settings UI, and per-task connection-policy command surface (D-023). Pause/resume scheduling remains deferred. `UI-002` is now complete: right-click task context menu mirrors toolbar/details actions while preserving multi-selection, queue-move shortcuts are workspace-bound, remove restores list focus, and existing sort/hidden-selection/mixed-state batch paths remain the authority (D-024). Remaining P1 audit items and P2 platform work are next.
 The proxy slice includes schema migration, validated endpoint/bypass fields,
 masked password input, system credential storage, session-bound runtime apply,
 new-session reapply, and explicit clearing. `FILE-002` now has
@@ -946,10 +984,11 @@ several can be shared by more than one feature.
   uses `aria2.changeOption` with outcome-unknown reconciliation (D-010/D-023).
   Each control is scope-labeled (live concurrent queue vs new-download
   defaults vs this download only). Pause/resume scheduling remains deferred.
-- [ ] `UI-002` Close list ergonomics around the selection work: deterministic
-  sorting, action availability for mixed states, hidden-selection disclosure
-  after filtering, context-menu parity, keyboard shortcuts, focus restoration,
-  and an undo or recovery path for accidental task removal where possible.
+- [x] `UI-002` Close list ergonomics around the selection work: deterministic
+  local sorting, mixed-state batch eligibility, hidden-selection disclosure,
+  right-click context-menu parity with toolbar/details actions, queue-move
+  keyboard shortcuts, focus restoration after remove, and confirmation/Trash
+  recovery for accidental removal (D-024). No second in-app undo stack.
 - [ ] `OBS-001` Add grouped completion/error notifications and a task activity
   or error history. Batch completions must not produce one notification per
   item, and notification volume/quiet behavior must be configurable.
@@ -1053,5 +1092,8 @@ acceptance outcomes overlap.
 | 2026-07-21 | `RATE-002` | `cargo test --workspace --no-fail-fast` | Pass - 274 passed, 13 ignored; adds TransferPolicyConfig/TaskConnectionPolicy domain validation, settings schema v4 migration, global `changeGlobalOption` transfer-policy mapping, per-task connection-policy `changeOption` forwarding and terminal/out-of-range rejection, settings-UI draft parsing (counts + K/M/G min-split), and live-test coverage for concurrent/connection/split options |
 | 2026-07-21 | `RATE-002` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 | 2026-07-21 | `RATE-002` live transfer policy and regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored` | Pass - all 11 real aria2 flows remain green; the speed-limit flow also accepts RATE-002 global concurrent/connection/split/allocation/integrity options and echoes per-task connection/split values through `getOption` |
+
+| 2026-07-21 | `UI-002` | `cargo test --workspace --no-fail-fast` | Pass - 276 passed, 13 ignored; adds right-click context menu with toolbar/details parity, multi-selection-preserving open, copy source/GID against the right-clicked identity, queue-move keyboard wiring (Cmd/Ctrl+Shift+Home/Up/Down/End), and remove focus restoration |
+| 2026-07-21 | `UI-002` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.
