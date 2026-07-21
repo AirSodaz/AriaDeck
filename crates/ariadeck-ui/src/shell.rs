@@ -299,6 +299,11 @@ struct TaskOptionsDialog {
 }
 
 /// Right-click menu for one focused task row (D-024).
+struct TextFieldContextMenuState {
+    field: Entity<TextField>,
+    position: Point<Pixels>,
+}
+
 struct TaskContextMenu {
     identity: TaskIdentity,
     position: Point<Pixels>,
@@ -391,6 +396,7 @@ pub struct AppShell {
     speed_popover_previous_focus: Option<WeakFocusHandle>,
     sort_popover_open: bool,
     context_menu: Option<TaskContextMenu>,
+    text_field_context_menu: Option<TextFieldContextMenuState>,
     status_notice: Option<StatusNotice>,
     next_notice_id: u64,
     activity_log: Vec<ActivityEntryView>,
@@ -457,9 +463,12 @@ impl AppShell {
         let search_input = cx.new(|cx| TextField::new("Search downloads or GID", theme, cx));
         let search_subscription = cx.subscribe(
             &search_input,
-            |this: &mut Self, _input, event: &SearchInputEvent, cx| {
-                if this.query.search != event.text {
-                    this.query.search.clone_from(&event.text);
+            |this: &mut Self, input, event: &SearchInputEvent, cx| {
+                this.handle_text_field_event(input, event, cx);
+                if let SearchInputEvent::TextChanged { text, .. } = event
+                    && this.query.search != *text
+                {
+                    this.query.search.clone_from(text);
                     this.sort_popover_open = false;
                     this.clear_task_selection();
                     this.emit_query(cx);
@@ -485,8 +494,12 @@ impl AppShell {
         });
         let add_subscription = cx.subscribe(
             &add_input,
-            |this: &mut Self, _input, _event: &SearchInputEvent, cx| {
-                if this.add_dialog.open && this.add_dialog.pending.is_none() {
+            |this: &mut Self, input, event: &SearchInputEvent, cx| {
+                this.handle_text_field_event(input, event, cx);
+                if let SearchInputEvent::TextChanged { .. } = event
+                    && this.add_dialog.open
+                    && this.add_dialog.pending.is_none()
+                {
                     if this.add_dialog.updating_input_from_result {
                         this.add_dialog.updating_input_from_result = false;
                         return;
@@ -631,7 +644,11 @@ impl AppShell {
         .map(|input| {
             cx.subscribe(
                 input,
-                |this: &mut Self, _input, _event: &SearchInputEvent, cx| {
+                |this: &mut Self, input, event: &SearchInputEvent, cx| {
+                    this.handle_text_field_event(input, event, cx);
+                    let SearchInputEvent::TextChanged { .. } = event else {
+                        return;
+                    };
                     if this.add_dialog.open
                         && this.add_dialog.pending.is_none()
                         && this.add_dialog.error.take().is_some()
@@ -660,7 +677,11 @@ impl AppShell {
         });
         let output_name_subscription = cx.subscribe(
             &output_name_input,
-            |this: &mut Self, _input, _event: &SearchInputEvent, cx| {
+            |this: &mut Self, input, event: &SearchInputEvent, cx| {
+                this.handle_text_field_event(input, event, cx);
+                let SearchInputEvent::TextChanged { .. } = event else {
+                    return;
+                };
                 if let Some(dialog) = &mut this.output_name_dialog
                     && this.pending_task_command.is_none()
                     && dialog.error.take().is_some()
@@ -707,7 +728,11 @@ impl AppShell {
             .map(|input| {
                 cx.subscribe(
                     input,
-                    |this: &mut Self, _input, _event: &SearchInputEvent, cx| {
+                    |this: &mut Self, input, event: &SearchInputEvent, cx| {
+                        this.handle_text_field_event(input, event, cx);
+                        let SearchInputEvent::TextChanged { .. } = event else {
+                            return;
+                        };
                         if let Some(dialog) = &mut this.task_speed_limit_dialog
                             && this.pending_task_command.is_none()
                             && dialog.error.take().is_some()
@@ -755,7 +780,11 @@ impl AppShell {
             [&task_seed_ratio_input, &task_seed_time_input].map(|input| {
                 cx.subscribe(
                     input,
-                    |this: &mut Self, _input, _event: &SearchInputEvent, cx| {
+                    |this: &mut Self, input, event: &SearchInputEvent, cx| {
+                        this.handle_text_field_event(input, event, cx);
+                        let SearchInputEvent::TextChanged { .. } = event else {
+                            return;
+                        };
                         if let Some(dialog) = &mut this.task_options_dialog
                             && this.pending_task_command.is_none()
                             && dialog.error.take().is_some()
@@ -1055,6 +1084,12 @@ impl AppShell {
         });
         let mut settings_subscriptions = [
             &settings_directory_input,
+            &settings_core_path_input,
+            &settings_profile_name_input,
+            &settings_profile_executable_input,
+            &settings_profile_endpoint_input,
+            &settings_profile_download_input,
+            &settings_profile_secret_input,
             &settings_all_proxy_input,
             &settings_http_proxy_input,
             &settings_https_proxy_input,
@@ -1072,7 +1107,11 @@ impl AppShell {
         .map(|input| {
             cx.subscribe(
                 input,
-                |this: &mut Self, _input, _event: &SearchInputEvent, cx| {
+                |this: &mut Self, input, event: &SearchInputEvent, cx| {
+                    this.handle_text_field_event(input, event, cx);
+                    let SearchInputEvent::TextChanged { .. } = event else {
+                        return;
+                    };
                     if this.page == AppPage::Settings
                         && this.pending_settings_save.is_none()
                         && this.settings_page.error.take().is_some()
@@ -1085,7 +1124,11 @@ impl AppShell {
         .collect::<Vec<_>>();
         settings_subscriptions.push(cx.subscribe(
             &settings_proxy_password_input,
-            |this: &mut Self, _input, _event: &SearchInputEvent, cx| {
+            |this: &mut Self, input, event: &SearchInputEvent, cx| {
+                this.handle_text_field_event(input, event, cx);
+                let SearchInputEvent::TextChanged { .. } = event else {
+                    return;
+                };
                 let changed = this.settings_page.clear_proxy_password
                     || (this.page == AppPage::Settings
                         && this.pending_settings_save.is_none()
@@ -1183,6 +1226,7 @@ impl AppShell {
             speed_popover_previous_focus: None,
             sort_popover_open: false,
             context_menu: None,
+            text_field_context_menu: None,
             status_notice: None,
             next_notice_id: 1,
             activity_log: Vec::new(),
@@ -2874,6 +2918,57 @@ impl AppShell {
         for input in self.all_text_fields() {
             input.update(cx, |input, cx| input.set_theme(theme, cx));
         }
+    }
+
+    fn handle_text_field_event(
+        &mut self,
+        field: Entity<TextField>,
+        event: &SearchInputEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SearchInputEvent::TextChanged { .. } => {}
+            SearchInputEvent::ContextMenuRequested { position } => {
+                self.open_text_field_context_menu(field, *position, cx);
+            }
+        }
+    }
+
+    fn open_text_field_context_menu(
+        &mut self,
+        field: Entity<TextField>,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.context_menu = None;
+        self.sort_popover_open = false;
+        self.speed_popover_open = false;
+        self.text_field_context_menu = Some(TextFieldContextMenuState { field, position });
+        cx.notify();
+    }
+
+    fn close_text_field_context_menu(&mut self, cx: &mut Context<Self>) {
+        if self.text_field_context_menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn activate_text_field_context_action(
+        &mut self,
+        action: TextFieldContextAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = self.text_field_context_menu.take() else {
+            return;
+        };
+        menu.field.update(cx, |field, cx| match action {
+            TextFieldContextAction::Cut => field.context_cut(window, cx),
+            TextFieldContextAction::Copy => field.context_copy(window, cx),
+            TextFieldContextAction::Paste => field.context_paste(window, cx),
+            TextFieldContextAction::SelectAll => field.context_select_all(window, cx),
+        });
+        cx.notify();
     }
 
     fn all_text_fields(&self) -> [&Entity<TextField>; 34] {
@@ -4910,6 +5005,7 @@ impl AppShell {
         }
         self.sort_popover_open = false;
         self.speed_popover_open = false;
+        self.text_field_context_menu = None;
         self.context_menu = Some(TaskContextMenu {
             identity: task.identity,
             position,
@@ -6224,6 +6320,107 @@ impl AppShell {
                     .bg(colors.elevated_surface)
                     .child(self.render_speed_chart()),
             )
+    }
+
+    fn render_text_field_context_menu(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = self.theme.colors;
+        let Some(menu) = self.text_field_context_menu.as_ref() else {
+            return div().into_any_element();
+        };
+        let field = menu.field.clone();
+        let position = menu.position;
+        let field_state = field.read(cx);
+        let has_selection = field_state.has_selection();
+        let secure = field_state.is_secure_field();
+        let is_empty = field_state.is_empty();
+        let can_copy = has_selection && !secure;
+        let can_cut = can_copy;
+        let can_paste = true;
+        let can_select_all = !is_empty;
+        let left = f32::from(position.x).max(8.0);
+        let top = f32::from(position.y).max(8.0);
+
+        let item = |action: TextFieldContextAction, label: &'static str, enabled: bool| {
+            let id = match action {
+                TextFieldContextAction::Cut => "shell-text-ctx-cut",
+                TextFieldContextAction::Copy => "shell-text-ctx-copy",
+                TextFieldContextAction::Paste => "shell-text-ctx-paste",
+                TextFieldContextAction::SelectAll => "shell-text-ctx-select-all",
+            };
+            div()
+                .id(id)
+                .role(Role::MenuItem)
+                .aria_label(label)
+                .w_full()
+                .px_3()
+                .py_1p5()
+                .rounded_sm()
+                .text_sm()
+                .text_color(if enabled {
+                    colors.text_primary
+                } else {
+                    colors.text_muted
+                })
+                .when(enabled, |element| {
+                    element
+                        .cursor_pointer()
+                        .hover(|style| style.bg(colors.surface_active))
+                        .on_mouse_down(MouseButton::Left, {
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                window.prevent_default();
+                                let _ = event;
+                                this.activate_text_field_context_action(action, window, cx);
+                            })
+                        })
+                })
+                .child(label)
+        };
+
+        div()
+            .id("text-field-context-menu-layer")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.close_text_field_context_menu(cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, _, cx| this.close_text_field_context_menu(cx)),
+            )
+            .child(
+                div()
+                    .id("text-field-context-menu")
+                    .role(Role::Menu)
+                    .aria_label("Text field menu")
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .min_w(px(168.0))
+                    .py_1()
+                    .px_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(colors.border_strong)
+                    .bg(colors.elevated_surface)
+                    .shadow_md()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .child(item(TextFieldContextAction::Cut, "Cut", can_cut))
+                    .child(item(TextFieldContextAction::Copy, "Copy", can_copy))
+                    .child(item(TextFieldContextAction::Paste, "Paste", can_paste))
+                    .child(item(
+                        TextFieldContextAction::SelectAll,
+                        "Select all",
+                        can_select_all,
+                    )),
+            )
+            .into_any_element()
     }
 
     fn render_task_context_menu(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -11322,6 +11519,9 @@ impl Render for AppShell {
             .when(self.context_menu.is_some(), |element| {
                 element.child(self.render_task_context_menu(cx))
             })
+            .when(self.text_field_context_menu.is_some(), |element| {
+                element.child(self.render_text_field_context_menu(cx))
+            })
             .when(
                 self.sort_popover_open && self.page == AppPage::Downloads,
                 |element| element.child(self.render_sort_popover(cx)),
@@ -11563,6 +11763,14 @@ fn queue_move_button(
             this.begin_task_command(command.clone(), cx);
         }))
     })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TextFieldContextAction {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

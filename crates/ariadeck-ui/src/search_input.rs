@@ -7,7 +7,7 @@ use gpui::{
     MouseUpEvent, PaintQuad, Pixels, Point, Role, ShapedLine, SharedString, Style, TextRun,
     UTF16Selection, UnderlineStyle, Window,
     accesskit::{self, ActionData},
-    deferred, div, fill, point,
+    div, fill, point,
     prelude::*,
     px, relative, size,
 };
@@ -22,24 +22,44 @@ use crate::{
 const CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
 #[derive(Clone, Eq, PartialEq)]
-pub struct TextFieldEvent {
-    pub text: String,
-    secure: bool,
+pub enum TextFieldEvent {
+    /// Content changed (typing, paste, set_text, a11y set value).
+    TextChanged { text: String, secure: bool },
+    /// Request a root-level context menu at window coordinates.
+    ContextMenuRequested { position: Point<Pixels> },
+}
+
+impl TextFieldEvent {
+    #[must_use]
+    pub fn text_changed(text: impl Into<String>, secure: bool) -> Self {
+        Self::TextChanged {
+            text: text.into(),
+            secure,
+        }
+    }
+
+    /// Text payload for change events; empty for menu requests.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        match self {
+            Self::TextChanged { text, .. } => text.as_str(),
+            Self::ContextMenuRequested { .. } => "",
+        }
+    }
 }
 
 impl std::fmt::Debug for TextFieldEvent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("TextFieldEvent")
-            .field(
-                "text",
-                &if self.secure {
-                    "[REDACTED]"
-                } else {
-                    &self.text
-                },
-            )
-            .finish()
+        match self {
+            Self::TextChanged { text, secure } => formatter
+                .debug_struct("TextChanged")
+                .field("text", &if *secure { "[REDACTED]" } else { text.as_str() })
+                .finish(),
+            Self::ContextMenuRequested { position } => formatter
+                .debug_struct("ContextMenuRequested")
+                .field("position", position)
+                .finish(),
+        }
     }
 }
 
@@ -75,18 +95,6 @@ impl TextFieldConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TextFieldContextAction {
-    Cut,
-    Copy,
-    Paste,
-    SelectAll,
-}
-
-struct TextFieldContextMenu {
-    position: Point<Pixels>,
-}
-
 pub struct TextField {
     focus_handle: FocusHandle,
     content: SharedString,
@@ -110,7 +118,6 @@ pub struct TextField {
     cursor_visible: bool,
     blink_epoch: u64,
     blink_enabled: bool,
-    context_menu: Option<TextFieldContextMenu>,
 }
 
 pub type SearchInput = TextField;
@@ -156,7 +163,6 @@ impl TextField {
             cursor_visible: true,
             blink_epoch: 0,
             blink_enabled: false,
-            context_menu: None,
         }
     }
 
@@ -175,7 +181,6 @@ impl TextField {
         self.selected_range = end..end;
         self.selection_reversed = false;
         self.marked_range = None;
-        self.close_context_menu(cx);
         self.emit_change(cx);
         self.pause_and_show_cursor(cx);
     }
@@ -243,147 +248,46 @@ impl TextField {
         self.pause_and_show_cursor(cx);
     }
 
-    fn close_context_menu(&mut self, cx: &mut Context<Self>) {
-        if self.context_menu.take().is_some() {
-            cx.notify();
-        }
-    }
-
     fn open_context_menu(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        // Store window coordinates; convert to field-local space at paint time.
-        self.context_menu = Some(TextFieldContextMenu { position });
+        // Parent shell paints the menu at the window root so it is never clipped.
+        cx.emit(TextFieldEvent::ContextMenuRequested { position });
         cx.notify();
     }
 
-    fn run_context_action(
-        &mut self,
-        action: TextFieldContextAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.context_menu = None;
-        match action {
-            TextFieldContextAction::Cut => self.cut(&Cut, window, cx),
-            TextFieldContextAction::Copy => self.copy(&Copy, window, cx),
-            TextFieldContextAction::Paste => self.paste(&Paste, window, cx),
-            TextFieldContextAction::SelectAll => self.select_all(&SelectAll, window, cx),
-        }
+    /// Public clipboard/selection actions for the root-level context menu.
+    pub fn context_cut(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cut(&Cut, window, cx);
         self.pause_and_show_cursor(cx);
     }
 
-    fn render_context_menu(&self, cx: &Context<Self>) -> impl IntoElement {
-        let colors = self.theme.colors;
-        let Some(menu) = self.context_menu.as_ref() else {
-            return div().into_any_element();
-        };
-        // Deferred draws keep this element's layout offset, so convert the stored
-        // window coordinates into field-local space. last_bounds is the text row
-        // inside the field; that origin is close enough for menu placement.
-        let (local_x, local_y) = if let Some(bounds) = self.last_bounds {
-            (
-                menu.position.x - bounds.left(),
-                menu.position.y - bounds.top(),
-            )
-        } else {
-            (px(8.0), px(8.0))
-        };
-        // Expand dismiss layer outward with negative margin; compensate menu offset.
-        let margin = px(64.0);
-        let menu_left = local_x + margin;
-        let menu_top = local_y + margin;
-        let has_selection = !self.selected_range.is_empty();
-        let can_copy = has_selection && !self.secure;
-        let can_cut = can_copy;
-        let can_paste = true;
-        let can_select_all = !self.content.is_empty();
+    pub fn context_copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.copy(&Copy, window, cx);
+        self.pause_and_show_cursor(cx);
+    }
 
-        let entry = |action: TextFieldContextAction, label: &'static str, enabled: bool| {
-            let id = match action {
-                TextFieldContextAction::Cut => "text-field-ctx-cut",
-                TextFieldContextAction::Copy => "text-field-ctx-copy",
-                TextFieldContextAction::Paste => "text-field-ctx-paste",
-                TextFieldContextAction::SelectAll => "text-field-ctx-select-all",
-            };
-            div()
-                .id(id)
-                .role(Role::MenuItem)
-                .aria_label(label)
-                .w_full()
-                .px_3()
-                .py_1p5()
-                .rounded_sm()
-                .text_sm()
-                .text_color(if enabled {
-                    colors.text_primary
-                } else {
-                    colors.text_muted
-                })
-                .when(enabled, |element| {
-                    element
-                        .cursor_pointer()
-                        .hover(|style| style.bg(colors.surface_active))
-                        .on_mouse_down(MouseButton::Left, {
-                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                cx.stop_propagation();
-                                window.prevent_default();
-                                let _ = event;
-                                this.run_context_action(action, window, cx);
-                            })
-                        })
-                })
-                .child(label)
-        };
+    pub fn context_paste(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.paste(&Paste, window, cx);
+        self.pause_and_show_cursor(cx);
+    }
 
-        // Deferred paint avoids ancestor overflow clipping of the popup.
-        deferred(
-            div()
-                .id("text-field-context-menu-layer")
-                .absolute()
-                .m_neg_16()
-                .w(px(4000.0))
-                .h(px(4000.0))
-                .occlude()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, _, cx| this.close_context_menu(cx)),
-                )
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(|this, _, _, cx| this.close_context_menu(cx)),
-                )
-                .child(
-                    div()
-                        .id("text-field-context-menu")
-                        .role(Role::Menu)
-                        .aria_label("Text field menu")
-                        .absolute()
-                        .left(menu_left)
-                        .top(menu_top)
-                        .min_w(px(168.0))
-                        .py_1()
-                        .px_1()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(colors.border_strong)
-                        .bg(colors.elevated_surface)
-                        .shadow_md()
-                        .flex()
-                        .flex_col()
-                        .gap_0p5()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                        .child(entry(TextFieldContextAction::Cut, "Cut", can_cut))
-                        .child(entry(TextFieldContextAction::Copy, "Copy", can_copy))
-                        .child(entry(TextFieldContextAction::Paste, "Paste", can_paste))
-                        .child(entry(
-                            TextFieldContextAction::SelectAll,
-                            "Select all",
-                            can_select_all,
-                        )),
-                ),
-        )
-        .with_priority(100)
-        .into_any_element()
+    pub fn context_select_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_all(&SelectAll, window, cx);
+        self.pause_and_show_cursor(cx);
+    }
+
+    #[must_use]
+    pub fn has_selection(&self) -> bool {
+        !self.selected_range.is_empty()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.content.is_empty()
+    }
+
+    #[must_use]
+    pub fn is_secure_field(&self) -> bool {
+        self.secure
     }
 
     #[cfg(test)]
@@ -397,10 +301,10 @@ impl TextField {
     }
 
     fn emit_change(&self, cx: &mut Context<Self>) {
-        cx.emit(TextFieldEvent {
-            text: self.content.to_string(),
-            secure: self.secure,
-        });
+        cx.emit(TextFieldEvent::text_changed(
+            self.content.to_string(),
+            self.secure,
+        ));
         cx.notify();
     }
 
@@ -534,7 +438,6 @@ impl TextField {
             self.open_context_menu(event.position, cx);
             return;
         }
-        self.close_context_menu(cx);
         self.is_selecting = true;
         let index = self.index_for_mouse_position(event.position);
         if event.modifiers.shift {
@@ -995,7 +898,6 @@ impl gpui::Render for TextField {
         );
         let weak_input = cx.entity().downgrade();
         let clear_input = weak_input.clone();
-        let show_context_menu = self.context_menu.is_some();
         let input = div()
             .h_full()
             .flex_1()
@@ -1086,16 +988,12 @@ impl gpui::Render for TextField {
                         };
                         let focus = input.read(cx).focus_handle.clone();
                         input.update(cx, |input, cx| {
-                            input.close_context_menu(cx);
                             input.set_text("", cx);
                         });
                         window.focus(&focus, cx);
                     })
                     .render(colors),
                 )
-            })
-            .when(show_context_menu, |field| {
-                field.child(self.render_context_menu(cx))
             })
     }
 }
@@ -1344,19 +1242,13 @@ mod tests {
         let input: Option<SearchInput> = None;
         let _: Option<TextField> = input;
 
-        let event = SearchInputEvent {
-            text: "example".to_owned(),
-            secure: false,
-        };
+        let event = SearchInputEvent::text_changed("example", false);
         let _: TextFieldEvent = event;
     }
 
     #[test]
     fn secure_change_event_debug_output_is_redacted() {
-        let event = TextFieldEvent {
-            text: "never-log-this".into(),
-            secure: true,
-        };
+        let event = TextFieldEvent::text_changed("never-log-this", true);
 
         let debug = format!("{event:?}");
         assert!(debug.contains("[REDACTED]"));
