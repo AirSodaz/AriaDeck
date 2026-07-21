@@ -17,17 +17,29 @@ data-encoding.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 lava_torrent.workspace = true
+notify-rust.workspace = true
 quick-xml.workspace = true
 secrecy.workspace = true
 sha2.workspace = true
+sysinfo.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tray-icon.workspace = true
 url.workspace = true
+raw-window-handle = "0.6"
 
 [dev-dependencies]
 async-trait.workspace = true
 futures.workspace = true
 tempfile.workspace = true
 
-[lints]
-workspace = true
+[lints.rust]
+# Platform boundary (Win32 ShowWindow for hide-to-tray) requires a narrow unsafe
+# call; keep the rest of the workspace forbid-unsafe.
+unsafe_code = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "warn"

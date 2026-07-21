@@ -12,14 +12,61 @@ use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 5;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ColorScheme {
-    Light,
+    /// Follow the operating-system light/dark preference (UI-001 / D-031).
     #[default]
+    System,
+    Light,
     Dark,
+}
+
+/// Last-used download list filter (UI-001). Not a named-filter library.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListFilterPreference {
+    #[default]
+    All,
+    Active,
+    Waiting,
+    Paused,
+    Completed,
+    Failed,
+}
+
+/// Last-used list sort key (UI-001).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListSortKeyPreference {
+    #[default]
+    Queue,
+    Name,
+    Status,
+    Progress,
+    DownloadSpeed,
+    Size,
+}
+
+/// Last-used list sort direction (UI-001).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListSortDirectionPreference {
+    #[default]
+    Ascending,
+    Descending,
+}
+
+/// Restored list-query preferences (filter + sort). Search text is never
+/// persisted so restarts do not re-hide tasks behind a forgotten query.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiPreferences {
+    pub list_filter: ListFilterPreference,
+    pub list_sort_key: ListSortKeyPreference,
+    pub list_sort_direction: ListSortDirectionPreference,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -264,7 +311,8 @@ impl TransferPolicySettings {
 ///
 /// Quiet still records activity history and keeps command-feedback toasts, but
 /// suppresses automatic completion/error toast surfaces. Defaults favor visible
-/// completions and errors without OS-native notification spam (deferred).
+/// completions and errors. OS-native toasts follow the same volume/category
+/// gates when enabled (PLAT-001).
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationVolume {
@@ -282,6 +330,12 @@ pub struct NotificationSettings {
     pub notify_on_completion: bool,
     pub notify_on_error: bool,
     pub notify_on_engine_events: bool,
+    /// Also emit OS-native desktop notifications for gated automatic events.
+    pub os_notifications: bool,
+    /// Surface a low-disk warning when free space falls below the threshold.
+    pub notify_on_low_disk: bool,
+    /// Free-space threshold in bytes (default 1 GiB).
+    pub low_disk_threshold_bytes: u64,
 }
 
 impl Default for NotificationSettings {
@@ -291,6 +345,43 @@ impl Default for NotificationSettings {
             notify_on_completion: true,
             notify_on_error: true,
             notify_on_engine_events: true,
+            os_notifications: true,
+            notify_on_low_disk: true,
+            low_disk_threshold_bytes: 1_073_741_824,
+        }
+    }
+}
+
+/// What the window close control does while the app stays running.
+///
+/// Quit is always available from the tray menu and File/Exit. Managed aria2 is
+/// always stopped when AriaDeck exits; remote engines are never stopped by the
+/// desktop process (D-030 / PLAT-001).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseBehavior {
+    /// Hide the main window and keep the process + managed engine running.
+    #[default]
+    MinimizeToTray,
+    /// Fully quit AriaDeck (and stop a managed engine).
+    Quit,
+}
+
+/// Platform window/tray preferences (schema v6).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlatformSettings {
+    pub close_behavior: CloseBehavior,
+    pub show_tray_icon: bool,
+    pub start_minimized_to_tray: bool,
+}
+
+impl Default for PlatformSettings {
+    fn default() -> Self {
+        Self {
+            close_behavior: CloseBehavior::MinimizeToTray,
+            show_tray_icon: true,
+            start_minimized_to_tray: false,
         }
     }
 }
@@ -333,6 +424,8 @@ pub struct AppSettings {
     pub speed_limits: SpeedLimitSettings,
     pub transfer_policy: TransferPolicySettings,
     pub notifications: NotificationSettings,
+    pub platform: PlatformSettings,
+    pub ui: UiPreferences,
 }
 
 impl AppSettings {
@@ -345,6 +438,8 @@ impl AppSettings {
             speed_limits: SpeedLimitSettings::default(),
             transfer_policy: TransferPolicySettings::default(),
             notifications: NotificationSettings::default(),
+            platform: PlatformSettings::default(),
+            ui: UiPreferences::default(),
         }
     }
 
@@ -525,6 +620,54 @@ struct SettingsDocumentV4 {
     transfer_policy: TransferPolicySettings,
 }
 
+/// Schema v5 notifications lacked OS/low-disk fields; migrate with defaults.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NotificationSettingsV5 {
+    volume: NotificationVolume,
+    notify_on_completion: bool,
+    notify_on_error: bool,
+    notify_on_engine_events: bool,
+}
+
+impl From<NotificationSettingsV5> for NotificationSettings {
+    fn from(value: NotificationSettingsV5) -> Self {
+        Self {
+            volume: value.volume,
+            notify_on_completion: value.notify_on_completion,
+            notify_on_error: value.notify_on_error,
+            notify_on_engine_events: value.notify_on_engine_events,
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsDocumentV5 {
+    schema_version: u32,
+    color_scheme: ColorScheme,
+    download_directory: PathBuf,
+    download_proxy: DownloadProxySettings,
+    speed_limits: SpeedLimitSettings,
+    transfer_policy: TransferPolicySettings,
+    notifications: NotificationSettingsV5,
+}
+
+/// Schema v6 platform settings lacked UI list preferences.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsDocumentV6 {
+    schema_version: u32,
+    color_scheme: ColorScheme,
+    download_directory: PathBuf,
+    download_proxy: DownloadProxySettings,
+    speed_limits: SpeedLimitSettings,
+    transfer_policy: TransferPolicySettings,
+    notifications: NotificationSettings,
+    platform: PlatformSettings,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SettingsDocument {
@@ -535,6 +678,8 @@ struct SettingsDocument {
     speed_limits: SpeedLimitSettings,
     transfer_policy: TransferPolicySettings,
     notifications: NotificationSettings,
+    platform: PlatformSettings,
+    ui: UiPreferences,
 }
 
 impl From<&AppSettings> for SettingsDocument {
@@ -547,6 +692,8 @@ impl From<&AppSettings> for SettingsDocument {
             speed_limits: settings.speed_limits,
             transfer_policy: settings.transfer_policy,
             notifications: settings.notifications,
+            platform: settings.platform,
+            ui: settings.ui,
         }
     }
 }
@@ -568,6 +715,8 @@ impl TryFrom<SettingsDocument> for AppSettings {
             speed_limits: document.speed_limits,
             transfer_policy: document.transfer_policy,
             notifications: document.notifications,
+            platform: document.platform,
+            ui: document.ui,
         };
         settings.validate()?;
         Ok(settings)
@@ -619,6 +768,8 @@ impl JsonSettingsStore {
                     speed_limits: SpeedLimitSettings::default(),
                     transfer_policy: TransferPolicySettings::default(),
                     notifications: NotificationSettings::default(),
+                    platform: PlatformSettings::default(),
+                    ui: UiPreferences::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -639,6 +790,8 @@ impl JsonSettingsStore {
                     speed_limits: SpeedLimitSettings::default(),
                     transfer_policy: TransferPolicySettings::default(),
                     notifications: NotificationSettings::default(),
+                    platform: PlatformSettings::default(),
+                    ui: UiPreferences::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -659,6 +812,8 @@ impl JsonSettingsStore {
                     speed_limits: document.speed_limits,
                     transfer_policy: TransferPolicySettings::default(),
                     notifications: NotificationSettings::default(),
+                    platform: PlatformSettings::default(),
+                    ui: UiPreferences::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -679,6 +834,52 @@ impl JsonSettingsStore {
                     speed_limits: document.speed_limits,
                     transfer_policy: document.transfer_policy,
                     notifications: NotificationSettings::default(),
+                    platform: PlatformSettings::default(),
+                    ui: UiPreferences::default(),
+                };
+                settings.validate()?;
+                Ok((settings, true))
+            }
+            5 => {
+                let document: SettingsDocumentV5 =
+                    serde_json::from_slice(&bytes).map_err(malformed)?;
+                if document.schema_version != 5 {
+                    return Err(SettingsError::UnsupportedSchemaVersion {
+                        found: document.schema_version,
+                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
+                    });
+                }
+                let settings = AppSettings {
+                    color_scheme: document.color_scheme,
+                    download_directory: document.download_directory,
+                    download_proxy: document.download_proxy,
+                    speed_limits: document.speed_limits,
+                    transfer_policy: document.transfer_policy,
+                    notifications: document.notifications.into(),
+                    platform: PlatformSettings::default(),
+                    ui: UiPreferences::default(),
+                };
+                settings.validate()?;
+                Ok((settings, true))
+            }
+            6 => {
+                let document: SettingsDocumentV6 =
+                    serde_json::from_slice(&bytes).map_err(malformed)?;
+                if document.schema_version != 6 {
+                    return Err(SettingsError::UnsupportedSchemaVersion {
+                        found: document.schema_version,
+                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
+                    });
+                }
+                let settings = AppSettings {
+                    color_scheme: document.color_scheme,
+                    download_directory: document.download_directory,
+                    download_proxy: document.download_proxy,
+                    speed_limits: document.speed_limits,
+                    transfer_policy: document.transfer_policy,
+                    notifications: document.notifications,
+                    platform: document.platform,
+                    ui: UiPreferences::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -836,6 +1037,143 @@ fn io_error(operation: &'static str, path: &Path, source: io::Error) -> Settings
     }
 }
 
+/// Schema version for the session-local window geometry document.
+pub const WINDOW_GEOMETRY_SCHEMA_VERSION: u32 = 1;
+
+/// Minimum restoreable content size in logical pixels (matches desktop min).
+pub const WINDOW_MIN_WIDTH: f32 = 960.0;
+pub const WINDOW_MIN_HEIGHT: f32 = 620.0;
+pub const WINDOW_DEFAULT_WIDTH: f32 = 1180.0;
+pub const WINDOW_DEFAULT_HEIGHT: f32 = 760.0;
+
+/// Persisted main-window placement (UI-001 / D-031). Stored separately from
+/// settings so resize storms never rewrite the full settings document.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowGeometry {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub maximized: bool,
+}
+
+impl Default for WindowGeometry {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            width: WINDOW_DEFAULT_WIDTH,
+            height: WINDOW_DEFAULT_HEIGHT,
+            maximized: false,
+        }
+    }
+}
+
+impl WindowGeometry {
+    /// Reject NaN/non-finite sizes and clamp below the desktop minimum.
+    #[must_use]
+    pub fn sanitized(self) -> Self {
+        let width = if self.width.is_finite() {
+            self.width.max(WINDOW_MIN_WIDTH)
+        } else {
+            WINDOW_DEFAULT_WIDTH
+        };
+        let height = if self.height.is_finite() {
+            self.height.max(WINDOW_MIN_HEIGHT)
+        } else {
+            WINDOW_DEFAULT_HEIGHT
+        };
+        let x = if self.x.is_finite() { self.x } else { 0.0 };
+        let y = if self.y.is_finite() { self.y } else { 0.0 };
+        Self {
+            x,
+            y,
+            width,
+            height,
+            maximized: self.maximized,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct WindowGeometryDocument {
+    schema_version: u32,
+    geometry: WindowGeometry,
+}
+
+/// Atomic JSON store for main-window geometry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JsonWindowGeometryStore {
+    path: PathBuf,
+}
+
+impl JsonWindowGeometryStore {
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Load a previously saved geometry, or `None` when missing/corrupt.
+    pub fn load(&self) -> Option<WindowGeometry> {
+        let bytes = fs::read(&self.path).ok()?;
+        let document: WindowGeometryDocument = serde_json::from_slice(&bytes).ok()?;
+        if document.schema_version != WINDOW_GEOMETRY_SCHEMA_VERSION {
+            return None;
+        }
+        Some(document.geometry.sanitized())
+    }
+
+    pub fn save(&self, geometry: WindowGeometry) -> Result<(), SettingsError> {
+        let geometry = geometry.sanitized();
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)
+            .map_err(|source| io_error("create the window-geometry directory", parent, source))?;
+        let file_name = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| SettingsError::InvalidStorePath {
+                path: self.path.clone(),
+            })?;
+        let temp_path = parent.join(format!(".{file_name}.tmp"));
+        let payload = serde_json::to_vec_pretty(&WindowGeometryDocument {
+            schema_version: WINDOW_GEOMETRY_SCHEMA_VERSION,
+            geometry,
+        })
+        .map_err(SettingsError::Serialize)?;
+        {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&temp_path)
+                .map_err(|source| {
+                    io_error("write the window-geometry temp file", &temp_path, source)
+                })?;
+            file.write_all(&payload).map_err(|source| {
+                io_error("write the window-geometry temp file", &temp_path, source)
+            })?;
+            file.write_all(b"\n").map_err(|source| {
+                io_error("write the window-geometry temp file", &temp_path, source)
+            })?;
+            file.sync_all().map_err(|source| {
+                io_error("sync the window-geometry temp file", &temp_path, source)
+            })?;
+        }
+        replace_file(&temp_path, &self.path).map_err(|source| {
+            io_error("replace the window-geometry document", &self.path, source)
+        })?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -848,6 +1186,8 @@ mod tests {
             speed_limits: SpeedLimitSettings::default(),
             transfer_policy: TransferPolicySettings::default(),
             notifications: NotificationSettings::default(),
+            platform: PlatformSettings::default(),
+            ui: UiPreferences::default(),
         }
     }
 
@@ -865,9 +1205,12 @@ mod tests {
         assert_eq!(store.load().expect("load settings"), expected);
 
         let document = fs::read_to_string(store.path()).expect("read settings JSON");
-        assert!(document.contains("\"schema_version\": 5"));
+        assert!(document.contains("\"schema_version\": 7"));
         assert!(document.contains("\"transfer_policy\""));
         assert!(document.contains("\"notifications\""));
+        assert!(document.contains("\"platform\""));
+        assert!(document.contains("\"os_notifications\""));
+        assert!(document.contains("\"ui\""));
         assert!(document.ends_with('\n'));
     }
 
@@ -898,13 +1241,17 @@ mod tests {
             loaded.settings.notifications,
             NotificationSettings::default()
         );
+        assert_eq!(loaded.settings.platform, PlatformSettings::default());
+        assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 5"));
+        assert!(migrated.contains("\"schema_version\": 7"));
         assert!(migrated.contains("\"download_proxy\""));
         assert!(migrated.contains("\"speed_limits\""));
         assert!(migrated.contains("\"transfer_policy\""));
         assert!(migrated.contains("\"notifications\""));
+        assert!(migrated.contains("\"platform\""));
+        assert!(migrated.contains("\"ui\""));
     }
 
     #[test]
@@ -930,12 +1277,16 @@ mod tests {
             loaded.settings.notifications,
             NotificationSettings::default()
         );
+        assert_eq!(loaded.settings.platform, PlatformSettings::default());
+        assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 5"));
+        assert!(migrated.contains("\"schema_version\": 7"));
         assert!(migrated.contains("\"speed_limits\""));
         assert!(migrated.contains("\"transfer_policy\""));
         assert!(migrated.contains("\"notifications\""));
+        assert!(migrated.contains("\"platform\""));
+        assert!(migrated.contains("\"ui\""));
     }
 
     #[test]
@@ -967,12 +1318,16 @@ mod tests {
             loaded.settings.notifications,
             NotificationSettings::default()
         );
+        assert_eq!(loaded.settings.platform, PlatformSettings::default());
+        assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 5"));
+        assert!(migrated.contains("\"schema_version\": 7"));
         assert!(migrated.contains("\"transfer_policy\""));
         assert!(migrated.contains("\"max_concurrent_downloads\""));
         assert!(migrated.contains("\"notifications\""));
+        assert!(migrated.contains("\"platform\""));
+        assert!(migrated.contains("\"ui\""));
     }
 
     #[test]
@@ -997,11 +1352,138 @@ mod tests {
             loaded.settings.notifications,
             NotificationSettings::default()
         );
+        assert_eq!(loaded.settings.platform, PlatformSettings::default());
+        assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 5"));
+        assert!(migrated.contains("\"schema_version\": 7"));
         assert!(migrated.contains("\"notifications\""));
         assert!(migrated.contains("\"notify_on_completion\""));
+        assert!(migrated.contains("\"platform\""));
+        assert!(migrated.contains("\"ui\""));
+    }
+
+    #[test]
+    fn version_five_document_is_migrated_with_default_platform_and_os_notifications() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        fs::write(
+            store.path(),
+            r#"{"schema_version":5,"color_scheme":"dark","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"quiet","notify_on_completion":false,"notify_on_error":true,"notify_on_engine_events":true}}"#,
+        )
+        .expect("seed version five settings");
+
+        let loaded = store
+            .load_or_initialize(&settings(root.path()))
+            .expect("migrate version five settings");
+
+        assert_eq!(
+            loaded.settings.notifications,
+            NotificationSettings {
+                volume: NotificationVolume::Quiet,
+                notify_on_completion: false,
+                notify_on_error: true,
+                notify_on_engine_events: true,
+                os_notifications: true,
+                notify_on_low_disk: true,
+                low_disk_threshold_bytes: 1_073_741_824,
+            }
+        );
+        assert_eq!(loaded.settings.platform, PlatformSettings::default());
+        assert_eq!(loaded.settings.ui, UiPreferences::default());
+        assert!(loaded.recovery.is_none());
+        let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
+        assert!(migrated.contains("\"schema_version\": 7"));
+        assert!(migrated.contains("\"platform\""));
+        assert!(migrated.contains("\"os_notifications\""));
+        assert!(migrated.contains("\"close_behavior\""));
+        assert!(migrated.contains("\"ui\""));
+    }
+
+    #[test]
+    fn version_six_document_is_migrated_with_default_ui_preferences() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        fs::write(
+            store.path(),
+            r#"{"schema_version":6,"color_scheme":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":true,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false}}"#,
+        )
+        .expect("seed version six settings");
+
+        let loaded = store
+            .load_or_initialize(&settings(root.path()))
+            .expect("migrate version six settings");
+
+        assert_eq!(loaded.settings.color_scheme, ColorScheme::System);
+        assert_eq!(loaded.settings.ui, UiPreferences::default());
+        assert!(loaded.recovery.is_none());
+        let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
+        assert!(migrated.contains("\"schema_version\": 7"));
+        assert!(migrated.contains("\"ui\""));
+        assert!(migrated.contains("\"list_filter\""));
+    }
+
+    #[test]
+    fn ui_preferences_and_system_theme_round_trip() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        let mut expected = settings(root.path());
+        expected.color_scheme = ColorScheme::System;
+        expected.ui = UiPreferences {
+            list_filter: ListFilterPreference::Completed,
+            list_sort_key: ListSortKeyPreference::Size,
+            list_sort_direction: ListSortDirectionPreference::Descending,
+        };
+
+        store.save(&expected).expect("save ui preferences");
+        assert_eq!(store.load().expect("load ui preferences"), expected);
+    }
+
+    #[test]
+    fn window_geometry_round_trips_and_sanitizes() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonWindowGeometryStore::new(root.path().join("window.json"));
+        assert!(store.load().is_none());
+
+        let geometry = WindowGeometry {
+            x: 120.0,
+            y: 80.0,
+            width: 1400.0,
+            height: 900.0,
+            maximized: true,
+        };
+        store.save(geometry).expect("save window geometry");
+        assert_eq!(store.load(), Some(geometry));
+
+        let tiny = WindowGeometry {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+            maximized: false,
+        };
+        store.save(tiny).expect("save tiny geometry");
+        let restored = store.load().expect("load sanitized geometry");
+        assert_eq!(restored.width, WINDOW_MIN_WIDTH);
+        assert_eq!(restored.height, WINDOW_MIN_HEIGHT);
+    }
+
+    #[test]
+    fn platform_settings_round_trip() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        let mut expected = settings(root.path());
+        expected.platform = PlatformSettings {
+            close_behavior: CloseBehavior::Quit,
+            show_tray_icon: false,
+            start_minimized_to_tray: true,
+        };
+        expected.notifications.os_notifications = false;
+        expected.notifications.notify_on_low_disk = false;
+        expected.notifications.low_disk_threshold_bytes = 512 * 1024 * 1024;
+
+        store.save(&expected).expect("save platform settings");
+        assert_eq!(store.load().expect("load platform settings"), expected);
     }
 
     #[test]

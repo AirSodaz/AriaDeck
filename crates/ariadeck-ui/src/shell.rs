@@ -22,31 +22,31 @@ use crate::{
     AddDownloadResultView, AddDownloadSourceView, BatchCommandOutcomeView,
     BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
     BatchTaskFailureView, Button, ButtonStyle, ClearSearch, CloseAddDownload, CloseBatchFailures,
-    CloseSettings, CloseTaskOutputName, CloseTaskSpeedLimit, ColorSchemeView, CommandOutcomeView,
-    ConnectionView, CoreCommandOutcomeView, CoreCommandRequestView, CoreCommandResultView,
-    CoreCommandView, CoreRegistryView, Dialog, DownloadProxySettingsView, DownloadRowView,
-    EngineHealthView, EngineSessionView, FileAllocationView, FileConflictPolicyView, FocusNext,
-    FocusPrevious, FocusSearch, GlobalTaskCommandRequestView, GlobalTaskCommandResultView,
-    GlobalTaskCommandView, Icon, IconButton, IconName, IconSize, MoveTaskDownInQueue,
-    MoveTaskToQueueBottom, MoveTaskToQueueTop, MoveTaskUpInQueue, NotificationSettingsView,
-    NotificationVolumeView, OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName,
-    OpenTaskSpeedLimit, OperationErrorView, PauseSelectedTask, ProfileCatalogView,
-    ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView,
-    ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask,
-    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
-    SaveSettings, SearchInputEvent, SecretStringView, Segment, SegmentedControl, SelectAllTasks,
-    SelectNextTask, SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView,
-    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator,
-    SubmitAddDownload, SubmitTaskOutputName, SubmitTaskSpeedLimit, SwitchProfileOutcomeView,
-    SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
-    TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView, TaskDetailsRequestView,
-    TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity, TaskOpenOutcomeView,
-    TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView, TaskOptionView,
-    TaskPathValidationView, TaskPeerView, TaskServerView, TaskStatusView, TaskTrackerView,
-    TaskUriView, TextField, TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Tooltip,
-    TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
-    WorkspaceSortDirection, WorkspaceSortKey, actions::TEXT_FIELD_KEY_CONTEXT, format_bytes,
-    format_eta, format_percent, format_rate, format_share_ratio,
+    CloseBehaviorView, CloseSettings, CloseTaskOutputName, CloseTaskSpeedLimit, ColorSchemeView,
+    CommandOutcomeView, ConnectionView, CoreCommandOutcomeView, CoreCommandRequestView,
+    CoreCommandResultView, CoreCommandView, CoreRegistryView, Dialog, DownloadProxySettingsView,
+    DownloadRowView, EngineHealthView, EngineSessionView, FileAllocationView,
+    FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch, GlobalTaskCommandRequestView,
+    GlobalTaskCommandResultView, GlobalTaskCommandView, Icon, IconButton, IconName, IconSize,
+    MoveTaskDownInQueue, MoveTaskToQueueBottom, MoveTaskToQueueTop, MoveTaskUpInQueue,
+    NotificationSettingsView, NotificationVolumeView, OpenAddDownload, OpenSettings,
+    OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit, OperationErrorView, PauseSelectedTask,
+    PlatformSettingsView, ProfileCatalogView, ProfileEntryView, ProfileKindView,
+    ProfileRpcSecretUpdateView, ProxyModeView, ProxyPasswordUpdateView, RemoveSelectedTask,
+    RequestId, ResumeSelectedTask, RetrySelectedTask, SaveProfileCatalogOutcomeView,
+    SaveProfileCatalogRequestView, SaveProfileCatalogResultView, SaveSettings, SearchInputEvent,
+    SecretStringView, Segment, SegmentedControl, SelectAllTasks, SelectNextTask,
+    SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
+    SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator, SubmitAddDownload,
+    SubmitTaskOutputName, SubmitTaskSpeedLimit, SwitchProfileOutcomeView, SwitchProfileRequestView,
+    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
+    TaskFileView, TaskIdentity, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
+    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
+    TaskStatusView, TaskTrackerView, TaskUriView, TextField, TextFieldConfig, Theme, ThemeMode,
+    Toast, ToastKind, Tooltip, TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery,
+    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, actions::TEXT_FIELD_KEY_CONTEXT,
+    format_bytes, format_eta, format_percent, format_rate, format_share_ratio,
 };
 
 const SPEED_CHART_SAMPLES: usize = 120;
@@ -94,7 +94,7 @@ fn centered_search_bounds(viewport_width: f32) -> (f32, f32) {
     (left, left + width)
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum AppShellEvent {
     QueryChanged(WorkspaceQuery),
     RetryRequested,
@@ -111,6 +111,32 @@ pub enum AppShellEvent {
     SwitchProfileRequested(SwitchProfileRequestView),
     SaveProfileCatalogRequested(SaveProfileCatalogRequestView),
     CoreCommandRequested(CoreCommandRequestView),
+    /// Hide the main window while keeping the process and managed engine alive.
+    HideToTrayRequested,
+    /// Bring the main window back from tray/minimized state.
+    ShowFromTrayRequested,
+    /// Fully quit AriaDeck (stops a managed engine on drop).
+    QuitRequested,
+    /// Emit an OS-native notification when preference-gated (PLAT-001).
+    OsNotificationRequested {
+        title: String,
+        body: String,
+        is_error: bool,
+    },
+    /// Persist list filter/sort preferences without rewriting other settings (UI-001).
+    UiPreferencesChanged {
+        filter: WorkspaceFilter,
+        sort_key: WorkspaceSortKey,
+        sort_direction: WorkspaceSortDirection,
+    },
+    /// Debounced main-window geometry for session restore (UI-001).
+    WindowGeometryChanged {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        maximized: bool,
+    },
 }
 
 struct PendingAddDownload {
@@ -233,6 +259,11 @@ struct SettingsPage {
     draft_notify_on_completion: bool,
     draft_notify_on_error: bool,
     draft_notify_on_engine_events: bool,
+    draft_os_notifications: bool,
+    draft_notify_on_low_disk: bool,
+    draft_close_behavior: CloseBehaviorView,
+    draft_show_tray_icon: bool,
+    draft_start_minimized_to_tray: bool,
     clear_proxy_password: bool,
     /// Profile id currently open in the inline editor (Settings → Profiles).
     editing_profile_id: Option<String>,
@@ -266,6 +297,7 @@ enum SettingsSaveSource {
     SpeedLimit,
     TransferPolicy,
     Notifications,
+    Platform,
 }
 
 struct PendingSettingsSave {
@@ -410,6 +442,8 @@ pub struct AppShell {
     activity_log: Vec<ActivityEntryView>,
     next_activity_id: u64,
     activity_panel_open: bool,
+    /// Suppresses repeated low-disk warnings until free space recovers.
+    low_disk_active: bool,
     known_task_status: HashMap<TaskIdentity, TaskStatusView>,
     next_request_id: u64,
     list_scroll: UniformListScrollHandle,
@@ -433,8 +467,9 @@ impl AppShell {
     #[must_use]
     pub fn new(theme: Theme, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let color_scheme = match theme.mode {
+            ThemeMode::System => ColorSchemeView::System,
             ThemeMode::Light => ColorSchemeView::Light,
-            ThemeMode::Dark | ThemeMode::System => ColorSchemeView::Dark,
+            ThemeMode::Dark => ColorSchemeView::Dark,
         };
         Self::new_inner(
             theme,
@@ -455,7 +490,7 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) -> Self {
         Self::new_inner(
-            theme_for_scheme(settings.color_scheme),
+            resolve_theme(settings.color_scheme, window),
             settings,
             window,
             cx,
@@ -1148,9 +1183,21 @@ impl AppShell {
                 }
             },
         ));
-        let window_bounds_subscription = cx.observe_window_bounds(window, |_, _, cx| {
+        let window_bounds_subscription = cx.observe_window_bounds(window, |this, window, cx| {
+            this.emit_window_geometry(window, cx);
             cx.notify();
         });
+        let _window_appearance_subscription =
+            cx.observe_window_appearance(window, |this, window, cx| {
+                if this.settings.color_scheme == ColorSchemeView::System {
+                    let theme = resolve_theme(ColorSchemeView::System, window);
+                    if this.theme.mode != theme.mode || this.theme.colors != theme.colors {
+                        this.theme = theme;
+                        this.apply_theme_to_text_fields(cx);
+                        cx.notify();
+                    }
+                }
+            });
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
         Self {
@@ -1240,6 +1287,7 @@ impl AppShell {
             activity_log: Vec::new(),
             next_activity_id: 1,
             activity_panel_open: false,
+            low_disk_active: false,
             known_task_status: HashMap::new(),
             next_request_id: 1,
             list_scroll: UniformListScrollHandle::new(),
@@ -2091,6 +2139,7 @@ impl AppShell {
                         "Transfer policy saved."
                     }
                     SettingsSaveSource::Notifications => "Notification preferences saved.",
+                    SettingsSaveSource::Platform => "Window and tray preferences saved.",
                 };
                 self.show_notice(message, false, cx);
             }
@@ -2637,9 +2686,37 @@ impl AppShell {
         self.rendered_range.clone()
     }
 
+    /// Restore list filter/sort from persisted preferences without re-emitting a save.
+    pub fn restore_list_preferences(&mut self, query: WorkspaceQuery, cx: &mut Context<Self>) {
+        self.query = WorkspaceQuery {
+            filter: query.filter,
+            // Search is intentionally never restored across restarts (D-031).
+            search: String::new(),
+            sort_key: query.sort_key,
+            sort_direction: query.sort_direction,
+        };
+        cx.notify();
+    }
+
     fn emit_query(&self, cx: &mut Context<Self>) {
         cx.emit(AppShellEvent::QueryChanged(self.query.clone()));
+        cx.emit(AppShellEvent::UiPreferencesChanged {
+            filter: self.query.filter,
+            sort_key: self.query.sort_key,
+            sort_direction: self.query.sort_direction,
+        });
         cx.notify();
+    }
+
+    fn emit_window_geometry(&self, window: &Window, cx: &mut Context<Self>) {
+        let bounds = window.bounds();
+        cx.emit(AppShellEvent::WindowGeometryChanged {
+            x: f32::from(bounds.origin.x),
+            y: f32::from(bounds.origin.y),
+            width: f32::from(bounds.size.width),
+            height: f32::from(bounds.size.height),
+            maximized: window.is_maximized(),
+        });
     }
 
     fn set_filter(&mut self, filter: WorkspaceFilter, window: &mut Window, cx: &mut Context<Self>) {
@@ -2907,7 +2984,11 @@ impl AppShell {
     }
 
     fn apply_settings(&mut self, settings: SettingsView, cx: &mut Context<Self>) {
-        self.theme = theme_for_scheme(settings.color_scheme);
+        // System scheme resolution needs a Window; callers that only have Context
+        // keep the previously resolved palette until the next appearance event.
+        if settings.color_scheme != ColorSchemeView::System {
+            self.theme = theme_for_scheme(settings.color_scheme);
+        }
         self.settings = settings.clone();
         self.settings_page.draft_color_scheme = settings.color_scheme;
         self.settings_page.draft_file_allocation = settings.transfer_policy.file_allocation;
@@ -2917,6 +2998,12 @@ impl AppShell {
         self.settings_page.draft_notify_on_error = settings.notifications.notify_on_error;
         self.settings_page.draft_notify_on_engine_events =
             settings.notifications.notify_on_engine_events;
+        self.settings_page.draft_os_notifications = settings.notifications.os_notifications;
+        self.settings_page.draft_notify_on_low_disk = settings.notifications.notify_on_low_disk;
+        self.settings_page.draft_close_behavior = settings.platform.close_behavior;
+        self.settings_page.draft_show_tray_icon = settings.platform.show_tray_icon;
+        self.settings_page.draft_start_minimized_to_tray =
+            settings.platform.start_minimized_to_tray;
         self.apply_theme_to_text_fields(cx);
     }
 
@@ -3126,6 +3213,11 @@ impl AppShell {
             draft_notify_on_completion: self.settings.notifications.notify_on_completion,
             draft_notify_on_error: self.settings.notifications.notify_on_error,
             draft_notify_on_engine_events: self.settings.notifications.notify_on_engine_events,
+            draft_os_notifications: self.settings.notifications.os_notifications,
+            draft_notify_on_low_disk: self.settings.notifications.notify_on_low_disk,
+            draft_close_behavior: self.settings.platform.close_behavior,
+            draft_show_tray_icon: self.settings.platform.show_tray_icon,
+            draft_start_minimized_to_tray: self.settings.platform.start_minimized_to_tray,
             clear_proxy_password: false,
             editing_profile_id: None,
             draft_profile_kind: ProfileKindView::LocalManaged,
@@ -3198,13 +3290,18 @@ impl AppShell {
         );
     }
 
-    fn select_color_scheme(&mut self, scheme: ColorSchemeView, cx: &mut Context<Self>) {
+    fn select_color_scheme(
+        &mut self,
+        scheme: ColorSchemeView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.pending_settings_save.is_some() || scheme == self.settings.color_scheme {
             return;
         }
         self.settings_page.draft_color_scheme = scheme;
         // Apply chrome immediately so TextFields switch light/dark before save returns.
-        self.theme = theme_for_scheme(scheme);
+        self.theme = resolve_theme(scheme, window);
         self.apply_theme_to_text_fields(cx);
         let mut settings = self.settings.clone();
         settings.color_scheme = scheme;
@@ -3406,6 +3503,9 @@ impl AppShell {
             notify_on_completion: self.settings_page.draft_notify_on_completion,
             notify_on_error: self.settings_page.draft_notify_on_error,
             notify_on_engine_events: self.settings_page.draft_notify_on_engine_events,
+            os_notifications: self.settings_page.draft_os_notifications,
+            notify_on_low_disk: self.settings_page.draft_notify_on_low_disk,
+            low_disk_threshold_bytes: self.settings.notifications.low_disk_threshold_bytes,
         };
         if draft == self.settings.notifications {
             return;
@@ -3416,6 +3516,28 @@ impl AppShell {
             settings,
             ProxyPasswordUpdateView::Unchanged,
             SettingsSaveSource::Notifications,
+            cx,
+        );
+    }
+
+    fn submit_platform(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        let draft = PlatformSettingsView {
+            close_behavior: self.settings_page.draft_close_behavior,
+            show_tray_icon: self.settings_page.draft_show_tray_icon,
+            start_minimized_to_tray: self.settings_page.draft_start_minimized_to_tray,
+        };
+        if draft == self.settings.platform {
+            return;
+        }
+        let mut settings = self.settings.clone();
+        settings.platform = draft;
+        self.request_settings_save(
+            settings,
+            ProxyPasswordUpdateView::Unchanged,
+            SettingsSaveSource::Platform,
             cx,
         );
     }
@@ -3463,6 +3585,129 @@ impl AppShell {
             !self.settings_page.draft_notify_on_engine_events;
         self.settings_page.error = None;
         cx.notify();
+    }
+
+    fn toggle_os_notifications(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        self.settings_page.draft_os_notifications = !self.settings_page.draft_os_notifications;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    fn toggle_notify_on_low_disk(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        self.settings_page.draft_notify_on_low_disk = !self.settings_page.draft_notify_on_low_disk;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    fn select_close_behavior(&mut self, behavior: CloseBehaviorView, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        if self.settings_page.draft_close_behavior == behavior {
+            return;
+        }
+        self.settings_page.draft_close_behavior = behavior;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    fn toggle_show_tray_icon(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        self.settings_page.draft_show_tray_icon = !self.settings_page.draft_show_tray_icon;
+        // Closing to tray requires a tray icon so the user can restore the window.
+        if !self.settings_page.draft_show_tray_icon
+            && self.settings_page.draft_close_behavior == CloseBehaviorView::MinimizeToTray
+        {
+            self.settings_page.draft_close_behavior = CloseBehaviorView::Quit;
+        }
+        if !self.settings_page.draft_show_tray_icon {
+            self.settings_page.draft_start_minimized_to_tray = false;
+        }
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    fn toggle_start_minimized_to_tray(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        if !self.settings_page.draft_show_tray_icon {
+            return;
+        }
+        self.settings_page.draft_start_minimized_to_tray =
+            !self.settings_page.draft_start_minimized_to_tray;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    /// Intercept the window close control: hide to tray when configured, else quit.
+    pub fn handle_window_close_request(&mut self, cx: &mut Context<Self>) -> bool {
+        match self.settings.platform.close_behavior {
+            CloseBehaviorView::MinimizeToTray if self.settings.platform.show_tray_icon => {
+                cx.emit(AppShellEvent::HideToTrayRequested);
+                false
+            }
+            _ => {
+                cx.emit(AppShellEvent::QuitRequested);
+                true
+            }
+        }
+    }
+
+    pub fn request_show_from_tray(&mut self, cx: &mut Context<Self>) {
+        cx.emit(AppShellEvent::ShowFromTrayRequested);
+    }
+
+    pub fn request_quit(&mut self, cx: &mut Context<Self>) {
+        cx.emit(AppShellEvent::QuitRequested);
+    }
+
+    pub fn request_pause_all_from_tray(&mut self, cx: &mut Context<Self>) {
+        self.begin_global_task_command(GlobalTaskCommandView::PauseAll, cx);
+    }
+
+    pub fn request_resume_all_from_tray(&mut self, cx: &mut Context<Self>) {
+        self.begin_global_task_command(GlobalTaskCommandView::ResumeAll, cx);
+    }
+
+    #[must_use]
+    pub fn tray_tooltip(&self) -> String {
+        self.snapshot.tray_tooltip()
+    }
+
+    /// Surface a low-disk warning once per free-space recovery (PLAT-001).
+    pub fn report_disk_space(&mut self, available_bytes: Option<u64>, cx: &mut Context<Self>) {
+        let prefs = self.settings.notifications;
+        if !prefs.notify_on_low_disk {
+            self.low_disk_active = false;
+            return;
+        }
+        let Some(available) = available_bytes else {
+            return;
+        };
+        if available < prefs.low_disk_threshold_bytes {
+            if self.low_disk_active {
+                return;
+            }
+            self.low_disk_active = true;
+            let threshold = format_bytes(prefs.low_disk_threshold_bytes);
+            let free = format_bytes(available);
+            let message = format!(
+                "Low disk space: {free} free (threshold {threshold}). New downloads may fail."
+            );
+            self.record_activity(ActivityKindView::Error, message.clone(), None, None, 1, cx);
+            self.show_automatic_notice(message, true, false, cx);
+        } else if self.low_disk_active {
+            self.low_disk_active = false;
+        }
     }
 
     fn request_settings_save(
@@ -3570,14 +3815,29 @@ impl AppShell {
         if automatic && self.settings.notifications.volume == NotificationVolumeView::Quiet {
             return;
         }
+        let message = message.into();
         let id = self.next_notice_id;
         self.next_notice_id = self.next_notice_id.checked_add(1).unwrap_or(1);
         self.status_notice = Some(StatusNotice {
             id,
-            message: message.into(),
+            message: message.clone(),
             is_error,
             automatic,
         });
+        // OS-native toasts only for automatic, preference-gated events (PLAT-001).
+        if automatic && self.settings.notifications.os_notifications {
+            let title = if is_error {
+                "AriaDeck — Error"
+            } else {
+                "AriaDeck"
+            }
+            .to_owned();
+            cx.emit(AppShellEvent::OsNotificationRequested {
+                title,
+                body: message,
+                is_error,
+            });
+        }
         cx.notify();
         if !is_error {
             cx.spawn(async move |this, cx| {
@@ -9211,22 +9471,43 @@ impl AppShell {
             notify_on_completion: self.settings_page.draft_notify_on_completion,
             notify_on_error: self.settings_page.draft_notify_on_error,
             notify_on_engine_events: self.settings_page.draft_notify_on_engine_events,
+            os_notifications: self.settings_page.draft_os_notifications,
+            notify_on_low_disk: self.settings_page.draft_notify_on_low_disk,
+            low_disk_threshold_bytes: self.settings.notifications.low_disk_threshold_bytes,
         };
         let notifications_dirty = notifications_draft != self.settings.notifications;
+        let platform_saving = self
+            .pending_settings_save
+            .as_ref()
+            .is_some_and(|pending| pending.source == SettingsSaveSource::Platform);
+        let platform_draft = PlatformSettingsView {
+            close_behavior: self.settings_page.draft_close_behavior,
+            show_tray_icon: self.settings_page.draft_show_tray_icon,
+            start_minimized_to_tray: self.settings_page.draft_start_minimized_to_tray,
+        };
+        let platform_dirty = platform_draft != self.settings.platform;
         let volume_selected = NotificationVolumeView::all()
             .iter()
             .position(|volume| *volume == self.settings_page.draft_notification_volume)
+            .unwrap_or(0);
+        let close_behavior_selected = CloseBehaviorView::all()
+            .iter()
+            .position(|behavior| *behavior == self.settings_page.draft_close_behavior)
             .unwrap_or(0);
         let allocation_selected = FileAllocationView::all()
             .iter()
             .position(|method| *method == self.settings_page.draft_file_allocation)
             .unwrap_or(1);
         let manual_proxy = proxy_draft.mode == ProxyModeView::Manual;
-        let selected_scheme = usize::from(draft_scheme == ColorSchemeView::Dark);
+        let selected_scheme = ColorSchemeView::ALL
+            .iter()
+            .position(|scheme| *scheme == draft_scheme)
+            .unwrap_or(0);
         let shell = cx.entity().downgrade();
         let scheme_control = SegmentedControl::new(
             "settings-theme",
             [
+                Segment::new("System").icon(IconName::Settings),
                 Segment::new("Light").icon(IconName::Sun),
                 Segment::new("Dark").icon(IconName::Moon),
             ],
@@ -9234,14 +9515,15 @@ impl AppShell {
             self.theme,
         )
         .disabled(pending)
-        .on_select(move |index, _window, cx| {
-            let scheme = if index == 0 {
-                ColorSchemeView::Light
-            } else {
-                ColorSchemeView::Dark
-            };
+        .on_select(move |index, window, cx| {
+            let scheme = ColorSchemeView::ALL
+                .get(index)
+                .copied()
+                .unwrap_or(ColorSchemeView::System);
             shell
-                .update(cx, |shell, cx| shell.select_color_scheme(scheme, cx))
+                .update(cx, |shell, cx| {
+                    shell.select_color_scheme(scheme, window, cx)
+                })
                 .ok();
         });
         let proxy_shell = cx.entity().downgrade();
@@ -10633,11 +10915,57 @@ impl AppShell {
                                         .render(colors),
                                     )
                                     .child(
+                                        Button::new(
+                                            "toggle-os-notifications",
+                                            if self.settings_page.draft_os_notifications {
+                                                "OS desktop notifications: On"
+                                            } else {
+                                                "OS desktop notifications: Off"
+                                            },
+                                        )
+                                        .aria_label(
+                                            if self.settings_page.draft_os_notifications {
+                                                "Disable OS desktop notifications"
+                                            } else {
+                                                "Enable OS desktop notifications"
+                                            },
+                                        )
+                                        .style(ButtonStyle::Secondary)
+                                        .disabled(pending)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_os_notifications(cx);
+                                        }))
+                                        .render(colors),
+                                    )
+                                    .child(
+                                        Button::new(
+                                            "toggle-notify-low-disk",
+                                            if self.settings_page.draft_notify_on_low_disk {
+                                                "Low disk space warnings: On"
+                                            } else {
+                                                "Low disk space warnings: Off"
+                                            },
+                                        )
+                                        .aria_label(
+                                            if self.settings_page.draft_notify_on_low_disk {
+                                                "Disable low disk space warnings"
+                                            } else {
+                                                "Enable low disk space warnings"
+                                            },
+                                        )
+                                        .style(ButtonStyle::Secondary)
+                                        .disabled(pending)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_notify_on_low_disk(cx);
+                                        }))
+                                        .render(colors),
+                                    )
+                                    .child(
                                         div()
                                             .text_xs()
                                             .text_color(colors.text_muted)
                                             .child(
-                                                "Batch completions and failures collapse into one notice per snapshot. Open Activity from the status bar for the recent history.",
+                                                "Batch completions and failures collapse into one notice per snapshot. OS notifications follow the same volume and category gates. Open Activity from the status bar for the recent history.",
                                             ),
                                     ),
                             )
@@ -10665,6 +10993,136 @@ impl AppShell {
                                         .loading(notifications_saving)
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.submit_notifications(cx);
+                                        }))
+                                        .render(colors),
+                                    ),
+                            )
+                        })
+                        .child({
+                            let close_shell = cx.entity().downgrade();
+                            let close_control = SegmentedControl::new(
+                                "settings-close-behavior",
+                                CloseBehaviorView::all()
+                                    .map(|behavior| Segment::new(behavior.label())),
+                                close_behavior_selected,
+                                self.theme,
+                            )
+                            .disabled(pending || !self.settings_page.draft_show_tray_icon)
+                            .on_select(move |index, _window, cx| {
+                                let behavior = CloseBehaviorView::all()
+                                    .get(index)
+                                    .copied()
+                                    .unwrap_or_default();
+                                close_shell
+                                    .update(cx, |shell, cx| {
+                                        shell.select_close_behavior(behavior, cx)
+                                    })
+                                    .ok();
+                            });
+                            settings_section(
+                                "Window and tray",
+                                "Closing the window can hide AriaDeck to the tray while downloads continue. Quitting always stops a managed local engine and leaves remote engines running.",
+                                colors,
+                            )
+                            .child(
+                                div()
+                                    .mt_4()
+                                    .max_w(px(620.0))
+                                    .flex()
+                                    .flex_col()
+                                    .gap_3()
+                                    .child(
+                                        Button::new(
+                                            "toggle-show-tray",
+                                            if self.settings_page.draft_show_tray_icon {
+                                                "System tray icon: On"
+                                            } else {
+                                                "System tray icon: Off"
+                                            },
+                                        )
+                                        .aria_label(if self.settings_page.draft_show_tray_icon {
+                                            "Hide system tray icon"
+                                        } else {
+                                            "Show system tray icon"
+                                        })
+                                        .style(ButtonStyle::Secondary)
+                                        .disabled(pending)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_show_tray_icon(cx);
+                                        }))
+                                        .render(colors),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(colors.text_muted)
+                                                    .child("When I close the window"),
+                                            )
+                                            .child(close_control),
+                                    )
+                                    .child(
+                                        Button::new(
+                                            "toggle-start-minimized",
+                                            if self.settings_page.draft_start_minimized_to_tray {
+                                                "Start minimized to tray: On"
+                                            } else {
+                                                "Start minimized to tray: Off"
+                                            },
+                                        )
+                                        .aria_label(
+                                            if self.settings_page.draft_start_minimized_to_tray {
+                                                "Disable start minimized to tray"
+                                            } else {
+                                                "Enable start minimized to tray"
+                                            },
+                                        )
+                                        .style(ButtonStyle::Secondary)
+                                        .disabled(
+                                            pending || !self.settings_page.draft_show_tray_icon,
+                                        )
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_start_minimized_to_tray(cx);
+                                        }))
+                                        .render(colors),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(colors.text_muted)
+                                            .child(
+                                                "Tray menu: Show AriaDeck, Pause all, Resume all, Quit. Managed aria2 is owned by this process and stops on quit; remote profiles keep their engines running.",
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .mt_4()
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        Button::new(
+                                            "save-platform",
+                                            if platform_saving {
+                                                "Saving..."
+                                            } else {
+                                                "Save window and tray preferences"
+                                            },
+                                        )
+                                        .aria_label(if platform_saving {
+                                            "Saving window and tray preferences"
+                                        } else {
+                                            "Save window and tray preferences"
+                                        })
+                                        .style(ButtonStyle::Primary)
+                                        .disabled(pending || !platform_dirty)
+                                        .loading(platform_saving)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.submit_platform(cx);
                                         }))
                                         .render(colors),
                                     ),
@@ -11664,8 +12122,19 @@ fn titlebar_drag_region() -> Div {
 
 fn theme_for_scheme(scheme: ColorSchemeView) -> Theme {
     match scheme {
+        ColorSchemeView::System | ColorSchemeView::Dark => Theme::dark(),
+        ColorSchemeView::Light => Theme::light(),
+    }
+}
+
+fn resolve_theme(scheme: ColorSchemeView, window: &Window) -> Theme {
+    match scheme {
         ColorSchemeView::Light => Theme::light(),
         ColorSchemeView::Dark => Theme::dark(),
+        ColorSchemeView::System => match window.appearance() {
+            gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight => Theme::light(),
+            gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark => Theme::dark(),
+        },
     }
 }
 
@@ -14577,9 +15046,9 @@ mod tests {
         let expected_initial = initial.clone();
         let (view, cx) =
             cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
-        let (request_id, requested) = view.update(cx, |shell, cx| {
+        let (request_id, requested) = view.update_in(cx, |shell, window, cx| {
             shell.page = AppPage::Settings;
-            shell.select_color_scheme(ColorSchemeView::Light, cx);
+            shell.select_color_scheme(ColorSchemeView::Light, window, cx);
             let pending = shell
                 .pending_settings_save
                 .as_ref()
@@ -14634,6 +15103,7 @@ mod tests {
             speed_limits: SpeedLimitSettingsView::default(),
             transfer_policy: TransferPolicySettingsView::default(),
             notifications: NotificationSettingsView::default(),
+            platform: PlatformSettingsView::default(),
         };
         let (view, cx) =
             cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
@@ -15381,6 +15851,168 @@ mod tests {
                 NotificationVolumeView::Quiet
             );
             assert!(!pending.settings.notifications.notify_on_completion);
+        });
+    }
+
+    #[gpui::test]
+    fn system_theme_selection_emits_settings_save(cx: &mut TestAppContext) {
+        let initial = SettingsView {
+            color_scheme: ColorSchemeView::Dark,
+            download_directory: "C:/Downloads".into(),
+            ..SettingsView::default()
+        };
+        let (view, cx) =
+            cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
+        view.update_in(cx, |shell, window, cx| {
+            shell.page = AppPage::Settings;
+            shell.select_color_scheme(ColorSchemeView::System, window, cx);
+            let pending = shell
+                .pending_settings_save
+                .as_ref()
+                .expect("system theme save pending");
+            assert_eq!(pending.source, SettingsSaveSource::Theme);
+            assert_eq!(pending.settings.color_scheme, ColorSchemeView::System);
+        });
+    }
+
+    #[gpui::test]
+    fn list_preferences_restore_and_emit_without_search(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = view.update(cx, |_, cx| {
+            cx.subscribe(&view, move |_, _, event: &AppShellEvent, _| {
+                if let AppShellEvent::UiPreferencesChanged {
+                    filter,
+                    sort_key,
+                    sort_direction,
+                } = event
+                {
+                    sink.lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push((*filter, *sort_key, *sort_direction));
+                }
+            })
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.restore_list_preferences(
+                WorkspaceQuery {
+                    filter: WorkspaceFilter::Completed,
+                    search: "should-not-stick".into(),
+                    sort_key: WorkspaceSortKey::Size,
+                    sort_direction: WorkspaceSortDirection::Descending,
+                },
+                cx,
+            );
+            assert_eq!(shell.query.filter, WorkspaceFilter::Completed);
+            assert_eq!(shell.query.sort_key, WorkspaceSortKey::Size);
+            assert_eq!(
+                shell.query.sort_direction,
+                WorkspaceSortDirection::Descending
+            );
+            assert!(shell.query.search.is_empty());
+        });
+        assert!(
+            events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty(),
+            "restore must not re-persist preferences"
+        );
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.set_filter(WorkspaceFilter::Failed, window, cx);
+        });
+        let captured = events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert_eq!(
+            captured.last().copied(),
+            Some((
+                WorkspaceFilter::Failed,
+                WorkspaceSortKey::Size,
+                WorkspaceSortDirection::Descending
+            ))
+        );
+    }
+
+    #[gpui::test]
+    fn platform_preferences_save_and_close_policy(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = view.update(cx, |_, cx| {
+            cx.subscribe(&view, move |_, _, event: &AppShellEvent, _| match event {
+                AppShellEvent::HideToTrayRequested => sink
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push("hide"),
+                AppShellEvent::QuitRequested => sink
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push("quit"),
+                _ => {}
+            })
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.open_settings(&OpenSettings, window, cx);
+            shell.select_close_behavior(CloseBehaviorView::Quit, cx);
+            shell.toggle_start_minimized_to_tray(cx);
+            shell.submit_platform(cx);
+            let pending = shell
+                .pending_settings_save
+                .as_ref()
+                .expect("platform save pending");
+            assert_eq!(pending.source, SettingsSaveSource::Platform);
+            assert_eq!(
+                pending.settings.platform.close_behavior,
+                CloseBehaviorView::Quit
+            );
+            assert!(pending.settings.platform.start_minimized_to_tray);
+
+            // Apply saved platform prefs and verify close interception.
+            shell.apply_settings(pending.settings.clone(), cx);
+            shell.pending_settings_save = None;
+            assert!(shell.handle_window_close_request(cx));
+
+            shell.settings.platform.close_behavior = CloseBehaviorView::MinimizeToTray;
+            shell.settings.platform.show_tray_icon = true;
+            assert!(!shell.handle_window_close_request(cx));
+        });
+
+        let captured = events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert!(
+            captured.contains(&"hide"),
+            "minimize-to-tray close must emit HideToTrayRequested"
+        );
+        assert!(
+            captured.contains(&"quit"),
+            "quit close policy must emit QuitRequested"
+        );
+    }
+
+    #[gpui::test]
+    fn low_disk_report_is_deduplicated_until_recovery(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+        view.update(cx, |shell, cx| {
+            shell.settings.notifications.notify_on_low_disk = true;
+            shell.settings.notifications.low_disk_threshold_bytes = 1_000;
+            shell.report_disk_space(Some(100), cx);
+            assert!(shell.low_disk_active);
+            let first_len = shell.activity_log.len();
+            shell.report_disk_space(Some(50), cx);
+            assert_eq!(shell.activity_log.len(), first_len);
+            shell.report_disk_space(Some(5_000), cx);
+            assert!(!shell.low_disk_active);
+            shell.report_disk_space(Some(10), cx);
+            assert!(shell.low_disk_active);
+            assert!(shell.activity_log.len() > first_len);
         });
     }
 

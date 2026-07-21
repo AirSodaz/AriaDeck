@@ -2,7 +2,7 @@
 
 **Status:** active
 
-**Last updated:** 2026-07-21
+**Last updated:** 2026-07-22
 
 This document is the persistent task state for the post-MVP usability and
 download-management work. It records decisions, dependencies, implementation
@@ -965,6 +965,65 @@ bundled first-run binary remains a release concern (RELEASE-001).
   network installers in the first P2 cut.
 
 
+### D-030 - Tray close keeps managed engines; quit always owns shutdown
+
+**Decision:** `PLAT-001` makes the window close control a preference rather than
+an implicit quit. Schema v6 adds `platform` with `close_behavior`
+(`minimize_to_tray` default / `quit`), `show_tray_icon`, and
+`start_minimized_to_tray`. When Minimize to tray is selected and a tray icon is
+available, the native close control hides the window and keeps the process (and
+managed aria2) running. Quit is always available from the tray menu; Drop of
+`DesktopRoot` continues to stop the managed engine it owns. Remote engines are
+never stopped by AriaDeck.
+
+**Notification rule:** OS-native desktop notifications follow the same
+Normal/Quiet/Silent volume and completion/error/engine gates as in-app toasts
+(D-025). Low-disk warnings are optional, thresholded (default 1 GiB free), and
+deduplicated until free space recovers above the threshold. Startup recovery
+notices for corrupt settings/profiles/session files remain in-app (PROFILE-002).
+
+**Evidence:**
+
+- design.md §27–28 tray and notification surfaces.
+- Motrix/qBittorrent default close-to-tray for download managers and keep Quit
+  explicit; managed engines die with the owner process.
+- AriaDeck already owned managed shutdown on Drop and OBS-001 toast grouping;
+  this decision adds the tray surface, OS notifications, and low-disk checks.
+
+
+### D-031 - Desktop ergonomics restore placement and list prefs, not product i18n
+
+**Decision:** `UI-001` ships the desktop-session ergonomics that users notice
+immediately, and defers multi-language catalogs, tags/categories, and OS file
+associations to later P2 work (`ACCESS-001` / future catalog work).
+
+**Theme rule:** Settings schema v7 adds `ColorScheme::System` as the default.
+Light and Dark remain explicit overrides. When System is selected, the palette
+follows GPUI `WindowAppearance` and re-resolves on appearance changes.
+
+**Geometry rule:** Main-window position/size/maximized state is stored in a
+separate `window.json` (schema 1) under the app data directory so resize storms
+never rewrite the full settings document. Saves are debounced (~400 ms),
+sanitized to the desktop minimum size, and restored on the next launch.
+
+**List preference rule:** Persist only the last-used filter and sort key/
+direction inside settings `ui`. Search text is never restored across restarts so
+a forgotten query cannot hide the task list. This is last-used restoration, not
+a named-filter library or tag engine.
+
+**Deferred:** Localization message catalogs, pluralized locale formatting,
+tags/categories, and browser/file associations remain out of this slice.
+
+**Evidence:**
+
+- design.md requires light/dark/system themes and localization readiness; full
+  catalogs are still an accessibility/release concern.
+- qBittorrent restores window geometry and last transfer list filters without
+  inventing a second filter database for the first desktop cut.
+- Motrix keeps theme and window placement as session ergonomics separate from
+  torrent tags.
+
+
 ### P0 - Correctness and Core Workflow
 
 - [x] `FNM-001` Add resolving/final/custom filename state and preserve the
@@ -1039,13 +1098,16 @@ bundled first-run binary remains a release concern (RELEASE-001).
 
 ### P2 - Platform and Long-Term Product Surface
 
-- [ ] `PLAT-001` Add system tray, explicit close/leave-engine-running behavior,
-  completion/error/low-disk notifications, and startup recovery UX.
+- [x] `PLAT-001` System tray, close/minimize-to-tray preferences, OS-native
+  completion/error/engine notifications, low-disk warnings, and startup recovery
+  notices (schema v6 platform + notification fields; D-030). Managed engines stop
+  only on full quit; remote engines are never stopped by AriaDeck.
 - [x] `PROFILE-001` Multi-profile catalog (local/remote): schema-2, migration,
   list/activate/add/edit/delete/save, sidebar banner, restart-bound activation.
   Local empty Executable = managed core (D-028 polish). Per-profile proxy/limit bags deferred.
-- [ ] `UI-001` Add system theme, window geometry, localization, saved filters,
-  tags/categories, and browser/file associations.
+- [x] `UI-001` System theme, window geometry restore, and last-used list
+  filter/sort preferences (schema v7 + `window.json`; D-031). Localization
+  catalogs, tags/categories, and browser/file associations remain deferred.
 - [x] `CORE-001` Managed aria2 core registry: import/link, verify, activate,
   rollback, remove under data/cores/aria2; Settings → Engine UI; restart-bound
   activation; env > active core > discovery resolution (D-029). Network update
@@ -1088,7 +1150,7 @@ details show sanitized source/directory/output fields, exact local-path
 validation, aria2 codes 9-18 with raw details, and managed-local Open download/
 Open folder actions that refetch exact-session details before touching the
 filesystem. External profiles expose the capability as unavailable rather than
-assuming their paths are local. `RPC-001` is now complete: force pause/remove (and force-pause-all) sit on the shared gateway with capability-safe Unsupported defaults; `system.multicall` batches on-demand URI/option/peer/server projections with nested-only authentication; `system.listMethods` feeds `EngineCapabilities.methods`; and the typed task-option editor applies seed-ratio/seed-time through `changeOption` with the same outcome-unknown reconciliation as other mutations. `HISTORY-001` is now complete: stopped-history state exposes loaded/total/next-offset, SyncHandle.load_more_stopped appends pages without dropping earlier ones, the status bar shows History loaded/total with single-flight Load more, and managed aria2 keeps 5000 terminal results in memory. `ADD-005` is now complete: typed advanced add controls cover referer, user-agent, custom headers, cookie, HTTP auth, and checksum for direct URL tasks; secrets stay redacted; multi-value headers collapse at the RPC boundary. `RATE-002` is now complete: typed transfer policy covers max concurrent downloads, connections per server, split, min-split size, file allocation, and integrity check with schema v4 persistence, session-bound apply/reapply/rollback, scope-labeled settings UI, and per-task connection-policy command surface (D-023). Pause/resume scheduling remains deferred. `UI-002` is now complete: right-click task context menu mirrors toolbar/details actions while preserving multi-selection, queue-move shortcuts are workspace-bound, remove restores list focus, and existing sort/hidden-selection/mixed-state batch paths remain the authority (D-024). `OBS-001` is now complete: snapshot-diff completion/error grouping, schema v5 notification preferences (Normal/Quiet/Silent + category toggles), session activity history panel, and preference-gated automatic toasts (D-025). OS-native notifications remain deferred. `PROFILE-002` is now complete: exclusive managed-profile ownership lock, corrupt session/profile recovery with backups and startup notices, preserved profile identity, and external RPC connection-only handoff (D-026). `RPC-002` is now complete: listMethods-backed EngineCapabilities gate force/queue/option controls in command preflight and UI, with empty-probe open-handed fallback and live force/proxy/multicall smoke coverage (D-027). `PROFILE-001` is now complete: multi-profile catalog (local/remote), legacy migration, settings activate/add/save, and restart-bound active-profile selection (D-028). `CORE-001` is now complete: managed core registry with import/link/verify/activate/rollback, Settings Engine UI, and restart-bound activation (D-029). Network channels and packaging remain deferred. Remaining P2 platform work is next.
+assuming their paths are local. `RPC-001` is now complete: force pause/remove (and force-pause-all) sit on the shared gateway with capability-safe Unsupported defaults; `system.multicall` batches on-demand URI/option/peer/server projections with nested-only authentication; `system.listMethods` feeds `EngineCapabilities.methods`; and the typed task-option editor applies seed-ratio/seed-time through `changeOption` with the same outcome-unknown reconciliation as other mutations. `HISTORY-001` is now complete: stopped-history state exposes loaded/total/next-offset, SyncHandle.load_more_stopped appends pages without dropping earlier ones, the status bar shows History loaded/total with single-flight Load more, and managed aria2 keeps 5000 terminal results in memory. `ADD-005` is now complete: typed advanced add controls cover referer, user-agent, custom headers, cookie, HTTP auth, and checksum for direct URL tasks; secrets stay redacted; multi-value headers collapse at the RPC boundary. `RATE-002` is now complete: typed transfer policy covers max concurrent downloads, connections per server, split, min-split size, file allocation, and integrity check with schema v4 persistence, session-bound apply/reapply/rollback, scope-labeled settings UI, and per-task connection-policy command surface (D-023). Pause/resume scheduling remains deferred. `UI-002` is now complete: right-click task context menu mirrors toolbar/details actions while preserving multi-selection, queue-move shortcuts are workspace-bound, remove restores list focus, and existing sort/hidden-selection/mixed-state batch paths remain the authority (D-024). `OBS-001` is now complete: snapshot-diff completion/error grouping, schema v5 notification preferences (Normal/Quiet/Silent + category toggles), session activity history panel, and preference-gated automatic toasts (D-025). OS-native notifications remain deferred. `PROFILE-002` is now complete: exclusive managed-profile ownership lock, corrupt session/profile recovery with backups and startup notices, preserved profile identity, and external RPC connection-only handoff (D-026). `RPC-002` is now complete: listMethods-backed EngineCapabilities gate force/queue/option controls in command preflight and UI, with empty-probe open-handed fallback and live force/proxy/multicall smoke coverage (D-027). `PROFILE-001` is now complete: multi-profile catalog (local/remote), legacy migration, settings activate/add/save, and restart-bound active-profile selection (D-028). `CORE-001` is now complete: managed core registry with import/link/verify/activate/rollback, Settings Engine UI, and restart-bound activation (D-029). `PLAT-001` is now complete: system tray with Show/Pause all/Resume all/Quit, schema v6 close/tray preferences, OS-native notifications gated by volume/category, low-disk free-space warnings, and startup recovery notices (D-030). `UI-001` is now complete for the desktop-ergonomics cut: System/Light/Dark theme with live OS appearance follow, debounced `window.json` geometry restore, and last-used list filter/sort persistence without restoring search text (D-031). Localization catalogs, tags/categories, browser/file associations, accessibility polish, privacy/perf, and release packaging remain. Network channels and packaging remain deferred.
 The proxy slice includes schema migration, validated endpoint/bypass fields,
 masked password input, system credential storage, session-bound runtime apply,
 new-session reapply, and explicit clearing. `FILE-002` now has
@@ -1291,5 +1353,9 @@ acceptance outcomes overlap.
 | 2026-07-21 | Profile polish | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 | 2026-07-21 | Profile polish 2 | `cargo test --workspace --no-fail-fast` | Pass - 301 passed, 13 ignored; remote RPC secret preserve/set/clear on catalog save, delete confirmation, editor secret field |
 | 2026-07-21 | Profile polish 2 | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+| 2026-07-21 | `PLAT-001` | `cargo test --workspace --no-fail-fast` | Pass - platform tray/OS notification/low-disk/close-policy coverage included in the later combined checkpoint |
+| 2026-07-21 | `PLAT-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop` | Pass - no warnings, formatting clean, native desktop build succeeds |
+| 2026-07-21 | `UI-001` | `cargo test --workspace --no-fail-fast` | Pass - 313 passed, 13 ignored; schema v7 System theme + UiPreferences migration, window.json geometry sanitize/round-trip, list preference restore without search re-persist, system theme settings emission |
+| 2026-07-21 | `UI-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.

@@ -425,6 +425,17 @@ impl Default for WorkspaceSnapshot {
 }
 
 impl WorkspaceSnapshot {
+    /// Compact transfer summary for the system-tray tooltip (PLAT-001).
+    #[must_use]
+    pub fn tray_tooltip(&self) -> String {
+        format!(
+            "AriaDeck · {} · ↓ {} · ↑ {}",
+            self.connection.label(),
+            format_rate(self.download_rate),
+            format_rate(self.upload_rate),
+        )
+    }
+
     #[must_use]
     pub fn engine_session(&self) -> Option<EngineSessionView> {
         if self.profile_id.is_empty() || self.session_id.is_empty() || self.generation == 0 {
@@ -1047,15 +1058,20 @@ pub struct TaskDetailsResultView {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ColorSchemeView {
-    Light,
+    /// Follow the OS light/dark preference (UI-001).
     #[default]
+    System,
+    Light,
     Dark,
 }
 
 impl ColorSchemeView {
+    pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
+            Self::System => "System",
             Self::Light => "Light",
             Self::Dark => "Dark",
         }
@@ -1334,13 +1350,16 @@ impl NotificationVolumeView {
     }
 }
 
-/// Notification preferences for automatic task/engine surfaces (OBS-001).
+/// Notification preferences for automatic task/engine surfaces (OBS-001 / PLAT-001).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NotificationSettingsView {
     pub volume: NotificationVolumeView,
     pub notify_on_completion: bool,
     pub notify_on_error: bool,
     pub notify_on_engine_events: bool,
+    pub os_notifications: bool,
+    pub notify_on_low_disk: bool,
+    pub low_disk_threshold_bytes: u64,
 }
 
 impl Default for NotificationSettingsView {
@@ -1350,6 +1369,50 @@ impl Default for NotificationSettingsView {
             notify_on_completion: true,
             notify_on_error: true,
             notify_on_engine_events: true,
+            os_notifications: true,
+            notify_on_low_disk: true,
+            low_disk_threshold_bytes: 1_073_741_824,
+        }
+    }
+}
+
+/// What the window close control does while the process stays alive (PLAT-001).
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum CloseBehaviorView {
+    #[default]
+    MinimizeToTray,
+    Quit,
+}
+
+impl CloseBehaviorView {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::MinimizeToTray => "Minimize to tray",
+            Self::Quit => "Quit AriaDeck",
+        }
+    }
+
+    #[must_use]
+    pub const fn all() -> [Self; 2] {
+        [Self::MinimizeToTray, Self::Quit]
+    }
+}
+
+/// Platform window/tray preferences (PLAT-001).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PlatformSettingsView {
+    pub close_behavior: CloseBehaviorView,
+    pub show_tray_icon: bool,
+    pub start_minimized_to_tray: bool,
+}
+
+impl Default for PlatformSettingsView {
+    fn default() -> Self {
+        Self {
+            close_behavior: CloseBehaviorView::MinimizeToTray,
+            show_tray_icon: true,
+            start_minimized_to_tray: false,
         }
     }
 }
@@ -1618,6 +1681,7 @@ pub struct SettingsView {
     pub speed_limits: SpeedLimitSettingsView,
     pub transfer_policy: TransferPolicySettingsView,
     pub notifications: NotificationSettingsView,
+    pub platform: PlatformSettingsView,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

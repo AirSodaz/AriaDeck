@@ -4,16 +4,19 @@
 )]
 
 mod metadata;
+mod platform;
 mod workspace;
 
 use std::sync::Arc;
 
 use gpui::{
-    App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowDecorations, WindowOptions,
-    px, size,
+    App, AppContext as _, Bounds, Point, TitlebarOptions, WindowBounds, WindowDecorations,
+    WindowOptions, px, size,
 };
 use gpui_platform::application;
 use tokio::runtime::Builder;
+
+use ariadeck_settings::{JsonWindowGeometryStore, WINDOW_DEFAULT_HEIGHT, WINDOW_DEFAULT_WIDTH};
 
 use crate::workspace::DesktopRoot;
 
@@ -37,17 +40,23 @@ fn main() {
         .with_assets(ariadeck_ui::Assets)
         .run(move |cx: &mut App| {
             ariadeck_ui::init(cx);
+            // Only quit when every window is gone *and* the app is not
+            // intentionally hidden to the tray (PLAT-001).
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
-                    cx.quit();
+                    // Tray-hidden sessions keep a zero-window app alive until
+                    // Quit is chosen from the tray menu.
+                    if !DesktopRoot::tray_session_active() {
+                        cx.quit();
+                    }
                 }
             })
             .detach();
 
-            let bounds = Bounds::centered(None, size(px(1180.0), px(760.0)), cx);
+            let window_bounds = restored_window_bounds(cx);
             let open_result = cx.open_window(
                 WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_bounds: Some(window_bounds),
                     titlebar: Some(platform_titlebar()),
                     window_decorations: platform_window_decorations(),
                     window_min_size: Some(size(px(960.0), px(620.0))),
@@ -67,6 +76,29 @@ fn main() {
 
             cx.activate(true);
         });
+}
+
+fn restored_window_bounds(cx: &App) -> WindowBounds {
+    let path = DesktopRoot::default_data_dir().join("window.json");
+    let store = JsonWindowGeometryStore::new(path);
+    if let Some(geometry) = store.load() {
+        let bounds = Bounds {
+            origin: Point {
+                x: px(geometry.x),
+                y: px(geometry.y),
+            },
+            size: size(px(geometry.width), px(geometry.height)),
+        };
+        if geometry.maximized {
+            return WindowBounds::Maximized(bounds);
+        }
+        return WindowBounds::Windowed(bounds);
+    }
+    WindowBounds::Windowed(Bounds::centered(
+        None,
+        size(px(WINDOW_DEFAULT_WIDTH), px(WINDOW_DEFAULT_HEIGHT)),
+        cx,
+    ))
 }
 
 #[cfg(target_os = "windows")]

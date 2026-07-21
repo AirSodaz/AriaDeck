@@ -36,9 +36,11 @@ use ariadeck_rpc::{
     WebSocketTransport,
 };
 use ariadeck_settings::{
-    AppSettings, ColorScheme, DownloadProxyMode, DownloadProxySettings, FileAllocationSetting,
-    JsonSettingsStore, NotificationSettings, NotificationVolume, ProxyCredentialRef,
-    ProxyCredentialStore, SpeedLimitSettings, SystemProxyCredentialStore, TransferPolicySettings,
+    AppSettings, CloseBehavior, ColorScheme, DownloadProxyMode, DownloadProxySettings,
+    FileAllocationSetting, JsonSettingsStore, JsonWindowGeometryStore, ListFilterPreference,
+    ListSortDirectionPreference, ListSortKeyPreference, NotificationSettings, NotificationVolume,
+    PlatformSettings, ProxyCredentialRef, ProxyCredentialStore, SpeedLimitSettings,
+    SystemProxyCredentialStore, TransferPolicySettings, UiPreferences, WindowGeometry,
 };
 use ariadeck_ui::{
     AddDownloadAdvancedOptionsView, AddDownloadItemResultView, AddDownloadMetadataFileView,
@@ -47,14 +49,15 @@ use ariadeck_ui::{
     AddDownloadMetadataPreviewResultView, AddDownloadMetadataPreviewView, AddDownloadModeView,
     AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView, AppShell, AppShellEvent,
     BatchCommandOutcomeView, BatchTaskCommandRequestView, BatchTaskCommandResultView,
-    BatchTaskCommandView, BatchTaskFailureView, ColorSchemeView, CommandOutcomeView,
-    ConnectionView, CoreCommandOutcomeView, CoreCommandRequestView, CoreCommandResultView,
-    CoreCommandView, CoreInstallStatusView, CoreInstallationView, CoreRegistryView, CoreSourceView,
-    DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView, EngineHealthView,
-    EngineSessionView, FileAllocationView, FileConflictPolicyView, GlobalTaskCommandRequestView,
-    GlobalTaskCommandResultView, GlobalTaskCommandView, NotificationSettingsView,
-    NotificationVolumeView, OperationErrorView, ProfileCatalogView, ProfileEntryView,
-    ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView, ProxyPasswordUpdateView,
+    BatchTaskCommandView, BatchTaskFailureView, CloseBehaviorView, ColorSchemeView,
+    CommandOutcomeView, ConnectionView, CoreCommandOutcomeView, CoreCommandRequestView,
+    CoreCommandResultView, CoreCommandView, CoreInstallStatusView, CoreInstallationView,
+    CoreRegistryView, CoreSourceView, DownloadProxySettingsView, DownloadRowView,
+    EngineCapabilitiesView, EngineHealthView, EngineSessionView, FileAllocationView,
+    FileConflictPolicyView, GlobalTaskCommandRequestView, GlobalTaskCommandResultView,
+    GlobalTaskCommandView, NotificationSettingsView, NotificationVolumeView, OperationErrorView,
+    PlatformSettingsView, ProfileCatalogView, ProfileEntryView, ProfileKindView,
+    ProfileRpcSecretUpdateView, ProxyModeView, ProxyPasswordUpdateView,
     SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
     SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
     SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView, SwitchProfileOutcomeView,
@@ -69,7 +72,10 @@ use ariadeck_ui::{
 };
 use data_encoding::BASE32_NOPAD;
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use secrecy::SecretString;
+
+use crate::platform::{self, SystemTray, TrayAction};
 use tokio::{
     runtime::Runtime,
     sync::{mpsc, watch},
@@ -78,6 +84,11 @@ use tokio::{
 use url::Url;
 
 use crate::metadata::parse_metadata;
+
+/// Process-wide flag: true while AriaDeck is intentionally hidden to tray with
+/// no open window. Prevents `on_window_closed` from quitting the app.
+static TRAY_SESSION_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 pub struct DesktopRoot {
     workspace: Entity<AppShell>,
@@ -94,6 +105,12 @@ pub struct DesktopRoot {
     profile_store: JsonProfileStore,
     profile_catalog: ProfileCatalog,
     core_store: CoreStore,
+    tray: Option<SystemTray>,
+    window_hidden_to_tray: bool,
+    window_geometry_store: JsonWindowGeometryStore,
+    last_saved_geometry: Option<WindowGeometry>,
+    pending_geometry: Option<WindowGeometry>,
+    geometry_save_generation: u64,
     _workspace_subscription: Subscription,
 }
 
@@ -122,6 +139,17 @@ struct SettingsPersistenceResult {
 }
 
 impl DesktopRoot {
+    #[must_use]
+    pub fn tray_session_active() -> bool {
+        TRAY_SESSION_ACTIVE.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Application data directory used for settings, profiles, and window geometry.
+    #[must_use]
+    pub fn default_data_dir() -> PathBuf {
+        default_data_dir()
+    }
+
     #[must_use]
     pub fn new(runtime: Arc<Runtime>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let data_dir = default_data_dir();
@@ -277,12 +305,14 @@ impl DesktopRoot {
             .map(map_local_engine_health)
             .unwrap_or(EngineHealthView::External);
         let settings_view = map_settings(&settings);
+        let initial_query = map_ui_preferences_to_query(&settings.ui);
         let workspace = cx.new(|cx| {
             let mut shell = AppShell::new_with_settings(settings_view, window, cx);
             shell.set_snapshot(initial_snapshot, cx);
             shell.set_engine_health(initial_engine_health, cx);
             shell.set_profiles(map_profile_catalog(&profile_catalog), cx);
             shell.set_cores(map_core_registry(&core_store), cx);
+            shell.restore_list_preferences(initial_query.clone(), cx);
             if let Some(message) = startup_notice {
                 shell.set_startup_notice(message, true, cx);
             } else if let Some(message) = profile_notice.take() {
@@ -292,7 +322,7 @@ impl DesktopRoot {
             }
             shell
         });
-        let (query_sender, query_receiver) = watch::channel(TaskListQuery::default());
+        let (query_sender, query_receiver) = watch::channel(map_query(&initial_query));
         let workspace_subscription = cx.subscribe_in(
             &workspace,
             window,
@@ -343,8 +373,56 @@ impl DesktopRoot {
                 AppShellEvent::CoreCommandRequested(request) => {
                     this.handle_core_command(request.clone(), window, cx);
                 }
+                AppShellEvent::HideToTrayRequested => {
+                    this.hide_to_tray(window, cx);
+                }
+                AppShellEvent::ShowFromTrayRequested => {
+                    this.show_from_tray(window, cx);
+                }
+                AppShellEvent::QuitRequested => {
+                    this.quit_application(cx);
+                }
+                AppShellEvent::OsNotificationRequested { title, body, .. } => {
+                    platform::show_os_notification(title, body);
+                }
+                AppShellEvent::UiPreferencesChanged {
+                    filter,
+                    sort_key,
+                    sort_direction,
+                } => {
+                    this.persist_ui_preferences(*filter, *sort_key, *sort_direction, cx);
+                }
+                AppShellEvent::WindowGeometryChanged {
+                    x,
+                    y,
+                    width,
+                    height,
+                    maximized,
+                } => {
+                    this.schedule_geometry_save(
+                        WindowGeometry {
+                            x: *x,
+                            y: *y,
+                            width: *width,
+                            height: *height,
+                            maximized: *maximized,
+                        },
+                        cx,
+                    );
+                }
             },
         );
+        let window_geometry_store = JsonWindowGeometryStore::new(data_dir.join("window.json"));
+        let last_saved_geometry = window_geometry_store.load();
+
+        // Intercept the native close control so Minimize-to-tray can keep the
+        // process (and managed engine) alive without destroying the window.
+        {
+            let workspace = workspace.clone();
+            window.on_window_should_close(cx, move |_window, cx| {
+                workspace.update(cx, |shell, cx| shell.handle_window_close_request(cx))
+            });
+        }
 
         if let Some(handle) = sync.clone() {
             spawn_snapshot_bridge(handle, query_receiver, task_file_gateway.is_some(), cx);
@@ -365,7 +443,19 @@ impl DesktopRoot {
             spawn_local_engine_health_bridge(health, cx);
         }
 
-        Self {
+        let tray = if settings.platform.show_tray_icon {
+            match SystemTray::try_new() {
+                Ok(tray) => Some(tray),
+                Err(error) => {
+                    tracing::warn!(%error, "system tray icon could not be created");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let root = Self {
             workspace,
             sync,
             download_destination_gateway,
@@ -380,8 +470,229 @@ impl DesktopRoot {
             profile_store,
             profile_catalog,
             core_store,
+            tray,
+            window_hidden_to_tray: false,
+            window_geometry_store,
+            last_saved_geometry,
+            pending_geometry: None,
+            geometry_save_generation: 0,
             _workspace_subscription: workspace_subscription,
+        };
+
+        // Poll tray interactions and free-space checks on a short UI timer.
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(400))
+                    .await;
+                let cont = this
+                    .update_in(cx, |this, window, cx| {
+                        this.poll_platform_surface(window, cx);
+                        true
+                    })
+                    .unwrap_or(false);
+                if !cont {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        if root.settings.platform.start_minimized_to_tray && root.tray.is_some() {
+            // Defer hide so the first frame can finish constructing the window.
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+                this.update_in(cx, |this, window, cx| {
+                    this.hide_to_tray(window, cx);
+                })
+                .ok();
+            })
+            .detach();
         }
+
+        root
+    }
+
+    fn poll_platform_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tray_actions = self
+            .tray
+            .as_ref()
+            .map(|tray| tray.poll_actions())
+            .unwrap_or_default();
+        for action in tray_actions {
+            match action {
+                TrayAction::Show => self.show_from_tray(window, cx),
+                TrayAction::PauseAll => {
+                    self.workspace.update(cx, |shell, cx| {
+                        shell.request_pause_all_from_tray(cx);
+                    });
+                }
+                TrayAction::ResumeAll => {
+                    self.workspace.update(cx, |shell, cx| {
+                        shell.request_resume_all_from_tray(cx);
+                    });
+                }
+                TrayAction::Quit => self.quit_application(cx),
+            }
+        }
+        if let Some(tray) = self.tray.as_ref() {
+            let tooltip = self.workspace.read(cx).tray_tooltip();
+            tray.set_tooltip(&tooltip);
+        }
+
+        // Low-disk check against the configured download directory.
+        let free = platform::available_disk_space(&self.settings.download_directory);
+        self.workspace.update(cx, |shell, cx| {
+            shell.report_disk_space(free, cx);
+        });
+    }
+
+    fn hide_to_tray(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tray.is_none() {
+            // No tray: fall back to quit so the user is not stuck without UI.
+            self.quit_application(cx);
+            return;
+        }
+        if hide_native_window(window) {
+            self.window_hidden_to_tray = true;
+            TRAY_SESSION_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(tray) = self.tray.as_ref() {
+                tray.set_visible(true);
+            }
+        }
+    }
+
+    fn show_from_tray(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if show_native_window(window) {
+            self.window_hidden_to_tray = false;
+            TRAY_SESSION_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+            window.activate_window();
+            cx.activate(true);
+        }
+    }
+
+    fn quit_application(&mut self, cx: &mut Context<Self>) {
+        TRAY_SESSION_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.window_hidden_to_tray = false;
+        // Drop tray first so Windows removes the icon immediately.
+        self.tray.take();
+        cx.quit();
+    }
+
+    fn persist_ui_preferences(
+        &mut self,
+        filter: WorkspaceFilter,
+        sort_key: WorkspaceSortKey,
+        sort_direction: WorkspaceSortDirection,
+        cx: &mut Context<Self>,
+    ) {
+        let ui = UiPreferences {
+            list_filter: match filter {
+                WorkspaceFilter::All => ListFilterPreference::All,
+                WorkspaceFilter::Active => ListFilterPreference::Active,
+                WorkspaceFilter::Waiting => ListFilterPreference::Waiting,
+                WorkspaceFilter::Paused => ListFilterPreference::Paused,
+                WorkspaceFilter::Completed => ListFilterPreference::Completed,
+                WorkspaceFilter::Failed => ListFilterPreference::Failed,
+            },
+            list_sort_key: match sort_key {
+                WorkspaceSortKey::Queue => ListSortKeyPreference::Queue,
+                WorkspaceSortKey::Name => ListSortKeyPreference::Name,
+                WorkspaceSortKey::Status => ListSortKeyPreference::Status,
+                WorkspaceSortKey::Progress => ListSortKeyPreference::Progress,
+                WorkspaceSortKey::DownloadSpeed => ListSortKeyPreference::DownloadSpeed,
+                WorkspaceSortKey::Size => ListSortKeyPreference::Size,
+            },
+            list_sort_direction: match sort_direction {
+                WorkspaceSortDirection::Ascending => ListSortDirectionPreference::Ascending,
+                WorkspaceSortDirection::Descending => ListSortDirectionPreference::Descending,
+            },
+        };
+        if self.settings.ui == ui {
+            return;
+        }
+        let mut next = self.settings.clone();
+        next.ui = ui;
+        // Persist through the same ordered settings worker when available so a
+        // concurrent proxy/theme save cannot clobber list preferences.
+        if let Some(sender) = self.settings_sender.as_ref() {
+            let request = SettingsPersistenceRequest {
+                request_id: ariadeck_ui::RequestId::from_u64(0),
+                settings: next.clone(),
+                previous_settings: self.settings.clone(),
+                proxy_password: ProxyPasswordUpdate::Unchanged,
+                apply_proxy: false,
+                apply_speed_limit: false,
+                apply_transfer_policy: false,
+            };
+            if sender.send(request).is_ok() {
+                self.settings = next;
+            }
+        } else {
+            self.settings = next;
+        }
+        let _ = cx;
+    }
+
+    fn schedule_geometry_save(&mut self, geometry: WindowGeometry, cx: &mut Context<Self>) {
+        let geometry = geometry.sanitized();
+        if self.last_saved_geometry == Some(geometry) {
+            self.pending_geometry = None;
+            return;
+        }
+        self.pending_geometry = Some(geometry);
+        self.geometry_save_generation = self.geometry_save_generation.wrapping_add(1);
+        let generation = self.geometry_save_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(400))
+                .await;
+            this.update(cx, |this, _cx| {
+                if this.geometry_save_generation != generation {
+                    return;
+                }
+                let Some(geometry) = this.pending_geometry.take() else {
+                    return;
+                };
+                if this.last_saved_geometry == Some(geometry) {
+                    return;
+                }
+                if let Err(error) = this.window_geometry_store.save(geometry) {
+                    tracing::debug!(%error, "failed to persist window geometry");
+                    return;
+                }
+                this.last_saved_geometry = Some(geometry);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn sync_tray_with_settings(&mut self, cx: &mut Context<Self>) {
+        let want_tray = self.settings.platform.show_tray_icon;
+        match (want_tray, self.tray.is_some()) {
+            (true, false) => match SystemTray::try_new() {
+                Ok(tray) => self.tray = Some(tray),
+                Err(error) => tracing::warn!(%error, "system tray icon could not be created"),
+            },
+            (false, true) => {
+                self.tray.take();
+                if self.window_hidden_to_tray {
+                    // Cannot stay hidden without a tray affordance.
+                    TRAY_SESSION_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+                    self.window_hidden_to_tray = false;
+                }
+            }
+            (true, true) => {
+                if let Some(tray) = self.tray.as_ref() {
+                    tray.set_visible(true);
+                }
+            }
+            (false, false) => {}
+        }
+        let _ = cx;
     }
 
     fn enqueue_settings_save(
@@ -902,6 +1213,9 @@ impl DesktopRoot {
 
 impl Drop for DesktopRoot {
     fn drop(&mut self) {
+        TRAY_SESSION_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.window_hidden_to_tray = false;
+        self.tray.take();
         self.settings_sender.take();
         if let Some(task) = self.settings_task.take()
             && let Err(error) = self.runtime.block_on(task)
@@ -3174,6 +3488,55 @@ fn resolve_local_executable(data_dir: &Path, profile_executable: &Path) -> Resul
     Ok(discover_aria2_executable().unwrap_or_else(|| PathBuf::from("aria2c")))
 }
 
+/// Hide the GPUI window without destroying it so tray sessions can restore it.
+fn hide_native_window(window: &Window) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        // Use the HasWindowHandle trait explicitly; Window::window_handle()
+        // returns the GPUI AnyWindowHandle id, not the OS handle.
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::Win32(win32) = handle.as_raw()
+        {
+            return hide_show_win32(win32.hwnd.get(), false);
+        }
+    }
+    // Fallback on non-Windows or when the raw handle is unavailable: minimize
+    // keeps the process alive and the tray menu can still restore/activate.
+    window.minimize_window();
+    true
+}
+
+fn show_native_window(window: &Window) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::Win32(win32) = handle.as_raw()
+        {
+            let restored = hide_show_win32(win32.hwnd.get(), true);
+            window.activate_window();
+            return restored;
+        }
+    }
+    window.activate_window();
+    true
+}
+
+#[cfg(target_os = "windows")]
+fn hide_show_win32(hwnd: isize, show: bool) -> bool {
+    // Narrow platform boundary: user32 ShowWindow for true hide-to-tray.
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
+    }
+    const SW_HIDE: i32 = 0;
+    const SW_RESTORE: i32 = 9;
+    // SAFETY: hwnd is the live GPUI window handle for this process.
+    unsafe {
+        ShowWindow(hwnd, if show { SW_RESTORE } else { SW_HIDE });
+    }
+    true
+}
+
 fn default_data_dir() -> PathBuf {
     if let Some(path) = env::var_os("LOCALAPPDATA") {
         return PathBuf::from(path).join("AriaDeck");
@@ -3378,6 +3741,7 @@ fn map_profile_catalog_request(
 fn map_settings(settings: &AppSettings) -> SettingsView {
     SettingsView {
         color_scheme: match settings.color_scheme {
+            ColorScheme::System => ColorSchemeView::System,
             ColorScheme::Light => ColorSchemeView::Light,
             ColorScheme::Dark => ColorSchemeView::Dark,
         },
@@ -3443,6 +3807,17 @@ fn map_settings(settings: &AppSettings) -> SettingsView {
             notify_on_completion: settings.notifications.notify_on_completion,
             notify_on_error: settings.notifications.notify_on_error,
             notify_on_engine_events: settings.notifications.notify_on_engine_events,
+            os_notifications: settings.notifications.os_notifications,
+            notify_on_low_disk: settings.notifications.notify_on_low_disk,
+            low_disk_threshold_bytes: settings.notifications.low_disk_threshold_bytes,
+        },
+        platform: PlatformSettingsView {
+            close_behavior: match settings.platform.close_behavior {
+                CloseBehavior::MinimizeToTray => CloseBehaviorView::MinimizeToTray,
+                CloseBehavior::Quit => CloseBehaviorView::Quit,
+            },
+            show_tray_icon: settings.platform.show_tray_icon,
+            start_minimized_to_tray: settings.platform.start_minimized_to_tray,
         },
     }
 }
@@ -3470,6 +3845,7 @@ fn map_settings_request(
     };
     let mapped = AppSettings {
         color_scheme: match settings.color_scheme {
+            ColorSchemeView::System => ColorScheme::System,
             ColorSchemeView::Light => ColorScheme::Light,
             ColorSchemeView::Dark => ColorScheme::Dark,
         },
@@ -3542,7 +3918,21 @@ fn map_settings_request(
             notify_on_completion: settings.notifications.notify_on_completion,
             notify_on_error: settings.notifications.notify_on_error,
             notify_on_engine_events: settings.notifications.notify_on_engine_events,
+            os_notifications: settings.notifications.os_notifications,
+            notify_on_low_disk: settings.notifications.notify_on_low_disk,
+            low_disk_threshold_bytes: settings.notifications.low_disk_threshold_bytes,
         },
+        platform: PlatformSettings {
+            close_behavior: match settings.platform.close_behavior {
+                CloseBehaviorView::MinimizeToTray => CloseBehavior::MinimizeToTray,
+                CloseBehaviorView::Quit => CloseBehavior::Quit,
+            },
+            show_tray_icon: settings.platform.show_tray_icon,
+            start_minimized_to_tray: settings.platform.start_minimized_to_tray,
+        },
+        // List preferences are owned by the shell query path (UI-001), not the
+        // settings form. Preserve whatever is currently persisted.
+        ui: current.ui,
     };
     mapped.validate().map_err(|error| error.to_string())?;
     Ok((mapped, password))
@@ -4062,6 +4452,7 @@ fn spawn_settings_result_bridge(
                 .update_in(cx, |this, window, cx| {
                     if result.result.is_ok() {
                         this.settings = result.settings.clone();
+                        this.sync_tray_with_settings(cx);
                     }
                     let outcome = result.result.map_or_else(
                         |summary| {
@@ -4261,6 +4652,32 @@ fn spawn_snapshot_bridge(
         }
     })
     .detach();
+}
+
+fn map_ui_preferences_to_query(ui: &UiPreferences) -> WorkspaceQuery {
+    WorkspaceQuery {
+        filter: match ui.list_filter {
+            ListFilterPreference::All => WorkspaceFilter::All,
+            ListFilterPreference::Active => WorkspaceFilter::Active,
+            ListFilterPreference::Waiting => WorkspaceFilter::Waiting,
+            ListFilterPreference::Paused => WorkspaceFilter::Paused,
+            ListFilterPreference::Completed => WorkspaceFilter::Completed,
+            ListFilterPreference::Failed => WorkspaceFilter::Failed,
+        },
+        search: String::new(),
+        sort_key: match ui.list_sort_key {
+            ListSortKeyPreference::Queue => WorkspaceSortKey::Queue,
+            ListSortKeyPreference::Name => WorkspaceSortKey::Name,
+            ListSortKeyPreference::Status => WorkspaceSortKey::Status,
+            ListSortKeyPreference::Progress => WorkspaceSortKey::Progress,
+            ListSortKeyPreference::DownloadSpeed => WorkspaceSortKey::DownloadSpeed,
+            ListSortKeyPreference::Size => WorkspaceSortKey::Size,
+        },
+        sort_direction: match ui.list_sort_direction {
+            ListSortDirectionPreference::Ascending => WorkspaceSortDirection::Ascending,
+            ListSortDirectionPreference::Descending => WorkspaceSortDirection::Descending,
+        },
+    }
 }
 
 fn map_query(query: &WorkspaceQuery) -> TaskListQuery {
@@ -6352,6 +6769,31 @@ Accept: */*"
     }
 
     #[test]
+    fn system_theme_and_list_preferences_round_trip_through_settings_mapping() {
+        let mut current = AppSettings::new("D:/Downloads");
+        current.color_scheme = ColorScheme::System;
+        current.ui = UiPreferences {
+            list_filter: ListFilterPreference::Paused,
+            list_sort_key: ListSortKeyPreference::Name,
+            list_sort_direction: ListSortDirectionPreference::Descending,
+        };
+        let settings = map_settings(&current);
+        assert_eq!(settings.color_scheme, ColorSchemeView::System);
+
+        let (mapped, _) =
+            map_settings_request(&settings, &current, ProxyPasswordUpdateView::Unchanged)
+                .expect("valid system theme settings");
+        assert_eq!(mapped.color_scheme, ColorScheme::System);
+        assert_eq!(mapped.ui, current.ui);
+
+        let query = map_ui_preferences_to_query(&current.ui);
+        assert_eq!(query.filter, WorkspaceFilter::Paused);
+        assert_eq!(query.sort_key, WorkspaceSortKey::Name);
+        assert_eq!(query.sort_direction, WorkspaceSortDirection::Descending);
+        assert!(query.search.is_empty());
+    }
+
+    #[test]
     fn rpc_runtime_settings_have_remote_defaults_and_accept_bounded_overrides() {
         let local = RpcRuntimeConfig::from_values(false, |_| None).expect("local defaults");
         let remote = RpcRuntimeConfig::from_values(true, |_| None).expect("remote defaults");
@@ -6432,6 +6874,7 @@ Accept: */*"
             speed_limits: SpeedLimitSettingsView::default(),
             transfer_policy: TransferPolicySettingsView::default(),
             notifications: NotificationSettingsView::default(),
+            platform: PlatformSettingsView::default(),
         };
 
         let (mapped, password) = map_settings_request(
@@ -6566,6 +7009,8 @@ Accept: */*"
             speed_limits: SpeedLimitSettings::default(),
             transfer_policy: TransferPolicySettings::default(),
             notifications: NotificationSettings::default(),
+            platform: PlatformSettings::default(),
+            ui: UiPreferences::default(),
         };
         let second = AppSettings {
             color_scheme: ColorScheme::Light,
@@ -6574,6 +7019,8 @@ Accept: */*"
             speed_limits: SpeedLimitSettings::default(),
             transfer_policy: TransferPolicySettings::default(),
             notifications: NotificationSettings::default(),
+            platform: PlatformSettings::default(),
+            ui: UiPreferences::default(),
         };
         sender
             .send(SettingsPersistenceRequest {
@@ -6634,6 +7081,8 @@ Accept: */*"
             speed_limits: SpeedLimitSettings::default(),
             transfer_policy: TransferPolicySettings::default(),
             notifications: NotificationSettings::default(),
+            platform: PlatformSettings::default(),
+            ui: UiPreferences::default(),
         };
 
         persist_settings(&store, &settings, None).expect("persist external engine path");
