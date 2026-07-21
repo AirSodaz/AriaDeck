@@ -14,10 +14,11 @@ use gpui::{
 };
 
 use crate::{
-    AddDownloadInputModeView, AddDownloadItemResultView, AddDownloadMetadataKindView,
-    AddDownloadMetadataPreviewOutcomeView, AddDownloadMetadataPreviewRequestView,
-    AddDownloadMetadataPreviewResultView, AddDownloadMetadataPreviewView, AddDownloadModeView,
-    AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView, BatchCommandOutcomeView,
+    AddDownloadAdvancedOptionsView, AddDownloadInputModeView, AddDownloadItemResultView,
+    AddDownloadMetadataKindView, AddDownloadMetadataPreviewOutcomeView,
+    AddDownloadMetadataPreviewRequestView, AddDownloadMetadataPreviewResultView,
+    AddDownloadMetadataPreviewView, AddDownloadModeView, AddDownloadRequestView,
+    AddDownloadResultView, AddDownloadSourceView, BatchCommandOutcomeView,
     BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
     BatchTaskFailureView, Button, ButtonStyle, ClearSearch, CloseAddDownload, CloseBatchFailures,
     CloseSettings, CloseTaskOutputName, CloseTaskSpeedLimit, ColorSchemeView, CommandOutcomeView,
@@ -87,6 +88,8 @@ fn centered_search_bounds(viewport_width: f32) -> (f32, f32) {
 pub enum AppShellEvent {
     QueryChanged(WorkspaceQuery),
     RetryRequested,
+    /// Request the next stopped-result page when history is incomplete.
+    LoadMoreStoppedRequested,
     AddDownloadRequested(AddDownloadRequestView),
     AddDownloadMetadataPreviewRequested(AddDownloadMetadataPreviewRequestView),
     TaskCommandRequested(TaskCommandRequestView),
@@ -113,6 +116,8 @@ struct AddDownloadDialog {
     input_mode: AddDownloadInputModeView,
     mode: AddDownloadModeView,
     file_conflict: FileConflictPolicyView,
+    /// Collapsed by default so the common path stays simple (ADD-005).
+    advanced_open: bool,
     metadata_files: Vec<AddDownloadMetadataPreviewView>,
     active_metadata_file: Option<usize>,
     preview_pending: Option<PendingMetadataPreview>,
@@ -248,6 +253,14 @@ struct TaskSpeedLimitDialog {
     error: Option<OperationErrorView>,
 }
 
+struct TaskOptionsDialog {
+    identity: TaskIdentity,
+    display_name: String,
+    supports_seed_rules: bool,
+    previous_focus: Option<WeakFocusHandle>,
+    error: Option<OperationErrorView>,
+}
+
 struct BatchFailureDetails {
     command: BatchTaskCommandView,
     failures: Vec<BatchTaskFailureView>,
@@ -266,6 +279,13 @@ pub struct AppShell {
     range_anchor: Option<TaskIdentity>,
     search_input: Entity<TextField>,
     add_input: Entity<TextField>,
+    add_referer_input: Entity<TextField>,
+    add_user_agent_input: Entity<TextField>,
+    add_headers_input: Entity<TextField>,
+    add_cookie_input: Entity<TextField>,
+    add_http_user_input: Entity<TextField>,
+    add_http_passwd_input: Entity<TextField>,
+    add_checksum_input: Entity<TextField>,
     output_name_input: Entity<TextField>,
     settings_directory_input: Entity<TextField>,
     settings_all_proxy_input: Entity<TextField>,
@@ -287,6 +307,7 @@ pub struct AppShell {
     pending_task_command: Option<PendingTaskCommand>,
     pending_global_task_command: Option<PendingGlobalTaskCommand>,
     pending_batch_command: Option<PendingBatchTaskCommand>,
+    pending_load_more_stopped: bool,
     batch_failure_details: Option<BatchFailureDetails>,
     batch_failure_dialog_focus: FocusHandle,
     batch_failure_close_focus: FocusHandle,
@@ -300,6 +321,12 @@ pub struct AppShell {
     task_speed_limit_dialog_focus: FocusHandle,
     task_speed_limit_cancel_focus: FocusHandle,
     task_speed_limit_submit_focus: FocusHandle,
+    task_seed_ratio_input: Entity<TextField>,
+    task_seed_time_input: Entity<TextField>,
+    task_options_dialog: Option<TaskOptionsDialog>,
+    task_options_dialog_focus: FocusHandle,
+    task_options_cancel_focus: FocusHandle,
+    task_options_submit_focus: FocusHandle,
     details_drawer: Option<TaskDetailsDrawer>,
     remove_confirmation: Option<RemoveConfirmation>,
     remove_dialog_focus: FocusHandle,
@@ -317,8 +344,10 @@ pub struct AppShell {
     rendered_range: Range<usize>,
     _search_subscription: Subscription,
     _add_subscription: Subscription,
+    _add_advanced_subscriptions: [Subscription; 7],
     _output_name_subscription: Subscription,
     _task_speed_limit_subscriptions: [Subscription; 2],
+    _task_options_subscriptions: [Subscription; 2],
     _settings_subscriptions: Vec<Subscription>,
     _window_bounds_subscription: Subscription,
 }
@@ -410,6 +439,147 @@ impl AppShell {
                 }
             },
         );
+        let add_referer_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "add-download-referer".into(),
+                    key_context: "AddDownloadAdvancedInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "Download referer".into(),
+                    placeholder: "https://example.test/page".into(),
+                    leading_icon: Some(IconName::Link),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: false,
+                },
+                theme,
+                cx,
+            )
+        });
+        let add_user_agent_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "add-download-user-agent".into(),
+                    key_context: "AddDownloadAdvancedInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "Download user agent".into(),
+                    placeholder: "Optional User-Agent".into(),
+                    leading_icon: Some(IconName::Info),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: false,
+                },
+                theme,
+                cx,
+            )
+        });
+        let add_headers_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "add-download-headers".into(),
+                    key_context: "AddDownloadAdvancedInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "Custom download headers".into(),
+                    placeholder: "One Name: value header per line".into(),
+                    leading_icon: Some(IconName::List),
+                    clearable: true,
+                    allow_newlines: true,
+                    secure: false,
+                },
+                theme,
+                cx,
+            )
+        });
+        let add_cookie_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "add-download-cookie".into(),
+                    key_context: "AddDownloadAdvancedInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "Download cookie".into(),
+                    placeholder: "session=…".into(),
+                    leading_icon: Some(IconName::Info),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: true,
+                },
+                theme,
+                cx,
+            )
+        });
+        let add_http_user_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "add-download-http-user".into(),
+                    key_context: "AddDownloadAdvancedInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "HTTP authentication username".into(),
+                    placeholder: "username".into(),
+                    leading_icon: Some(IconName::Pencil),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: false,
+                },
+                theme,
+                cx,
+            )
+        });
+        let add_http_passwd_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "add-download-http-passwd".into(),
+                    key_context: "AddDownloadAdvancedInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "HTTP authentication password".into(),
+                    placeholder: "password".into(),
+                    leading_icon: Some(IconName::CircleAlert),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: true,
+                },
+                theme,
+                cx,
+            )
+        });
+        let add_checksum_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "add-download-checksum".into(),
+                    key_context: "AddDownloadAdvancedInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "Download checksum".into(),
+                    placeholder: "sha-256=…".into(),
+                    leading_icon: Some(IconName::ScanSearch),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: false,
+                },
+                theme,
+                cx,
+            )
+        });
+        let add_advanced_subscriptions = [
+            &add_referer_input,
+            &add_user_agent_input,
+            &add_headers_input,
+            &add_cookie_input,
+            &add_http_user_input,
+            &add_http_passwd_input,
+            &add_checksum_input,
+        ]
+        .map(|input| {
+            cx.subscribe(
+                input,
+                |this: &mut Self, _input, _event: &SearchInputEvent, cx| {
+                    if this.add_dialog.open
+                        && this.add_dialog.pending.is_none()
+                        && this.add_dialog.error.take().is_some()
+                    {
+                        cx.notify();
+                    }
+                },
+            )
+        });
         let output_name_input = cx.new(|cx| {
             TextField::new_with_config(
                 TextFieldConfig {
@@ -478,6 +648,54 @@ impl AppShell {
                     input,
                     |this: &mut Self, _input, _event: &SearchInputEvent, cx| {
                         if let Some(dialog) = &mut this.task_speed_limit_dialog
+                            && this.pending_task_command.is_none()
+                            && dialog.error.take().is_some()
+                        {
+                            cx.notify();
+                        }
+                    },
+                )
+            });
+        let task_seed_ratio_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "task-seed-ratio".into(),
+                    key_context: "TaskOptionsInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "BitTorrent seed ratio".into(),
+                    placeholder: "e.g. 1.0 or 0 to disable".into(),
+                    leading_icon: Some(IconName::Activity),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: false,
+                },
+                theme,
+                cx,
+            )
+        });
+        let task_seed_time_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "task-seed-time".into(),
+                    key_context: "TaskOptionsInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "BitTorrent seed time in minutes".into(),
+                    placeholder: "Minutes (e.g. 60)".into(),
+                    leading_icon: Some(IconName::Clock3),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: false,
+                },
+                theme,
+                cx,
+            )
+        });
+        let task_options_subscriptions =
+            [&task_seed_ratio_input, &task_seed_time_input].map(|input| {
+                cx.subscribe(
+                    input,
+                    |this: &mut Self, _input, _event: &SearchInputEvent, cx| {
+                        if let Some(dialog) = &mut this.task_options_dialog
                             && this.pending_task_command.is_none()
                             && dialog.error.take().is_some()
                         {
@@ -677,6 +895,13 @@ impl AppShell {
             range_anchor: None,
             search_input,
             add_input,
+            add_referer_input,
+            add_user_agent_input,
+            add_headers_input,
+            add_cookie_input,
+            add_http_user_input,
+            add_http_passwd_input,
+            add_checksum_input,
             output_name_input,
             settings_directory_input,
             settings_all_proxy_input,
@@ -698,6 +923,7 @@ impl AppShell {
             pending_task_command: None,
             pending_global_task_command: None,
             pending_batch_command: None,
+            pending_load_more_stopped: false,
             batch_failure_details: None,
             batch_failure_dialog_focus: cx.focus_handle(),
             batch_failure_close_focus: cx.focus_handle().tab_stop(true),
@@ -711,6 +937,12 @@ impl AppShell {
             task_speed_limit_dialog_focus: cx.focus_handle(),
             task_speed_limit_cancel_focus: cx.focus_handle().tab_stop(true),
             task_speed_limit_submit_focus: cx.focus_handle().tab_stop(true),
+            task_seed_ratio_input,
+            task_seed_time_input,
+            task_options_dialog: None,
+            task_options_dialog_focus: cx.focus_handle(),
+            task_options_cancel_focus: cx.focus_handle().tab_stop(true),
+            task_options_submit_focus: cx.focus_handle().tab_stop(true),
             details_drawer: None,
             remove_confirmation: None,
             remove_dialog_focus: cx.focus_handle(),
@@ -728,8 +960,10 @@ impl AppShell {
             rendered_range: 0..0,
             _search_subscription: search_subscription,
             _add_subscription: add_subscription,
+            _add_advanced_subscriptions: add_advanced_subscriptions,
             _output_name_subscription: output_name_subscription,
             _task_speed_limit_subscriptions: task_speed_limit_subscriptions,
+            _task_options_subscriptions: task_options_subscriptions,
             _settings_subscriptions: settings_subscriptions,
             _window_bounds_subscription: window_bounds_subscription,
         }
@@ -816,6 +1050,9 @@ impl AppShell {
                     true,
                     cx,
                 );
+            }
+            if self.pending_load_more_stopped {
+                self.pending_load_more_stopped = false;
             }
             if let (Some(drawer), Some(session)) = (&mut self.details_drawer, &next_session) {
                 drawer.session = session.clone();
@@ -1138,7 +1375,9 @@ impl AppShell {
             CommandOutcomeView::Success { tasks } => {
                 self.show_notice(result.command.success_label(), false, cx);
                 match result.command {
-                    TaskCommandView::RemoveTask | TaskCommandView::RemoveTaskAndFiles => {
+                    TaskCommandView::RemoveTask
+                    | TaskCommandView::ForceRemoveTask
+                    | TaskCommandView::RemoveTaskAndFiles => {
                         self.selected_tasks.remove(&result.identity);
                         self.range_anchor = None;
                         self.selected = None;
@@ -1159,7 +1398,11 @@ impl AppShell {
                     TaskCommandView::SetSpeedLimit { .. } => {
                         self.close_task_speed_limit(window, cx);
                     }
+                    TaskCommandView::SetOptions { .. } => {
+                        self.close_task_options(window, cx);
+                    }
                     TaskCommandView::Pause
+                    | TaskCommandView::ForcePause
                     | TaskCommandView::Resume
                     | TaskCommandView::MoveToQueueTop
                     | TaskCommandView::MoveUpInQueue
@@ -1182,6 +1425,12 @@ impl AppShell {
                     }
                 } else if matches!(result.command, TaskCommandView::SetSpeedLimit { .. }) {
                     if let Some(dialog) = &mut self.task_speed_limit_dialog {
+                        dialog.error = Some(error);
+                    } else {
+                        self.show_notice(error.summary, true, cx);
+                    }
+                } else if matches!(result.command, TaskCommandView::SetOptions { .. }) {
+                    if let Some(dialog) = &mut self.task_options_dialog {
                         dialog.error = Some(error);
                     } else {
                         self.show_notice(error.summary, true, cx);
@@ -1389,6 +1638,7 @@ impl AppShell {
             command,
             BatchTaskCommandView::Retry
                 | BatchTaskCommandView::RemoveTask
+                | BatchTaskCommandView::ForceRemoveTask
                 | BatchTaskCommandView::RemoveTaskAndFiles
         ) && self.selected.as_ref().is_some_and(|identity| {
             requested.contains(identity) && !failed_identities.contains(identity)
@@ -1651,6 +1901,10 @@ impl AppShell {
             self.close_speed_popover(window, cx);
         } else if self.output_name_dialog.is_some() {
             self.close_task_output_name(window, cx);
+        } else if self.task_speed_limit_dialog.is_some() {
+            self.close_task_speed_limit(window, cx);
+        } else if self.task_options_dialog.is_some() {
+            self.close_task_options(window, cx);
         } else if self.remove_confirmation.is_some() {
             self.close_remove_confirmation(window, cx);
         } else if self.page == AppPage::Settings {
@@ -1846,6 +2100,17 @@ impl AppShell {
             .update(cx, |input, cx| input.set_theme(self.theme, cx));
         self.add_input
             .update(cx, |input, cx| input.set_theme(self.theme, cx));
+        for input in [
+            &self.add_referer_input,
+            &self.add_user_agent_input,
+            &self.add_headers_input,
+            &self.add_cookie_input,
+            &self.add_http_user_input,
+            &self.add_http_passwd_input,
+            &self.add_checksum_input,
+        ] {
+            input.update(cx, |input, cx| input.set_theme(self.theme, cx));
+        }
         self.output_name_input
             .update(cx, |input, cx| input.set_theme(self.theme, cx));
         self.settings_directory_input
@@ -2178,6 +2443,35 @@ impl AppShell {
         cx.emit(AppShellEvent::RetryRequested);
     }
 
+    fn request_load_more_stopped(&mut self, cx: &mut Context<Self>) {
+        if self.pending_load_more_stopped
+            || !self.snapshot.connection.is_connected()
+            || self.snapshot.stale
+            || !self.snapshot.stopped_history.can_load_more
+        {
+            return;
+        }
+        self.pending_load_more_stopped = true;
+        cx.emit(AppShellEvent::LoadMoreStoppedRequested);
+        cx.notify();
+    }
+
+    pub fn set_load_more_stopped_result(
+        &mut self,
+        success: bool,
+        message: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.pending_load_more_stopped {
+            return;
+        }
+        self.pending_load_more_stopped = false;
+        if let Some(message) = message {
+            self.show_notice(message, !success, cx);
+        }
+        cx.notify();
+    }
+
     fn show_notice(&mut self, message: impl Into<String>, is_error: bool, cx: &mut Context<Self>) {
         let id = self.next_notice_id;
         self.next_notice_id = self.next_notice_id.checked_add(1).unwrap_or(1);
@@ -2254,11 +2548,23 @@ impl AppShell {
 
         self.add_input
             .update(cx, |input, cx| input.set_text("", cx));
+        for input in [
+            &self.add_referer_input,
+            &self.add_user_agent_input,
+            &self.add_headers_input,
+            &self.add_cookie_input,
+            &self.add_http_user_input,
+            &self.add_http_passwd_input,
+            &self.add_checksum_input,
+        ] {
+            input.update(cx, |input, cx| input.set_text("", cx));
+        }
         self.add_dialog = AddDownloadDialog {
             open: true,
             input_mode: AddDownloadInputModeView::Links,
             mode: AddDownloadModeView::SeparateTasks,
             file_conflict: FileConflictPolicyView::AutoRename,
+            advanced_open: false,
             metadata_files: Vec::new(),
             active_metadata_file: None,
             preview_pending: None,
@@ -2405,6 +2711,11 @@ impl AppShell {
             session: session.clone(),
         });
         self.add_dialog.error = None;
+        let advanced = if self.add_dialog.input_mode == AddDownloadInputModeView::Links {
+            self.collect_add_advanced_options(cx)
+        } else {
+            AddDownloadAdvancedOptionsView::default()
+        };
         cx.emit(AppShellEvent::AddDownloadRequested(
             AddDownloadRequestView {
                 request_id,
@@ -2423,6 +2734,7 @@ impl AppShell {
                 } else {
                     FileConflictPolicyView::Reject
                 },
+                advanced,
             },
         ));
         cx.notify();
@@ -2637,6 +2949,28 @@ impl AppShell {
                 retryable: true,
             });
             cx.notify();
+        }
+    }
+
+    fn toggle_add_advanced(&mut self, cx: &mut Context<Self>) {
+        if self.add_dialog.pending.is_some() || self.add_dialog.preview_pending.is_some() {
+            return;
+        }
+        self.add_dialog.advanced_open = !self.add_dialog.advanced_open;
+        cx.notify();
+    }
+
+    fn collect_add_advanced_options(&self, cx: &App) -> AddDownloadAdvancedOptionsView {
+        let cookie = self.add_cookie_input.read(cx).text().trim().to_owned();
+        let http_passwd = self.add_http_passwd_input.read(cx).text();
+        AddDownloadAdvancedOptionsView {
+            referer: self.add_referer_input.read(cx).text().trim().to_owned(),
+            user_agent: self.add_user_agent_input.read(cx).text().trim().to_owned(),
+            headers: self.add_headers_input.read(cx).text().to_owned(),
+            cookie: (!cookie.is_empty()).then(|| SecretStringView::new(cookie)),
+            http_user: self.add_http_user_input.read(cx).text().trim().to_owned(),
+            http_passwd: (!http_passwd.is_empty()).then(|| SecretStringView::new(http_passwd)),
+            checksum: self.add_checksum_input.read(cx).text().trim().to_owned(),
         }
     }
 
@@ -3112,6 +3446,212 @@ impl AppShell {
         );
     }
 
+    fn open_task_options(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.task_options_dialog.is_some() {
+            window.focus(&self.task_seed_ratio_input.focus_handle(cx), cx);
+            return;
+        }
+        if self.add_dialog.open
+            || self.output_name_dialog.is_some()
+            || self.task_speed_limit_dialog.is_some()
+            || self.remove_confirmation.is_some()
+            || self.batch_failure_details.is_some()
+            || self.pending_task_command.is_some()
+            || self.pending_batch_command.is_some()
+        {
+            return;
+        }
+        let Some(task) = self.selected_task_view() else {
+            self.show_notice("Select a visible task first.", true, cx);
+            return;
+        };
+        if !task.status.can_set_speed_limit() || !self.snapshot.commands_available() {
+            self.show_notice(
+                "Task options can be changed only while the download is still live.",
+                true,
+                cx,
+            );
+            return;
+        }
+        let supports_seed_rules = matches!(
+            task.source_kind,
+            crate::TaskSourceKindView::Magnet | crate::TaskSourceKindView::BitTorrent
+        ) || task.status == TaskStatusView::Seeding;
+        // Prefill from the open details drawer options projection when present.
+        let (seed_ratio, seed_time) = self
+            .details_drawer
+            .as_ref()
+            .and_then(|drawer| match &drawer.state {
+                TaskDetailsLoadState::Ready { details } => Some(details),
+                _ => None,
+            })
+            .map(|details| {
+                let value = |key: &str| {
+                    details
+                        .options
+                        .iter()
+                        .find(|option| option.key.eq_ignore_ascii_case(key))
+                        .map(|option| option.value.clone())
+                        .unwrap_or_default()
+                };
+                (value("seed-ratio"), value("seed-time"))
+            })
+            .unwrap_or_default();
+        self.task_seed_ratio_input.update(cx, |input, cx| {
+            input.set_text(
+                if supports_seed_rules {
+                    seed_ratio
+                } else {
+                    String::new()
+                },
+                cx,
+            );
+        });
+        self.task_seed_time_input.update(cx, |input, cx| {
+            input.set_text(
+                if supports_seed_rules {
+                    seed_time
+                } else {
+                    String::new()
+                },
+                cx,
+            );
+        });
+        self.task_options_dialog = Some(TaskOptionsDialog {
+            identity: task.identity.clone(),
+            display_name: task_display_name(&task),
+            supports_seed_rules,
+            previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
+            error: None,
+        });
+        cx.notify();
+        cx.defer_in(window, |this, window, cx| {
+            if this.task_options_dialog.is_some() {
+                window.focus(&this.task_seed_ratio_input.focus_handle(cx), cx);
+            }
+        });
+    }
+
+    fn close_task_options(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.task_options_dialog.is_none()
+            || self.pending_task_command.as_ref().is_some_and(|pending| {
+                matches!(&pending.command, TaskCommandView::SetOptions { .. })
+            })
+        {
+            return;
+        }
+        let previous_focus = self
+            .task_options_dialog
+            .take()
+            .and_then(|dialog| dialog.previous_focus)
+            .and_then(|focus| focus.upgrade());
+        if let Some(focus) = previous_focus {
+            window.focus(&focus, cx);
+        } else {
+            window.focus(&self.focus_handle, cx);
+        }
+        cx.notify();
+    }
+
+    fn submit_task_options(&mut self, cx: &mut Context<Self>) {
+        if self.pending_task_command.is_some() {
+            return;
+        }
+        let Some(dialog) = self.task_options_dialog.as_ref() else {
+            return;
+        };
+        let identity = dialog.identity.clone();
+        let supports_seed_rules = dialog.supports_seed_rules;
+        let seed_ratio_raw = self.task_seed_ratio_input.read(cx).text().trim().to_owned();
+        let seed_time_raw = self.task_seed_time_input.read(cx).text().trim().to_owned();
+        let mut seed_ratio = None;
+        let mut seed_time_minutes = None;
+        if !supports_seed_rules {
+            if let Some(dialog) = &mut self.task_options_dialog {
+                dialog.error = Some(OperationErrorView {
+                    code: "command.unsupported".into(),
+                    summary: "Seed rules apply only to BitTorrent tasks.".into(),
+                    retryable: false,
+                });
+            }
+            cx.notify();
+            return;
+        }
+        if !seed_ratio_raw.is_empty() {
+            match seed_ratio_raw.parse::<f64>() {
+                Ok(value) if value.is_finite() && value >= 0.0 => {
+                    seed_ratio = Some(seed_ratio_raw.clone());
+                }
+                _ => {
+                    if let Some(dialog) = &mut self.task_options_dialog {
+                        dialog.error = Some(OperationErrorView {
+                            code: "validation.invalid_seed_ratio".into(),
+                            summary: "Seed ratio must be a number greater than or equal to 0."
+                                .into(),
+                            retryable: false,
+                        });
+                    }
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+        if !seed_time_raw.is_empty() {
+            match seed_time_raw.parse::<u64>() {
+                Ok(_) => seed_time_minutes = Some(seed_time_raw.clone()),
+                Err(_) => {
+                    if let Some(dialog) = &mut self.task_options_dialog {
+                        dialog.error = Some(OperationErrorView {
+                            code: "validation.invalid_seed_time".into(),
+                            summary: "Seed time must be a whole number of minutes.".into(),
+                            retryable: false,
+                        });
+                    }
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+        if seed_ratio.is_none() && seed_time_minutes.is_none() {
+            if let Some(dialog) = &mut self.task_options_dialog {
+                dialog.error = Some(OperationErrorView {
+                    code: "validation.empty_task_options".into(),
+                    summary: "Enter a seed ratio and/or seed time to apply.".into(),
+                    retryable: false,
+                });
+            }
+            cx.notify();
+            return;
+        }
+        let current_task = self
+            .snapshot
+            .tasks
+            .iter()
+            .find(|task| task.identity == identity);
+        if self.selected.as_ref() != Some(&identity)
+            || current_task.is_none_or(|task| !task.status.can_set_speed_limit())
+        {
+            if let Some(dialog) = &mut self.task_options_dialog {
+                dialog.error = Some(OperationErrorView {
+                    code: "command.task_changed".into(),
+                    summary: "The task changed. Close this dialog and review its current state."
+                        .into(),
+                    retryable: false,
+                });
+            }
+            cx.notify();
+            return;
+        }
+        self.begin_task_command(
+            TaskCommandView::SetOptions {
+                seed_ratio,
+                seed_time_minutes,
+                selected_file_indices: None,
+            },
+            cx,
+        );
+    }
+
     fn remove_selected(
         &mut self,
         _: &RemoveSelectedTask,
@@ -3146,7 +3686,7 @@ impl AppShell {
             return;
         };
         let allowed = match command {
-            TaskCommandView::Pause => task.status.can_pause(),
+            TaskCommandView::Pause | TaskCommandView::ForcePause => task.status.can_pause(),
             TaskCommandView::Resume => task.status.can_resume(),
             TaskCommandView::MoveToQueueTop
             | TaskCommandView::MoveUpInQueue
@@ -3157,9 +3697,10 @@ impl AppShell {
             TaskCommandView::Retry => task.status.can_retry(),
             TaskCommandView::SetOutputName { .. } => task.can_set_output_name(),
             TaskCommandView::SetSpeedLimit { .. } => task.status.can_set_speed_limit(),
-            TaskCommandView::RemoveTask | TaskCommandView::RemoveTaskAndFiles => {
-                task.status.can_remove()
-            }
+            TaskCommandView::SetOptions { .. } => task.status.can_set_speed_limit(),
+            TaskCommandView::RemoveTask
+            | TaskCommandView::ForceRemoveTask
+            | TaskCommandView::RemoveTaskAndFiles => task.status.can_remove(),
         };
         if !allowed {
             self.show_notice(
@@ -4080,6 +4621,48 @@ impl AppShell {
                         .child("Last known data"),
                 )
             })
+            .when_some(
+                self.snapshot.stopped_history.summary_label(),
+                |element, label| {
+                    let can_load = self.snapshot.stopped_history.can_load_more
+                        && self.snapshot.connection.is_connected()
+                        && !self.snapshot.stale;
+                    let pending = self.pending_load_more_stopped;
+                    element.child(
+                        div()
+                            .id("stopped-history-status")
+                            .role(if can_load { Role::Button } else { Role::Status })
+                            .aria_label(if can_load {
+                                format!("{label}. Load more stopped results.")
+                            } else {
+                                label.clone()
+                            })
+                            .h_full()
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(label)
+                            .when(can_load, |element| {
+                                element
+                                    .focusable()
+                                    .tab_stop(true)
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(colors.surface_hover))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.request_load_more_stopped(cx);
+                                    }))
+                                    .child(div().text_color(colors.information).child(if pending {
+                                        "Loading..."
+                                    } else {
+                                        "Load more"
+                                    }))
+                            }),
+                    )
+                },
+            )
             .child(
                 div()
                     .id("transfer-status")
@@ -4174,6 +4757,23 @@ impl AppShell {
                     .when(commands_available, |button| {
                         button.on_click(cx.listener(|this, _, _, cx| {
                             this.begin_global_task_command(GlobalTaskCommandView::PauseAll, cx);
+                        }))
+                    }),
+            )
+            .child(
+                IconButton::new("force-pause-all-action", IconName::Square)
+                    .aria_label("Force pause all tasks")
+                    .style(ButtonStyle::Ghost)
+                    .disabled(!commands_available)
+                    .loading(pending_global == Some(GlobalTaskCommandView::ForcePauseAll))
+                    .tooltip(Tooltip::new("Force pause all"))
+                    .render(colors)
+                    .when(commands_available, |button| {
+                        button.on_click(cx.listener(|this, _, _, cx| {
+                            this.begin_global_task_command(
+                                GlobalTaskCommandView::ForcePauseAll,
+                                cx,
+                            );
                         }))
                     }),
             )
@@ -4408,25 +5008,45 @@ impl AppShell {
                 }),
             )
             .when(task.status.can_pause(), |element| {
-                element.child(
-                    toolbar_icon_button(
-                        "pause-task-action",
-                        IconName::Pause,
-                        "Pause",
-                        ToolbarButtonState::from_flags(
-                            pause_enabled,
-                            pending_command == Some(TaskCommandView::Pause),
-                        ),
-                        false,
-                        Some("Cmd+Shift+P"),
-                        colors,
+                element
+                    .child(
+                        toolbar_icon_button(
+                            "pause-task-action",
+                            IconName::Pause,
+                            "Pause",
+                            ToolbarButtonState::from_flags(
+                                pause_enabled,
+                                pending_command == Some(TaskCommandView::Pause),
+                            ),
+                            false,
+                            Some("Cmd+Shift+P"),
+                            colors,
+                        )
+                        .when(pause_enabled, |button| {
+                            button.on_click(cx.listener(|this, _, _window, cx| {
+                                this.begin_task_command(TaskCommandView::Pause, cx);
+                            }))
+                        }),
                     )
-                    .when(pause_enabled, |button| {
-                        button.on_click(cx.listener(|this, _, _window, cx| {
-                            this.begin_task_command(TaskCommandView::Pause, cx);
-                        }))
-                    }),
-                )
+                    .child(
+                        toolbar_icon_button(
+                            "force-pause-task-action",
+                            IconName::Square,
+                            "Force pause",
+                            ToolbarButtonState::from_flags(
+                                pause_enabled,
+                                pending_command == Some(TaskCommandView::ForcePause),
+                            ),
+                            false,
+                            None,
+                            colors,
+                        )
+                        .when(pause_enabled, |button| {
+                            button.on_click(cx.listener(|this, _, _window, cx| {
+                                this.begin_task_command(TaskCommandView::ForcePause, cx);
+                            }))
+                        }),
+                    )
             })
             .when(task.status.can_resume(), |element| {
                 element.child(
@@ -4537,22 +5157,39 @@ impl AppShell {
                 )
             })
             .when(task.status.can_set_speed_limit(), |element| {
-                element.child(
-                    toolbar_icon_button(
-                        "task-speed-limit-action",
-                        IconName::ArrowUpDown,
-                        "Set speed limits",
-                        ToolbarButtonState::from_flags(commands_available, false),
-                        false,
-                        None,
-                        colors,
+                element
+                    .child(
+                        toolbar_icon_button(
+                            "task-speed-limit-action",
+                            IconName::ArrowUpDown,
+                            "Set speed limits",
+                            ToolbarButtonState::from_flags(commands_available, false),
+                            false,
+                            None,
+                            colors,
+                        )
+                        .when(commands_available, |button| {
+                            button.on_click(cx.listener(|this, _, window, cx| {
+                                this.open_task_speed_limit(window, cx);
+                            }))
+                        }),
                     )
-                    .when(commands_available, |button| {
-                        button.on_click(cx.listener(|this, _, window, cx| {
-                            this.open_task_speed_limit(window, cx);
-                        }))
-                    }),
-                )
+                    .child(
+                        toolbar_icon_button(
+                            "task-options-action",
+                            IconName::Settings,
+                            "Edit task options",
+                            ToolbarButtonState::from_flags(commands_available, false),
+                            false,
+                            None,
+                            colors,
+                        )
+                        .when(commands_available, |button| {
+                            button.on_click(cx.listener(|this, _, window, cx| {
+                                this.open_task_options(window, cx);
+                            }))
+                        }),
+                    )
             })
             .child(
                 toolbar_icon_button(
@@ -4563,7 +5200,11 @@ impl AppShell {
                         remove_enabled,
                         matches!(
                             pending_command,
-                            Some(TaskCommandView::RemoveTask | TaskCommandView::RemoveTaskAndFiles)
+                            Some(
+                                TaskCommandView::RemoveTask
+                                    | TaskCommandView::ForceRemoveTask
+                                    | TaskCommandView::RemoveTaskAndFiles
+                            )
                         ),
                     ),
                     true,
@@ -4632,6 +5273,25 @@ impl AppShell {
             )
             .child(
                 toolbar_icon_button(
+                    "batch-force-pause-action",
+                    IconName::Square,
+                    "Force pause selected",
+                    ToolbarButtonState::from_flags(
+                        commands_available && can_pause,
+                        pending == Some(BatchTaskCommandView::ForcePause),
+                    ),
+                    false,
+                    None,
+                    colors,
+                )
+                .when(commands_available && can_pause, |button| {
+                    button.on_click(cx.listener(|this, _, _, cx| {
+                        this.begin_batch_task_command(BatchTaskCommandView::ForcePause, cx);
+                    }))
+                }),
+            )
+            .child(
+                toolbar_icon_button(
                     "batch-resume-action",
                     IconName::Play,
                     "Resume selected",
@@ -4679,6 +5339,7 @@ impl AppShell {
                             pending,
                             Some(
                                 BatchTaskCommandView::RemoveTask
+                                    | BatchTaskCommandView::ForceRemoveTask
                                     | BatchTaskCommandView::RemoveTaskAndFiles
                             )
                         ),
@@ -5712,6 +6373,7 @@ impl AppShell {
                             )
                         },
                     )
+                    .child(self.render_add_advanced_section(pending, colors, cx))
                     .into_any_element(),
                 AddDownloadInputModeView::MetadataFiles => {
                     self.render_metadata_file_picker(pending, preview_pending, cx)
@@ -5737,6 +6399,8 @@ impl AppShell {
             .track_focus(self.add_dialog_focus.clone())
             .width(if input_mode == AddDownloadInputModeView::MetadataFiles {
                 720.0
+            } else if self.add_dialog.advanced_open {
+                640.0
             } else {
                 560.0
             })
@@ -5769,6 +6433,135 @@ impl AppShell {
                     .render(colors),
             )
             .into_any_element()
+    }
+
+    fn render_add_advanced_section(
+        &mut self,
+        pending: bool,
+        colors: crate::ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let open = self.add_dialog.advanced_open;
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .id("add-download-advanced-toggle")
+                    .role(Role::Button)
+                    .aria_label(if open {
+                        "Hide advanced download options"
+                    } else {
+                        "Show advanced download options"
+                    })
+                    .aria_expanded(open)
+                    .focusable()
+                    .tab_stop(true)
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.elevated_surface)
+                    .px_3()
+                    .py_2()
+                    .hover(|style| style.bg(colors.surface_hover))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_add_advanced(cx)))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(colors.text_secondary)
+                            .child("Advanced options"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(if open { "Hide" } else { "Show" }),
+                    ),
+            )
+            .when(open, |element| {
+                element
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(
+                                "Applies only to direct URL downloads. Cookies and HTTP passwords stay out of task rows and logs.",
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .child(
+                                settings_labeled_input(
+                                    "Referer",
+                                    self.add_referer_input.clone(),
+                                    colors,
+                                )
+                                .flex_1()
+                                .min_w_0(),
+                            )
+                            .child(
+                                settings_labeled_input(
+                                    "User-Agent",
+                                    self.add_user_agent_input.clone(),
+                                    colors,
+                                )
+                                .flex_1()
+                                .min_w_0(),
+                            ),
+                    )
+                    .child(settings_labeled_input(
+                        "Custom headers",
+                        self.add_headers_input.clone(),
+                        colors,
+                    ))
+                    .child(settings_labeled_input(
+                        "Cookie",
+                        self.add_cookie_input.clone(),
+                        colors,
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .child(
+                                settings_labeled_input(
+                                    "HTTP username",
+                                    self.add_http_user_input.clone(),
+                                    colors,
+                                )
+                                .flex_1()
+                                .min_w_0(),
+                            )
+                            .child(
+                                settings_labeled_input(
+                                    "HTTP password",
+                                    self.add_http_passwd_input.clone(),
+                                    colors,
+                                )
+                                .flex_1()
+                                .min_w_0(),
+                            ),
+                    )
+                    .child(settings_labeled_input(
+                        "Checksum",
+                        self.add_checksum_input.clone(),
+                        colors,
+                    ))
+                    .when(pending, |element| {
+                        // Keep the section visible while submitting, but inputs stay
+                        // disabled through the dialog pending state of TextField focus.
+                        element
+                    })
+            })
     }
 
     fn render_metadata_file_picker(
@@ -7086,6 +7879,109 @@ impl AppShell {
             .into_any_element()
     }
 
+    fn render_task_options_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = self.theme.colors;
+        let Some(dialog) = self.task_options_dialog.as_ref() else {
+            return div().into_any_element();
+        };
+        let identity = dialog.identity.clone();
+        let display_name = dialog.display_name.clone();
+        let supports_seed_rules = dialog.supports_seed_rules;
+        let error = dialog.error.clone();
+        let pending = self.pending_task_command.as_ref().is_some_and(|pending| {
+            pending.identity == identity
+                && matches!(&pending.command, TaskCommandView::SetOptions { .. })
+        });
+        let content = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(if supports_seed_rules {
+                        "Stops seeding when the first of seed-ratio or seed-time is reached. Use 0 for seed-ratio to disable the ratio condition."
+                    } else {
+                        "Seed-ratio and seed-time apply only to BitTorrent tasks."
+                    }),
+            )
+            .when(supports_seed_rules, |element| {
+                element.child(
+                    div()
+                        .flex()
+                        .gap_3()
+                        .child(
+                            settings_labeled_input(
+                                "Seed ratio",
+                                self.task_seed_ratio_input.clone(),
+                                colors,
+                            )
+                            .flex_1()
+                            .min_w_0(),
+                        )
+                        .child(
+                            settings_labeled_input(
+                                "Seed time (minutes)",
+                                self.task_seed_time_input.clone(),
+                                colors,
+                            )
+                            .flex_1()
+                            .min_w_0(),
+                        ),
+                )
+            })
+            .when_some(error, |element, error| {
+                element.child(
+                    div()
+                        .id("task-options-error")
+                        .role(Role::Alert)
+                        .aria_label(error.summary.clone())
+                        .text_xs()
+                        .text_color(colors.danger)
+                        .child(error.summary),
+                )
+            });
+
+        Dialog::new("task-options-dialog", "Edit task options", self.theme)
+            .description(format!("Change typed aria2 options for {display_name}."))
+            .key_context("TaskOptionsDialog")
+            .track_focus(self.task_options_dialog_focus.clone())
+            .width(520.0)
+            .child(content)
+            .action(
+                Button::new("cancel-task-options", "Cancel")
+                    .aria_label("Cancel task option change")
+                    .style(ButtonStyle::Secondary)
+                    .disabled(pending)
+                    .track_focus(self.task_options_cancel_focus.clone())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.close_task_options(window, cx);
+                    }))
+                    .render(colors),
+            )
+            .action(
+                Button::new(
+                    "submit-task-options",
+                    if pending { "Saving..." } else { "Save" },
+                )
+                .aria_label(if pending {
+                    "Saving task options"
+                } else {
+                    "Save task options"
+                })
+                .style(ButtonStyle::Primary)
+                .loading(pending)
+                .disabled(!supports_seed_rules)
+                .track_focus(self.task_options_submit_focus.clone())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.submit_task_options(cx);
+                }))
+                .render(colors),
+            )
+            .into_any_element()
+    }
+
     fn render_toast(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let Some(notice) = self.status_notice.as_ref() else {
             return div().into_any_element();
@@ -7302,6 +8198,9 @@ impl Render for AppShell {
             })
             .when(self.task_speed_limit_dialog.is_some(), |element| {
                 element.child(self.render_task_speed_limit_dialog(cx))
+            })
+            .when(self.task_options_dialog.is_some(), |element| {
+                element.child(self.render_task_options_dialog(cx))
             })
             .when(self.remove_confirmation.is_some(), |element| {
                 element.child(self.render_remove_confirmation(cx))
@@ -8205,6 +9104,7 @@ fn render_file_row(
 fn task_command_label(command: &TaskCommandView) -> &'static str {
     match command {
         TaskCommandView::Pause => "Pause",
+        TaskCommandView::ForcePause => "Force pause",
         TaskCommandView::Resume => "Resume",
         TaskCommandView::MoveToQueueTop => "Move to top",
         TaskCommandView::MoveUpInQueue => "Move up",
@@ -8213,7 +9113,9 @@ fn task_command_label(command: &TaskCommandView) -> &'static str {
         TaskCommandView::Retry => "Retry",
         TaskCommandView::SetOutputName { .. } => "Change output name",
         TaskCommandView::SetSpeedLimit { .. } => "Set speed limits",
+        TaskCommandView::SetOptions { .. } => "Edit task options",
         TaskCommandView::RemoveTask | TaskCommandView::RemoveTaskAndFiles => "Remove",
+        TaskCommandView::ForceRemoveTask => "Force remove",
     }
 }
 
@@ -8383,6 +9285,11 @@ mod tests {
                 all: count,
                 completed: count,
                 ..TaskCountsView::default()
+            },
+            stopped_history: crate::StoppedHistoryView {
+                loaded: count,
+                total: Some(count),
+                can_load_more: false,
             },
             tasks: (0..count).map(task).collect(),
         }
@@ -8974,6 +9881,71 @@ mod tests {
     }
 
     #[gpui::test]
+    fn load_more_stopped_history_is_single_flight_and_gated(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(2);
+            shell.snapshot.stopped_history = crate::StoppedHistoryView {
+                loaded: 2,
+                total: Some(5),
+                can_load_more: true,
+            };
+            shell
+        });
+        let events = Arc::new(std::sync::Mutex::new(0usize));
+        let sink = events.clone();
+        let _subscription = view.update(cx, |_, cx| {
+            cx.subscribe(&view, move |_, _, event: &AppShellEvent, _| {
+                if matches!(event, AppShellEvent::LoadMoreStoppedRequested) {
+                    *sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) += 1;
+                }
+            })
+        });
+
+        // Stale or disconnected snapshots must not request another page.
+        view.update(cx, |shell, cx| {
+            shell.snapshot.stale = true;
+            shell.request_load_more_stopped(cx);
+            assert!(!shell.pending_load_more_stopped);
+            shell.snapshot.stale = false;
+            shell.snapshot.connection = ConnectionView::Disconnected;
+            shell.request_load_more_stopped(cx);
+            assert!(!shell.pending_load_more_stopped);
+            shell.snapshot.connection = ConnectionView::Connected;
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.request_load_more_stopped(cx);
+            assert!(shell.pending_load_more_stopped);
+            // Single-flight: a second click while pending must not re-emit.
+            shell.request_load_more_stopped(cx);
+        });
+        assert_eq!(
+            *events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            1,
+            "only one LoadMoreStoppedRequested event while pending"
+        );
+
+        view.update(cx, |shell, cx| {
+            shell.set_load_more_stopped_result(
+                true,
+                Some("Loaded more history (4 of 5).".into()),
+                cx,
+            );
+            assert!(!shell.pending_load_more_stopped);
+            assert_eq!(
+                shell
+                    .status_notice
+                    .as_ref()
+                    .map(|notice| notice.message.as_str()),
+                Some("Loaded more history (4 of 5).")
+            );
+        });
+    }
+
+    #[gpui::test]
     fn changing_the_sort_preserves_selection_and_emits_the_query(cx: &mut TestAppContext) {
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut shell = AppShell::new(Theme::dark(), window, cx);
@@ -9375,6 +10347,71 @@ mod tests {
 
         assert!(can_accept_metadata_drop(true, &paths));
         assert!(!can_accept_metadata_drop(false, &paths));
+    }
+
+    #[gpui::test]
+    fn add_download_advanced_options_toggle_and_collect_secrets(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.open_add_download(&OpenAddDownload, window, cx);
+            assert!(!shell.add_dialog.advanced_open);
+            shell.toggle_add_advanced(cx);
+            assert!(shell.add_dialog.advanced_open);
+            shell.add_referer_input.update(cx, |input, cx| {
+                input.set_text("https://example.test/ref", cx);
+            });
+            shell.add_user_agent_input.update(cx, |input, cx| {
+                input.set_text("AriaDeck-Test/1.0", cx);
+            });
+            shell.add_headers_input.update(cx, |input, cx| {
+                input.set_text("X-Token: one\nAccept: */*", cx);
+            });
+            shell.add_cookie_input.update(cx, |input, cx| {
+                input.set_text("session=secret-cookie", cx);
+            });
+            shell.add_http_user_input.update(cx, |input, cx| {
+                input.set_text("alice", cx);
+            });
+            shell.add_http_passwd_input.update(cx, |input, cx| {
+                input.set_text("s3cret", cx);
+            });
+            shell.add_checksum_input.update(cx, |input, cx| {
+                input.set_text(format!("sha-256={}", "ab".repeat(32)), cx);
+            });
+        });
+
+        view.read_with(cx, |shell, cx| {
+            let advanced = shell.collect_add_advanced_options(cx);
+            assert_eq!(advanced.referer, "https://example.test/ref");
+            assert_eq!(advanced.user_agent, "AriaDeck-Test/1.0");
+            assert!(advanced.headers.contains("X-Token: one"));
+            assert_eq!(
+                advanced
+                    .cookie
+                    .as_ref()
+                    .map(|value| value.clone().into_inner()),
+                Some("session=secret-cookie".into())
+            );
+            assert_eq!(advanced.http_user, "alice");
+            assert_eq!(
+                advanced
+                    .http_passwd
+                    .as_ref()
+                    .map(|value| value.clone().into_inner()),
+                Some("s3cret".into())
+            );
+            assert!(advanced.checksum.starts_with("sha-256="));
+            let debug = format!("{advanced:?}");
+            assert!(!debug.contains("s3cret"));
+            assert!(!debug.contains("secret-cookie"));
+            assert!(shell.add_cookie_input.read(cx).is_secure());
+            assert!(shell.add_http_passwd_input.read(cx).is_secure());
+        });
     }
 
     #[gpui::test]

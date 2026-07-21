@@ -9,14 +9,14 @@ use std::{
 };
 
 use ariadeck_application::{
-    AddDownloadRequest, AddDownloadSource, AppCommand, ApplicationError, ApplicationErrorCode,
-    CommandItem, CommandOutcome, CoordinatorConfig, DownloadDestinationFile,
-    DownloadDestinationGateway, DownloadDestinationRequest, DownloadProxyConfig,
-    DownloadProxyMode as ApplicationProxyMode, FileConflictPolicy, ItemFailure,
-    MoveTaskInQueueRequest, QueueMove, ReconnectPolicy, RemoveTasksRequest,
-    SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, StoreSnapshot, SyncHandle, TaskFileGateway,
-    TaskFileRemovalRequest, TaskListQuery, TaskOpenRequest, TaskOpenTarget, TaskRemovalScope,
-    spawn_sync_coordinator,
+    AddDownloadAdvancedOptions, AddDownloadRequest, AddDownloadSource, AppCommand,
+    ApplicationError, ApplicationErrorCode, CommandItem, CommandOutcome, CoordinatorConfig,
+    DownloadDestinationFile, DownloadDestinationGateway, DownloadDestinationRequest,
+    DownloadProxyConfig, DownloadProxyMode as ApplicationProxyMode, FileConflictPolicy,
+    ItemFailure, MoveTaskInQueueRequest, QueueMove, ReconnectPolicy, RemoveTasksRequest,
+    SetTaskOptionsRequest, SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, StoreSnapshot,
+    SyncHandle, TaskFileGateway, TaskFileRemovalRequest, TaskListQuery, TaskOpenRequest,
+    TaskOpenTarget, TaskRemovalScope, spawn_sync_coordinator,
 };
 use ariadeck_domain::{
     ByteRate, ConnectionState, DownloadFilter, DownloadSort, DownloadStatus, DownloadTask,
@@ -38,24 +38,25 @@ use ariadeck_settings::{
     ProxyCredentialRef, ProxyCredentialStore, SpeedLimitSettings, SystemProxyCredentialStore,
 };
 use ariadeck_ui::{
-    AddDownloadItemResultView, AddDownloadMetadataFileView, AddDownloadMetadataKindView,
-    AddDownloadMetadataPreviewItemView, AddDownloadMetadataPreviewOutcomeView,
-    AddDownloadMetadataPreviewRequestView, AddDownloadMetadataPreviewResultView,
-    AddDownloadMetadataPreviewView, AddDownloadModeView, AddDownloadRequestView,
-    AddDownloadResultView, AddDownloadSourceView, AppShell, AppShellEvent, BatchCommandOutcomeView,
-    BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
-    BatchTaskFailureView, ColorSchemeView, CommandOutcomeView, ConnectionView,
-    DownloadProxySettingsView, DownloadRowView, EngineHealthView, EngineSessionView,
-    FileConflictPolicyView, GlobalTaskCommandRequestView, GlobalTaskCommandResultView,
-    GlobalTaskCommandView, OperationErrorView, ProxyModeView, ProxyPasswordUpdateView,
-    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    SpeedLimitSettingsView, SpeedSampleView, TaskCommandRequestView, TaskCommandResultView,
-    TaskCommandView, TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView,
-    TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity,
-    TaskNameStateView, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
-    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
-    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
-    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    AddDownloadAdvancedOptionsView, AddDownloadItemResultView, AddDownloadMetadataFileView,
+    AddDownloadMetadataKindView, AddDownloadMetadataPreviewItemView,
+    AddDownloadMetadataPreviewOutcomeView, AddDownloadMetadataPreviewRequestView,
+    AddDownloadMetadataPreviewResultView, AddDownloadMetadataPreviewView, AddDownloadModeView,
+    AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView, AppShell, AppShellEvent,
+    BatchCommandOutcomeView, BatchTaskCommandRequestView, BatchTaskCommandResultView,
+    BatchTaskCommandView, BatchTaskFailureView, ColorSchemeView, CommandOutcomeView,
+    ConnectionView, DownloadProxySettingsView, DownloadRowView, EngineHealthView,
+    EngineSessionView, FileConflictPolicyView, GlobalTaskCommandRequestView,
+    GlobalTaskCommandResultView, GlobalTaskCommandView, OperationErrorView, ProxyModeView,
+    ProxyPasswordUpdateView, SettingsSaveOutcomeView, SettingsSaveRequestView,
+    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView,
+    StoppedHistoryView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
+    TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
+    TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
+    TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
+    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, WorkspaceFilter,
+    WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
     format_speed_limit_field,
 };
 use data_encoding::BASE32_NOPAD;
@@ -228,6 +229,9 @@ impl DesktopRoot {
                             handle.force_refresh().await;
                         });
                     }
+                }
+                AppShellEvent::LoadMoreStoppedRequested => {
+                    this.spawn_load_more_stopped(window, cx);
                 }
                 AppShellEvent::AddDownloadRequested(request) => {
                     this.spawn_add_download(request.clone(), window, cx);
@@ -507,6 +511,50 @@ impl DesktopRoot {
         })
         .detach();
     }
+
+    fn spawn_load_more_stopped(&self, window: &Window, cx: &mut Context<Self>) {
+        let sync = self.sync.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let (success, message) = match sync {
+                Some(handle) => match handle.load_more_stopped().await {
+                    Some(history) if history.can_load_more => (
+                        true,
+                        Some(format!(
+                            "Loaded more history ({} of {}).",
+                            history.loaded,
+                            history.total.unwrap_or(history.loaded)
+                        )),
+                    ),
+                    Some(history) => (
+                        true,
+                        Some(format!(
+                            "Loaded all available history ({} of {}).",
+                            history.loaded,
+                            history.total.unwrap_or(history.loaded)
+                        )),
+                    ),
+                    None => (
+                        false,
+                        Some(
+                            "Stopped history could not be loaded while aria2 is unavailable."
+                                .into(),
+                        ),
+                    ),
+                },
+                None => (
+                    false,
+                    Some("Stopped history is unavailable without a connected engine.".into()),
+                ),
+            };
+            this.update(cx, |this, cx| {
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.set_load_more_stopped_result(success, message, cx);
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
 }
 
 impl Drop for DesktopRoot {
@@ -555,6 +603,7 @@ async fn execute_add_download(
         destination,
         required_bytes,
         file_conflict,
+        advanced,
     } = request;
     let mapped_session = map_engine_session(&session);
     let destination_error = match (destination_gateway.clone(), destination.as_deref()) {
@@ -641,6 +690,7 @@ async fn execute_add_download(
                         &group,
                         destination.clone(),
                         file_conflict,
+                        advanced.clone(),
                     )
                     .await;
                     match request {
@@ -821,6 +871,7 @@ async fn prepare_add_download_request(
     sources: &[AddDownloadSourceView],
     destination: Option<String>,
     file_conflict: FileConflictPolicyView,
+    advanced: AddDownloadAdvancedOptionsView,
 ) -> Result<PreparedAddDownloadRequest, ApplicationError> {
     let source = match sources {
         [
@@ -898,17 +949,66 @@ async fn prepare_add_download_request(
     } else {
         FileConflictPolicy::Reject
     };
+    let advanced = map_add_advanced_options(advanced, &source.source)?;
     Ok(PreparedAddDownloadRequest {
         request: AddDownloadRequest {
             source: source.source,
             destination: destination.map(EnginePath::new),
             file_conflict,
             selected_file_indices: source.selected_file_indices,
+            advanced,
             options: Vec::new(),
         },
         destination_files: source.destination_files,
         required_bytes: source.required_bytes,
     })
+}
+
+fn map_add_advanced_options(
+    advanced: AddDownloadAdvancedOptionsView,
+    source: &AddDownloadSource,
+) -> Result<AddDownloadAdvancedOptions, ApplicationError> {
+    if advanced.is_empty() {
+        return Ok(AddDownloadAdvancedOptions::default());
+    }
+    if !matches!(source, AddDownloadSource::Uris(_)) {
+        return Err(ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            "Referer, headers, cookies, authentication, and checksum apply only to direct URL downloads.",
+            false,
+        ));
+    }
+    let headers = advanced
+        .headers
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let mapped = AddDownloadAdvancedOptions {
+        referer: nonempty_optional(advanced.referer),
+        user_agent: nonempty_optional(advanced.user_agent),
+        headers,
+        cookie: advanced
+            .cookie
+            .map(|value| SecretString::new(value.into_inner())),
+        http_user: nonempty_optional(advanced.http_user),
+        http_passwd: advanced
+            .http_passwd
+            .map(|value| SecretString::new(value.into_inner())),
+        checksum: nonempty_optional(advanced.checksum),
+    };
+    mapped.validate()?;
+    Ok(mapped)
+}
+
+fn nonempty_optional(value: String) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_owned())
+    }
 }
 
 #[derive(Debug)]
@@ -1274,6 +1374,7 @@ async fn execute_global_task_command(
     } = request;
     let app_command = match command {
         GlobalTaskCommandView::PauseAll => AppCommand::PauseAll,
+        GlobalTaskCommandView::ForcePauseAll => AppCommand::ForcePauseAll,
         GlobalTaskCommandView::ResumeAll => AppCommand::ResumeAll,
     };
     let outcome = match (sync, map_engine_session(&session)) {
@@ -1320,7 +1421,9 @@ async fn execute_task_command(
             };
             let remove_baseline = if matches!(
                 &command,
-                TaskCommandView::RemoveTask | TaskCommandView::RemoveTaskAndFiles
+                TaskCommandView::RemoveTask
+                    | TaskCommandView::ForceRemoveTask
+                    | TaskCommandView::RemoveTaskAndFiles
             ) {
                 capture_remove_baseline(&handle, std::slice::from_ref(&task)).await
             } else {
@@ -1348,6 +1451,7 @@ async fn execute_task_command(
             }
             let app_command = match &command {
                 TaskCommandView::Pause => AppCommand::PauseTasks(vec![task]),
+                TaskCommandView::ForcePause => AppCommand::ForcePauseTasks(vec![task]),
                 TaskCommandView::Resume => AppCommand::ResumeTasks(vec![task]),
                 TaskCommandView::MoveToQueueTop => {
                     AppCommand::MoveTaskInQueue(MoveTaskInQueueRequest {
@@ -1388,16 +1492,37 @@ async fn execute_task_command(
                     download_limit: ByteRate::new(*download_limit),
                     upload_limit: ByteRate::new(*upload_limit),
                 }),
+                TaskCommandView::SetOptions {
+                    seed_ratio,
+                    seed_time_minutes,
+                    selected_file_indices,
+                } => AppCommand::SetTaskOptions(SetTaskOptionsRequest {
+                    task,
+                    seed_ratio: seed_ratio.clone(),
+                    seed_time_minutes: seed_time_minutes
+                        .as_ref()
+                        .and_then(|value| value.parse().ok()),
+                    selected_file_indices: selected_file_indices.clone(),
+                }),
                 TaskCommandView::RemoveTask => AppCommand::RemoveTasks(RemoveTasksRequest {
                     tasks: vec![task],
                     scope: TaskRemovalScope::TaskOnly,
                 }),
+                TaskCommandView::ForceRemoveTask => {
+                    AppCommand::ForceRemoveTasks(RemoveTasksRequest {
+                        tasks: vec![task],
+                        scope: TaskRemovalScope::TaskOnly,
+                    })
+                }
                 TaskCommandView::RemoveTaskAndFiles => unreachable!("handled above"),
             };
             let mut outcome = handle.execute(engine_session, app_command).await;
             if matches!(&command, TaskCommandView::Retry) {
                 outcome = reconcile_unknown_retries(&handle, retry_baseline, outcome).await;
-            } else if matches!(&command, TaskCommandView::RemoveTask) {
+            } else if matches!(
+                &command,
+                TaskCommandView::RemoveTask | TaskCommandView::ForceRemoveTask
+            ) {
                 outcome = reconcile_unknown_removals(&handle, remove_baseline, outcome).await;
             }
             if outcome.has_successes() {
@@ -1444,7 +1569,9 @@ async fn execute_batch_task_command(
             };
             let remove_baseline = if matches!(
                 command,
-                BatchTaskCommandView::RemoveTask | BatchTaskCommandView::RemoveTaskAndFiles
+                BatchTaskCommandView::RemoveTask
+                    | BatchTaskCommandView::ForceRemoveTask
+                    | BatchTaskCommandView::RemoveTaskAndFiles
             ) {
                 capture_remove_baseline(&handle, &tasks).await
             } else {
@@ -1472,18 +1599,28 @@ async fn execute_batch_task_command(
             }
             let app_command = match command {
                 BatchTaskCommandView::Pause => AppCommand::PauseTasks(tasks),
+                BatchTaskCommandView::ForcePause => AppCommand::ForcePauseTasks(tasks),
                 BatchTaskCommandView::Resume => AppCommand::ResumeTasks(tasks),
                 BatchTaskCommandView::Retry => AppCommand::RetryTasks(tasks),
                 BatchTaskCommandView::RemoveTask => AppCommand::RemoveTasks(RemoveTasksRequest {
                     tasks,
                     scope: TaskRemovalScope::TaskOnly,
                 }),
+                BatchTaskCommandView::ForceRemoveTask => {
+                    AppCommand::ForceRemoveTasks(RemoveTasksRequest {
+                        tasks,
+                        scope: TaskRemovalScope::TaskOnly,
+                    })
+                }
                 BatchTaskCommandView::RemoveTaskAndFiles => unreachable!("handled above"),
             };
             let mut outcome = handle.execute(engine_session, app_command).await;
             if command == BatchTaskCommandView::Retry {
                 outcome = reconcile_unknown_retries(&handle, retry_baseline, outcome).await;
-            } else if command == BatchTaskCommandView::RemoveTask {
+            } else if matches!(
+                command,
+                BatchTaskCommandView::RemoveTask | BatchTaskCommandView::ForceRemoveTask
+            ) {
                 outcome = reconcile_unknown_removals(&handle, remove_baseline, outcome).await;
             }
             if outcome.has_successes() {
@@ -3324,6 +3461,11 @@ fn map_snapshot(snapshot: StoreSnapshot, local_path_actions_available: bool) -> 
             completed: snapshot.counts.completed,
             failed: snapshot.counts.failed,
         },
+        stopped_history: StoppedHistoryView {
+            loaded: snapshot.stopped_history.loaded,
+            total: snapshot.stopped_history.total,
+            can_load_more: snapshot.stopped_history.can_load_more,
+        },
         tasks: snapshot
             .tasks
             .into_iter()
@@ -3644,6 +3786,7 @@ mod tests {
                 capabilities: EngineCapabilities {
                     version: "test".into(),
                     enabled_features: Vec::new(),
+                    methods: Vec::new(),
                 },
                 global_stat: GlobalStat::default(),
                 live: LiveSyncSnapshot {
@@ -3800,6 +3943,7 @@ mod tests {
                 capabilities: EngineCapabilities {
                     version: "test".into(),
                     enabled_features: Vec::new(),
+                    methods: Vec::new(),
                 },
                 global_stat: GlobalStat::default(),
                 live: self.live(),
@@ -4062,6 +4206,7 @@ mod tests {
                 capabilities: EngineCapabilities {
                     version: "test".into(),
                     enabled_features: Vec::new(),
+                    methods: Vec::new(),
                 },
                 global_stat: GlobalStat::default(),
                 live: self.live(),
@@ -4466,6 +4611,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn advanced_source_controls_map_into_typed_add_options() {
+        let advanced = AddDownloadAdvancedOptionsView {
+            referer: "https://cdn.example/ref".into(),
+            user_agent: "AriaDeck-Test/1.0".into(),
+            headers: "X-Token: one
+Accept: */*"
+                .into(),
+            cookie: Some(ariadeck_ui::SecretStringView::new("session=secret")),
+            http_user: "alice".into(),
+            http_passwd: Some(ariadeck_ui::SecretStringView::new("s3cret")),
+            checksum: format!("sha-256={}", "ab".repeat(32)),
+        };
+        let request = prepare_add_download_request(
+            &tokio::runtime::Handle::current(),
+            &[AddDownloadSourceView::Uri {
+                line: 1,
+                uri: "https://example.test/archive.iso".into(),
+            }],
+            None,
+            FileConflictPolicyView::AutoRename,
+            advanced,
+        )
+        .await
+        .expect("advanced URI request maps");
+
+        let pairs = request.request.advanced.to_option_pairs();
+        assert!(
+            pairs
+                .iter()
+                .any(|(k, v)| k == "referer" && v == "https://cdn.example/ref")
+        );
+        assert!(
+            pairs
+                .iter()
+                .any(|(k, v)| k == "user-agent" && v == "AriaDeck-Test/1.0")
+        );
+        assert!(
+            pairs
+                .iter()
+                .any(|(k, v)| k == "header" && v == "X-Token: one")
+        );
+        assert!(
+            pairs
+                .iter()
+                .any(|(k, v)| k == "header" && v == "Accept: */*")
+        );
+        assert!(
+            pairs
+                .iter()
+                .any(|(k, v)| k == "header" && v == "Cookie: session=secret")
+        );
+        assert!(pairs.iter().any(|(k, v)| k == "http-user" && v == "alice"));
+        assert!(
+            pairs
+                .iter()
+                .any(|(k, v)| k == "http-passwd" && v == "s3cret")
+        );
+        assert!(
+            pairs
+                .iter()
+                .any(|(k, v)| k == "checksum" && v.starts_with("sha-256="))
+        );
+        let debug = format!("{:?}", request.request.advanced);
+        assert!(!debug.contains("s3cret"));
+        assert!(!debug.contains("session=secret"));
+    }
+
+    #[tokio::test]
     async fn configured_destination_is_forwarded_to_the_application_command() {
         let request = prepare_add_download_request(
             &tokio::runtime::Handle::current(),
@@ -4475,6 +4688,7 @@ mod tests {
             }],
             Some("D:/Transfers".into()),
             FileConflictPolicyView::Reject,
+            AddDownloadAdvancedOptionsView::default(),
         )
         .await
         .expect("URI request maps");
@@ -4515,6 +4729,7 @@ mod tests {
             }],
             Some("D:/Transfers".into()),
             FileConflictPolicyView::Overwrite,
+            AddDownloadAdvancedOptionsView::default(),
         ))
         .expect("metadata request maps");
 
@@ -4571,6 +4786,7 @@ mod tests {
                 }],
                 None,
                 FileConflictPolicyView::AutoRename,
+                AddDownloadAdvancedOptionsView::default(),
             ));
             assert!(result.is_err(), "invalid metadata file must be rejected");
         }
@@ -4589,6 +4805,7 @@ mod tests {
             }],
             None,
             FileConflictPolicyView::AutoRename,
+            AddDownloadAdvancedOptionsView::default(),
         ));
         assert!(result.is_err(), "oversized metadata file must be rejected");
     }
@@ -4667,6 +4884,7 @@ mod tests {
                 destination: Some("relative/downloads".into()),
                 required_bytes: None,
                 file_conflict: FileConflictPolicyView::default(),
+                advanced: AddDownloadAdvancedOptionsView::default(),
             },
         )
         .await;
@@ -4705,6 +4923,7 @@ mod tests {
                 destination: Some(downloads.path().to_string_lossy().into_owned()),
                 required_bytes: Some(u64::MAX),
                 file_conflict: FileConflictPolicyView::default(),
+                advanced: AddDownloadAdvancedOptionsView::default(),
             },
         )
         .await;
@@ -4898,6 +5117,7 @@ mod tests {
                 destination: None,
                 required_bytes: None,
                 file_conflict: FileConflictPolicyView::default(),
+                advanced: AddDownloadAdvancedOptionsView::default(),
             },
         )
         .await;
@@ -4920,6 +5140,7 @@ mod tests {
                 destination: None,
                 required_bytes: None,
                 file_conflict: FileConflictPolicyView::default(),
+                advanced: AddDownloadAdvancedOptionsView::default(),
             },
         )
         .await;
@@ -4976,6 +5197,7 @@ mod tests {
                 destination: None,
                 required_bytes: None,
                 file_conflict: FileConflictPolicyView::default(),
+                advanced: AddDownloadAdvancedOptionsView::default(),
             },
         )
         .await;

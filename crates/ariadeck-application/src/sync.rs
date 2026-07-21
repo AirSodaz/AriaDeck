@@ -18,8 +18,8 @@ use tokio::{
 
 use crate::{
     AppCommand, ApplicationError, ApplicationErrorCode, CommandOutcome, CommandService,
-    DownloadEngineGateway, DownloadProxyConfig, DownloadStore, StoreError, StorePatch,
-    TaskCommandContext, TaskConnectionDetailsGateway, TaskCounts, TaskDetailsGateway,
+    DownloadEngineGateway, DownloadProxyConfig, DownloadStore, StoppedHistoryState, StoreError,
+    StorePatch, TaskCommandContext, TaskConnectionDetailsGateway, TaskCounts, TaskDetailsGateway,
     TaskListQuery, TaskListView,
 };
 
@@ -27,6 +27,23 @@ use crate::{
 pub struct EngineCapabilities {
     pub version: String,
     pub enabled_features: Vec<String>,
+    /// Method names published by `system.listMethods` when available.
+    /// An empty list means the probe was unavailable; callers must treat
+    /// unknown methods as capability-gated rather than assuming support.
+    pub methods: Vec<String>,
+}
+
+impl EngineCapabilities {
+    #[must_use]
+    pub fn supports_method(&self, method: &str) -> bool {
+        if self.methods.is_empty() {
+            // When the probe is unavailable, degrade open-handedly only for
+            // methods that every supported aria2 build exposes. Callers that
+            // need a hard gate should treat empty as "unknown".
+            return true;
+        }
+        self.methods.iter().any(|name| name == method)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -277,6 +294,8 @@ pub struct StoreSnapshot {
     pub global_stat: GlobalStat,
     pub speed_history: crate::SpeedHistory,
     pub counts: TaskCounts,
+    /// How many stopped results are loaded locally versus aria2's total.
+    pub stopped_history: StoppedHistoryState,
     pub view: TaskListView,
     pub tasks: Vec<DownloadTask>,
     pub observed_seeding_seconds: HashMap<Gid, u64>,
@@ -302,6 +321,19 @@ impl SyncHandle {
 
     pub async fn force_refresh(&self) {
         let _ = self.commands.send(Control::ForceRefresh).await;
+    }
+
+    /// Append the next stopped-result page when the local cache is incomplete.
+    ///
+    /// Returns the post-request history state. A no-op when every currently
+    /// reported stopped result is already loaded or the engine is unavailable.
+    pub async fn load_more_stopped(&self) -> Option<StoppedHistoryState> {
+        let (sender, receiver) = oneshot::channel();
+        self.commands
+            .send(Control::LoadMoreStopped { sender })
+            .await
+            .ok()?;
+        receiver.await.ok()
     }
 
     pub async fn snapshot(&self, query: TaskListQuery) -> Option<StoreSnapshot> {
@@ -429,6 +461,9 @@ impl SyncHandle {
 enum Control {
     SetActivity(ActivityMode),
     ForceRefresh,
+    LoadMoreStopped {
+        sender: oneshot::Sender<StoppedHistoryState>,
+    },
     Snapshot {
         query: TaskListQuery,
         sender: oneshot::Sender<StoreSnapshot>,
@@ -484,6 +519,10 @@ fn handle_unavailable_control(
             UnavailableControlDisposition::RetryNow
         }
         Some(Control::ForceRefresh) => UnavailableControlDisposition::Continue,
+        Some(Control::LoadMoreStopped { sender }) => {
+            let _ = sender.send(store.stopped_history());
+            UnavailableControlDisposition::Continue
+        }
         Some(Control::Snapshot { query, sender }) => {
             let _ = sender.send(build_snapshot(store, state, &query));
             UnavailableControlDisposition::Continue
@@ -915,6 +954,39 @@ async fn run_connected(
                             return ConnectedExit::Retry(error);
                         }
                     }
+                    Some(Control::LoadMoreStopped { sender }) => {
+                        let history = store.stopped_history();
+                        if !history.can_load_more {
+                            let _ = sender.send(history);
+                            continue;
+                        }
+                        let offset = history.next_offset;
+                        let page_size = config.stopped_page_size;
+                        let result = tokio::select! {
+                            biased;
+                            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
+                            result = session.refresh_stopped_page(offset, page_size) => result,
+                        };
+                        match result {
+                            Ok(page) => {
+                                match store.apply_stopped_page(
+                                    generation,
+                                    page.offset,
+                                    Some(page.total),
+                                    page.tasks,
+                                ) {
+                                    Ok(patch) => {
+                                        emit_patch(events, patch);
+                                        let _ = sender.send(store.stopped_history());
+                                    }
+                                    Err(error) => {
+                                        return ConnectedExit::Retry(SyncError::store(error));
+                                    }
+                                }
+                            }
+                            Err(error) => return ConnectedExit::Retry(error),
+                        }
+                    }
                     Some(Control::Snapshot { query, sender }) => {
                         let _ = sender.send(build_snapshot(store, state, &query));
                     }
@@ -1189,22 +1261,38 @@ async fn run_connected(
                 }
             }
             _ = timers.stopped.tick() => {
-                let result = tokio::select! {
-                    biased;
-                    () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
-                    result = session.refresh_stopped_page(0, config.stopped_page_size) => result,
-                };
-                match result {
-                    Ok(page) => match store.apply_stopped_page(
-                        generation,
-                        page.offset,
-                        Some(page.total),
-                        page.tasks,
-                    ) {
-                        Ok(patch) => emit_patch(events, patch),
-                        Err(error) => return ConnectedExit::Retry(SyncError::store(error)),
-                    },
-                    Err(error) => return ConnectedExit::Retry(error),
+                // Refresh every already-loaded contiguous page so a prior
+                // "Load more" request is not discarded by the periodic poll
+                // (HISTORY-001). The first page also updates the authoritative
+                // total from aria2's numStoppedTotal.
+                let page_size = config.stopped_page_size.max(1);
+                let mut offset = 0usize;
+                let loaded_through = store.next_stopped_offset().max(page_size as usize);
+                loop {
+                    let result = tokio::select! {
+                        biased;
+                        () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
+                        result = session.refresh_stopped_page(offset, page_size) => result,
+                    };
+                    match result {
+                        Ok(page) => {
+                            let total = page.total;
+                            match store.apply_stopped_page(
+                                generation,
+                                page.offset,
+                                Some(total),
+                                page.tasks,
+                            ) {
+                                Ok(patch) => emit_patch(events, patch),
+                                Err(error) => return ConnectedExit::Retry(SyncError::store(error)),
+                            }
+                            offset = offset.saturating_add(page_size as usize);
+                            if offset >= loaded_through || offset >= total {
+                                break;
+                            }
+                        }
+                        Err(error) => return ConnectedExit::Retry(error),
+                    }
                 }
             }
         }
@@ -1220,30 +1308,46 @@ async fn refresh_all(
 ) -> Result<(), SyncError> {
     let global = session.refresh_global_stat().await?;
     let live = session.refresh_live().await?;
-    let stopped = session.refresh_stopped_page(0, stopped_page_size).await?;
     emit_patch(
         events,
         store
             .update_global_stat(generation, global)
             .map_err(SyncError::store)?,
     );
-    emit_patch(
-        events,
-        store
-            .apply_stopped_page(
-                generation,
-                stopped.offset,
-                Some(stopped.total),
-                stopped.tasks,
-            )
-            .map_err(SyncError::store)?,
-    );
+    refresh_loaded_stopped_pages(session, store, generation, stopped_page_size, events).await?;
     emit_patch(
         events,
         store
             .reconcile_live(generation, live.active, live.waiting)
             .map_err(SyncError::store)?,
     );
+    Ok(())
+}
+
+async fn refresh_loaded_stopped_pages(
+    session: &dyn DownloadSyncSession,
+    store: &mut DownloadStore,
+    generation: SessionGeneration,
+    stopped_page_size: u32,
+    events: &broadcast::Sender<SyncEvent>,
+) -> Result<(), SyncError> {
+    let page_size = stopped_page_size.max(1);
+    let mut offset = 0usize;
+    let loaded_through = store.next_stopped_offset().max(page_size as usize);
+    loop {
+        let page = session.refresh_stopped_page(offset, page_size).await?;
+        let total = page.total;
+        emit_patch(
+            events,
+            store
+                .apply_stopped_page(generation, page.offset, Some(total), page.tasks)
+                .map_err(SyncError::store)?,
+        );
+        offset = offset.saturating_add(page_size as usize);
+        if offset >= loaded_through || offset >= total {
+            break;
+        }
+    }
     Ok(())
 }
 
@@ -1441,6 +1545,7 @@ fn build_snapshot(
         global_stat: store.global_stat(),
         speed_history: store.speed_history().clone(),
         counts: store.counts(),
+        stopped_history: store.stopped_history(),
         view,
         tasks,
         observed_seeding_seconds,
@@ -1926,6 +2031,7 @@ mod tests {
             capabilities: EngineCapabilities {
                 version: "1.37.0".into(),
                 enabled_features: vec!["BitTorrent".into()],
+                methods: Vec::new(),
             },
             global_stat: GlobalStat::default(),
             live: LiveSyncSnapshot {
@@ -2001,6 +2107,7 @@ mod tests {
         let error = validate_capabilities(&EngineCapabilities {
             version: "  ".into(),
             enabled_features: Vec::new(),
+            methods: Vec::new(),
         });
 
         assert!(matches!(
@@ -2336,6 +2443,7 @@ mod tests {
                     destination: None,
                     file_conflict: crate::FileConflictPolicy::default(),
                     selected_file_indices: None,
+                    advanced: Default::default(),
                     options: Vec::new(),
                 }),
             ),
@@ -2499,6 +2607,7 @@ mod tests {
                 capabilities: EngineCapabilities {
                     version: "1.37.0".into(),
                     enabled_features: Vec::new(),
+                    methods: Vec::new(),
                 },
                 global_stat: GlobalStat::default(),
                 live: LiveSyncSnapshot {

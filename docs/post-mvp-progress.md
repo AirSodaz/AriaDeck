@@ -645,6 +645,74 @@ unavailable because their engine paths are not assumed to exist locally.
   checks existence before showing a path, and reports missing-file failures:
   https://github.com/agalwood/Motrix/blob/7012040fec926e16fe8f6c403cf038527f5c18b9/src/renderer/utils/native.js
 
+
+### D-021 - Stopped history pages engine memory; restart keeps only the session file
+
+**Decision:** AriaDeck does not invent a second completed/failed history store
+before SQLite exists. Stopped results are always the engine's in-memory
+`tellStopped` queue, bounded by aria2's `--max-download-result`. The UI loads
+the first page on connect, discloses `loaded/total` from
+`numStoppedTotal`, and appends later pages only through an explicit Load more
+action. Periodic and force refreshes re-fetch every already-loaded contiguous
+page so a prior Load more is not discarded.
+
+**Retention rule:** Managed local aria2 starts with
+`--max-download-result=5000` so more terminal results stay addressable through
+RPC. External profiles keep their daemon's own limit. When the FIFO is full,
+the oldest completed/error/removed result disappears from aria2 and therefore
+from AriaDeck. Application restart restores only what aria2 reloads from
+`--save-session` / `--input-file` (error and unfinished downloads, plus any
+uploaded metadata saved by the daemon). Completed-download rows are not
+guaranteed to survive a restart until a client-side history database exists.
+
+**Presentation rule:** Status bar shows `History loaded/total` while the
+engine reports a non-zero total. Load more is single-flight, disabled while
+disconnected or stale, and cleared on engine-session change without replaying
+an in-flight page request.
+
+**Evidence:**
+
+- aria2 manual: `--max-download-result` is a FIFO of completed/error/removed
+  results; `--save-session` persists error/unfinished downloads for restart:
+  https://aria2.github.io/manual/en/html/aria2c.html
+- design.md requires paginated stopped-task loading for large collections.
+- Motrix/AriaNg treat aria2 stopped results as the history surface rather than
+  maintaining a parallel completed-download database in the MVP path.
+
+
+### D-022 - Advanced add controls are typed, URI-only, and secret-isolated
+
+**Decision:** Extend the add-download flow with a collapsed Advanced section for
+direct URL tasks only. Typed fields cover referer, user-agent, multi-line custom
+headers, cookie, HTTP username/password, and aria2 `type=digest` checksum.
+Magnet/Torrent/Metalink submissions reject these fields so users cannot believe
+a Cookie or Referer rewrites tracker/peer authentication. Scheduling remains
+out of scope for this slice.
+
+**Secret rule:** Cookie and HTTP password use secure inputs and
+`SecretString`/`SecretStringView`. They are flattened into aria2 options only at
+the application→RPC boundary. Debug output redacts them; task rows, notices, and
+exported diagnostics never receive the raw values. Free-form headers may not
+carry `Cookie:` or `Authorization:`; those secrets must use the dedicated fields.
+
+**Conflict rule:** The existing Keep both / Reject / Overwrite control remains
+the authoritative add-time file-conflict policy (D-008). Advanced options never
+override it. Multi-value `header` pairs are collapsed into a JSON string array
+before `aria2.addUri`.
+
+**Clipboard rule:** Standard paste into the URL field remains the handoff path.
+A separate browser-extension protocol is deferred.
+
+**Evidence:**
+
+- aria2 RPC accepts per-download options including multi-value `header`,
+  `referer`, `user-agent`, `http-user`/`http-passwd`, and `checksum`:
+  https://aria2.github.io/manual/en/html/aria2c.html
+- Motrix exposes advanced headers/referer/UA/cookie controls on its new-task
+  form rather than a free-form option bag.
+- AriaNg maps sensitive option keys separately and keeps them out of ordinary
+  task presentation.
+
 ## Task Matrix
 
 Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
@@ -712,9 +780,14 @@ Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
 - [x] `TASK-001` Add duplicate detection, source/path display, open-file/open-
   folder actions, disk/permission/path-length error details, and the
   post-metadata output-conflict surfacing defined in D-019.
-- [ ] `RPC-001` Extend the typed RPC adapter for addTorrent/addMetalink,
+- [x] `RPC-001` Extend the typed RPC adapter for addTorrent/addMetalink,
   getUris/getPeers/getServers, get/changeOption, changePosition, global
-  options, force operations, and multicall where needed.
+  options, force operations, and multicall where needed. Force
+  pause/remove/pause-all are gateway-backed with Unsupported defaults;
+  connection-details projections use `system.multicall` with nested-only
+  token injection; `system.listMethods` populates `EngineCapabilities.methods`;
+  and a typed task-option editor mutates `seed-ratio`/`seed-time` (with
+  `select-file` available on the same request contract).
 
 ### P2 - Platform and Long-Term Product Surface
 
@@ -764,7 +837,7 @@ details show sanitized source/directory/output fields, exact local-path
 validation, aria2 codes 9-18 with raw details, and managed-local Open download/
 Open folder actions that refetch exact-session details before touching the
 filesystem. External profiles expose the capability as unavailable rather than
-assuming their paths are local. `RPC-001` is the next active matrix slice.
+assuming their paths are local. `RPC-001` is now complete: force pause/remove (and force-pause-all) sit on the shared gateway with capability-safe Unsupported defaults; `system.multicall` batches on-demand URI/option/peer/server projections with nested-only authentication; `system.listMethods` feeds `EngineCapabilities.methods`; and the typed task-option editor applies seed-ratio/seed-time through `changeOption` with the same outcome-unknown reconciliation as other mutations. `HISTORY-001` is now complete: stopped-history state exposes loaded/total/next-offset, SyncHandle.load_more_stopped appends pages without dropping earlier ones, the status bar shows History loaded/total with single-flight Load more, and managed aria2 keeps 5000 terminal results in memory. `ADD-005` is now complete: typed advanced add controls cover referer, user-agent, custom headers, cookie, HTTP auth, and checksum for direct URL tasks; secrets stay redacted; multi-value headers collapse at the RPC boundary. Remaining P1 audit items and P2 platform work are next.
 The proxy slice includes schema migration, validated endpoint/bypass fields,
 masked password input, system credential storage, session-bound runtime apply,
 new-session reapply, and explicit clearing. `FILE-002` now has
@@ -812,14 +885,22 @@ several can be shared by more than one feature.
 
 ### P1 - Expected Download-Manager Completeness
 
-- [ ] `HISTORY-001` Define stopped-result retention and history behavior when
+- [x] `HISTORY-001` Define stopped-result retention and history behavior when
   aria2's result limit or session file is reached. Provide lazy loading with a
   clear loaded/total state, and decide which metadata survives an application
-  restart before SQLite history exists.
-- [ ] `ADD-005` Add source and request controls beyond a URL field: clipboard or
+  restart before SQLite history exists. Stopped results remain aria2-owned
+  (`tellStopped` / `numStoppedTotal`); managed local engines raise
+  `--max-download-result=5000`; the UI discloses loaded/total and single-flight
+  Load more appends contiguous pages (D-021). Restart survival is limited to
+  the aria2 session file until SQLite history exists.
+- [x] `ADD-005` Add source and request controls beyond a URL field: clipboard or
   browser handoff, custom headers/cookies/auth, referer and user-agent, checksum
   verification, output conflict policy, and optional scheduling. Keep secrets
-  out of task rows, logs, and exported diagnostics.
+  out of task rows, logs, and exported diagnostics. Collapsed Advanced section
+  for direct-URI tasks only (D-022): typed referer/UA/headers/cookie/HTTP
+  auth/checksum; secure secret fields; existing Keep both/Reject/Overwrite
+  policy retained; scheduling deferred; multi-value headers collapsed for
+  `aria2.addUri`.
 - [ ] `RATE-002` Expose capability-aware transfer policy controls beyond a
   single speed limit: connection and split counts, piece/file allocation and
   integrity-check policy, and pause/resume scheduling. Each control must state
@@ -914,5 +995,18 @@ acceptance outcomes overlap.
 | 2026-07-21 | `TASK-001`, final `BT-001` checkpoint | `cargo test --workspace --no-fail-fast` | Pass - 250 passed, 12 ignored; adds stable sparse-refresh metadata, normalized URL/Magnet/Torrent duplicate matching, existing-task focus, sanitized source fields, aria2 code 9-18 classification with raw details, managed-local post-details path validation, safe process-argument path opening, and external-profile capability gating |
 | 2026-07-21 | `TASK-001`, final `BT-001` checkpoint | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 | 2026-07-21 | `TASK-001` live regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored --nocapture` | Pass - all 10 real aria2 flows; authenticated state, restart recovery, command/removal, proxy, queue, limits, metadata upload, task details, explicit seeding, and cleanup remain green after the task/source/path changes |
+
+| 2026-07-21 | `RPC-001` | `cargo test --workspace --no-fail-fast` | Pass - 257 passed, 13 ignored; adds force pause/remove/pause-all gateway forwarding, typed seed-option changeOption mapping and validation, multicall decode/redaction, nested-only multicall authentication, and listMethods capability probe |
+| 2026-07-21 | `RPC-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+| 2026-07-21 | `RPC-001` live force/multicall/options and regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored --nocapture` | Pass - all 11 real aria2 flows; listMethods published force/multicall methods, multicall returned independent authenticated projections, forcePause/forceRemove operated on a live task, changeOption seed-ratio/seed-time echoed through getOption, and all prior authentication, restart, queue, limits, details, seeding, command/removal, proxy, metadata-upload, and cleanup regressions remained green |
+
+| 2026-07-21 | `HISTORY-001` | `cargo test --workspace --no-fail-fast` | Pass - 259 passed, 13 ignored; adds StoppedHistoryState loaded/total/next-offset, contiguous Load more paging, periodic refresh of already-loaded pages, status-bar History loaded/total disclosure, single-flight Load more UI, managed `--max-download-result=5000`, and restart-retention decision D-021 |
+| 2026-07-21 | `HISTORY-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+
+| 2026-07-21 | `HISTORY-001` live regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored` | Pass - all 11 real aria2 flows remain green after stopped-history paging and managed max-download-result changes |
+
+| 2026-07-21 | `ADD-005` | `cargo test --workspace --no-fail-fast` | Pass - 265 passed, 13 ignored; adds typed advanced add options (referer/UA/headers/cookie/HTTP auth/checksum), secret redaction, multi-value header array collapse, collapsed Advanced add-dialog section, and URI-only validation (D-022) |
+| 2026-07-21 | `ADD-005` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+| 2026-07-21 | `ADD-005` live regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored` | Pass - all 11 real aria2 flows remain green after advanced add-option mapping and multi-header collapse |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.

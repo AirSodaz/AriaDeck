@@ -49,6 +49,32 @@ impl<T> AuthenticatedTransport<T> {
         }
         params
     }
+
+    /// aria2's `system.multicall` is special: the outer method takes only the
+    /// methods array (no token prefix), while each nested aria2 method still
+    /// requires its own `token:` secret as its first parameter. Prefixing the
+    /// outer call with a token makes aria2 reject parameter 0 as the wrong type.
+    fn inject_secret_for_method(&self, method: &str, mut params: Vec<Value>) -> Vec<Value> {
+        if method.starts_with("system.") {
+            if method == "system.multicall"
+                && let Some(Value::Array(methods)) = params.first_mut()
+                && self.secret.is_some()
+            {
+                for entry in methods.iter_mut() {
+                    if let Some(nested) = entry
+                        .as_object_mut()
+                        .and_then(|object| object.get_mut("params"))
+                        .and_then(Value::as_array_mut)
+                    {
+                        let nested_params = std::mem::take(nested);
+                        *nested = self.inject_secret(nested_params);
+                    }
+                }
+            }
+            return params;
+        }
+        self.inject_secret(params)
+    }
 }
 
 impl<T> fmt::Debug for AuthenticatedTransport<T> {
@@ -66,15 +92,17 @@ where
     T: RpcTransport,
 {
     async fn call(&self, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
-        self.inner.call(method, self.inject_secret(params)).await
+        self.inner
+            .call(method, self.inject_secret_for_method(method, params))
+            .await
     }
 
     async fn batch(&self, calls: Vec<RpcCall>) -> Result<Vec<Result<Value, RpcError>>, RpcError> {
         let calls = calls
             .into_iter()
             .map(|call| RpcCall {
+                params: self.inject_secret_for_method(&call.method, call.params),
                 method: call.method,
-                params: self.inject_secret(call.params),
             })
             .collect();
         self.inner.batch(calls).await
@@ -84,6 +112,8 @@ where
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
+
+    use serde_json::json;
 
     use super::*;
 
@@ -125,5 +155,42 @@ mod tests {
         assert_eq!(params[0], Value::String("token:highly-sensitive".into()));
         assert_eq!(params[1], Value::String("argument".into()));
         assert!(!format!("{transport:?}").contains("highly-sensitive"));
+    }
+
+    #[tokio::test]
+    async fn multicall_injects_secret_only_into_nested_methods() {
+        let transport = AuthenticatedTransport::new(
+            RecordingTransport::default(),
+            Some(RpcSecret::new("highly-sensitive")),
+        );
+
+        if let Err(error) = transport
+            .call(
+                "system.multicall",
+                vec![Value::Array(vec![json!({
+                    "methodName": "aria2.getUris",
+                    "params": ["0000000000000001"],
+                })])],
+            )
+            .await
+        {
+            panic!("recording multicall failed: {error}");
+        }
+
+        let params = transport
+            .inner()
+            .params
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Outer multicall params must remain a one-element methods array.
+        assert_eq!(params.len(), 1);
+        let nested = params[0]
+            .as_array()
+            .and_then(|methods| methods.first())
+            .and_then(|entry| entry.get("params"))
+            .and_then(Value::as_array)
+            .expect("nested multicall params");
+        assert_eq!(nested[0], Value::String("token:highly-sensitive".into()));
+        assert_eq!(nested[1], Value::String("0000000000000001".into()));
     }
 }

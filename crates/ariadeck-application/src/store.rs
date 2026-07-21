@@ -18,6 +18,20 @@ pub enum TaskCollection {
     Stopped,
 }
 
+/// Progress of stopped-result pages loaded from aria2 into the local cache.
+///
+/// `total` is aria2's in-memory result count (`numStoppedTotal`), which is
+/// itself bounded by the engine's `--max-download-result` setting. AriaDeck
+/// does not invent a second history store; it pages what the engine still
+/// holds and discloses when more pages remain.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StoppedHistoryState {
+    pub loaded: usize,
+    pub total: Option<usize>,
+    pub next_offset: usize,
+    pub can_load_more: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TaskFieldPatch {
     pub gid: Gid,
@@ -166,6 +180,52 @@ impl DownloadStore {
     #[must_use]
     pub fn stopped_total(&self) -> Option<usize> {
         self.stopped_total
+    }
+
+    /// Distinct stopped GIDs currently held in the local page cache.
+    #[must_use]
+    pub fn stopped_loaded(&self) -> usize {
+        self.stopped_order.len()
+    }
+
+    /// Next `tellStopped` offset for a contiguous page append.
+    ///
+    /// Pages are stored by their starting offset. When earlier pages have been
+    /// loaded without a gap, this is the number of distinct loaded GIDs. When a
+    /// gap exists, the lowest missing offset is returned so the caller can fill
+    /// it before extending further.
+    #[must_use]
+    pub fn next_stopped_offset(&self) -> usize {
+        let mut expected = 0;
+        for (offset, page) in &self.stopped_pages {
+            if *offset > expected {
+                return expected;
+            }
+            expected = expected.saturating_add(page.len());
+        }
+        expected
+    }
+
+    /// Whether another stopped page can be requested from the engine.
+    #[must_use]
+    pub fn can_load_more_stopped(&self) -> bool {
+        match self.stopped_total {
+            Some(total) => self.next_stopped_offset() < total,
+            // Before the first authoritative total arrives, only request the
+            // initial page. Further pages wait for `numStoppedTotal`.
+            None => self.stopped_pages.is_empty(),
+        }
+    }
+
+    /// Snapshot of stopped-history loading progress for UI disclosure.
+    #[must_use]
+    pub fn stopped_history(&self) -> StoppedHistoryState {
+        StoppedHistoryState {
+            loaded: self.stopped_loaded(),
+            total: self.stopped_total,
+            next_offset: self.next_stopped_offset(),
+            can_load_more: self.can_load_more_stopped(),
+        }
     }
 
     /// Application-observed seeding duration for the current engine session.
@@ -652,6 +712,55 @@ mod tests {
         assert_eq!(patch.updated.len(), 1);
         assert_eq!(store.waiting_order, vec![Gid::from_u64(1)]);
         assert!(store.task(Gid::from_u64(2)).is_none());
+    }
+
+    #[test]
+    fn stopped_history_tracks_loaded_total_and_next_page_offset() {
+        let mut store = store();
+        assert_eq!(
+            store.stopped_history(),
+            crate::StoppedHistoryState {
+                loaded: 0,
+                total: None,
+                next_offset: 0,
+                can_load_more: true,
+            }
+        );
+
+        let first = vec![
+            task(10, DownloadStatus::Complete, "ten"),
+            task(11, DownloadStatus::Complete, "eleven"),
+        ];
+        store
+            .apply_stopped_page(generation(), 0, Some(5), first)
+            .expect("first page");
+        assert_eq!(
+            store.stopped_history(),
+            crate::StoppedHistoryState {
+                loaded: 2,
+                total: Some(5),
+                next_offset: 2,
+                can_load_more: true,
+            }
+        );
+
+        let second = vec![
+            task(12, DownloadStatus::Error, "twelve"),
+            task(13, DownloadStatus::Complete, "thirteen"),
+            task(14, DownloadStatus::Complete, "fourteen"),
+        ];
+        store
+            .apply_stopped_page(generation(), 2, Some(5), second)
+            .expect("second page");
+        assert_eq!(
+            store.stopped_history(),
+            crate::StoppedHistoryState {
+                loaded: 5,
+                total: Some(5),
+                next_offset: 5,
+                can_load_more: false,
+            }
+        );
     }
 
     #[test]

@@ -130,10 +130,21 @@ impl DownloadSyncSession for RpcSyncSession {
         self.remember_tasks(&snapshot.waiting);
         self.remember_tasks(&snapshot.stopped);
         let total = usize::try_from(snapshot.global_stat.stopped_tasks).unwrap_or(usize::MAX);
+        let methods = match self.client.list_methods().await {
+            Ok(methods) => methods,
+            Err(error) => {
+                // listMethods is optional; a remote that omits it still works
+                // for every method AriaDeck already uses. Keep methods empty
+                // so capability checks treat support as unknown.
+                tracing::debug!(error = %error, "system.listMethods unavailable");
+                Vec::new()
+            }
+        };
         Ok(InitialSyncSnapshot {
             capabilities: EngineCapabilities {
                 version: snapshot.version.version,
                 enabled_features: snapshot.version.enabled_features,
+                methods,
             },
             global_stat: snapshot.global_stat,
             live: LiveSyncSnapshot {

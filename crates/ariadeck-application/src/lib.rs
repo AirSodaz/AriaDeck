@@ -8,9 +8,10 @@ mod sync;
 mod view;
 
 pub use commands::{
-    AddDownloadRequest, AddDownloadSource, AppCommand, ApplicationError, ApplicationErrorCode,
-    CommandItem, CommandOutcome, CommandService, DownloadProxyConfig, DownloadProxyMode,
-    FileConflictPolicy, ItemFailure, MoveTaskInQueueRequest, QueueMove, RemoveTasksRequest,
+    AddDownloadAdvancedOptions, AddDownloadRequest, AddDownloadSource, AppCommand,
+    ApplicationError, ApplicationErrorCode, CommandItem, CommandOutcome, CommandService,
+    DownloadProxyConfig, DownloadProxyMode, FileConflictPolicy, ItemFailure,
+    MoveTaskInQueueRequest, QueueMove, RemoveTasksRequest, SetTaskOptionsRequest,
     SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, TaskCommandContext, TaskRemovalScope,
 };
 pub use history::{DEFAULT_SPEED_HISTORY_CAPACITY, SpeedHistory, SpeedHistoryError, SpeedSample};
@@ -22,7 +23,8 @@ pub use ports::{
     TaskRemovalTarget,
 };
 pub use store::{
-    DownloadStore, OrderPatch, StoreError, StorePatch, TaskCollection, TaskFieldPatch,
+    DownloadStore, OrderPatch, StoppedHistoryState, StoreError, StorePatch, TaskCollection,
+    TaskFieldPatch,
 };
 pub use sync::{
     ActivityMode, ConnectedSyncSession, CoordinatorConfig, DownloadSyncConnector,

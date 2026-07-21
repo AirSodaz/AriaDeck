@@ -172,6 +172,7 @@ async fn applies_global_and_per_task_speed_limits_on_live_aria2() -> Result<(), 
         destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
         file_conflict: ariadeck_application::FileConflictPolicy::default(),
         selected_file_indices: None,
+        advanced: Default::default(),
         options: vec![("pause".into(), "true".into())],
     };
     let gid = client.add_uri(&request).await?;
@@ -231,6 +232,7 @@ async fn projects_task_connection_details_on_live_aria2() -> Result<(), TestErro
         destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
         file_conflict: ariadeck_application::FileConflictPolicy::default(),
         selected_file_indices: None,
+        advanced: Default::default(),
         options: vec![
             ("pause".into(), "true".into()),
             ("max-download-limit".into(), "1M".into()),
@@ -271,6 +273,7 @@ async fn projects_task_connection_details_on_live_aria2() -> Result<(), TestErro
         destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
         file_conflict: ariadeck_application::FileConflictPolicy::default(),
         selected_file_indices: None,
+        advanced: Default::default(),
         options: vec![("split".into(), "1".into())],
     };
     let active_gid = client.add_uri(&active_request).await?;
@@ -323,6 +326,7 @@ async fn reorders_queue_and_applies_global_pause_resume_on_live_aria2() -> Resul
             destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
             file_conflict: ariadeck_application::FileConflictPolicy::default(),
             selected_file_indices: None,
+            advanced: Default::default(),
             options: vec![("pause".into(), "true".into())],
         };
         gids.push(client.add_uri(&request).await?);
@@ -417,6 +421,7 @@ async fn uploads_torrent_and_metalink_metadata_to_live_aria2() -> Result<(), Tes
             destination: None,
             file_conflict: ariadeck_application::FileConflictPolicy::Reject,
             selected_file_indices: Some(vec![2]),
+            advanced: Default::default(),
             options: Vec::new(),
         })
         .await?;
@@ -432,6 +437,7 @@ async fn uploads_torrent_and_metalink_metadata_to_live_aria2() -> Result<(), Tes
             destination: None,
             file_conflict: ariadeck_application::FileConflictPolicy::Reject,
             selected_file_indices: Some(vec![2]),
+            advanced: Default::default(),
             options: Vec::new(),
         })
         .await?;
@@ -530,6 +536,7 @@ async fn projects_explicit_seeding_state_and_stop_rules_on_live_aria2() -> Resul
             destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
             file_conflict: ariadeck_application::FileConflictPolicy::Overwrite,
             selected_file_indices: None,
+            advanced: Default::default(),
             options: vec![
                 ("check-integrity".into(), "true".into()),
                 ("seed-ratio".into(), "1000.0".into()),
@@ -683,6 +690,7 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
                 destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
                 file_conflict: ariadeck_application::FileConflictPolicy::default(),
                 selected_file_indices: None,
+                advanced: Default::default(),
                 options: vec![
                     ("out".into(), kept_name.into()),
                     ("split".into(), "1".into()),
@@ -714,6 +722,7 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
                 destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
                 file_conflict: ariadeck_application::FileConflictPolicy::AutoRename,
                 selected_file_indices: None,
+                advanced: Default::default(),
                 options: vec![
                     ("out".into(), kept_name.into()),
                     ("split".into(), "1".into()),
@@ -778,6 +787,7 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
                 destination: None,
                 file_conflict: ariadeck_application::FileConflictPolicy::default(),
                 selected_file_indices: None,
+                advanced: Default::default(),
                 options: vec![("pause".into(), "true".into())],
             }),
         )
@@ -840,6 +850,7 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
                 destination: None,
                 file_conflict: ariadeck_application::FileConflictPolicy::default(),
                 selected_file_indices: None,
+                advanced: Default::default(),
                 options: vec![("pause".into(), "true".into())],
             }),
         )
@@ -879,6 +890,7 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
                 destination: None,
                 file_conflict: ariadeck_application::FileConflictPolicy::default(),
                 selected_file_indices: None,
+                advanced: Default::default(),
                 options: Vec::new(),
             }),
         )
@@ -960,6 +972,7 @@ async fn session_bound_command_flow_handles_both_removal_contracts() -> Result<(
                 destination: None,
                 file_conflict: ariadeck_application::FileConflictPolicy::default(),
                 selected_file_indices: None,
+                advanced: Default::default(),
                 options: vec![
                     ("connect-timeout".into(), "1".into()),
                     ("max-tries".into(), "1".into()),
@@ -1260,6 +1273,115 @@ fn single_succeeded_task(outcome: CommandOutcome) -> Result<TaskIdentity, TestEr
         return Err(std::io::Error::other("add command returned no task identity").into());
     };
     Ok(identity)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires ARIA2C_PATH and launches a real local aria2 process"]
+async fn force_ops_multicall_and_typed_seed_options_on_live_aria2() -> Result<(), TestError> {
+    let executable = env::var("ARIA2C_PATH")?;
+    let data_dir = TempDir::new()?;
+    let port = reserve_loopback_port()?;
+    let secret = Uuid::new_v4().simple().to_string();
+    let mut process = ChildGuard::spawn(Path::new(&executable), data_dir.path(), port, &secret)?;
+    let endpoint = Url::parse(&format!("ws://127.0.0.1:{port}/jsonrpc"))?;
+    let transport = connect_with_retry(endpoint, Duration::from_secs(5)).await?;
+    let client = Aria2Client::new(AuthenticatedTransport::new(
+        transport.clone(),
+        Some(RpcSecret::new(secret)),
+    ));
+
+    // Capability probe: every supported aria2 build publishes the force and
+    // multicall methods AriaDeck now depends on for RPC-001.
+    let methods = client.list_methods().await?;
+    for required in [
+        "aria2.forcePause",
+        "aria2.forceRemove",
+        "aria2.forcePauseAll",
+        "system.multicall",
+        "system.listMethods",
+    ] {
+        assert!(
+            methods.iter().any(|method| method == required),
+            "live aria2 must publish {required}"
+        );
+    }
+
+    // Keep the fixture paused so changeOption/getOption/multicall have a
+    // stable live task. Force operations need a separate active task because
+    // aria2 rejects forcePause on an already-paused GID and a dead endpoint
+    // can leave Active almost immediately.
+    let paused = client
+        .add_uri(&AddDownloadRequest {
+            source: AddDownloadSource::Uris(vec!["http://127.0.0.1:9/force-ops-paused.bin".into()]),
+            destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
+            file_conflict: ariadeck_application::FileConflictPolicy::default(),
+            selected_file_indices: None,
+            advanced: Default::default(),
+            options: vec![("pause".into(), "true".into())],
+        })
+        .await?;
+
+    // Typed seed-option mutation uses the same changeOption path as the
+    // task-option editor. aria2 accepts the values on a paused HTTP task even
+    // though they only take effect for BitTorrent; getOption must echo them.
+    client
+        .change_options(
+            paused,
+            &[
+                ("seed-ratio".into(), "1.5".into()),
+                ("seed-time".into(), "30".into()),
+            ],
+        )
+        .await?;
+    let options = client.get_options(paused).await?;
+    assert_eq!(
+        options.get("seed-ratio").and_then(|value| value.as_str()),
+        Some("1.5")
+    );
+    assert_eq!(
+        options.get("seed-time").and_then(|value| value.as_str()),
+        Some("30")
+    );
+
+    // Multicall must return independent per-call results under authentication.
+    let multicall = client
+        .multicall(vec![
+            ariadeck_rpc::RpcCall::new(
+                "aria2.getUris",
+                vec![serde_json::json!(paused.to_string())],
+            ),
+            ariadeck_rpc::RpcCall::new(
+                "aria2.getOption",
+                vec![serde_json::json!(paused.to_string())],
+            ),
+        ])
+        .await?;
+    assert_eq!(multicall.len(), 2);
+    assert!(multicall[0].is_ok());
+    assert!(multicall[1].is_ok());
+
+    let active = client
+        .add_uri(&AddDownloadRequest {
+            source: AddDownloadSource::Uris(vec!["http://127.0.0.1:9/force-ops-active.bin".into()]),
+            destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
+            file_conflict: ariadeck_application::FileConflictPolicy::default(),
+            selected_file_indices: None,
+            advanced: Default::default(),
+            options: Vec::new(),
+        })
+        .await?;
+    client.force_pause(active).await?;
+    client.force_remove(active).await?;
+    client.remove_download_result(active).await.ok();
+
+    client.force_remove(paused).await?;
+    client.remove_download_result(paused).await.ok();
+
+    client.shutdown().await?;
+    transport.close().await;
+    let status = process.wait_for_exit(Duration::from_secs(5))?;
+    assert!(status.success());
+    Ok(())
 }
 
 async fn wait_for_task_status(

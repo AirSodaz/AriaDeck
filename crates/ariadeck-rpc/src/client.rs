@@ -249,6 +249,13 @@ where
             .await
     }
 
+    /// Force-pause skips graceful peer/server teardown. Prefer ordinary pause;
+    /// use force only when a hung active transfer will not leave Active.
+    pub async fn force_pause(&self, gid: Gid) -> Result<Gid, RpcError> {
+        self.call_gid("aria2.forcePause", vec![json!(gid.to_string())])
+            .await
+    }
+
     pub async fn resume(&self, gid: Gid) -> Result<Gid, RpcError> {
         self.call_gid("aria2.unpause", vec![json!(gid.to_string())])
             .await
@@ -256,6 +263,10 @@ where
 
     pub async fn pause_all(&self) -> Result<(), RpcError> {
         self.call_ok("aria2.pauseAll", Vec::new()).await
+    }
+
+    pub async fn force_pause_all(&self) -> Result<(), RpcError> {
+        self.call_ok("aria2.forcePauseAll", Vec::new()).await
     }
 
     pub async fn resume_all(&self) -> Result<(), RpcError> {
@@ -320,9 +331,20 @@ where
             .await
     }
 
+    /// Force-remove skips graceful peer/server teardown for a live download.
+    /// The stopped result still remains until `removeDownloadResult`.
+    pub async fn force_remove(&self, gid: Gid) -> Result<Gid, RpcError> {
+        self.call_gid("aria2.forceRemove", vec![json!(gid.to_string())])
+            .await
+    }
+
     pub async fn remove_download_result(&self, gid: Gid) -> Result<(), RpcError> {
         self.call_ok("aria2.removeDownloadResult", vec![json!(gid.to_string())])
             .await
+    }
+
+    pub async fn purge_download_result(&self) -> Result<(), RpcError> {
+        self.call_ok("aria2.purgeDownloadResult", Vec::new()).await
     }
 
     pub async fn task_details(&self, gid: Gid) -> Result<TaskDetails, RpcError> {
@@ -347,6 +369,11 @@ where
     /// run only for `active` tasks and only for the matching source kind. A
     /// projection that aria2 cannot serve (for example peers on a non-torrent)
     /// is treated as empty rather than an error.
+    ///
+    /// When more than one projection is needed the adapter uses
+    /// `system.multicall` so a single RPC round-trip returns every independent
+    /// result, including per-item remote failures that must stay empty rather
+    /// than fail the whole drawer.
     pub async fn connection_details(
         &self,
         gid: Gid,
@@ -354,86 +381,108 @@ where
         is_bittorrent: bool,
     ) -> Result<TaskConnectionDetails, RpcError> {
         let mut details = TaskConnectionDetails::new(gid);
-        details.uris = self.get_detail_uris(gid).await?;
-        details.options = self.get_option_entries(gid).await?;
-        if active {
+        let gid_param = json!(gid.to_string());
+        let mut calls = vec![
+            crate::RpcCall::new("aria2.getUris", vec![gid_param.clone()]),
+            crate::RpcCall::new("aria2.getOption", vec![gid_param.clone()]),
+        ];
+        let active_kind = if active {
             if is_bittorrent {
-                details.peers = match self.get_peers(gid).await {
-                    Ok(peers) => peers,
-                    Err(RpcError::Remote { .. }) => Vec::new(),
-                    Err(error) => return Err(error),
-                };
+                calls.push(crate::RpcCall::new("aria2.getPeers", vec![gid_param]));
+                Some(ActiveProjectionKind::Peers)
             } else {
-                details.servers = match self.get_servers(gid).await {
-                    Ok(servers) => servers,
-                    Err(RpcError::Remote { .. }) => Vec::new(),
-                    Err(error) => return Err(error),
-                };
+                calls.push(crate::RpcCall::new("aria2.getServers", vec![gid_param]));
+                Some(ActiveProjectionKind::Servers)
+            }
+        } else {
+            None
+        };
+
+        let results = self.multicall(calls).await?;
+        let mut results = results.into_iter();
+        details.uris = decode_detail_uris(next_multicall_result(&mut results, "aria2.getUris")?)?;
+        details.options =
+            decode_option_entries(next_multicall_result(&mut results, "aria2.getOption")?)?;
+        if let Some(kind) = active_kind {
+            let method = match kind {
+                ActiveProjectionKind::Peers => "aria2.getPeers",
+                ActiveProjectionKind::Servers => "aria2.getServers",
+            };
+            match next_multicall_result(&mut results, method) {
+                Ok(value) => match kind {
+                    ActiveProjectionKind::Peers => {
+                        details.peers = decode_peers(value)?;
+                    }
+                    ActiveProjectionKind::Servers => {
+                        details.servers = decode_servers(value)?;
+                    }
+                },
+                Err(RpcError::Remote { .. }) => {}
+                Err(error) => return Err(error),
             }
         }
         Ok(details)
     }
 
-    async fn get_detail_uris(&self, gid: Gid) -> Result<Vec<ariadeck_domain::TaskUri>, RpcError> {
-        const METHOD: &str = "aria2.getUris";
-        let value = self
-            .transport
-            .call(METHOD, vec![json!(gid.to_string())])
-            .await?;
-        Ok(decode::<Vec<DetailUriWire>>(METHOD, value)?
-            .into_iter()
-            .map(DetailUriWire::into_domain)
-            .filter(|uri| !uri.uri.is_empty())
-            .collect())
-    }
-
-    async fn get_servers(&self, gid: Gid) -> Result<Vec<ariadeck_domain::TaskServer>, RpcError> {
-        const METHOD: &str = "aria2.getServers";
-        let value = self
-            .transport
-            .call(METHOD, vec![json!(gid.to_string())])
-            .await?;
-        let groups = decode::<Vec<ServerGroupWire>>(METHOD, value)?;
-        let mut servers = Vec::new();
-        for group in groups {
-            servers.extend(group.into_domain(METHOD)?);
+    /// Execute independent methods through aria2's `system.multicall`.
+    ///
+    /// Unlike a JSON-RPC request array, multicall returns one envelope whose
+    /// result array can mix successful values and per-call remote errors. Use
+    /// this for read projections that must stay available when one optional
+    /// method fails (for example peers while a task leaves Active).
+    pub async fn multicall(
+        &self,
+        calls: Vec<crate::RpcCall>,
+    ) -> Result<Vec<Result<Value, RpcError>>, RpcError> {
+        if calls.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(servers)
-    }
-
-    async fn get_peers(&self, gid: Gid) -> Result<Vec<ariadeck_domain::TaskPeer>, RpcError> {
-        const METHOD: &str = "aria2.getPeers";
-        let value = self
-            .transport
-            .call(METHOD, vec![json!(gid.to_string())])
-            .await?;
-        decode::<Vec<PeerWire>>(METHOD, value)?
-            .into_iter()
-            .map(|peer| peer.into_domain(METHOD))
-            .collect()
-    }
-
-    async fn get_option_entries(&self, gid: Gid) -> Result<Vec<TaskOptionEntry>, RpcError> {
-        let options = self.get_options(gid).await?;
-        let mut entries = options
-            .into_iter()
-            .filter_map(|(key, value)| {
-                if task_option_is_sensitive(&key) {
-                    return Some(TaskOptionEntry {
-                        key,
-                        value: String::new(),
-                        redacted: true,
-                    });
-                }
-                value.as_str().map(|value| TaskOptionEntry {
-                    key,
-                    value: value.to_owned(),
-                    redacted: false,
+        const METHOD: &str = "system.multicall";
+        let methods = calls
+            .iter()
+            .map(|call| {
+                json!({
+                    "methodName": call.method,
+                    "params": call.params,
                 })
             })
             .collect::<Vec<_>>();
-        entries.sort_by(|left, right| left.key.cmp(&right.key));
-        Ok(entries)
+        let value = self
+            .transport
+            .call(METHOD, vec![Value::Array(methods)])
+            .await?;
+        let results = decode::<Vec<Value>>(METHOD, value)?;
+        if results.len() != calls.len() {
+            return Err(RpcError::InvalidData {
+                method: METHOD.into(),
+                field: "result".into(),
+                message: format!(
+                    "expected {} multicall results, got {}",
+                    calls.len(),
+                    results.len()
+                ),
+            });
+        }
+        Ok(results
+            .into_iter()
+            .zip(calls.into_iter().map(|call| call.method))
+            .map(|(entry, method)| decode_multicall_entry(method, entry))
+            .collect())
+    }
+
+    /// Discover the method names published by the connected aria2 process.
+    pub async fn list_methods(&self) -> Result<Vec<String>, RpcError> {
+        const METHOD: &str = "system.listMethods";
+        let value = self.transport.call(METHOD, Vec::new()).await?;
+        let methods = decode::<Vec<String>>(METHOD, value)?;
+        if methods.is_empty() {
+            return Err(RpcError::InvalidData {
+                method: METHOD.into(),
+                field: "result".into(),
+                message: "expected at least one method name".into(),
+            });
+        }
+        Ok(methods)
     }
 
     pub async fn shutdown(&self) -> Result<(), RpcError> {
@@ -696,12 +745,26 @@ fn apply_file_conflict_policy(options: &mut Map<String, Value>, policy: FileConf
 }
 
 fn request_options(request: &AddDownloadRequest) -> Map<String, Value> {
-    let mut options = request
-        .options
-        .iter()
-        .cloned()
-        .map(|(key, value)| (key, Value::String(value)))
-        .collect::<Map<_, _>>();
+    let mut options = Map::new();
+    // aria2 accepts repeated option names for multi-value keys such as
+    // `header`. Collapse same-key pairs into a string array so Cookie/Referer
+    // and custom headers can travel together (ADD-005).
+    for (key, value) in &request.options {
+        match options.get_mut(key) {
+            Some(Value::String(existing)) => {
+                let previous = existing.clone();
+                *options.get_mut(key).expect("key exists") =
+                    Value::Array(vec![Value::String(previous), Value::String(value.clone())]);
+            }
+            Some(Value::Array(values)) => values.push(Value::String(value.clone())),
+            Some(_) => {
+                options.insert(key.clone(), Value::String(value.clone()));
+            }
+            None => {
+                options.insert(key.clone(), Value::String(value.clone()));
+            }
+        }
+    }
     apply_file_conflict_policy(&mut options, request.file_conflict);
     if let Some(destination) = &request.destination {
         options.insert("dir".into(), Value::String(destination.as_str().to_owned()));
@@ -750,6 +813,121 @@ fn next_batch_result(
     results.next().ok_or_else(|| {
         RpcError::Protocol(format!("batch response is missing result for {method}"))
     })?
+}
+
+fn next_multicall_result(
+    results: &mut impl Iterator<Item = Result<Value, RpcError>>,
+    method: &str,
+) -> Result<Value, RpcError> {
+    results.next().ok_or_else(|| {
+        RpcError::Protocol(format!("multicall response is missing result for {method}"))
+    })?
+}
+
+enum ActiveProjectionKind {
+    Peers,
+    Servers,
+}
+
+fn decode_multicall_entry(method: String, entry: Value) -> Result<Value, RpcError> {
+    // aria2 wraps a successful multicall item as a one-element array and an
+    // error item as an object with code/message, matching the RPC manual.
+    if let Value::Array(mut values) = entry {
+        if values.len() == 1 {
+            return Ok(values.remove(0));
+        }
+        return Err(RpcError::InvalidData {
+            method: "system.multicall".into(),
+            field: method,
+            message: "expected a one-element success array".into(),
+        });
+    }
+    if let Value::Object(mut object) = entry {
+        let code = object
+            .remove("code")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(1);
+        let message = object
+            .remove("message")
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_else(|| format!("{method} failed inside multicall"));
+        return Err(RpcError::Remote {
+            code,
+            message,
+            data: object.remove("data"),
+        });
+    }
+    Err(RpcError::InvalidData {
+        method: "system.multicall".into(),
+        field: method,
+        message: "expected a success array or an error object".into(),
+    })
+}
+
+fn decode_detail_uris(value: Value) -> Result<Vec<ariadeck_domain::TaskUri>, RpcError> {
+    const METHOD: &str = "aria2.getUris";
+    Ok(decode::<Vec<DetailUriWire>>(METHOD, value)?
+        .into_iter()
+        .map(DetailUriWire::into_domain)
+        .filter(|uri| !uri.uri.is_empty())
+        .collect())
+}
+
+fn decode_servers(value: Value) -> Result<Vec<ariadeck_domain::TaskServer>, RpcError> {
+    const METHOD: &str = "aria2.getServers";
+    let groups = decode::<Vec<ServerGroupWire>>(METHOD, value)?;
+    let mut servers = Vec::new();
+    for group in groups {
+        servers.extend(group.into_domain(METHOD)?);
+    }
+    Ok(servers)
+}
+
+fn decode_peers(value: Value) -> Result<Vec<ariadeck_domain::TaskPeer>, RpcError> {
+    const METHOD: &str = "aria2.getPeers";
+    decode::<Vec<PeerWire>>(METHOD, value)?
+        .into_iter()
+        .map(|peer| peer.into_domain(METHOD))
+        .collect()
+}
+
+fn decode_option_entries(value: Value) -> Result<Vec<TaskOptionEntry>, RpcError> {
+    const METHOD: &str = "aria2.getOption";
+    let options = decode::<Map<String, Value>>(METHOD, value)?;
+    for (key, value) in &options {
+        let valid = matches!(value, Value::String(_))
+            || matches!(value, Value::Array(values) if values.iter().all(Value::is_string));
+        if !valid {
+            return Err(RpcError::InvalidData {
+                method: METHOD.into(),
+                field: key.clone(),
+                message: "expected a string or an array of strings".into(),
+            });
+        }
+    }
+    decode_option_map(options)
+}
+
+fn decode_option_map(options: Map<String, Value>) -> Result<Vec<TaskOptionEntry>, RpcError> {
+    let mut entries = options
+        .into_iter()
+        .filter_map(|(key, value)| {
+            if task_option_is_sensitive(&key) {
+                return Some(TaskOptionEntry {
+                    key,
+                    value: String::new(),
+                    redacted: true,
+                });
+            }
+            value.as_str().map(|value| TaskOptionEntry {
+                key,
+                value: value.to_owned(),
+                redacted: false,
+            })
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.key.cmp(&right.key));
+    Ok(entries)
 }
 
 fn decode_tasks(method: &str, value: Value) -> Result<Vec<TaskSnapshot>, RpcError> {
@@ -824,6 +1002,13 @@ where
             .map_err(map_mutation_error)
     }
 
+    async fn force_pause(&self, gid: Gid) -> Result<(), GatewayError> {
+        Aria2Client::force_pause(self, gid)
+            .await
+            .map(|_| ())
+            .map_err(map_mutation_error)
+    }
+
     async fn resume(&self, gid: Gid) -> Result<(), GatewayError> {
         Aria2Client::resume(self, gid)
             .await
@@ -833,6 +1018,12 @@ where
 
     async fn pause_all(&self) -> Result<(), GatewayError> {
         Aria2Client::pause_all(self)
+            .await
+            .map_err(map_mutation_error)
+    }
+
+    async fn force_pause_all(&self) -> Result<(), GatewayError> {
+        Aria2Client::force_pause_all(self)
             .await
             .map_err(map_mutation_error)
     }
@@ -881,6 +1072,22 @@ where
                 }
                 Err(error) => Err(error),
             },
+            TaskRemovalTarget::DownloadResult => self.remove_download_result(gid).await,
+        }
+        .map_err(map_mutation_error)
+    }
+
+    async fn force_remove(&self, gid: Gid, target: TaskRemovalTarget) -> Result<(), GatewayError> {
+        match target {
+            TaskRemovalTarget::LiveTask => match Aria2Client::force_remove(self, gid).await {
+                Ok(_) => Ok(()),
+                Err(error) if live_task_became_stopped(&error) => {
+                    self.remove_download_result(gid).await
+                }
+                Err(error) => Err(error),
+            },
+            // A stopped result has no live peers to force-teardown; the ordinary
+            // result-removal path is the only supported contract.
             TaskRemovalTarget::DownloadResult => self.remove_download_result(gid).await,
         }
         .map_err(map_mutation_error)
@@ -1111,6 +1318,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn add_uri_collapses_repeated_headers_into_an_array() {
+        let transport = ScriptedTransport::new([Ok(json!("000000000000000a"))]);
+        let client = Aria2Client::new(transport);
+        let request = AddDownloadRequest {
+            source: AddDownloadSource::Uris(vec!["https://example.test/file".into()]),
+            destination: None,
+            file_conflict: FileConflictPolicy::Reject,
+            selected_file_indices: None,
+            advanced: Default::default(),
+            options: vec![
+                ("header".into(), "X-Token: one".into()),
+                ("header".into(), "Cookie: session=secret".into()),
+                ("referer".into(), "https://example.test/ref".into()),
+            ],
+        };
+
+        client.add_uri(&request).await.expect("addUri succeeds");
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(calls[0].0, "aria2.addUri");
+        assert_eq!(
+            calls[0].1[1]["header"],
+            json!(["X-Token: one", "Cookie: session=secret"])
+        );
+        assert_eq!(calls[0].1[1]["referer"], json!("https://example.test/ref"));
+    }
+
+    #[tokio::test]
     async fn add_uri_builds_options_without_losing_destination() {
         let transport = ScriptedTransport::new([Ok(json!("0000000000000009"))]);
         let client = Aria2Client::new(transport);
@@ -1122,6 +1360,7 @@ mod tests {
             destination: Some("D:/Downloads".into()),
             file_conflict: FileConflictPolicy::AutoRename,
             selected_file_indices: None,
+            advanced: Default::default(),
             options: vec![("max-download-limit".into(), "1M".into())],
         };
 
@@ -1164,6 +1403,7 @@ mod tests {
             destination: Some("/downloads".into()),
             file_conflict: FileConflictPolicy::Reject,
             selected_file_indices: Some(vec![1, 2, 3, 5]),
+            advanced: Default::default(),
             options: vec![("max-connection-per-server".into(), "4".into())],
         };
 
@@ -1198,6 +1438,7 @@ mod tests {
             destination: None,
             file_conflict: FileConflictPolicy::Reject,
             selected_file_indices: None,
+            advanced: Default::default(),
             options: Vec::new(),
         };
 
@@ -1226,6 +1467,7 @@ mod tests {
                 destination: None,
                 file_conflict: FileConflictPolicy::Reject,
                 selected_file_indices: None,
+                advanced: Default::default(),
                 options: Vec::new(),
             };
 
@@ -1337,6 +1579,7 @@ mod tests {
             destination: Some("/fallback".into()),
             file_conflict: FileConflictPolicy::default(),
             selected_file_indices: None,
+            advanced: Default::default(),
             options: Vec::new(),
         };
 
@@ -1390,6 +1633,7 @@ mod tests {
             destination: None,
             file_conflict: FileConflictPolicy::default(),
             selected_file_indices: None,
+            advanced: Default::default(),
             options: Vec::new(),
         };
         let query_error =
@@ -1590,25 +1834,33 @@ mod tests {
 
     #[tokio::test]
     async fn connection_details_loads_active_bittorrent_peers_and_redacts_sensitive_options() {
-        let transport = ScriptedTransport::new([
-            Ok(json!([
-                {"uri": "https://mirror-one.example/file", "status": "used"},
-                {"uri": "https://mirror-two.example/file", "status": "waiting"}
-            ])),
-            Ok(json!({
+        // Each successful multicall item is a one-element array around the
+        // method's ordinary result value (aria2 system.multicall contract).
+        let transport = ScriptedTransport::new([Ok(json!([
+            [[
+                {
+                    "uri": "https://mirror-one.example/file",
+                    "status": "used"
+                },
+                {
+                    "uri": "https://mirror-two.example/file",
+                    "status": "waiting"
+                }
+            ]],
+            [{
                 "max-download-limit": "1M",
                 "http-passwd": "must-not-leave-the-adapter",
                 "header": ["Cookie: session=secret"],
                 "all-proxy": "http://user:password@proxy.example:8080"
-            })),
-            Ok(json!([{
+            }],
+            [[{
                 "ip": "2001:db8::1",
                 "port": "6881",
                 "downloadSpeed": "1024",
                 "uploadSpeed": "512",
                 "seeder": "true"
-            }])),
-        ]);
+            }]]
+        ]))]);
         let client = Aria2Client::new(transport);
 
         let details = client
@@ -1646,26 +1898,33 @@ mod tests {
             .calls
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(calls[0].0, "system.multicall");
+        let methods = calls[0].1[0]
+            .as_array()
+            .expect("multicall methods array")
+            .iter()
+            .map(|entry| entry["methodName"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>();
         assert_eq!(
-            calls.iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
+            methods,
             vec!["aria2.getUris", "aria2.getOption", "aria2.getPeers"]
         );
     }
 
     #[tokio::test]
     async fn connection_details_loads_servers_only_for_active_non_bittorrent_tasks() {
-        let transport = ScriptedTransport::new([
-            Ok(json!([])),
-            Ok(json!({"split": "4"})),
-            Ok(json!([{
+        let transport = ScriptedTransport::new([Ok(json!([
+            [[]],
+            [{"split": "4"}],
+            [[{
                 "index": "1",
                 "servers": [{
                     "uri": "https://origin.example/file",
                     "currentUri": "https://cdn.example/file",
                     "downloadSpeed": "2048"
                 }]
-            }])),
-        ]);
+            }]]
+        ]))]);
         let client = Aria2Client::new(transport);
 
         let details = client
@@ -1682,12 +1941,22 @@ mod tests {
             .calls
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        assert_eq!(calls[2].0, "aria2.getServers");
+        assert_eq!(calls[0].0, "system.multicall");
+        let methods = calls[0].1[0]
+            .as_array()
+            .expect("multicall methods array")
+            .iter()
+            .map(|entry| entry["methodName"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            methods,
+            vec!["aria2.getUris", "aria2.getOption", "aria2.getServers"]
+        );
     }
 
     #[tokio::test]
     async fn connection_details_skips_active_only_projections_for_inactive_tasks() {
-        let transport = ScriptedTransport::new([Ok(json!([])), Ok(json!({}))]);
+        let transport = ScriptedTransport::new([Ok(json!([[[]], [{}]]))]);
         let client = Aria2Client::new(transport);
 
         let details = client
@@ -1702,20 +1971,23 @@ mod tests {
             .calls
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "system.multicall");
+        let methods = calls[0].1[0]
+            .as_array()
+            .expect("multicall methods array")
+            .iter()
+            .map(|entry| entry["methodName"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert_eq!(methods, vec!["aria2.getUris", "aria2.getOption"]);
     }
 
     #[tokio::test]
     async fn connection_details_treats_unavailable_active_only_projection_as_empty() {
-        let transport = ScriptedTransport::new([
-            Ok(json!([])),
-            Ok(json!({"split": "4"})),
-            Err(RpcError::Remote {
-                code: 1,
-                message: "GID is not found in active downloads".into(),
-                data: None,
-            }),
-        ]);
+        let transport = ScriptedTransport::new([Ok(json!([
+            [[]],
+            [{"split": "4"}],
+            {"code": 1, "message": "GID is not found in active downloads"}
+        ]))]);
         let client = Aria2Client::new(transport);
 
         let details = client
@@ -1725,6 +1997,60 @@ mod tests {
 
         assert!(details.peers.is_empty());
         assert_eq!(details.options[0].key, "split");
+    }
+
+    #[tokio::test]
+    async fn force_pause_and_force_remove_use_the_force_rpc_methods() {
+        let transport = ScriptedTransport::new([
+            Ok(json!("0000000000000009")),
+            Ok(json!("0000000000000009")),
+            Ok(json!("OK")),
+            Ok(json!("OK")),
+        ]);
+        let client = Aria2Client::new(transport);
+
+        DownloadEngineGateway::force_pause(&client, Gid::from_u64(9))
+            .await
+            .expect("force pause");
+        DownloadEngineGateway::force_remove(&client, Gid::from_u64(9), TaskRemovalTarget::LiveTask)
+            .await
+            .expect("force remove");
+        DownloadEngineGateway::force_pause_all(&client)
+            .await
+            .expect("force pause all");
+        Aria2Client::purge_download_result(&client)
+            .await
+            .expect("purge results");
+
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(
+            calls.iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
+            vec![
+                "aria2.forcePause",
+                "aria2.forceRemove",
+                "aria2.forcePauseAll",
+                "aria2.purgeDownloadResult",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_methods_returns_engine_published_names() {
+        let transport = ScriptedTransport::new([Ok(json!([
+            "aria2.addUri",
+            "aria2.forcePause",
+            "system.multicall",
+            "system.listMethods"
+        ]))]);
+        let client = Aria2Client::new(transport);
+
+        let methods = client.list_methods().await.expect("list methods");
+        assert!(methods.iter().any(|method| method == "aria2.forcePause"));
+        assert!(methods.iter().any(|method| method == "system.multicall"));
     }
 
     #[tokio::test]

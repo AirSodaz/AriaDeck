@@ -210,6 +210,30 @@ pub struct TaskCountsView {
     pub failed: usize,
 }
 
+/// Stopped-result page progress for completed/failed history (HISTORY-001).
+///
+/// `total` is aria2's in-memory result count and may be lower than lifetime
+/// history once `--max-download-result` is exceeded. Before SQLite history
+/// exists, only engine-held results and the managed session file survive a
+/// restart.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StoppedHistoryView {
+    pub loaded: usize,
+    pub total: Option<usize>,
+    pub can_load_more: bool,
+}
+
+impl StoppedHistoryView {
+    #[must_use]
+    pub fn summary_label(self) -> Option<String> {
+        let total = self.total?;
+        if total == 0 {
+            return None;
+        }
+        Some(format!("History {}/{total}", self.loaded.min(total)))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SpeedSampleView {
     pub download_rate: u64,
@@ -307,6 +331,7 @@ pub struct WorkspaceSnapshot {
     pub upload_rate: u64,
     pub speed_history: Vec<SpeedSampleView>,
     pub counts: TaskCountsView,
+    pub stopped_history: StoppedHistoryView,
     pub tasks: Vec<DownloadRowView>,
 }
 
@@ -324,6 +349,7 @@ impl Default for WorkspaceSnapshot {
             upload_rate: 0,
             speed_history: Vec::new(),
             counts: TaskCountsView::default(),
+            stopped_history: StoppedHistoryView::default(),
             tasks: Vec::new(),
         }
     }
@@ -375,6 +401,7 @@ impl RequestId {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum TaskCommandView {
     Pause,
+    ForcePause,
     Resume,
     MoveToQueueTop,
     MoveUpInQueue,
@@ -388,13 +415,20 @@ pub enum TaskCommandView {
         download_limit: u64,
         upload_limit: u64,
     },
+    SetOptions {
+        seed_ratio: Option<String>,
+        seed_time_minutes: Option<String>,
+        selected_file_indices: Option<Vec<u32>>,
+    },
     RemoveTask,
+    ForceRemoveTask,
     RemoveTaskAndFiles,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum GlobalTaskCommandView {
     PauseAll,
+    ForcePauseAll,
     ResumeAll,
 }
 
@@ -403,6 +437,7 @@ impl GlobalTaskCommandView {
     pub const fn progress_label(self) -> &'static str {
         match self {
             Self::PauseAll => "Pausing all tasks...",
+            Self::ForcePauseAll => "Force-pausing all tasks...",
             Self::ResumeAll => "Resuming all tasks...",
         }
     }
@@ -411,6 +446,7 @@ impl GlobalTaskCommandView {
     pub const fn success_label(self) -> &'static str {
         match self {
             Self::PauseAll => "All eligible tasks paused.",
+            Self::ForcePauseAll => "All eligible tasks force-paused.",
             Self::ResumeAll => "All paused tasks resumed.",
         }
     }
@@ -419,9 +455,11 @@ impl GlobalTaskCommandView {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum BatchTaskCommandView {
     Pause,
+    ForcePause,
     Resume,
     Retry,
     RemoveTask,
+    ForceRemoveTask,
     RemoveTaskAndFiles,
 }
 
@@ -430,9 +468,11 @@ impl BatchTaskCommandView {
     pub const fn progress_label(self) -> &'static str {
         match self {
             Self::Pause => "Pausing selected tasks...",
+            Self::ForcePause => "Force-pausing selected tasks...",
             Self::Resume => "Resuming selected tasks...",
             Self::Retry => "Creating new tasks from selected failed tasks...",
             Self::RemoveTask => "Removing selected tasks...",
+            Self::ForceRemoveTask => "Force-removing selected tasks...",
             Self::RemoveTaskAndFiles => {
                 "Removing selected tasks and moving local files to the Recycle Bin..."
             }
@@ -443,9 +483,11 @@ impl BatchTaskCommandView {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Pause => "Pause",
+            Self::ForcePause => "Force pause",
             Self::Resume => "Resume",
             Self::Retry => "Retry",
             Self::RemoveTask => "Remove",
+            Self::ForceRemoveTask => "Force remove",
             Self::RemoveTaskAndFiles => "Remove with files",
         }
     }
@@ -456,6 +498,7 @@ impl TaskCommandView {
     pub const fn progress_label(&self) -> &'static str {
         match self {
             Self::Pause => "Pausing task...",
+            Self::ForcePause => "Force-pausing task...",
             Self::Resume => "Resuming task...",
             Self::MoveToQueueTop => "Moving task to the top of the queue...",
             Self::MoveUpInQueue => "Moving task up in the queue...",
@@ -464,7 +507,9 @@ impl TaskCommandView {
             Self::Retry => "Creating a new task from the failed source...",
             Self::SetOutputName { .. } => "Updating output name...",
             Self::SetSpeedLimit { .. } => "Updating speed limits...",
+            Self::SetOptions { .. } => "Updating task options...",
             Self::RemoveTask => "Removing task...",
+            Self::ForceRemoveTask => "Force-removing task...",
             Self::RemoveTaskAndFiles => {
                 "Removing task and moving local files to the Recycle Bin..."
             }
@@ -475,6 +520,7 @@ impl TaskCommandView {
     pub const fn success_label(&self) -> &'static str {
         match self {
             Self::Pause => "Task paused.",
+            Self::ForcePause => "Task force-paused.",
             Self::Resume => "Task resumed.",
             Self::MoveToQueueTop => "Task moved to the top of the queue.",
             Self::MoveUpInQueue => "Task moved up in the queue.",
@@ -483,7 +529,9 @@ impl TaskCommandView {
             Self::Retry => "New retry task created; the failed result was kept.",
             Self::SetOutputName { .. } => "Output name updated.",
             Self::SetSpeedLimit { .. } => "Speed limits updated for this task.",
+            Self::SetOptions { .. } => "Task options updated.",
             Self::RemoveTask => "Task removed from aria2; downloaded files were kept.",
+            Self::ForceRemoveTask => "Task force-removed from aria2; downloaded files were kept.",
             Self::RemoveTaskAndFiles => "Task removed; local files were moved to the Recycle Bin.",
         }
     }
@@ -630,6 +678,38 @@ pub struct AddDownloadMetadataPreviewResultView {
     pub items: Vec<AddDownloadMetadataPreviewItemView>,
 }
 
+/// Advanced source controls for a new direct-URI download (ADD-005).
+///
+/// Secrets use `SecretStringView` so Debug and notices never echo them. Cookie
+/// and HTTP password are separate from free-form headers so the application
+/// layer can keep redaction and validation consistent.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AddDownloadAdvancedOptionsView {
+    pub referer: String,
+    pub user_agent: String,
+    /// Multi-line `Name: value` headers. Cookie/Authorization belong in the
+    /// dedicated secret fields below.
+    pub headers: String,
+    pub cookie: Option<SecretStringView>,
+    pub http_user: String,
+    pub http_passwd: Option<SecretStringView>,
+    /// aria2 `type=digest` form, for example `sha-256=…`.
+    pub checksum: String,
+}
+
+impl AddDownloadAdvancedOptionsView {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.referer.trim().is_empty()
+            && self.user_agent.trim().is_empty()
+            && self.headers.trim().is_empty()
+            && self.cookie.is_none()
+            && self.http_user.trim().is_empty()
+            && self.http_passwd.is_none()
+            && self.checksum.trim().is_empty()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AddDownloadRequestView {
     pub request_id: RequestId,
@@ -639,6 +719,7 @@ pub struct AddDownloadRequestView {
     pub destination: Option<String>,
     pub required_bytes: Option<u64>,
     pub file_conflict: FileConflictPolicyView,
+    pub advanced: AddDownloadAdvancedOptionsView,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

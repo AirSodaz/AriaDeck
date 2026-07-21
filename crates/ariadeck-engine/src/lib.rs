@@ -1234,6 +1234,10 @@ fn local_engine_arguments(
         format!("--input-file={}", session_path.to_string_lossy()),
         format!("--save-session={}", session_path.to_string_lossy()),
         "--save-session-interval=60".to_owned(),
+        // Keep more completed/error/removed results in memory so the UI can
+        // page history without a separate SQLite store (HISTORY-001). aria2's
+        // default is 1000; raise the managed-local budget to 5000.
+        "--max-download-result=5000".to_owned(),
         "--rpc-save-upload-metadata=true".to_owned(),
         "--rpc-max-request-size=32M".to_owned(),
         format!("--log={}", log_path.to_string_lossy()),
@@ -1673,6 +1677,7 @@ mod tests {
 
         assert!(arguments.contains(&"--rpc-save-upload-metadata=true".to_owned()));
         assert!(arguments.contains(&"--rpc-max-request-size=32M".to_owned()));
+        assert!(arguments.contains(&"--max-download-result=5000".to_owned()));
         let _ = fs::remove_dir_all(root);
     }
 

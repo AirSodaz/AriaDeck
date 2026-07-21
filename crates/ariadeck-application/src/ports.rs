@@ -14,11 +14,26 @@ pub trait DownloadEngineGateway: Send + Sync {
         fallback: &AddDownloadRequest,
     ) -> Result<Gid, GatewayError>;
     async fn pause(&self, gid: Gid) -> Result<(), GatewayError>;
+    /// Force-pause skips graceful peer/server teardown. Prefer ordinary pause.
+    async fn force_pause(&self, _gid: Gid) -> Result<(), GatewayError> {
+        Err(GatewayError::new(
+            GatewayErrorKind::Unsupported,
+            "The connected engine does not expose force-pause.",
+            false,
+        ))
+    }
     async fn resume(&self, gid: Gid) -> Result<(), GatewayError>;
     async fn pause_all(&self) -> Result<(), GatewayError> {
         Err(GatewayError::new(
             GatewayErrorKind::Unsupported,
             "The connected engine does not expose pause-all.",
+            false,
+        ))
+    }
+    async fn force_pause_all(&self) -> Result<(), GatewayError> {
+        Err(GatewayError::new(
+            GatewayErrorKind::Unsupported,
+            "The connected engine does not expose force-pause-all.",
             false,
         ))
     }
@@ -59,6 +74,19 @@ pub trait DownloadEngineGateway: Send + Sync {
         ))
     }
     async fn remove(&self, gid: Gid, target: TaskRemovalTarget) -> Result<(), GatewayError>;
+    /// Force-remove a live task without graceful peer/server teardown.
+    /// Stopped-result removal still uses the ordinary result path.
+    async fn force_remove(
+        &self,
+        _gid: Gid,
+        _target: TaskRemovalTarget,
+    ) -> Result<(), GatewayError> {
+        Err(GatewayError::new(
+            GatewayErrorKind::Unsupported,
+            "The connected engine does not expose force-remove.",
+            false,
+        ))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

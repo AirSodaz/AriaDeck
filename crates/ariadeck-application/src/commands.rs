@@ -42,12 +42,297 @@ impl fmt::Debug for AddDownloadSource {
     }
 }
 
+/// Typed advanced request controls for a new download (ADD-005 / D-022).
+///
+/// Secrets stay as `SecretString` and are flattened into aria2 option pairs only
+/// at the RPC adapter boundary. They must never enter task rows, notices, or
+/// Debug output.
+#[derive(Clone, Default)]
+pub struct AddDownloadAdvancedOptions {
+    pub referer: Option<String>,
+    pub user_agent: Option<String>,
+    /// Raw header lines excluding `Cookie:` and `Authorization:` (those have
+    /// dedicated fields so they can be redacted consistently).
+    pub headers: Vec<String>,
+    pub cookie: Option<SecretString>,
+    pub http_user: Option<String>,
+    pub http_passwd: Option<SecretString>,
+    /// aria2 checksum form `TYPE=DIGEST`, for example `sha-256=…`.
+    pub checksum: Option<String>,
+}
+
+impl fmt::Debug for AddDownloadAdvancedOptions {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AddDownloadAdvancedOptions")
+            .field("referer", &self.referer)
+            .field("user_agent", &self.user_agent)
+            .field("headers", &self.headers)
+            .field("cookie", &self.cookie.as_ref().map(|_| "[REDACTED]"))
+            .field("http_user", &self.http_user)
+            .field(
+                "http_passwd",
+                &self.http_passwd.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("checksum", &self.checksum)
+            .finish()
+    }
+}
+
+impl PartialEq for AddDownloadAdvancedOptions {
+    fn eq(&self, other: &Self) -> bool {
+        self.referer == other.referer
+            && self.user_agent == other.user_agent
+            && self.headers == other.headers
+            && self.cookie.as_ref().map(ExposeSecret::expose_secret)
+                == other.cookie.as_ref().map(ExposeSecret::expose_secret)
+            && self.http_user == other.http_user
+            && self.http_passwd.as_ref().map(ExposeSecret::expose_secret)
+                == other.http_passwd.as_ref().map(ExposeSecret::expose_secret)
+            && self.checksum == other.checksum
+    }
+}
+
+impl Eq for AddDownloadAdvancedOptions {}
+
+impl AddDownloadAdvancedOptions {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.referer.is_none()
+            && self.user_agent.is_none()
+            && self.headers.is_empty()
+            && self.cookie.is_none()
+            && self.http_user.is_none()
+            && self.http_passwd.is_none()
+            && self.checksum.is_none()
+    }
+
+    pub fn validate(&self) -> Result<(), ApplicationError> {
+        if let Some(referer) = &self.referer {
+            validate_non_empty_line("Referer", referer)?;
+            if referer.contains(['\r', '\n']) {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::Validation,
+                    "Referer must be a single line.",
+                    false,
+                ));
+            }
+        }
+        if let Some(user_agent) = &self.user_agent {
+            validate_non_empty_line("User-Agent", user_agent)?;
+            if user_agent.contains(['\r', '\n']) {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::Validation,
+                    "User-Agent must be a single line.",
+                    false,
+                ));
+            }
+        }
+        for header in &self.headers {
+            validate_header_line(header)?;
+        }
+        if let Some(cookie) = &self.cookie {
+            let cookie = cookie.expose_secret().trim();
+            if cookie.is_empty() {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::Validation,
+                    "Cookie must not be empty when provided.",
+                    false,
+                ));
+            }
+            if cookie.contains(['\r', '\n']) {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::Validation,
+                    "Cookie must be a single line.",
+                    false,
+                ));
+            }
+        }
+        if self.http_passwd.is_some() && self.http_user.as_deref().is_none_or(str::is_empty) {
+            return Err(ApplicationError::new(
+                ApplicationErrorCode::Validation,
+                "HTTP authentication requires a non-empty username.",
+                false,
+            ));
+        }
+        if let Some(user) = &self.http_user {
+            validate_non_empty_line("HTTP username", user)?;
+            if user.contains(['\r', '\n', ':']) {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::Validation,
+                    "HTTP username must be a single line without ':'.",
+                    false,
+                ));
+            }
+        }
+        if let Some(password) = &self.http_passwd {
+            let password = password.expose_secret();
+            if password.is_empty() {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::Validation,
+                    "HTTP password must not be empty when provided.",
+                    false,
+                ));
+            }
+            if password.contains(['\r', '\n']) {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::Validation,
+                    "HTTP password must be a single line.",
+                    false,
+                ));
+            }
+        }
+        if let Some(checksum) = &self.checksum {
+            validate_checksum(checksum)?;
+        }
+        Ok(())
+    }
+
+    /// Flatten into aria2 option pairs. Multi-value `header` is emitted once
+    /// per line so the RPC adapter can rebuild the array form.
+    #[must_use]
+    pub fn to_option_pairs(&self) -> Vec<(String, String)> {
+        let mut options = Vec::new();
+        if let Some(referer) = &self.referer {
+            options.push(("referer".into(), referer.trim().to_owned()));
+        }
+        if let Some(user_agent) = &self.user_agent {
+            options.push(("user-agent".into(), user_agent.trim().to_owned()));
+        }
+        for header in &self.headers {
+            options.push(("header".into(), header.trim().to_owned()));
+        }
+        if let Some(cookie) = &self.cookie {
+            options.push((
+                "header".into(),
+                format!("Cookie: {}", cookie.expose_secret().trim()),
+            ));
+        }
+        if let Some(user) = &self.http_user {
+            options.push(("http-user".into(), user.trim().to_owned()));
+        }
+        if let Some(password) = &self.http_passwd {
+            options.push(("http-passwd".into(), password.expose_secret().to_owned()));
+        }
+        if let Some(checksum) = &self.checksum {
+            options.push(("checksum".into(), checksum.trim().to_owned()));
+        }
+        options
+    }
+}
+
+fn validate_non_empty_line(label: &str, value: &str) -> Result<(), ApplicationError> {
+    if value.trim().is_empty() {
+        return Err(ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            format!("{label} must not be empty when provided."),
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_header_line(header: &str) -> Result<(), ApplicationError> {
+    let header = header.trim();
+    if header.is_empty() {
+        return Err(ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            "Custom headers must not contain blank lines.",
+            false,
+        ));
+    }
+    if header.contains(['\r', '\n']) {
+        return Err(ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            "Each custom header must be a single line.",
+            false,
+        ));
+    }
+    let Some((name, value)) = header.split_once(':') else {
+        return Err(ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            "Custom headers must use `Name: value` form.",
+            false,
+        ));
+    };
+    if name.trim().is_empty() || value.trim().is_empty() {
+        return Err(ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            "Custom headers must include both a name and a value.",
+            false,
+        ));
+    }
+    let name_lower = name.trim().to_ascii_lowercase();
+    if name_lower == "cookie" || name_lower == "authorization" {
+        return Err(ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            "Use the dedicated Cookie or HTTP authentication fields for secrets.",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_checksum(checksum: &str) -> Result<(), ApplicationError> {
+    let checksum = checksum.trim();
+    let Some((kind, digest)) = checksum.split_once('=') else {
+        return Err(ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            "Checksum must use `type=digest` form, for example `sha-256=…`.",
+            false,
+        ));
+    };
+    let kind = kind.trim().to_ascii_lowercase();
+    let digest = digest.trim();
+    if !matches!(
+        kind.as_str(),
+        "sha-1" | "sha-224" | "sha-256" | "sha-384" | "sha-512" | "md5" | "adler32"
+    ) {
+        return Err(ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            "Unsupported checksum type. Use sha-1/224/256/384/512, md5, or adler32.",
+            false,
+        ));
+    }
+    if digest.is_empty()
+        || !digest.chars().all(|ch| ch.is_ascii_hexdigit())
+        || digest.len() % 2 == 1
+    {
+        return Err(ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            "Checksum digest must be a non-empty even-length hex string.",
+            false,
+        ));
+    }
+    let expected_len = match kind.as_str() {
+        "md5" => Some(32),
+        "sha-1" => Some(40),
+        "sha-224" => Some(56),
+        "sha-256" => Some(64),
+        "sha-384" => Some(96),
+        "sha-512" => Some(128),
+        "adler32" => Some(8),
+        _ => None,
+    };
+    if let Some(expected) = expected_len
+        && digest.len() != expected
+    {
+        return Err(ApplicationError::new(
+            ApplicationErrorCode::Validation,
+            format!("Checksum digest for {kind} must be {expected} hex characters."),
+            false,
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AddDownloadRequest {
     pub source: AddDownloadSource,
     pub destination: Option<EnginePath>,
     pub file_conflict: FileConflictPolicy,
     pub selected_file_indices: Option<Vec<u32>>,
+    pub advanced: AddDownloadAdvancedOptions,
     pub options: Vec<(String, String)>,
 }
 
@@ -152,6 +437,19 @@ impl DownloadProxyConfig {
 
 impl AddDownloadRequest {
     fn validate(&self) -> Result<(), ApplicationError> {
+        self.advanced.validate()?;
+        if !self.advanced.is_empty() {
+            // Advanced HTTP source controls apply only to direct URI tasks.
+            // Magnet/Torrent/Metalink keep the typed fields unavailable so users
+            // do not believe a Cookie/Referer will rewrite tracker or peer auth.
+            if !matches!(self.source, AddDownloadSource::Uris(_)) {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::Validation,
+                    "Referer, headers, cookies, authentication, and checksum apply only to direct URL downloads.",
+                    false,
+                ));
+            }
+        }
         let AddDownloadSource::Uris(uris) = &self.source else {
             let content = match &self.source {
                 AddDownloadSource::Torrent(content) | AddDownloadSource::Metalink(content) => {
@@ -263,18 +561,148 @@ pub struct SetTaskSpeedLimitRequest {
     pub upload_limit: ariadeck_domain::ByteRate,
 }
 
+/// Typed subset of dynamically changeable aria2 task options (RPC-001).
+///
+/// Free-form option bags are intentionally not exposed: each field maps to a
+/// documented changeOption key and is validated on the desktop before mutation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SetTaskOptionsRequest {
+    pub task: TaskIdentity,
+    /// BitTorrent share ratio limit as an aria2 decimal string; `0`/`0.0`
+    /// disables the ratio condition. Stored as text so the request stays Eq.
+    pub seed_ratio: Option<String>,
+    /// BitTorrent seed time in minutes; aria2 stops at the first satisfied
+    /// seed-ratio / seed-time condition.
+    pub seed_time_minutes: Option<u64>,
+    /// 1-based file indexes for BitTorrent/Metalink selection. `None` leaves
+    /// the current selection unchanged; `Some([])` is rejected.
+    pub selected_file_indices: Option<Vec<u32>>,
+}
+
+impl SetTaskOptionsRequest {
+    pub fn validate(&self) -> Result<(), ApplicationError> {
+        if self.seed_ratio.is_none()
+            && self.seed_time_minutes.is_none()
+            && self.selected_file_indices.is_none()
+        {
+            return Err(ApplicationError::new(
+                ApplicationErrorCode::Validation,
+                "At least one task option must be provided.",
+                false,
+            ));
+        }
+        if let Some(ratio) = &self.seed_ratio {
+            let parsed = ratio.parse::<f64>().ok().filter(|value| value.is_finite());
+            if parsed.is_none_or(|value| value < 0.0) {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::Validation,
+                    "Seed ratio must be a finite number greater than or equal to 0.",
+                    false,
+                ));
+            }
+        }
+        if let Some(indices) = &self.selected_file_indices {
+            if indices.is_empty() {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::Validation,
+                    "At least one file must remain selected.",
+                    false,
+                ));
+            }
+            let mut previous = None;
+            for &index in indices {
+                if index == 0 {
+                    return Err(ApplicationError::new(
+                        ApplicationErrorCode::Validation,
+                        "File selection uses 1-based indexes.",
+                        false,
+                    ));
+                }
+                if previous.is_some_and(|value| index <= value) {
+                    return Err(ApplicationError::new(
+                        ApplicationErrorCode::Validation,
+                        "File selection indexes must be unique and ascending.",
+                        false,
+                    ));
+                }
+                previous = Some(index);
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn to_option_pairs(&self) -> Vec<(String, String)> {
+        let mut options = Vec::new();
+        if let Some(ratio) = &self.seed_ratio {
+            options.push(("seed-ratio".into(), normalize_seed_ratio(ratio)));
+        }
+        if let Some(minutes) = self.seed_time_minutes {
+            options.push(("seed-time".into(), minutes.to_string()));
+        }
+        if let Some(indices) = &self.selected_file_indices {
+            options.push(("select-file".into(), format_selected_file_indices(indices)));
+        }
+        options
+    }
+}
+
+fn normalize_seed_ratio(ratio: &str) -> String {
+    ratio
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+        .map(|value| {
+            let text = format!("{value:.4}");
+            text.trim_end_matches('0').trim_end_matches('.').to_owned()
+        })
+        .unwrap_or_else(|| ratio.trim().to_owned())
+}
+
+fn format_selected_file_indices(indices: &[u32]) -> String {
+    let mut ranges = Vec::new();
+    let Some(&first) = indices.first() else {
+        return String::new();
+    };
+    let mut start = first;
+    let mut end = first;
+    for &index in &indices[1..] {
+        if index == end.saturating_add(1) {
+            end = index;
+        } else {
+            if start == end {
+                ranges.push(start.to_string());
+            } else {
+                ranges.push(format!("{start}-{end}"));
+            }
+            start = index;
+            end = index;
+        }
+    }
+    if start == end {
+        ranges.push(start.to_string());
+    } else {
+        ranges.push(format!("{start}-{end}"));
+    }
+    ranges.join(",")
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AppCommand {
     AddDownload(AddDownloadRequest),
     PauseAll,
+    ForcePauseAll,
     ResumeAll,
     PauseTasks(Vec<TaskIdentity>),
+    ForcePauseTasks(Vec<TaskIdentity>),
     ResumeTasks(Vec<TaskIdentity>),
     MoveTaskInQueue(MoveTaskInQueueRequest),
     RetryTasks(Vec<TaskIdentity>),
     SetTaskOutputName(SetTaskOutputNameRequest),
     RemoveTasks(RemoveTasksRequest),
+    ForceRemoveTasks(RemoveTasksRequest),
     SetTaskSpeedLimit(SetTaskSpeedLimitRequest),
+    SetTaskOptions(SetTaskOptionsRequest),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -438,9 +866,17 @@ impl CommandService {
         match command {
             AppCommand::AddDownload(request) => self.add_download(request).await,
             AppCommand::PauseAll => self.execute_global(GlobalTaskOperation::PauseAll).await,
+            AppCommand::ForcePauseAll => {
+                self.execute_global(GlobalTaskOperation::ForcePauseAll)
+                    .await
+            }
             AppCommand::ResumeAll => self.execute_global(GlobalTaskOperation::ResumeAll).await,
             AppCommand::PauseTasks(tasks) => {
                 self.execute_batch(tasks, TaskOperation::Pause, task_contexts)
+                    .await
+            }
+            AppCommand::ForcePauseTasks(tasks) => {
+                self.execute_batch(tasks, TaskOperation::ForcePause, task_contexts)
                     .await
             }
             AppCommand::ResumeTasks(tasks) => {
@@ -467,8 +903,19 @@ impl CommandService {
                 )
                 .await
             }
+            AppCommand::ForceRemoveTasks(request) => {
+                self.execute_batch(
+                    request.tasks,
+                    TaskOperation::ForceRemove(request.scope),
+                    task_contexts,
+                )
+                .await
+            }
             AppCommand::SetTaskSpeedLimit(request) => {
                 self.set_task_speed_limit(request, task_contexts).await
+            }
+            AppCommand::SetTaskOptions(request) => {
+                self.set_task_options(request, task_contexts).await
             }
         }
     }
@@ -563,11 +1010,18 @@ impl CommandService {
         }
     }
 
-    async fn add_download(&self, request: AddDownloadRequest) -> CommandOutcome {
+    async fn add_download(&self, mut request: AddDownloadRequest) -> CommandOutcome {
         if let Err(error) = request.validate() {
             return CommandOutcome::Failure {
                 failed: vec![ItemFailure { item: None, error }],
             };
+        }
+        // Flatten typed advanced controls into the option bag before the RPC
+        // boundary. Keep validation on the typed form so secrets never need to
+        // re-enter UI state.
+        let advanced_options = request.advanced.to_option_pairs();
+        if !advanced_options.is_empty() {
+            request.options.extend(advanced_options);
         }
 
         match self.gateway.add_download(&request).await {
@@ -596,9 +1050,112 @@ impl CommandService {
         }
     }
 
+    async fn set_task_options(
+        &self,
+        request: SetTaskOptionsRequest,
+        task_contexts: &HashMap<TaskIdentity, TaskCommandContext>,
+    ) -> CommandOutcome {
+        let item = CommandItem::Task(request.task);
+        if let Err(error) = request.validate() {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error,
+                }],
+            };
+        }
+        if request.task.profile_id != self.profile_id {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::WrongProfile,
+                        "The task belongs to a different engine profile.",
+                        false,
+                    ),
+                }],
+            };
+        }
+        let Some(context) = task_contexts.get(&request.task) else {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Rejected,
+                        "The task is no longer present in the current engine session.",
+                        false,
+                    ),
+                }],
+            };
+        };
+        if context.status.is_terminal() {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Rejected,
+                        "A completed or failed task cannot change its options.",
+                        false,
+                    ),
+                }],
+            };
+        }
+        if (request.seed_ratio.is_some() || request.seed_time_minutes.is_some())
+            && !matches!(
+                context.metadata.source_kind,
+                TaskSourceKind::Magnet | TaskSourceKind::BitTorrent
+            )
+        {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Unsupported,
+                        "Seed-ratio and seed-time apply only to BitTorrent tasks.",
+                        false,
+                    ),
+                }],
+            };
+        }
+        if request.selected_file_indices.is_some()
+            && !matches!(
+                context.metadata.source_kind,
+                TaskSourceKind::Magnet | TaskSourceKind::BitTorrent | TaskSourceKind::Metalink
+            )
+        {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Unsupported,
+                        "File selection applies only to Torrent and Metalink tasks.",
+                        false,
+                    ),
+                }],
+            };
+        }
+        let options = request.to_option_pairs();
+        match self
+            .gateway
+            .change_options(request.task.gid, &options)
+            .await
+        {
+            Ok(()) => CommandOutcome::Success {
+                succeeded: vec![item],
+            },
+            Err(error) => CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: error.into(),
+                }],
+            },
+        }
+    }
+
     async fn execute_global(&self, operation: GlobalTaskOperation) -> CommandOutcome {
         let result = match operation {
             GlobalTaskOperation::PauseAll => self.gateway.pause_all().await,
+            GlobalTaskOperation::ForcePauseAll => self.gateway.force_pause_all().await,
             GlobalTaskOperation::ResumeAll => self.gateway.resume_all().await,
         };
         match result {
@@ -747,7 +1304,7 @@ impl CommandService {
                 continue;
             };
             let allowed = match operation {
-                TaskOperation::Pause => matches!(
+                TaskOperation::Pause | TaskOperation::ForcePause => matches!(
                     context.status,
                     DownloadStatus::Active
                         | DownloadStatus::Seeding
@@ -762,7 +1319,9 @@ impl CommandService {
                         | DownloadStatus::Removed
                         | DownloadStatus::Unknown
                 ),
-                TaskOperation::Remove(_) => !matches!(context.status, DownloadStatus::Unknown),
+                TaskOperation::Remove(_) | TaskOperation::ForceRemove(_) => {
+                    !matches!(context.status, DownloadStatus::Unknown)
+                }
             };
             if !allowed {
                 failed.push(ItemFailure {
@@ -782,6 +1341,7 @@ impl CommandService {
 
             let result = match operation {
                 TaskOperation::Pause => self.gateway.pause(identity.gid).await,
+                TaskOperation::ForcePause => self.gateway.force_pause(identity.gid).await,
                 TaskOperation::Resume => self.gateway.resume(identity.gid).await,
                 TaskOperation::MoveInQueue(movement) => {
                     self.gateway.move_in_queue(identity.gid, movement).await
@@ -793,6 +1353,14 @@ impl CommandService {
                         TaskRemovalTarget::LiveTask
                     };
                     self.gateway.remove(identity.gid, target).await
+                }
+                TaskOperation::ForceRemove(TaskRemovalScope::TaskOnly) => {
+                    let target = if context.status.is_terminal() {
+                        TaskRemovalTarget::DownloadResult
+                    } else {
+                        TaskRemovalTarget::LiveTask
+                    };
+                    self.gateway.force_remove(identity.gid, target).await
                 }
             };
             match result {
@@ -881,6 +1449,7 @@ impl CommandService {
                 destination: context.metadata.directory.clone(),
                 file_conflict: FileConflictPolicy::default(),
                 selected_file_indices: None,
+                advanced: Default::default(),
                 options: Vec::new(),
             };
             match self.gateway.retry_download(identity.gid, &request).await {
@@ -901,9 +1470,11 @@ impl CommandService {
 fn task_operation_label(operation: TaskOperation) -> &'static str {
     match operation {
         TaskOperation::Pause => "Pause",
+        TaskOperation::ForcePause => "Force pause",
         TaskOperation::Resume => "Resume",
         TaskOperation::MoveInQueue(_) => "Change queue priority",
         TaskOperation::Remove(_) => "Remove",
+        TaskOperation::ForceRemove(_) => "Force remove",
     }
 }
 
@@ -923,14 +1494,18 @@ fn finish_batch(succeeded: Vec<CommandItem>, failed: Vec<ItemFailure>) -> Comman
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TaskOperation {
     Pause,
+    ForcePause,
     Resume,
     MoveInQueue(QueueMove),
     Remove(TaskRemovalScope),
+    ForceRemove(TaskRemovalScope),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::enum_variant_names)]
 enum GlobalTaskOperation {
     PauseAll,
+    ForcePauseAll,
     ResumeAll,
 }
 
@@ -1049,8 +1624,20 @@ mod tests {
             self.record(TaskOperation::Pause, gid)
         }
 
+        async fn force_pause(&self, gid: Gid) -> Result<(), GatewayError> {
+            self.record(TaskOperation::ForcePause, gid)
+        }
+
         async fn resume(&self, gid: Gid) -> Result<(), GatewayError> {
             self.record(TaskOperation::Resume, gid)
+        }
+
+        async fn force_pause_all(&self) -> Result<(), GatewayError> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((TaskOperation::ForcePause, Gid::from_u64(0)));
+            Ok(())
         }
 
         async fn move_in_queue(&self, gid: Gid, movement: QueueMove) -> Result<(), GatewayError> {
@@ -1096,6 +1683,18 @@ mod tests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push((gid, target));
             self.record(TaskOperation::Remove(TaskRemovalScope::TaskOnly), gid)
+        }
+
+        async fn force_remove(
+            &self,
+            gid: Gid,
+            target: TaskRemovalTarget,
+        ) -> Result<(), GatewayError> {
+            self.removals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((gid, target));
+            self.record(TaskOperation::ForceRemove(TaskRemovalScope::TaskOnly), gid)
         }
     }
 
@@ -1254,6 +1853,7 @@ mod tests {
                     destination: None,
                     file_conflict: FileConflictPolicy::default(),
                     selected_file_indices: None,
+                    advanced: Default::default(),
                     options: Vec::new(),
                 }),
                 &HashMap::new(),
@@ -1280,6 +1880,7 @@ mod tests {
                 destination: None,
                 file_conflict: FileConflictPolicy::default(),
                 selected_file_indices: None,
+                advanced: Default::default(),
                 options: Vec::new(),
             }),
             &HashMap::new(),
@@ -1310,6 +1911,7 @@ mod tests {
                 destination: None,
                 file_conflict: FileConflictPolicy::Reject,
                 selected_file_indices: None,
+                advanced: Default::default(),
                 options: Vec::new(),
             }),
             &HashMap::new(),
@@ -1346,6 +1948,7 @@ mod tests {
                     destination: None,
                     file_conflict: FileConflictPolicy::Reject,
                     selected_file_indices,
+                    advanced: Default::default(),
                     options: Vec::new(),
                 }),
                 &HashMap::new(),
@@ -1362,6 +1965,7 @@ mod tests {
                 destination: None,
                 file_conflict: FileConflictPolicy::Reject,
                 selected_file_indices: Some(vec![1]),
+                advanced: Default::default(),
                 options: Vec::new(),
             }),
             &HashMap::new(),
@@ -1396,6 +2000,7 @@ mod tests {
                 destination: None,
                 file_conflict: FileConflictPolicy::Reject,
                 selected_file_indices: None,
+                advanced: Default::default(),
                 options: Vec::new(),
             }),
             &HashMap::new(),
@@ -1429,6 +2034,7 @@ mod tests {
                 destination: None,
                 file_conflict: FileConflictPolicy::Reject,
                 selected_file_indices: None,
+                advanced: Default::default(),
                 options: Vec::new(),
             }),
             &HashMap::new(),
@@ -1611,6 +2217,7 @@ mod tests {
                     destination: Some(EnginePath::new("/downloads")),
                     file_conflict: FileConflictPolicy::default(),
                     selected_file_indices: None,
+                    advanced: Default::default(),
                     options: Vec::new(),
                 }
             )]
@@ -1837,6 +2444,268 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn force_pause_and_force_remove_forward_to_the_gateway() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+        let task = TaskIdentity::new(profile_id, Gid::from_u64(21));
+        let contexts = HashMap::from([(
+            task,
+            TaskCommandContext {
+                status: DownloadStatus::Active,
+                metadata: TaskMetadata::default(),
+            },
+        )]);
+
+        let pause = block_on(service.execute(AppCommand::ForcePauseTasks(vec![task]), &contexts));
+        assert_eq!(
+            pause,
+            CommandOutcome::Success {
+                succeeded: vec![CommandItem::Task(task)]
+            }
+        );
+
+        let remove = block_on(service.execute(
+            AppCommand::ForceRemoveTasks(RemoveTasksRequest {
+                tasks: vec![task],
+                scope: TaskRemovalScope::TaskOnly,
+            }),
+            &contexts,
+        ));
+        assert_eq!(
+            remove,
+            CommandOutcome::Success {
+                succeeded: vec![CommandItem::Task(task)]
+            }
+        );
+
+        let calls = gateway
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert!(calls.contains(&(TaskOperation::ForcePause, task.gid)));
+        assert!(calls.contains(&(
+            TaskOperation::ForceRemove(TaskRemovalScope::TaskOnly),
+            task.gid
+        )));
+    }
+
+    #[test]
+    fn set_task_options_maps_typed_seed_and_file_selection_fields() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+        let task = TaskIdentity::new(profile_id, Gid::from_u64(22));
+        let contexts = HashMap::from([(
+            task,
+            TaskCommandContext {
+                status: DownloadStatus::Seeding,
+                metadata: TaskMetadata {
+                    source_kind: TaskSourceKind::BitTorrent,
+                    ..TaskMetadata::default()
+                },
+            },
+        )]);
+
+        let outcome = block_on(service.execute(
+            AppCommand::SetTaskOptions(SetTaskOptionsRequest {
+                task,
+                seed_ratio: Some("1.5".into()),
+                seed_time_minutes: Some(60),
+                selected_file_indices: Some(vec![1, 2, 4]),
+            }),
+            &contexts,
+        ));
+
+        assert_eq!(
+            outcome,
+            CommandOutcome::Success {
+                succeeded: vec![CommandItem::Task(task)]
+            }
+        );
+        assert_eq!(
+            *gateway
+                .changed_options
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![(
+                task.gid,
+                vec![
+                    ("seed-ratio".into(), "1.5".into()),
+                    ("seed-time".into(), "60".into()),
+                    ("select-file".into(), "1-2,4".into()),
+                ]
+            )]
+        );
+    }
+
+    #[test]
+    fn set_task_options_rejects_seed_rules_for_direct_uri_tasks() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+        let task = TaskIdentity::new(profile_id, Gid::from_u64(23));
+        let contexts = HashMap::from([(
+            task,
+            TaskCommandContext {
+                status: DownloadStatus::Active,
+                metadata: TaskMetadata {
+                    source_kind: TaskSourceKind::DirectUri,
+                    ..TaskMetadata::default()
+                },
+            },
+        )]);
+
+        let outcome = block_on(service.execute(
+            AppCommand::SetTaskOptions(SetTaskOptionsRequest {
+                task,
+                seed_ratio: Some("1.0".into()),
+                seed_time_minutes: None,
+                selected_file_indices: None,
+            }),
+            &contexts,
+        ));
+
+        assert!(matches!(outcome, CommandOutcome::Failure { .. }));
+        assert!(
+            gateway
+                .changed_options
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn task_option_request_formats_selected_file_ranges() {
+        let request = SetTaskOptionsRequest {
+            task: TaskIdentity::new(ProfileId::new(), Gid::from_u64(1)),
+            seed_ratio: None,
+            seed_time_minutes: None,
+            selected_file_indices: Some(vec![1, 2, 3, 5, 7, 8]),
+        };
+        assert_eq!(
+            request.to_option_pairs(),
+            vec![("select-file".into(), "1-3,5,7-8".into())]
+        );
+    }
+
+    #[test]
+    fn advanced_options_flatten_headers_cookie_auth_and_checksum() {
+        let advanced = AddDownloadAdvancedOptions {
+            referer: Some("https://example.test/page".into()),
+            user_agent: Some("AriaDeck/test".into()),
+            headers: vec!["X-Token: abc".into(), "Accept: */*".into()],
+            cookie: Some(SecretString::new("session=secret".into())),
+            http_user: Some("alice".into()),
+            http_passwd: Some(SecretString::new("s3cret".into())),
+            checksum: Some(format!("sha-256={}", "ab".repeat(32))),
+        };
+        assert!(advanced.validate().is_ok());
+        assert_eq!(
+            advanced.to_option_pairs(),
+            vec![
+                ("referer".into(), "https://example.test/page".into()),
+                ("user-agent".into(), "AriaDeck/test".into()),
+                ("header".into(), "X-Token: abc".into()),
+                ("header".into(), "Accept: */*".into()),
+                ("header".into(), "Cookie: session=secret".into()),
+                ("http-user".into(), "alice".into()),
+                ("http-passwd".into(), "s3cret".into()),
+                ("checksum".into(), format!("sha-256={}", "ab".repeat(32))),
+            ]
+        );
+        let debug = format!("{advanced:?}");
+        assert!(!debug.contains("s3cret"));
+        assert!(!debug.contains("session=secret"));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn advanced_options_reject_secret_headers_and_bad_checksums() {
+        let cookie_header = AddDownloadAdvancedOptions {
+            headers: vec!["Cookie: session=abc".into()],
+            ..AddDownloadAdvancedOptions::default()
+        };
+        assert!(cookie_header.validate().is_err());
+
+        let auth_header = AddDownloadAdvancedOptions {
+            headers: vec!["Authorization: Bearer token".into()],
+            ..AddDownloadAdvancedOptions::default()
+        };
+        assert!(auth_header.validate().is_err());
+
+        let bad_checksum = AddDownloadAdvancedOptions {
+            checksum: Some("sha-256=deadbeef".into()),
+            ..AddDownloadAdvancedOptions::default()
+        };
+        assert!(bad_checksum.validate().is_err());
+
+        let password_without_user = AddDownloadAdvancedOptions {
+            http_passwd: Some(SecretString::new("x".into())),
+            ..AddDownloadAdvancedOptions::default()
+        };
+        assert!(password_without_user.validate().is_err());
+    }
+
+    #[test]
+    fn add_download_forwards_typed_advanced_options_only_for_direct_uris() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+        let advanced = AddDownloadAdvancedOptions {
+            referer: Some("https://cdn.example/ref".into()),
+            headers: vec!["X-Request-Id: 1".into()],
+            cookie: Some(SecretString::new("k=v".into())),
+            checksum: Some(format!("sha-256={}", "cd".repeat(32))),
+            ..AddDownloadAdvancedOptions::default()
+        };
+
+        let outcome = block_on(service.execute(
+            AppCommand::AddDownload(AddDownloadRequest {
+                source: AddDownloadSource::Uris(vec!["https://example.test/file.bin".into()]),
+                destination: None,
+                file_conflict: FileConflictPolicy::default(),
+                selected_file_indices: None,
+                advanced: advanced.clone(),
+                options: Vec::new(),
+            }),
+            &HashMap::new(),
+        ));
+        assert!(matches!(outcome, CommandOutcome::Success { .. }));
+        let adds = gateway
+            .adds
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert_eq!(adds.len(), 1);
+        assert_eq!(adds[0].options, advanced.to_option_pairs());
+
+        let rejected = block_on(service.execute(
+            AppCommand::AddDownload(AddDownloadRequest {
+                source: AddDownloadSource::Torrent(Arc::<[u8]>::from(&b"torrent"[..])),
+                destination: None,
+                file_conflict: FileConflictPolicy::Reject,
+                selected_file_indices: None,
+                advanced,
+                options: Vec::new(),
+            }),
+            &HashMap::new(),
+        ));
+        assert!(matches!(rejected, CommandOutcome::Failure { .. }));
+        assert_eq!(
+            gateway
+                .adds
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len(),
+            1,
+            "invalid metadata advanced options must not reach the gateway"
         );
     }
 }
