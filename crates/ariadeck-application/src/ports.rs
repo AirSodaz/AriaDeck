@@ -1,4 +1,4 @@
-use ariadeck_domain::{EnginePath, Gid, TaskDetails};
+use ariadeck_domain::{EnginePath, Gid, SpeedLimitConfig, TaskConnectionDetails, TaskDetails};
 use async_trait::async_trait;
 use thiserror::Error;
 
@@ -48,6 +48,13 @@ pub trait DownloadEngineGateway: Send + Sync {
         Err(GatewayError::new(
             GatewayErrorKind::Unsupported,
             "The connected engine does not expose global proxy settings.",
+            false,
+        ))
+    }
+    async fn apply_speed_limit(&self, _config: &SpeedLimitConfig) -> Result<(), GatewayError> {
+        Err(GatewayError::new(
+            GatewayErrorKind::Unsupported,
+            "The connected engine does not expose global speed limits.",
             false,
         ))
     }
@@ -124,6 +131,26 @@ pub trait TaskFileGateway: Send + Sync {
 #[async_trait]
 pub trait TaskDetailsGateway: Send + Sync {
     async fn task_details(&self, gid: Gid) -> Result<TaskDetails, GatewayError>;
+}
+
+/// On-demand URI/mirror, server, peer, and read-only option projections.
+///
+/// `active` and `is_bittorrent` let the adapter skip projections that only
+/// exist for active tasks or only for the matching source kind (D-017).
+#[async_trait]
+pub trait TaskConnectionDetailsGateway: Send + Sync {
+    async fn connection_details(
+        &self,
+        _gid: Gid,
+        _active: bool,
+        _is_bittorrent: bool,
+    ) -> Result<TaskConnectionDetails, GatewayError> {
+        Err(GatewayError::new(
+            GatewayErrorKind::Unsupported,
+            "The connected engine does not expose connection detail projections.",
+            false,
+        ))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

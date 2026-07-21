@@ -98,6 +98,23 @@ impl TaskProgress {
     }
 }
 
+/// Per-engine global speed limits (0 = unlimited, which is aria2's convention).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SpeedLimitConfig {
+    /// Maximum aggregate download speed in bytes per second. Zero means unlimited.
+    pub download_limit: ByteRate,
+    /// Maximum aggregate upload speed in bytes per second. Zero means unlimited.
+    pub upload_limit: ByteRate,
+}
+
+impl SpeedLimitConfig {
+    /// Returns true when both limits are zero (i.e., no throttling is active).
+    #[must_use]
+    pub const fn is_unlimited(self) -> bool {
+        self.download_limit.is_zero() && self.upload_limit.is_zero()
+    }
+}
+
 /// Lightweight global statistics returned by aria2.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GlobalStat {

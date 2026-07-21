@@ -97,6 +97,17 @@ impl TaskStatusView {
         )
     }
 
+    /// Per-task speed limits use aria2's `changeOption`, which targets a live
+    /// download. A completed/failed/removed task cannot change its limits, and
+    /// an unknown status has no addressable task.
+    #[must_use]
+    pub const fn can_set_speed_limit(self) -> bool {
+        matches!(
+            self,
+            Self::Active | Self::Waiting | Self::Paused | Self::Verifying
+        )
+    }
+
     #[must_use]
     pub const fn is_terminal(self) -> bool {
         matches!(self, Self::Complete | Self::Failed | Self::Removed)
@@ -329,7 +340,13 @@ pub enum TaskCommandView {
     MoveDownInQueue,
     MoveToQueueBottom,
     Retry,
-    SetOutputName { output_name: String },
+    SetOutputName {
+        output_name: String,
+    },
+    SetSpeedLimit {
+        download_limit: u64,
+        upload_limit: u64,
+    },
     RemoveTask,
     RemoveTaskAndFiles,
 }
@@ -405,6 +422,7 @@ impl TaskCommandView {
             Self::MoveToQueueBottom => "Moving task to the bottom of the queue...",
             Self::Retry => "Creating a new task from the failed source...",
             Self::SetOutputName { .. } => "Updating output name...",
+            Self::SetSpeedLimit { .. } => "Updating speed limits...",
             Self::RemoveTask => "Removing task...",
             Self::RemoveTaskAndFiles => {
                 "Removing task and moving local files to the Recycle Bin..."
@@ -423,6 +441,7 @@ impl TaskCommandView {
             Self::MoveToQueueBottom => "Task moved to the bottom of the queue.",
             Self::Retry => "New retry task created; the failed result was kept.",
             Self::SetOutputName { .. } => "Output name updated.",
+            Self::SetSpeedLimit { .. } => "Speed limits updated for this task.",
             Self::RemoveTask => "Task removed from aria2; downloaded files were kept.",
             Self::RemoveTaskAndFiles => "Task removed; local files were moved to the Recycle Bin.",
         }
@@ -607,6 +626,8 @@ pub struct TaskDetailsRequestView {
     pub request_id: RequestId,
     pub session: EngineSessionView,
     pub identity: TaskIdentity,
+    pub active: bool,
+    pub is_bittorrent: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -697,12 +718,72 @@ pub struct TaskFileView {
     pub selected: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TaskUriStatusView {
+    Used,
+    Waiting,
+    #[default]
+    Unknown,
+}
+
+impl TaskUriStatusView {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Used => "In use",
+            Self::Waiting => "Mirror",
+            Self::Unknown => "Unknown",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskUriView {
+    pub uri: String,
+    pub status: TaskUriStatusView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskTrackerView {
+    pub tier: u32,
+    pub uri: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskServerView {
+    pub file_index: u32,
+    pub uri: String,
+    pub current_uri: String,
+    pub download_rate: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskPeerView {
+    pub address: String,
+    pub port: u16,
+    pub download_rate: u64,
+    pub upload_rate: u64,
+    pub seeder: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskOptionView {
+    pub key: String,
+    pub value: String,
+    pub redacted: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaskDetailsView {
     pub directory: Option<String>,
     pub info_hash: Option<String>,
     pub piece_length: Option<u64>,
     pub piece_count: Option<u32>,
+    pub trackers: Vec<TaskTrackerView>,
+    pub uris: Vec<TaskUriView>,
+    pub servers: Vec<TaskServerView>,
+    pub peers: Vec<TaskPeerView>,
+    pub options: Vec<TaskOptionView>,
     pub files: Vec<TaskFileView>,
 }
 
@@ -766,6 +847,90 @@ pub struct DownloadProxySettingsView {
     pub has_password: bool,
 }
 
+/// Speed limit values as user-editable text using aria2's `K`/`M` suffix syntax.
+///
+/// The accepted forms mirror aria2's `--max-*-limit` options: a plain byte
+/// count (`1048576`), or a whole number followed by a `K`/`M`/`G` suffix
+/// (`512K`, `2M`, case-insensitive), where each unit is a 1024-based multiple
+/// exactly as aria2 interprets it. An empty field means "no limit" (`0`). The
+/// UI parses these to bytes/second before building a save request.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SpeedLimitSettingsView {
+    /// Raw text entered by the user for the global download speed limit.
+    pub download_limit: String,
+    /// Raw text entered by the user for the global upload speed limit.
+    pub upload_limit: String,
+}
+
+impl SpeedLimitSettingsView {
+    /// Parse `download_limit` to bytes/second. Empty string yields 0 (unlimited).
+    #[must_use]
+    pub fn parse_download_limit(&self) -> Option<u64> {
+        parse_speed_limit_field(&self.download_limit)
+    }
+
+    /// Parse `upload_limit` to bytes/second. Empty string yields 0 (unlimited).
+    #[must_use]
+    pub fn parse_upload_limit(&self) -> Option<u64> {
+        parse_speed_limit_field(&self.upload_limit)
+    }
+
+    /// Returns true when both fields parse (or are empty).
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.parse_download_limit().is_some() && self.parse_upload_limit().is_some()
+    }
+}
+
+/// Parse an aria2 speed-limit field to bytes/second.
+///
+/// Accepts an empty string (0/unlimited), a plain integer of bytes, or an
+/// integer with a single `K`/`M`/`G` suffix (case-insensitive, 1024-based).
+/// Returns `None` when the value is malformed or overflows `u64`.
+#[must_use]
+pub fn parse_speed_limit_field(value: &str) -> Option<u64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Some(0);
+    }
+    let (digits, multiplier) = match trimmed.as_bytes().last() {
+        Some(b'K' | b'k') => (&trimmed[..trimmed.len() - 1], 1024),
+        Some(b'M' | b'm') => (&trimmed[..trimmed.len() - 1], 1024 * 1024),
+        Some(b'G' | b'g') => (&trimmed[..trimmed.len() - 1], 1024 * 1024 * 1024),
+        _ => (trimmed, 1),
+    };
+    let digits = digits.trim_end();
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|amount| amount.checked_mul(multiplier))
+}
+
+/// Render a byte/second speed limit back into a compact editable field value.
+///
+/// Zero becomes an empty string (unlimited). Exact 1024-based multiples use the
+/// largest whole `K`/`M`/`G` unit so a saved `2M` round-trips as `2M` instead
+/// of `2097152`.
+#[must_use]
+pub fn format_speed_limit_field(bytes_per_second: u64) -> String {
+    if bytes_per_second == 0 {
+        return String::new();
+    }
+    for (suffix, unit) in [
+        ('G', 1024u64 * 1024 * 1024),
+        ('M', 1024 * 1024),
+        ('K', 1024),
+    ] {
+        if bytes_per_second.is_multiple_of(unit) {
+            return format!("{}{suffix}", bytes_per_second / unit);
+        }
+    }
+    bytes_per_second.to_string()
+}
+
 #[derive(Clone, Eq, PartialEq)]
 pub struct SecretStringView(String);
 
@@ -800,6 +965,7 @@ pub struct SettingsView {
     pub color_scheme: ColorSchemeView,
     pub download_directory: String,
     pub download_proxy: DownloadProxySettingsView,
+    pub speed_limits: SpeedLimitSettingsView,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1099,5 +1265,48 @@ mod tests {
         assert!(TaskStatusView::Failed.can_remove());
         assert!(TaskStatusView::Removed.can_remove());
         assert!(!TaskStatusView::Unknown.can_remove());
+    }
+
+    #[test]
+    fn speed_limit_field_parses_bytes_and_ki_mi_gi_suffixes() {
+        assert_eq!(parse_speed_limit_field(""), Some(0));
+        assert_eq!(parse_speed_limit_field("   "), Some(0));
+        assert_eq!(parse_speed_limit_field("0"), Some(0));
+        assert_eq!(parse_speed_limit_field("1048576"), Some(1_048_576));
+        assert_eq!(parse_speed_limit_field("512K"), Some(512 * 1024));
+        assert_eq!(parse_speed_limit_field("512k"), Some(512 * 1024));
+        assert_eq!(parse_speed_limit_field("2M"), Some(2 * 1024 * 1024));
+        assert_eq!(
+            parse_speed_limit_field(" 3g "),
+            Some(3 * 1024 * 1024 * 1024)
+        );
+        assert_eq!(parse_speed_limit_field("10 M"), Some(10 * 1024 * 1024));
+    }
+
+    #[test]
+    fn speed_limit_field_rejects_malformed_and_overflowing_values() {
+        assert_eq!(parse_speed_limit_field("abc"), None);
+        assert_eq!(parse_speed_limit_field("K"), None);
+        assert_eq!(parse_speed_limit_field("1.5M"), None);
+        assert_eq!(parse_speed_limit_field("-5"), None);
+        assert_eq!(parse_speed_limit_field("5MB"), None);
+        // 18 EiB * 1024 overflows u64.
+        assert_eq!(parse_speed_limit_field("18446744073709551615K"), None);
+    }
+
+    #[test]
+    fn speed_limit_field_round_trips_through_the_compact_formatter() {
+        assert_eq!(format_speed_limit_field(0), "");
+        assert_eq!(format_speed_limit_field(2 * 1024 * 1024), "2M");
+        assert_eq!(format_speed_limit_field(512 * 1024), "512K");
+        assert_eq!(format_speed_limit_field(3 * 1024 * 1024 * 1024), "3G");
+        // Not a clean unit multiple stays in raw bytes.
+        assert_eq!(format_speed_limit_field(1_500_000), "1500000");
+        for value in [0, 100, 1024, 2 * 1024 * 1024, 5 * 1024 * 1024 * 1024] {
+            assert_eq!(
+                parse_speed_limit_field(&format_speed_limit_field(value)),
+                Some(value)
+            );
+        }
     }
 }

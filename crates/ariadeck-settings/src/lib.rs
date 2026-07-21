@@ -12,7 +12,7 @@ use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -158,6 +158,17 @@ pub struct DownloadProxySettings {
     pub credential: Option<ProxyCredentialRef>,
 }
 
+/// Persisted global speed limits. Zero means unlimited (aria2 convention).
+/// Values are stored in bytes per second and applied to aria2 on each connection.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpeedLimitSettings {
+    /// Max aggregate download speed in bytes/s (0 = unlimited).
+    pub download_limit: u64,
+    /// Max aggregate upload speed in bytes/s (0 = unlimited).
+    pub upload_limit: u64,
+}
+
 impl DownloadProxySettings {
     pub fn validate(&self) -> Result<(), SettingsError> {
         for (label, endpoint) in [
@@ -193,6 +204,7 @@ pub struct AppSettings {
     pub color_scheme: ColorScheme,
     pub download_directory: PathBuf,
     pub download_proxy: DownloadProxySettings,
+    pub speed_limits: SpeedLimitSettings,
 }
 
 impl AppSettings {
@@ -202,6 +214,7 @@ impl AppSettings {
             color_scheme: ColorScheme::default(),
             download_directory: download_directory.into(),
             download_proxy: DownloadProxySettings::default(),
+            speed_limits: SpeedLimitSettings::default(),
         }
     }
 
@@ -349,6 +362,15 @@ struct SettingsDocumentV1 {
     download_directory: PathBuf,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsDocumentV2 {
+    schema_version: u32,
+    color_scheme: ColorScheme,
+    download_directory: PathBuf,
+    download_proxy: DownloadProxySettings,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SettingsDocument {
@@ -356,6 +378,7 @@ struct SettingsDocument {
     color_scheme: ColorScheme,
     download_directory: PathBuf,
     download_proxy: DownloadProxySettings,
+    speed_limits: SpeedLimitSettings,
 }
 
 impl From<&AppSettings> for SettingsDocument {
@@ -365,6 +388,7 @@ impl From<&AppSettings> for SettingsDocument {
             color_scheme: settings.color_scheme,
             download_directory: settings.download_directory.clone(),
             download_proxy: settings.download_proxy.clone(),
+            speed_limits: settings.speed_limits,
         }
     }
 }
@@ -383,6 +407,7 @@ impl TryFrom<SettingsDocument> for AppSettings {
             color_scheme: document.color_scheme,
             download_directory: document.download_directory,
             download_proxy: document.download_proxy,
+            speed_limits: document.speed_limits,
         };
         settings.validate()?;
         Ok(settings)
@@ -431,6 +456,25 @@ impl JsonSettingsStore {
                     color_scheme: document.color_scheme,
                     download_directory: document.download_directory,
                     download_proxy: DownloadProxySettings::default(),
+                    speed_limits: SpeedLimitSettings::default(),
+                };
+                settings.validate()?;
+                Ok((settings, true))
+            }
+            2 => {
+                let document: SettingsDocumentV2 =
+                    serde_json::from_slice(&bytes).map_err(malformed)?;
+                if document.schema_version != 2 {
+                    return Err(SettingsError::UnsupportedSchemaVersion {
+                        found: document.schema_version,
+                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
+                    });
+                }
+                let settings = AppSettings {
+                    color_scheme: document.color_scheme,
+                    download_directory: document.download_directory,
+                    download_proxy: document.download_proxy,
+                    speed_limits: SpeedLimitSettings::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -597,6 +641,7 @@ mod tests {
             color_scheme: ColorScheme::Light,
             download_directory: root.join("downloads"),
             download_proxy: DownloadProxySettings::default(),
+            speed_limits: SpeedLimitSettings::default(),
         }
     }
 
@@ -614,7 +659,7 @@ mod tests {
         assert_eq!(store.load().expect("load settings"), expected);
 
         let document = fs::read_to_string(store.path()).expect("read settings JSON");
-        assert!(document.contains("\"schema_version\": 2"));
+        assert!(document.contains("\"schema_version\": 3"));
         assert!(document.ends_with('\n'));
     }
 
@@ -636,10 +681,33 @@ mod tests {
             loaded.settings.download_proxy,
             DownloadProxySettings::default()
         );
+        assert_eq!(loaded.settings.speed_limits, SpeedLimitSettings::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 2"));
+        assert!(migrated.contains("\"schema_version\": 3"));
         assert!(migrated.contains("\"download_proxy\""));
+        assert!(migrated.contains("\"speed_limits\""));
+    }
+
+    #[test]
+    fn version_two_document_is_migrated_with_speed_limits_at_zero() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        fs::write(
+            store.path(),
+            r#"{"schema_version":2,"color_scheme":"dark","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null}}"#,
+        )
+        .expect("seed version two settings");
+
+        let loaded = store
+            .load_or_initialize(&settings(root.path()))
+            .expect("migrate version two settings");
+
+        assert_eq!(loaded.settings.speed_limits, SpeedLimitSettings::default());
+        assert!(loaded.recovery.is_none());
+        let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
+        assert!(migrated.contains("\"schema_version\": 3"));
+        assert!(migrated.contains("\"speed_limits\""));
     }
 
     #[test]

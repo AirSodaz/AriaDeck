@@ -45,6 +45,7 @@ impl DownloadSyncConnector for RpcSyncConnector {
                 metadata_cache: Mutex::new(HashMap::new()),
             }),
             client.clone(),
+            client.clone(),
             client,
             notifications,
         ))

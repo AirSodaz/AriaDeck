@@ -11,11 +11,12 @@ mod theme;
 pub use actions::init;
 pub use actions::{
     Backspace, ClearSearch, CloseAddDownload, CloseBatchFailures, CloseSettings,
-    CloseTaskOutputName, Copy, Cut, Delete, FocusNext, FocusPrevious, FocusSearch, InsertNewline,
-    MoveEnd, MoveHome, MoveLeft, MoveRight, OpenAddDownload, OpenSettings, OpenTaskDetails,
-    OpenTaskOutputName, Paste, PauseSelectedTask, RemoveSelectedTask, ResumeSelectedTask,
-    RetrySelectedTask, SaveSettings, SelectAll, SelectAllTasks, SelectLeft, SelectNextTask,
-    SelectPreviousTask, SelectRight, SubmitAddDownload, SubmitTaskOutputName,
+    CloseTaskOutputName, CloseTaskSpeedLimit, Copy, Cut, Delete, FocusNext, FocusPrevious,
+    FocusSearch, InsertNewline, MoveEnd, MoveHome, MoveLeft, MoveRight, OpenAddDownload,
+    OpenSettings, OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit, Paste,
+    PauseSelectedTask, RemoveSelectedTask, ResumeSelectedTask, RetrySelectedTask, SaveSettings,
+    SelectAll, SelectAllTasks, SelectLeft, SelectNextTask, SelectPreviousTask, SelectRight,
+    SubmitAddDownload, SubmitTaskOutputName, SubmitTaskSpeedLimit,
 };
 pub use assets::Assets;
 pub use components::{
@@ -34,12 +35,14 @@ pub use model::{
     FileConflictPolicyView, GlobalTaskCommandRequestView, GlobalTaskCommandResultView,
     GlobalTaskCommandView, OperationErrorView, ProxyModeView, ProxyPasswordUpdateView, RequestId,
     SecretStringView, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
-    SettingsView, SpeedSampleView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
-    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
-    TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
-    TaskSourceKindView, TaskStatusView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
-    WorkspaceSortDirection, WorkspaceSortKey, format_bytes, format_eta, format_percent,
-    format_rate,
+    SettingsView, SpeedLimitSettingsView, SpeedSampleView, TaskCommandRequestView,
+    TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
+    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
+    TaskIdentity, TaskNameStateView, TaskOptionView, TaskPeerView, TaskServerView,
+    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
+    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    format_bytes, format_eta, format_percent, format_rate, format_speed_limit_field,
+    parse_speed_limit_field,
 };
 pub use search_input::{SearchInput, SearchInputEvent, TextField, TextFieldConfig, TextFieldEvent};
 pub use shell::{AppShell, AppShellEvent};

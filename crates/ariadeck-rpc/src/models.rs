@@ -1,6 +1,7 @@
 use ariadeck_domain::{
     ByteCount, ByteRate, DownloadStatus, EnginePath, Gid, GlobalStat, TaskDetails, TaskError,
-    TaskFile, TaskMetadata, TaskNameState, TaskSnapshot, TaskSourceKind,
+    TaskFile, TaskMetadata, TaskNameState, TaskPeer, TaskServer, TaskSnapshot, TaskSourceKind,
+    TaskTracker, TaskUri, TaskUriStatus,
 };
 use serde::Deserialize;
 use url::Url;
@@ -80,6 +81,7 @@ impl TaskKey {
         Self::InfoHash,
         Self::PieceLength,
         Self::NumPieces,
+        Self::BitTorrent,
     ];
 
     #[must_use]
@@ -307,6 +309,10 @@ impl TaskWire {
             piece_length: parse_optional_u64(method, "pieceLength", &self.piece_length)?
                 .map(ByteCount::new),
             piece_count: parse_optional_u32(method, "numPieces", &self.num_pieces)?,
+            trackers: self
+                .bittorrent
+                .map(|torrent| torrent.trackers())
+                .unwrap_or_default(),
             files,
         })
     }
@@ -355,12 +361,137 @@ struct UriWire {
 struct BitTorrentWire {
     #[serde(default)]
     info: Option<BitTorrentInfoWire>,
+    #[serde(default, rename = "announceList")]
+    announce_list: Vec<Vec<String>>,
+}
+
+impl BitTorrentWire {
+    fn trackers(self) -> Vec<TaskTracker> {
+        self.announce_list
+            .into_iter()
+            .enumerate()
+            .flat_map(|(tier, uris)| {
+                let tier = u32::try_from(tier + 1).unwrap_or(u32::MAX);
+                uris.into_iter().filter_map(move |uri| {
+                    let uri = uri.trim().to_owned();
+                    (!uri.is_empty()).then_some(TaskTracker { tier, uri })
+                })
+            })
+            .collect()
+    }
 }
 
 #[derive(Deserialize)]
 struct BitTorrentInfoWire {
     #[serde(default)]
     name: String,
+}
+
+/// Wire form of `aria2.getUris` entries (URI plus `used`/`waiting` status).
+#[derive(Deserialize)]
+pub(crate) struct DetailUriWire {
+    #[serde(default)]
+    uri: String,
+    #[serde(default)]
+    status: String,
+}
+
+impl DetailUriWire {
+    pub(crate) fn into_domain(self) -> TaskUri {
+        let status = match self.status.as_str() {
+            "used" => TaskUriStatus::Used,
+            "waiting" => TaskUriStatus::Waiting,
+            _ => TaskUriStatus::Unknown,
+        };
+        TaskUri {
+            uri: self.uri.trim().to_owned(),
+            status,
+        }
+    }
+}
+
+/// Wire form of one `aria2.getServers` file entry (index plus its servers).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ServerGroupWire {
+    #[serde(default)]
+    index: String,
+    #[serde(default)]
+    servers: Vec<ServerWire>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerWire {
+    #[serde(default)]
+    uri: String,
+    #[serde(default)]
+    current_uri: String,
+    #[serde(default)]
+    download_speed: String,
+}
+
+impl ServerGroupWire {
+    pub(crate) fn into_domain(self, method: &str) -> Result<Vec<TaskServer>, RpcError> {
+        let file_index = parse_u32(method, "servers.index", &self.index)?;
+        self.servers
+            .into_iter()
+            .map(|server| {
+                Ok(TaskServer {
+                    file_index,
+                    uri: server.uri.trim().to_owned(),
+                    current_uri: server.current_uri.trim().to_owned(),
+                    download_speed: ByteRate::new(parse_u64(
+                        method,
+                        "servers.downloadSpeed",
+                        &server.download_speed,
+                    )?),
+                })
+            })
+            .collect()
+    }
+}
+
+/// Wire form of `aria2.getPeers` entries.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PeerWire {
+    #[serde(default)]
+    ip: String,
+    #[serde(default)]
+    port: String,
+    #[serde(default)]
+    download_speed: String,
+    #[serde(default)]
+    upload_speed: String,
+    #[serde(default)]
+    seeder: String,
+}
+
+impl PeerWire {
+    pub(crate) fn into_domain(self, method: &str) -> Result<TaskPeer, RpcError> {
+        let port = parse_u32(method, "peers.port", &self.port)?;
+        let port = u16::try_from(port).map_err(|_| RpcError::InvalidData {
+            method: method.into(),
+            field: "peers.port".into(),
+            message: "peer port is outside the u16 range".into(),
+        })?;
+        Ok(TaskPeer {
+            address: self.ip.trim().to_owned(),
+            port,
+            download_speed: ByteRate::new(parse_u64(
+                method,
+                "peers.downloadSpeed",
+                &self.download_speed,
+            )?),
+            upload_speed: ByteRate::new(parse_u64(
+                method,
+                "peers.uploadSpeed",
+                &self.upload_speed,
+            )?),
+            seeder: parse_bool(method, "peers.seeder", &self.seeder)?,
+        })
+    }
 }
 
 fn parse_status(value: &str) -> DownloadStatus {

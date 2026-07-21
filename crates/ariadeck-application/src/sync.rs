@@ -6,7 +6,8 @@ use std::{
 
 use ariadeck_domain::{
     ConnectionState, DownloadTask, EngineSession, EngineSessionId, Gid, GlobalStat, ProfileId,
-    SessionGeneration, TaskDetails, TaskIdentity, TaskSnapshot,
+    SessionGeneration, SpeedLimitConfig, TaskConnectionDetails, TaskDetails, TaskIdentity,
+    TaskSnapshot,
 };
 use async_trait::async_trait;
 use thiserror::Error;
@@ -18,7 +19,8 @@ use tokio::{
 use crate::{
     AppCommand, ApplicationError, ApplicationErrorCode, CommandOutcome, CommandService,
     DownloadEngineGateway, DownloadProxyConfig, DownloadStore, StoreError, StorePatch,
-    TaskCommandContext, TaskCounts, TaskDetailsGateway, TaskListQuery, TaskListView,
+    TaskCommandContext, TaskConnectionDetailsGateway, TaskCounts, TaskDetailsGateway,
+    TaskListQuery, TaskListView,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -75,6 +77,7 @@ pub struct ConnectedSyncSession {
     session: Box<dyn DownloadSyncSession>,
     command_gateway: Option<Arc<dyn DownloadEngineGateway>>,
     details_gateway: Option<Arc<dyn TaskDetailsGateway>>,
+    connection_gateway: Option<Arc<dyn TaskConnectionDetailsGateway>>,
     notifications: mpsc::Receiver<RefreshHint>,
 }
 
@@ -82,6 +85,7 @@ struct ConnectedSessionParts {
     session: Box<dyn DownloadSyncSession>,
     command_gateway: Option<Arc<dyn DownloadEngineGateway>>,
     details_gateway: Option<Arc<dyn TaskDetailsGateway>>,
+    connection_gateway: Option<Arc<dyn TaskConnectionDetailsGateway>>,
     notifications: mpsc::Receiver<RefreshHint>,
 }
 
@@ -95,6 +99,7 @@ impl ConnectedSyncSession {
             session,
             command_gateway: None,
             details_gateway: None,
+            connection_gateway: None,
             notifications,
         }
     }
@@ -104,12 +109,14 @@ impl ConnectedSyncSession {
         session: Box<dyn DownloadSyncSession>,
         command_gateway: Arc<dyn DownloadEngineGateway>,
         details_gateway: Arc<dyn TaskDetailsGateway>,
+        connection_gateway: Arc<dyn TaskConnectionDetailsGateway>,
         notifications: mpsc::Receiver<RefreshHint>,
     ) -> Self {
         Self {
             session,
             command_gateway: Some(command_gateway),
             details_gateway: Some(details_gateway),
+            connection_gateway: Some(connection_gateway),
             notifications,
         }
     }
@@ -119,6 +126,7 @@ impl ConnectedSyncSession {
             session: self.session,
             command_gateway: self.command_gateway,
             details_gateway: self.details_gateway,
+            connection_gateway: self.connection_gateway,
             notifications: self.notifications,
         }
     }
@@ -342,6 +350,25 @@ impl SyncHandle {
         })?
     }
 
+    pub async fn apply_speed_limit(
+        &self,
+        session: EngineSession,
+        config: SpeedLimitConfig,
+    ) -> Result<(), ApplicationError> {
+        let (sender, receiver) = oneshot::channel();
+        self.commands
+            .send(Control::ApplySpeedLimit {
+                session,
+                config,
+                sender,
+            })
+            .await
+            .map_err(|_| unavailable_error("The synchronization coordinator is unavailable."))?;
+        receiver.await.map_err(|_| {
+            unavailable_error("The synchronization coordinator stopped unexpectedly.")
+        })?
+    }
+
     pub async fn task_details(
         &self,
         session: EngineSession,
@@ -352,6 +379,33 @@ impl SyncHandle {
             .send(Control::TaskDetails {
                 session,
                 task,
+                sender,
+            })
+            .await
+            .map_err(|_| unavailable_error("The synchronization coordinator is unavailable."))?;
+        receiver.await.map_err(|_| {
+            unavailable_error("The synchronization coordinator stopped unexpectedly.")
+        })?
+    }
+
+    /// Request the on-demand URI/server/peer/option projections for a task.
+    ///
+    /// `active` and `is_bittorrent` reflect the caller's current view of the
+    /// task so the adapter can skip active-only or source-specific projections.
+    pub async fn connection_details(
+        &self,
+        session: EngineSession,
+        task: TaskIdentity,
+        active: bool,
+        is_bittorrent: bool,
+    ) -> Result<TaskConnectionDetails, ApplicationError> {
+        let (sender, receiver) = oneshot::channel();
+        self.commands
+            .send(Control::ConnectionDetails {
+                session,
+                task,
+                active,
+                is_bittorrent,
                 sender,
             })
             .await
@@ -388,10 +442,22 @@ enum Control {
         config: DownloadProxyConfig,
         sender: oneshot::Sender<Result<(), ApplicationError>>,
     },
+    ApplySpeedLimit {
+        session: EngineSession,
+        config: SpeedLimitConfig,
+        sender: oneshot::Sender<Result<(), ApplicationError>>,
+    },
     TaskDetails {
         session: EngineSession,
         task: TaskIdentity,
         sender: oneshot::Sender<Result<TaskDetails, ApplicationError>>,
+    },
+    ConnectionDetails {
+        session: EngineSession,
+        task: TaskIdentity,
+        active: bool,
+        is_bittorrent: bool,
+        sender: oneshot::Sender<Result<TaskConnectionDetails, ApplicationError>>,
     },
 }
 
@@ -433,9 +499,21 @@ fn handle_unavailable_control(
             )));
             UnavailableControlDisposition::Continue
         }
+        Some(Control::ApplySpeedLimit { sender, .. }) => {
+            let _ = sender.send(Err(unavailable_error(
+                "Speed limits cannot be applied until aria2 is connected and synchronized.",
+            )));
+            UnavailableControlDisposition::Continue
+        }
         Some(Control::TaskDetails { sender, .. }) => {
             let _ = sender.send(Err(unavailable_error(
                 "Task details are unavailable until aria2 is connected and synchronized.",
+            )));
+            UnavailableControlDisposition::Continue
+        }
+        Some(Control::ConnectionDetails { sender, .. }) => {
+            let _ = sender.send(Err(unavailable_error(
+                "Connection details are unavailable until aria2 is connected and synchronized.",
             )));
             UnavailableControlDisposition::Continue
         }
@@ -596,6 +674,7 @@ async fn run_coordinator(
             session,
             command_gateway,
             details_gateway,
+            connection_gateway,
             notifications,
         } = connected.into_parts();
         set_state(&events, &mut state, ConnectionState::Authenticating);
@@ -708,6 +787,7 @@ async fn run_coordinator(
             session.as_ref(),
             command_gateway.as_ref(),
             details_gateway.as_ref(),
+            connection_gateway.as_ref(),
             notifications,
             &mut commands,
             &mut store,
@@ -793,6 +873,7 @@ async fn run_connected(
     session: &dyn DownloadSyncSession,
     command_gateway: Option<&Arc<dyn DownloadEngineGateway>>,
     details_gateway: Option<&Arc<dyn TaskDetailsGateway>>,
+    connection_gateway: Option<&Arc<dyn TaskConnectionDetailsGateway>>,
     mut notifications: mpsc::Receiver<RefreshHint>,
     commands: &mut mpsc::Receiver<Control>,
     store: &mut DownloadStore,
@@ -864,6 +945,9 @@ async fn run_connected(
                             AppCommand::SetTaskOutputName(request) => {
                                 Some(std::slice::from_ref(&request.task))
                             }
+                            AppCommand::SetTaskSpeedLimit(request) => {
+                                Some(std::slice::from_ref(&request.task))
+                            }
                             _ => None,
                         }
                         .map_or_else(HashMap::new, |tasks| {
@@ -885,6 +969,9 @@ async fn run_connected(
                         });
                         let refresh_after_success = match &command {
                             AppCommand::SetTaskOutputName(request) => {
+                                RefreshHint::Task(request.task.gid)
+                            }
+                            AppCommand::SetTaskSpeedLimit(request) => {
                                 RefreshHint::Task(request.task.gid)
                             }
                             _ => RefreshHint::Full,
@@ -945,6 +1032,29 @@ async fn run_connected(
                         };
                         let _ = sender.send(result);
                     }
+                    Some(Control::ApplySpeedLimit {
+                        session: expected_session,
+                        config: speed_limit,
+                        sender,
+                    }) => {
+                        if expected_session != store.session() {
+                            let _ = sender.send(Err(stale_session_error()));
+                            continue;
+                        }
+                        let Some(gateway) = command_gateway else {
+                            let _ = sender.send(Err(unsupported_error(
+                                "The connected engine does not expose global speed limits.",
+                            )));
+                            continue;
+                        };
+                        let service = CommandService::new(config.profile_id, gateway.clone());
+                        let result = tokio::select! {
+                            biased;
+                            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
+                            result = service.apply_speed_limit(&speed_limit) => result,
+                        };
+                        let _ = sender.send(result);
+                    }
                     Some(Control::TaskDetails {
                         session: expected_session,
                         task,
@@ -968,6 +1078,35 @@ async fn run_connected(
                             biased;
                             () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
                             result = gateway.task_details(task.gid) => result.map_err(Into::into),
+                        };
+                        let _ = sender.send(result);
+                    }
+                    Some(Control::ConnectionDetails {
+                        session: expected_session,
+                        task,
+                        active,
+                        is_bittorrent,
+                        sender,
+                    }) => {
+                        if expected_session != store.session() {
+                            let _ = sender.send(Err(stale_session_error()));
+                            continue;
+                        }
+                        if task.profile_id != config.profile_id {
+                            let _ = sender.send(Err(wrong_profile_error()));
+                            continue;
+                        }
+                        let Some(gateway) = connection_gateway else {
+                            let _ = sender.send(Err(unsupported_error(
+                                "The connected engine does not expose connection details.",
+                            )));
+                            continue;
+                        };
+                        let result = tokio::select! {
+                            biased;
+                            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
+                            result = gateway.connection_details(task.gid, active, is_bittorrent)
+                                => result.map_err(Into::into),
                         };
                         let _ = sender.send(result);
                     }
@@ -1712,6 +1851,7 @@ mod tests {
                 info_hash: None,
                 piece_length: None,
                 piece_count: None,
+                trackers: Vec::new(),
                 files: vec![TaskFile {
                     index: 1,
                     path: EnginePath::new("/downloads/item.bin"),
@@ -1720,6 +1860,18 @@ mod tests {
                     selected: true,
                 }],
             })
+        }
+    }
+
+    #[async_trait]
+    impl TaskConnectionDetailsGateway for FakeInteractiveGateway {
+        async fn connection_details(
+            &self,
+            gid: Gid,
+            _active: bool,
+            _is_bittorrent: bool,
+        ) -> Result<TaskConnectionDetails, crate::GatewayError> {
+            Ok(TaskConnectionDetails::new(gid))
         }
     }
 
@@ -1973,6 +2125,7 @@ mod tests {
                     }),
                     gateway.clone(),
                     gateway.clone(),
+                    gateway.clone(),
                     notification_rx,
                 ),
             )])),
@@ -1998,6 +2151,13 @@ mod tests {
         assert!(matches!(output_name, CommandOutcome::Success { .. }));
         let details = handle.task_details(snapshot.session, identity).await;
         assert!(matches!(details, Ok(TaskDetails { gid: value, .. }) if value == gid));
+        let connection_details = handle
+            .connection_details(snapshot.session, identity, true, false)
+            .await;
+        assert!(matches!(
+            connection_details,
+            Ok(TaskConnectionDetails { gid: value, .. }) if value == gid
+        ));
         let proxy = DownloadProxyConfig::default();
         assert!(
             handle
@@ -2021,6 +2181,16 @@ mod tests {
         let stale_details = handle.task_details(stale_session, identity).await;
         assert!(matches!(
             stale_details,
+            Err(ApplicationError {
+                code: ApplicationErrorCode::StaleSession,
+                ..
+            })
+        ));
+        let stale_connection_details = handle
+            .connection_details(stale_session, identity, true, false)
+            .await;
+        assert!(matches!(
+            stale_connection_details,
             Err(ApplicationError {
                 code: ApplicationErrorCode::StaleSession,
                 ..
@@ -2089,6 +2259,7 @@ mod tests {
                         initial,
                         targeted_calls: targeted_calls.clone(),
                     }),
+                    gateway.clone(),
                     gateway.clone(),
                     gateway.clone(),
                     notification_rx,

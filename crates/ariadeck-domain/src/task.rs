@@ -130,7 +130,94 @@ pub struct TaskDetails {
     pub info_hash: Option<String>,
     pub piece_length: Option<ByteCount>,
     pub piece_count: Option<u32>,
+    pub trackers: Vec<TaskTracker>,
     pub files: Vec<TaskFile>,
+}
+
+/// One BitTorrent tracker from an aria2 announce-list tier.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskTracker {
+    pub tier: u32,
+    pub uri: String,
+}
+
+/// How aria2 currently treats a source URI for a task (from `getUris`).
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskUriStatus {
+    /// aria2 is actively using this URI.
+    Used,
+    /// aria2 holds this URI in reserve (a mirror not yet in use).
+    Waiting,
+    #[default]
+    Unknown,
+}
+
+/// A single source URI and its current usage, from `aria2.getUris`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskUri {
+    pub uri: String,
+    pub status: TaskUriStatus,
+}
+
+/// An active HTTP(S)/FTP server connection for one file, from `aria2.getServers`.
+///
+/// aria2 reports servers grouped per file index; `current_uri` is the URI aria2
+/// resolved to after any redirect, which can differ from the originally listed
+/// `uri`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskServer {
+    pub file_index: u32,
+    pub uri: String,
+    pub current_uri: String,
+    pub download_speed: ByteRate,
+}
+
+/// An active BitTorrent peer, from `aria2.getPeers`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskPeer {
+    pub address: String,
+    pub port: u16,
+    pub download_speed: ByteRate,
+    pub upload_speed: ByteRate,
+    /// True when the peer reports itself as a seed.
+    pub seeder: bool,
+}
+
+/// A read-only aria2 option key/value pair from `aria2.getOption`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskOptionEntry {
+    pub key: String,
+    pub value: String,
+    /// Sensitive values are replaced inside the RPC adapter before they can
+    /// enter application or UI state.
+    pub redacted: bool,
+}
+
+/// On-demand connection/source projections kept outside the list refresh.
+///
+/// Peer and server data exist only while a task is active, so those vectors are
+/// empty for non-active tasks. URIs and options are available regardless.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskConnectionDetails {
+    pub gid: Gid,
+    pub uris: Vec<TaskUri>,
+    pub servers: Vec<TaskServer>,
+    pub peers: Vec<TaskPeer>,
+    pub options: Vec<TaskOptionEntry>,
+}
+
+impl TaskConnectionDetails {
+    #[must_use]
+    pub fn new(gid: Gid) -> Self {
+        Self {
+            gid,
+            uris: Vec::new(),
+            servers: Vec::new(),
+            peers: Vec::new(),
+            options: Vec::new(),
+        }
+    }
 }
 
 /// Adapter-produced task values without application revision metadata.
@@ -463,6 +550,16 @@ mod tests {
         assert_eq!(changed, TaskFields::DISPLAY_NAME | TaskFields::NAME_STATE);
         assert_eq!(task.name_state, TaskNameState::Resolved);
         assert_eq!(task.revision, 2);
+    }
+
+    #[test]
+    fn connection_details_start_empty_for_a_gid() {
+        let details = TaskConnectionDetails::new(Gid::from_u64(7));
+        assert_eq!(details.gid, Gid::from_u64(7));
+        assert!(details.uris.is_empty());
+        assert!(details.servers.is_empty());
+        assert!(details.peers.is_empty());
+        assert!(details.options.is_empty());
     }
 
     #[test]

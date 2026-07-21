@@ -14,13 +14,14 @@ use ariadeck_application::{
     DownloadDestinationGateway, DownloadDestinationRequest, DownloadProxyConfig,
     DownloadProxyMode as ApplicationProxyMode, FileConflictPolicy, ItemFailure,
     MoveTaskInQueueRequest, QueueMove, ReconnectPolicy, RemoveTasksRequest,
-    SetTaskOutputNameRequest, StoreSnapshot, SyncHandle, TaskFileGateway, TaskFileRemovalRequest,
-    TaskListQuery, TaskRemovalScope, spawn_sync_coordinator,
+    SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, StoreSnapshot, SyncHandle, TaskFileGateway,
+    TaskFileRemovalRequest, TaskListQuery, TaskRemovalScope, spawn_sync_coordinator,
 };
 use ariadeck_domain::{
-    ConnectionState, DownloadFilter, DownloadSort, DownloadStatus, DownloadTask, EnginePath,
-    EngineSession, EngineSessionId, Gid, ProfileId, SessionGeneration, SortDirection, SortKey,
-    TaskDetails, TaskIdentity as DomainTaskIdentity, TaskProgress,
+    ByteRate, ConnectionState, DownloadFilter, DownloadSort, DownloadStatus, DownloadTask,
+    EnginePath, EngineSession, EngineSessionId, Gid, ProfileId, SessionGeneration, SortDirection,
+    SortKey, SpeedLimitConfig, TaskConnectionDetails, TaskDetails,
+    TaskIdentity as DomainTaskIdentity, TaskProgress, TaskUriStatus,
 };
 use ariadeck_engine::{
     ExternalEngineProfile, JsonProfileStore, LocalDownloadDestinationGateway,
@@ -33,7 +34,7 @@ use ariadeck_rpc::{
 };
 use ariadeck_settings::{
     AppSettings, ColorScheme, DownloadProxyMode, DownloadProxySettings, JsonSettingsStore,
-    ProxyCredentialRef, ProxyCredentialStore, SystemProxyCredentialStore,
+    ProxyCredentialRef, ProxyCredentialStore, SpeedLimitSettings, SystemProxyCredentialStore,
 };
 use ariadeck_ui::{
     AddDownloadItemResultView, AddDownloadMetadataFileView, AddDownloadMetadataKindView,
@@ -47,11 +48,13 @@ use ariadeck_ui::{
     FileConflictPolicyView, GlobalTaskCommandRequestView, GlobalTaskCommandResultView,
     GlobalTaskCommandView, OperationErrorView, ProxyModeView, ProxyPasswordUpdateView,
     SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    SpeedSampleView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
-    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
-    TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
-    TaskSourceKindView, TaskStatusView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
-    WorkspaceSortDirection, WorkspaceSortKey,
+    SpeedLimitSettingsView, SpeedSampleView, TaskCommandRequestView, TaskCommandResultView,
+    TaskCommandView, TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView,
+    TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity,
+    TaskNameStateView, TaskOptionView, TaskPeerView, TaskServerView, TaskSourceKindView,
+    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, WorkspaceFilter,
+    WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    format_speed_limit_field,
 };
 use data_encoding::BASE32_NOPAD;
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
@@ -86,6 +89,7 @@ struct SettingsPersistenceRequest {
     previous_settings: AppSettings,
     proxy_password: ProxyPasswordUpdate,
     apply_proxy: bool,
+    apply_speed_limit: bool,
 }
 
 #[derive(Clone)]
@@ -299,6 +303,7 @@ impl DesktopRoot {
         };
         let apply_proxy = settings.download_proxy != self.settings.download_proxy
             || !matches!(proxy_password, ProxyPasswordUpdate::Unchanged);
+        let apply_speed_limit = settings.speed_limits != self.settings.speed_limits;
         let Some(sender) = &self.settings_sender else {
             self.deliver_settings_error(
                 request,
@@ -315,6 +320,7 @@ impl DesktopRoot {
                 previous_settings: self.settings.clone(),
                 proxy_password,
                 apply_proxy,
+                apply_speed_limit,
             })
             .is_err()
         {
@@ -1313,6 +1319,14 @@ async fn execute_task_command(
                         output_name: output_name.clone(),
                     })
                 }
+                TaskCommandView::SetSpeedLimit {
+                    download_limit,
+                    upload_limit,
+                } => AppCommand::SetTaskSpeedLimit(SetTaskSpeedLimitRequest {
+                    task,
+                    download_limit: ByteRate::new(*download_limit),
+                    upload_limit: ByteRate::new(*upload_limit),
+                }),
                 TaskCommandView::RemoveTask => AppCommand::RemoveTasks(RemoveTasksRequest {
                     tasks: vec![task],
                     scope: TaskRemovalScope::TaskOnly,
@@ -1837,18 +1851,30 @@ async fn execute_task_details(
         request_id,
         session,
         identity,
+        active,
+        is_bittorrent,
     } = request;
     let mapped = map_engine_session(&session)
         .and_then(|engine_session| map_task_identity(&identity).map(|task| (engine_session, task)));
     let outcome = match (sync, mapped) {
-        (Some(handle), Ok((engine_session, task))) => handle
-            .task_details(engine_session, task)
-            .await
-            .map(map_task_details)
-            .map_or_else(
-                |error| TaskDetailsOutcomeView::Failed(map_application_error(error)),
-                TaskDetailsOutcomeView::Ready,
-            ),
+        (Some(handle), Ok((engine_session, task))) => {
+            let task_details = handle.task_details(engine_session, task);
+            let connection_details =
+                handle.connection_details(engine_session, task, active, is_bittorrent);
+            match tokio::join!(task_details, connection_details) {
+                (Ok(details), Ok(connection)) if details.gid == connection.gid => {
+                    TaskDetailsOutcomeView::Ready(map_task_details(details, connection))
+                }
+                (Ok(_), Ok(_)) => TaskDetailsOutcomeView::Failed(OperationErrorView {
+                    code: ApplicationErrorCode::Internal.as_str().into(),
+                    summary: "aria2 returned mismatched task detail identities.".into(),
+                    retryable: false,
+                }),
+                (Err(error), _) | (_, Err(error)) => {
+                    TaskDetailsOutcomeView::Failed(map_application_error(error))
+                }
+            }
+        }
         (None, _) => TaskDetailsOutcomeView::Failed(unavailable_operation_error()),
         (Some(_), Err(error)) => TaskDetailsOutcomeView::Failed(map_application_error(error)),
     };
@@ -2001,12 +2027,62 @@ fn internal_operation_error() -> OperationErrorView {
     }
 }
 
-fn map_task_details(details: TaskDetails) -> TaskDetailsView {
+fn map_task_details(details: TaskDetails, connection: TaskConnectionDetails) -> TaskDetailsView {
     TaskDetailsView {
         directory: details.directory.map(|path| path.to_string()),
         info_hash: details.info_hash,
         piece_length: details.piece_length.map(|length| length.get()),
         piece_count: details.piece_count,
+        trackers: details
+            .trackers
+            .into_iter()
+            .map(|tracker| TaskTrackerView {
+                tier: tracker.tier,
+                uri: tracker.uri,
+            })
+            .collect(),
+        uris: connection
+            .uris
+            .into_iter()
+            .map(|uri| TaskUriView {
+                uri: uri.uri,
+                status: match uri.status {
+                    TaskUriStatus::Used => TaskUriStatusView::Used,
+                    TaskUriStatus::Waiting => TaskUriStatusView::Waiting,
+                    TaskUriStatus::Unknown => TaskUriStatusView::Unknown,
+                },
+            })
+            .collect(),
+        servers: connection
+            .servers
+            .into_iter()
+            .map(|server| TaskServerView {
+                file_index: server.file_index,
+                uri: server.uri,
+                current_uri: server.current_uri,
+                download_rate: server.download_speed.get(),
+            })
+            .collect(),
+        peers: connection
+            .peers
+            .into_iter()
+            .map(|peer| TaskPeerView {
+                address: peer.address,
+                port: peer.port,
+                download_rate: peer.download_speed.get(),
+                upload_rate: peer.upload_speed.get(),
+                seeder: peer.seeder,
+            })
+            .collect(),
+        options: connection
+            .options
+            .into_iter()
+            .map(|option| TaskOptionView {
+                key: option.key,
+                value: option.value,
+                redacted: option.redacted,
+            })
+            .collect(),
         files: details
             .files
             .into_iter()
@@ -2322,6 +2398,10 @@ fn map_settings(settings: &AppSettings) -> SettingsView {
             username: settings.download_proxy.username.clone().unwrap_or_default(),
             has_password: settings.download_proxy.credential.is_some(),
         },
+        speed_limits: SpeedLimitSettingsView {
+            download_limit: format_speed_limit_field(settings.speed_limits.download_limit),
+            upload_limit: format_speed_limit_field(settings.speed_limits.upload_limit),
+        },
     }
 }
 
@@ -2371,6 +2451,16 @@ fn map_settings_request(
                 .collect(),
             username: trimmed_value(&settings.download_proxy.username),
             credential,
+        },
+        speed_limits: SpeedLimitSettings {
+            download_limit: settings
+                .speed_limits
+                .parse_download_limit()
+                .ok_or_else(|| "Download speed limit must be bytes/second or a K/M/G value (or empty for unlimited).".to_owned())?,
+            upload_limit: settings
+                .speed_limits
+                .parse_upload_limit()
+                .ok_or_else(|| "Upload speed limit must be bytes/second or a K/M/G value (or empty for unlimited).".to_owned())?,
         },
     };
     mapped.validate().map_err(|error| error.to_string())?;
@@ -2428,6 +2518,15 @@ async fn persist_settings_request(
     })
     .await
     .map_err(|error| format!("settings preflight task failed: {error}"))??;
+
+    // Speed limits carry no credentials, so they are applied independently of
+    // the proxy credential dance. When only speed limits change we still push
+    // them to the running engine before persisting, then persist and roll the
+    // engine back on a save failure so disk and engine stay consistent.
+    if request.apply_speed_limit && !request.apply_proxy {
+        return apply_speed_limit_only(store, sync, request).await;
+    }
+
     if !request.apply_proxy {
         let settings = request.settings;
         return tokio::task::spawn_blocking(move || {
@@ -2478,6 +2577,33 @@ async fn persist_settings_request(
         };
     }
 
+    if request.apply_speed_limit
+        && let Err(error) = sync
+            .apply_speed_limit(snapshot.session, map_speed_limit_config(&request.settings))
+            .await
+    {
+        // Roll the proxy and credential mutation back so the engine matches the
+        // still-unchanged persisted settings.
+        let rollback_proxy =
+            map_download_proxy_config(&request.previous_settings, previous_password);
+        let engine_rollback = sync
+            .apply_download_proxy(snapshot.session, rollback_proxy)
+            .await
+            .err()
+            .map(|error| error.summary);
+        let credential_rollback = rollback_credential_async(credential_store, mutation)
+            .await
+            .err();
+        let mut summary = error.summary;
+        if let Some(error) = engine_rollback {
+            summary.push_str(&format!(" Proxy rollback also failed: {error}"));
+        }
+        if let Some(error) = credential_rollback {
+            summary.push_str(&format!(" Credential rollback also failed: {error}"));
+        }
+        return Err(summary);
+    }
+
     let settings_to_save = request.settings.clone();
     let save_store = store.clone();
     if let Err(error) = tokio::task::spawn_blocking(move || {
@@ -2495,6 +2621,17 @@ async fn persist_settings_request(
             .await
             .err()
             .map(|error| error.summary);
+        let speed_rollback = if request.apply_speed_limit {
+            sync.apply_speed_limit(
+                snapshot.session,
+                map_speed_limit_config(&request.previous_settings),
+            )
+            .await
+            .err()
+            .map(|error| error.summary)
+        } else {
+            None
+        };
         let credential_rollback = rollback_credential_async(credential_store, mutation)
             .await
             .err();
@@ -2502,8 +2639,64 @@ async fn persist_settings_request(
         if let Some(error) = engine_rollback {
             summary.push_str(&format!(" Engine rollback also failed: {error}"));
         }
+        if let Some(error) = speed_rollback {
+            summary.push_str(&format!(" Speed-limit rollback also failed: {error}"));
+        }
         if let Some(error) = credential_rollback {
             summary.push_str(&format!(" Credential rollback also failed: {error}"));
+        }
+        return Err(summary);
+    }
+    Ok(())
+}
+
+/// Apply and persist a speed-limit-only settings change.
+///
+/// Pushes the new limits to the running engine first, then persists to disk and
+/// rolls the engine back to the previous limits if persistence fails, so the
+/// engine never diverges from the source-of-truth settings file.
+async fn apply_speed_limit_only(
+    store: JsonSettingsStore,
+    sync: Option<SyncHandle>,
+    request: SettingsPersistenceRequest,
+) -> Result<(), String> {
+    let Some(sync) = sync else {
+        return Err("Speed limits cannot be applied because aria2 is unavailable.".into());
+    };
+    let Some(snapshot) = sync.snapshot(TaskListQuery::default()).await else {
+        return Err(
+            "Speed limits cannot be applied because the synchronization coordinator is unavailable."
+                .into(),
+        );
+    };
+    if let Err(error) = sync
+        .apply_speed_limit(snapshot.session, map_speed_limit_config(&request.settings))
+        .await
+    {
+        return Err(error.summary);
+    }
+
+    let settings_to_save = request.settings.clone();
+    let save_store = store.clone();
+    if let Err(error) = tokio::task::spawn_blocking(move || {
+        save_store
+            .save(&settings_to_save)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("settings persistence task failed: {error}"))?
+    {
+        let engine_rollback = sync
+            .apply_speed_limit(
+                snapshot.session,
+                map_speed_limit_config(&request.previous_settings),
+            )
+            .await
+            .err()
+            .map(|error| error.summary);
+        let mut summary = format!("Failed to persist speed limits: {error}");
+        if let Some(error) = engine_rollback {
+            summary.push_str(&format!(" Engine rollback also failed: {error}"));
         }
         return Err(summary);
     }
@@ -2624,6 +2817,13 @@ fn map_download_proxy_config(
     }
 }
 
+fn map_speed_limit_config(settings: &AppSettings) -> SpeedLimitConfig {
+    SpeedLimitConfig {
+        download_limit: ByteRate::new(settings.speed_limits.download_limit),
+        upload_limit: ByteRate::new(settings.speed_limits.upload_limit),
+    }
+}
+
 #[cfg(test)]
 fn persist_settings(
     store: &JsonSettingsStore,
@@ -2732,11 +2932,26 @@ fn spawn_proxy_reapply_bridge(
                     .and_then(|result| result);
                 let result = match loaded {
                     Ok((settings, password)) => {
-                        let config = map_download_proxy_config(&settings, password);
-                        handle
-                            .apply_download_proxy(snapshot.session, config)
+                        let proxy = map_download_proxy_config(&settings, password);
+                        let proxy_result = handle
+                            .apply_download_proxy(snapshot.session, proxy)
                             .await
-                            .map_err(|error| error.summary)
+                            .map_err(|error| {
+                                format!(
+                                    "Download proxy settings were not applied: {}",
+                                    error.summary
+                                )
+                            });
+                        // Reapply persisted speed limits on the fresh session so
+                        // a reconnect restores the user's throttle. Zero limits
+                        // are still sent so aria2 explicitly clears any default.
+                        let speed_result = handle
+                            .apply_speed_limit(snapshot.session, map_speed_limit_config(&settings))
+                            .await
+                            .map_err(|error| {
+                                format!("Speed limits were not applied: {}", error.summary)
+                            });
+                        proxy_result.and(speed_result)
                     }
                     Err(error) => Err(error),
                 };
@@ -2744,11 +2959,7 @@ fn spawn_proxy_reapply_bridge(
                     && this
                         .update(cx, |this, cx| {
                             this.workspace.update(cx, |workspace, cx| {
-                                workspace.set_startup_notice(
-                                    format!("Download proxy settings were not applied: {error}"),
-                                    true,
-                                    cx,
-                                );
+                                workspace.set_startup_notice(error, true, cx);
                             });
                         })
                         .is_err()
@@ -3011,8 +3222,9 @@ mod tests {
     use ariadeck_application::{
         ConnectedSyncSession, DownloadEngineGateway, DownloadSyncConnector, DownloadSyncSession,
         EngineCapabilities, GatewayError, GatewayErrorKind, InitialSyncSnapshot, ItemFailure,
-        LiveSyncSnapshot, RefreshHint, StoppedPage, SyncError, SyncErrorKind, TaskDetailsGateway,
-        TaskFileRemovalPreview, TaskFileRemovalReport, TaskRemovalTarget,
+        LiveSyncSnapshot, RefreshHint, StoppedPage, SyncError, SyncErrorKind,
+        TaskConnectionDetailsGateway, TaskDetailsGateway, TaskFileRemovalPreview,
+        TaskFileRemovalReport, TaskRemovalTarget,
     };
     use ariadeck_domain::{
         ByteCount, ByteRate, EnginePath, Gid, GlobalStat, TaskDetails, TaskFile, TaskSnapshot,
@@ -3122,6 +3334,9 @@ mod tests {
             Err(unsupported_test_gateway_error())
         }
     }
+
+    #[async_trait]
+    impl TaskConnectionDetailsGateway for UnknownAcceptedAddGateway {}
 
     struct UnknownAcceptedAddSession {
         accepted: Arc<AtomicBool>,
@@ -3270,6 +3485,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl TaskConnectionDetailsGateway for UnknownAcceptedRetryGateway {}
+
     struct UnknownAcceptedRetrySession {
         accepted: Arc<AtomicBool>,
     }
@@ -3387,6 +3605,7 @@ mod tests {
                     accepted: self.accepted.clone(),
                 }),
                 gateway.clone(),
+                gateway.clone(),
                 gateway,
                 notifications,
             ))
@@ -3412,6 +3631,7 @@ mod tests {
                 Box::new(UnknownAcceptedAddSession {
                     accepted: self.accepted.clone(),
                 }),
+                gateway.clone(),
                 gateway.clone(),
                 gateway,
                 notifications,
@@ -3491,6 +3711,7 @@ mod tests {
                 info_hash: None,
                 piece_length: None,
                 piece_count: None,
+                trackers: Vec::new(),
                 files: vec![TaskFile {
                     index: 1,
                     path: EnginePath::new("D:/downloads/item.bin"),
@@ -3501,6 +3722,9 @@ mod tests {
             })
         }
     }
+
+    #[async_trait]
+    impl TaskConnectionDetailsGateway for RemovalWorkflowGateway {}
 
     struct RemovalWorkflowSession {
         removed: Arc<AtomicBool>,
@@ -3640,6 +3864,7 @@ mod tests {
                     removed: self.removed.clone(),
                     terminal: self.terminal,
                 }),
+                gateway.clone(),
                 gateway.clone(),
                 gateway,
                 notifications,
@@ -3838,12 +4063,17 @@ mod tests {
 
     #[test]
     fn details_mapping_keeps_remote_paths_as_display_strings() {
-        let mapped = map_task_details(TaskDetails {
-            gid: Gid::from_u64(7),
+        let gid = Gid::from_u64(7);
+        let details = TaskDetails {
+            gid,
             directory: Some(EnginePath::new("/srv/downloads")),
             info_hash: None,
             piece_length: Some(ByteCount::new(1_024)),
             piece_count: Some(2),
+            trackers: vec![ariadeck_domain::TaskTracker {
+                tier: 1,
+                uri: "https://tracker.example/announce".into(),
+            }],
             files: vec![TaskFile {
                 index: 1,
                 path: EnginePath::new("/srv/downloads/archive.bin"),
@@ -3851,11 +4081,26 @@ mod tests {
                 completed_length: ByteCount::new(1_024),
                 selected: true,
             }],
+        };
+        let mut connection = TaskConnectionDetails::new(gid);
+        connection.uris.push(ariadeck_domain::TaskUri {
+            uri: "https://example.test/archive.bin".into(),
+            status: TaskUriStatus::Used,
         });
+        connection.options.push(ariadeck_domain::TaskOptionEntry {
+            key: "http-passwd".into(),
+            value: String::new(),
+            redacted: true,
+        });
+        let mapped = map_task_details(details, connection);
 
         assert_eq!(mapped.directory.as_deref(), Some("/srv/downloads"));
         assert_eq!(mapped.files[0].path, "/srv/downloads/archive.bin");
         assert_eq!(mapped.files[0].completed_length, 1_024);
+        assert_eq!(mapped.trackers[0].tier, 1);
+        assert_eq!(mapped.uris[0].status, TaskUriStatusView::Used);
+        assert!(mapped.options[0].redacted);
+        assert!(mapped.options[0].value.is_empty());
     }
 
     #[test]
@@ -4652,6 +4897,7 @@ mod tests {
                 has_password: true,
                 ..DownloadProxySettingsView::default()
             },
+            speed_limits: SpeedLimitSettingsView::default(),
         };
 
         let (mapped, password) = map_settings_request(
@@ -4783,11 +5029,13 @@ mod tests {
             color_scheme: ColorScheme::Dark,
             download_directory: root.path().join("first"),
             download_proxy: DownloadProxySettings::default(),
+            speed_limits: SpeedLimitSettings::default(),
         };
         let second = AppSettings {
             color_scheme: ColorScheme::Light,
             download_directory: root.path().join("second"),
             download_proxy: DownloadProxySettings::default(),
+            speed_limits: SpeedLimitSettings::default(),
         };
         sender
             .send(SettingsPersistenceRequest {
@@ -4796,6 +5044,7 @@ mod tests {
                 previous_settings: first.clone(),
                 proxy_password: ProxyPasswordUpdate::Unchanged,
                 apply_proxy: false,
+                apply_speed_limit: false,
             })
             .expect("queue first settings");
         sender
@@ -4805,6 +5054,7 @@ mod tests {
                 previous_settings: first.clone(),
                 proxy_password: ProxyPasswordUpdate::Unchanged,
                 apply_proxy: false,
+                apply_speed_limit: false,
             })
             .expect("queue second settings");
         drop(sender);
@@ -4841,6 +5091,7 @@ mod tests {
             color_scheme: ColorScheme::Dark,
             download_directory: remote_path.clone(),
             download_proxy: DownloadProxySettings::default(),
+            speed_limits: SpeedLimitSettings::default(),
         };
 
         persist_settings(&store, &settings, None).expect("persist external engine path");

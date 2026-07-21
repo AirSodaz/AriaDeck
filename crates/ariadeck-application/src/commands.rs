@@ -5,7 +5,8 @@ use std::{
 };
 
 use ariadeck_domain::{
-    DownloadStatus, EnginePath, ProfileId, TaskIdentity, TaskMetadata, TaskSourceKind,
+    DownloadStatus, EnginePath, ProfileId, SpeedLimitConfig, TaskIdentity, TaskMetadata,
+    TaskSourceKind,
 };
 use secrecy::{ExposeSecret, SecretString};
 use url::Url;
@@ -256,6 +257,13 @@ pub enum TaskRemovalScope {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SetTaskSpeedLimitRequest {
+    pub task: TaskIdentity,
+    pub download_limit: ariadeck_domain::ByteRate,
+    pub upload_limit: ariadeck_domain::ByteRate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AppCommand {
     AddDownload(AddDownloadRequest),
     PauseAll,
@@ -266,6 +274,7 @@ pub enum AppCommand {
     RetryTasks(Vec<TaskIdentity>),
     SetTaskOutputName(SetTaskOutputNameRequest),
     RemoveTasks(RemoveTasksRequest),
+    SetTaskSpeedLimit(SetTaskSpeedLimitRequest),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -456,6 +465,9 @@ impl CommandService {
                 )
                 .await
             }
+            AppCommand::SetTaskSpeedLimit(request) => {
+                self.set_task_speed_limit(request, task_contexts).await
+            }
         }
     }
 
@@ -468,6 +480,85 @@ impl CommandService {
             .apply_download_proxy(config)
             .await
             .map_err(Into::into)
+    }
+
+    pub async fn apply_speed_limit(
+        &self,
+        config: &SpeedLimitConfig,
+    ) -> Result<(), ApplicationError> {
+        self.gateway
+            .apply_speed_limit(config)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn set_task_speed_limit(
+        &self,
+        request: SetTaskSpeedLimitRequest,
+        task_contexts: &HashMap<TaskIdentity, TaskCommandContext>,
+    ) -> CommandOutcome {
+        let item = CommandItem::Task(request.task);
+        if request.task.profile_id != self.profile_id {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::WrongProfile,
+                        "The task belongs to a different engine profile.",
+                        false,
+                    ),
+                }],
+            };
+        }
+        let Some(context) = task_contexts.get(&request.task) else {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Rejected,
+                        "The task is no longer present in the current engine session.",
+                        false,
+                    ),
+                }],
+            };
+        };
+        if context.status.is_terminal() {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Rejected,
+                        "A completed or failed task cannot change its speed limit.",
+                        false,
+                    ),
+                }],
+            };
+        }
+        let options = [
+            (
+                "max-download-limit".to_owned(),
+                request.download_limit.get().to_string(),
+            ),
+            (
+                "max-upload-limit".to_owned(),
+                request.upload_limit.get().to_string(),
+            ),
+        ];
+        match self
+            .gateway
+            .change_options(request.task.gid, &options)
+            .await
+        {
+            Ok(()) => CommandOutcome::Success {
+                succeeded: vec![item],
+            },
+            Err(error) => CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: error.into(),
+                }],
+            },
+        }
     }
 
     async fn add_download(&self, request: AddDownloadRequest) -> CommandOutcome {
@@ -914,6 +1005,7 @@ mod tests {
         calls: Mutex<Vec<(TaskOperation, Gid)>>,
         removals: Mutex<Vec<(Gid, TaskRemovalTarget)>>,
         changed_options: Mutex<Vec<ChangedOptionCall>>,
+        global_options: Mutex<Vec<Vec<(String, String)>>>,
         queue_moves: Mutex<Vec<(Gid, QueueMove)>>,
         fail_gid: Option<Gid>,
     }
@@ -976,6 +1068,23 @@ mod tests {
             Ok(())
         }
 
+        async fn apply_speed_limit(&self, config: &SpeedLimitConfig) -> Result<(), GatewayError> {
+            self.global_options
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(vec![
+                    (
+                        "max-overall-download-limit".into(),
+                        config.download_limit.get().to_string(),
+                    ),
+                    (
+                        "max-overall-upload-limit".into(),
+                        config.upload_limit.get().to_string(),
+                    ),
+                ]);
+            Ok(())
+        }
+
         async fn remove(&self, gid: Gid, target: TaskRemovalTarget) -> Result<(), GatewayError> {
             self.removals
                 .lock()
@@ -1013,6 +1122,7 @@ mod tests {
             calls: Mutex::default(),
             removals: Mutex::default(),
             changed_options: Mutex::default(),
+            global_options: Mutex::default(),
             queue_moves: Mutex::default(),
             fail_gid: Some(Gid::from_u64(2)),
         });
@@ -1575,6 +1685,110 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn task_speed_limit_forwards_typed_change_options_for_a_live_task() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+        let task = TaskIdentity::new(profile_id, Gid::from_u64(11));
+        let contexts = HashMap::from([(
+            task,
+            TaskCommandContext {
+                status: DownloadStatus::Active,
+                metadata: TaskMetadata::default(),
+            },
+        )]);
+
+        let outcome = block_on(service.execute(
+            AppCommand::SetTaskSpeedLimit(SetTaskSpeedLimitRequest {
+                task,
+                download_limit: ariadeck_domain::ByteRate::new(2 * 1024 * 1024),
+                upload_limit: ariadeck_domain::ByteRate::new(0),
+            }),
+            &contexts,
+        ));
+
+        assert_eq!(
+            outcome,
+            CommandOutcome::Success {
+                succeeded: vec![CommandItem::Task(task)]
+            }
+        );
+        assert_eq!(
+            *gateway
+                .changed_options
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![(
+                task.gid,
+                vec![
+                    ("max-download-limit".into(), (2 * 1024 * 1024).to_string()),
+                    ("max-upload-limit".into(), "0".into()),
+                ]
+            )]
+        );
+    }
+
+    #[test]
+    fn task_speed_limit_rejects_terminal_tasks_before_the_gateway() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+        let task = TaskIdentity::new(profile_id, Gid::from_u64(12));
+        let contexts = HashMap::from([(
+            task,
+            TaskCommandContext {
+                status: DownloadStatus::Complete,
+                metadata: TaskMetadata::default(),
+            },
+        )]);
+
+        let outcome = block_on(service.execute(
+            AppCommand::SetTaskSpeedLimit(SetTaskSpeedLimitRequest {
+                task,
+                download_limit: ariadeck_domain::ByteRate::new(1024),
+                upload_limit: ariadeck_domain::ByteRate::new(1024),
+            }),
+            &contexts,
+        ));
+
+        assert!(matches!(outcome, CommandOutcome::Failure { .. }));
+        assert!(
+            gateway
+                .changed_options
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn global_speed_limit_forwards_overall_options_to_the_gateway() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+
+        let result = block_on(service.apply_speed_limit(&SpeedLimitConfig {
+            download_limit: ariadeck_domain::ByteRate::new(5 * 1024 * 1024),
+            upload_limit: ariadeck_domain::ByteRate::new(512 * 1024),
+        }));
+
+        assert!(result.is_ok());
+        assert_eq!(
+            *gateway
+                .global_options
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![vec![
+                (
+                    "max-overall-download-limit".into(),
+                    (5 * 1024 * 1024).to_string()
+                ),
+                ("max-overall-upload-limit".into(), (512 * 1024).to_string()),
+            ]]
         );
     }
 

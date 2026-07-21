@@ -131,6 +131,176 @@ async fn authenticates_and_reads_live_aria2_state() -> Result<(), TestError> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires ARIA2C_PATH and launches a real local aria2 process"]
+async fn applies_global_and_per_task_speed_limits_on_live_aria2() -> Result<(), TestError> {
+    let executable = env::var("ARIA2C_PATH")?;
+    let data_dir = TempDir::new()?;
+    let port = reserve_loopback_port()?;
+    let secret = Uuid::new_v4().simple().to_string();
+    let mut process = ChildGuard::spawn(Path::new(&executable), data_dir.path(), port, &secret)?;
+    let endpoint = Url::parse(&format!("ws://127.0.0.1:{port}/jsonrpc"))?;
+    let transport = connect_with_retry(endpoint, Duration::from_secs(5)).await?;
+    let authenticated =
+        AuthenticatedTransport::new(transport.clone(), Some(RpcSecret::new(secret)));
+    let client = Aria2Client::new(authenticated);
+
+    // Global limits use the exact option names the RATE-001 adapter emits
+    // (aria2.changeGlobalOption with max-overall-*-limit). A real aria2 must
+    // accept the K/M-normalized byte strings without error.
+    client
+        .change_global_options(&[
+            (
+                "max-overall-download-limit".into(),
+                (2 * 1024 * 1024).to_string(),
+            ),
+            ("max-overall-upload-limit".into(), (512 * 1024).to_string()),
+        ])
+        .await?;
+    // Zero must clear the limit rather than being rejected.
+    client
+        .change_global_options(&[
+            ("max-overall-download-limit".into(), "0".into()),
+            ("max-overall-upload-limit".into(), "0".into()),
+        ])
+        .await?;
+
+    // Add a paused task and apply per-task limits through the same option names
+    // the adapter uses (aria2.changeOption with max-*-limit), then read them
+    // back from aria2's own getOption projection.
+    let request = AddDownloadRequest {
+        source: AddDownloadSource::Uris(vec!["http://127.0.0.1:9/limited.bin".into()]),
+        destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
+        file_conflict: ariadeck_application::FileConflictPolicy::default(),
+        selected_file_indices: None,
+        options: vec![("pause".into(), "true".into())],
+    };
+    let gid = client.add_uri(&request).await?;
+    client
+        .change_options(
+            gid,
+            &[
+                ("max-download-limit".into(), (1024 * 1024).to_string()),
+                ("max-upload-limit".into(), (256 * 1024).to_string()),
+            ],
+        )
+        .await?;
+    let options = client.get_options(gid).await?;
+    assert_eq!(
+        options
+            .get("max-download-limit")
+            .and_then(|value| value.as_str()),
+        Some((1024 * 1024).to_string().as_str()),
+        "aria2 must report the per-task download limit it accepted"
+    );
+    assert_eq!(
+        options
+            .get("max-upload-limit")
+            .and_then(|value| value.as_str()),
+        Some((256 * 1024).to_string().as_str()),
+        "aria2 must report the per-task upload limit it accepted"
+    );
+
+    client.remove(gid).await.ok();
+    client.remove_download_result(gid).await.ok();
+    client.shutdown().await?;
+    transport.close().await;
+    let status = process.wait_for_exit(Duration::from_secs(5))?;
+    assert!(status.success());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires ARIA2C_PATH and launches a real local aria2 process"]
+async fn projects_task_connection_details_on_live_aria2() -> Result<(), TestError> {
+    let executable = env::var("ARIA2C_PATH")?;
+    let data_dir = TempDir::new()?;
+    let port = reserve_loopback_port()?;
+    let secret = Uuid::new_v4().simple().to_string();
+    let mut process = ChildGuard::spawn(Path::new(&executable), data_dir.path(), port, &secret)?;
+    let endpoint = Url::parse(&format!("ws://127.0.0.1:{port}/jsonrpc"))?;
+    let transport = connect_with_retry(endpoint, Duration::from_secs(5)).await?;
+    let authenticated =
+        AuthenticatedTransport::new(transport.clone(), Some(RpcSecret::new(secret)));
+    let client = Aria2Client::new(authenticated);
+
+    let mirror_request = AddDownloadRequest {
+        source: AddDownloadSource::Uris(vec![
+            "http://127.0.0.1:9/mirror.bin".into(),
+            "http://127.0.0.1:10/mirror.bin".into(),
+        ]),
+        destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
+        file_conflict: ariadeck_application::FileConflictPolicy::default(),
+        selected_file_indices: None,
+        options: vec![
+            ("pause".into(), "true".into()),
+            ("max-download-limit".into(), "1M".into()),
+            ("http-user".into(), "private-user".into()),
+            ("http-passwd".into(), "private-password".into()),
+            ("header".into(), "Cookie: private-cookie".into()),
+        ],
+    };
+    let mirror_gid = client.add_uri(&mirror_request).await?;
+    let mirror_details = client.connection_details(mirror_gid, false, false).await?;
+    assert_eq!(mirror_details.uris.len(), 2);
+    assert!(mirror_details.peers.is_empty());
+    assert!(mirror_details.servers.is_empty());
+    let limit = mirror_details
+        .options
+        .iter()
+        .find(|entry| entry.key == "max-download-limit")
+        .expect("real aria2 returns max-download-limit");
+    assert!(!limit.redacted);
+    assert!(matches!(limit.value.as_str(), "1M" | "1048576"));
+    for key in ["header", "http-passwd", "http-user"] {
+        let option = mirror_details
+            .options
+            .iter()
+            .find(|entry| entry.key == key)
+            .unwrap_or_else(|| panic!("real aria2 did not return {key}"));
+        assert!(option.redacted, "{key} must be redacted before projection");
+        assert!(
+            option.value.is_empty(),
+            "{key} value escaped the RPC adapter"
+        );
+    }
+
+    let payload = vec![b'x'; 64 * 1024];
+    let (slow_url, slow_server) = spawn_slow_http_fixture(payload, Duration::from_secs(5))?;
+    let active_request = AddDownloadRequest {
+        source: AddDownloadSource::Uris(vec![slow_url]),
+        destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
+        file_conflict: ariadeck_application::FileConflictPolicy::default(),
+        selected_file_indices: None,
+        options: vec![("split".into(), "1".into())],
+    };
+    let active_gid = client.add_uri(&active_request).await?;
+    wait_for_active_client_task(&client, active_gid, Duration::from_secs(5)).await?;
+    let active_details =
+        wait_for_server_details(&client, active_gid, Duration::from_secs(3)).await?;
+    assert!(active_details.peers.is_empty());
+    assert!(
+        active_details
+            .servers
+            .iter()
+            .any(|server| server.file_index == 1 && !server.current_uri.is_empty()),
+        "real aria2 must expose the active HTTP server projection"
+    );
+    slow_server
+        .join()
+        .map_err(|_| std::io::Error::other("slow HTTP fixture panicked"))??;
+
+    client.remove(mirror_gid).await.ok();
+    client.remove_download_result(mirror_gid).await.ok();
+    client.remove(active_gid).await.ok();
+    client.remove_download_result(active_gid).await.ok();
+    client.shutdown().await?;
+    transport.close().await;
+    let status = process.wait_for_exit(Duration::from_secs(5))?;
+    assert!(status.success());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires ARIA2C_PATH and launches a real local aria2 process"]
 async fn reorders_queue_and_applies_global_pause_resume_on_live_aria2() -> Result<(), TestError> {
     let executable = env::var("ARIA2C_PATH")?;
     let data_dir = TempDir::new()?;
@@ -1050,6 +1220,85 @@ fn spawn_http_fixture(
         stream.flush()
     });
     Ok((format!("http://{address}/fixture.bin"), handle))
+}
+
+fn spawn_slow_http_fixture(
+    payload: Vec<u8>,
+    hold: Duration,
+) -> Result<(String, thread::JoinHandle<Result<(), std::io::Error>>), TestError> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let address = listener.local_addr()?;
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept()?;
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request)?;
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            payload.len()
+        );
+        stream.write_all(header.as_bytes())?;
+        let first_chunk = payload.len().min(1);
+        stream.write_all(&payload[..first_chunk])?;
+        stream.flush()?;
+        thread::sleep(hold);
+        stream.write_all(&payload[first_chunk..])?;
+        stream.flush()
+    });
+    Ok((format!("http://{address}/slow.bin"), handle))
+}
+
+async fn wait_for_active_client_task<T>(
+    client: &Aria2Client<T>,
+    gid: ariadeck_domain::Gid,
+    timeout: Duration,
+) -> Result<(), TestError>
+where
+    T: ariadeck_rpc::RpcTransport,
+{
+    let deadline = Instant::now() + timeout;
+    loop {
+        if client
+            .tell_active(TaskKey::LIST_PROJECTION)
+            .await?
+            .iter()
+            .any(|task| task.gid == gid)
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("task {gid} did not become active"),
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn wait_for_server_details<T>(
+    client: &Aria2Client<T>,
+    gid: ariadeck_domain::Gid,
+    timeout: Duration,
+) -> Result<ariadeck_domain::TaskConnectionDetails, TestError>
+where
+    T: ariadeck_rpc::RpcTransport,
+{
+    let deadline = Instant::now() + timeout;
+    loop {
+        let details = client.connection_details(gid, true, false).await?;
+        if !details.servers.is_empty() {
+            return Ok(details);
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("task {gid} did not expose an active server"),
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 }
 
 fn spawn_http_proxy_fixture(

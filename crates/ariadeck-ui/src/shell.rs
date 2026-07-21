@@ -20,21 +20,23 @@ use crate::{
     AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView, BatchCommandOutcomeView,
     BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
     BatchTaskFailureView, Button, ButtonStyle, ClearSearch, CloseAddDownload, CloseBatchFailures,
-    CloseSettings, CloseTaskOutputName, ColorSchemeView, CommandOutcomeView, ConnectionView,
-    Dialog, DownloadProxySettingsView, DownloadRowView, EngineHealthView, EngineSessionView,
-    FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch, GlobalTaskCommandRequestView,
-    GlobalTaskCommandResultView, GlobalTaskCommandView, Icon, IconButton, IconName, IconSize,
-    OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName, OperationErrorView,
-    PauseSelectedTask, ProxyModeView, ProxyPasswordUpdateView, RemoveSelectedTask, RequestId,
-    ResumeSelectedTask, RetrySelectedTask, SaveSettings, SearchInputEvent, SecretStringView,
-    Segment, SegmentedControl, SelectAllTasks, SelectNextTask, SelectPreviousTask,
-    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    SpeedSampleView, StatusIndicator, SubmitAddDownload, SubmitTaskOutputName,
-    TaskCommandRequestView, TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView,
-    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity,
-    TaskStatusView, TextField, TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Tooltip,
-    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
-    format_bytes, format_eta, format_percent, format_rate,
+    CloseSettings, CloseTaskOutputName, CloseTaskSpeedLimit, ColorSchemeView, CommandOutcomeView,
+    ConnectionView, Dialog, DownloadProxySettingsView, DownloadRowView, EngineHealthView,
+    EngineSessionView, FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch,
+    GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView, Icon,
+    IconButton, IconName, IconSize, OpenAddDownload, OpenSettings, OpenTaskDetails,
+    OpenTaskOutputName, OpenTaskSpeedLimit, OperationErrorView, PauseSelectedTask, ProxyModeView,
+    ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask,
+    SaveSettings, SearchInputEvent, SecretStringView, Segment, SegmentedControl, SelectAllTasks,
+    SelectNextTask, SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView,
+    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator,
+    SubmitAddDownload, SubmitTaskOutputName, SubmitTaskSpeedLimit, TaskCommandRequestView,
+    TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView, TaskDetailsRequestView,
+    TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity, TaskOptionView,
+    TaskPeerView, TaskServerView, TaskStatusView, TaskTrackerView, TaskUriView, TextField,
+    TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Tooltip, WorkspaceFilter, WorkspaceQuery,
+    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, format_bytes, format_eta,
+    format_percent, format_rate,
 };
 
 const SPEED_CHART_SAMPLES: usize = 120;
@@ -159,9 +161,23 @@ enum TaskDetailsPresentation {
         piece_length: Option<u64>,
         piece_count: Option<u32>,
         file_count: usize,
+        trackers: Vec<TaskTrackerView>,
+        uris: Vec<TaskUriView>,
+        servers: Vec<TaskServerView>,
+        peers: Vec<TaskPeerView>,
+        options: Vec<TaskOptionView>,
     },
     Failed(String),
     Stale,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum TaskDetailsTab {
+    #[default]
+    Info,
+    Files,
+    Network,
+    Options,
 }
 
 struct TaskDetailsDrawer {
@@ -170,6 +186,7 @@ struct TaskDetailsDrawer {
     session: EngineSessionView,
     state: TaskDetailsLoadState,
     pending: Option<PendingTaskDetails>,
+    tab: TaskDetailsTab,
     file_scroll: UniformListScrollHandle,
     rendered_file_range: Range<usize>,
 }
@@ -201,6 +218,7 @@ enum SettingsSaveSource {
     Theme,
     Directory,
     Proxy,
+    SpeedLimit,
 }
 
 struct PendingSettingsSave {
@@ -222,6 +240,13 @@ struct TaskOutputNameDialog {
     identity: TaskIdentity,
     display_name: String,
     active: bool,
+    previous_focus: Option<WeakFocusHandle>,
+    error: Option<OperationErrorView>,
+}
+
+struct TaskSpeedLimitDialog {
+    identity: TaskIdentity,
+    display_name: String,
     previous_focus: Option<WeakFocusHandle>,
     error: Option<OperationErrorView>,
 }
@@ -253,6 +278,8 @@ pub struct AppShell {
     settings_no_proxy_input: Entity<TextField>,
     settings_proxy_username_input: Entity<TextField>,
     settings_proxy_password_input: Entity<TextField>,
+    settings_download_limit_input: Entity<TextField>,
+    settings_upload_limit_input: Entity<TextField>,
     add_dialog: AddDownloadDialog,
     add_dialog_focus: FocusHandle,
     add_cancel_focus: FocusHandle,
@@ -270,6 +297,12 @@ pub struct AppShell {
     output_name_dialog_focus: FocusHandle,
     output_name_cancel_focus: FocusHandle,
     output_name_submit_focus: FocusHandle,
+    task_download_limit_input: Entity<TextField>,
+    task_upload_limit_input: Entity<TextField>,
+    task_speed_limit_dialog: Option<TaskSpeedLimitDialog>,
+    task_speed_limit_dialog_focus: FocusHandle,
+    task_speed_limit_cancel_focus: FocusHandle,
+    task_speed_limit_submit_focus: FocusHandle,
     details_drawer: Option<TaskDetailsDrawer>,
     remove_confirmation: Option<RemoveConfirmation>,
     remove_dialog_focus: FocusHandle,
@@ -288,6 +321,7 @@ pub struct AppShell {
     _search_subscription: Subscription,
     _add_subscription: Subscription,
     _output_name_subscription: Subscription,
+    _task_speed_limit_subscriptions: [Subscription; 2],
     _settings_subscriptions: Vec<Subscription>,
     _window_bounds_subscription: Subscription,
 }
@@ -407,6 +441,54 @@ impl AppShell {
                 }
             },
         );
+        let task_download_limit_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "task-download-limit".into(),
+                    key_context: "TaskSpeedLimitInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "Task maximum download speed".into(),
+                    placeholder: "Unlimited (e.g. 2M, 512K)".into(),
+                    leading_icon: Some(IconName::ArrowDown),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: false,
+                },
+                theme,
+                cx,
+            )
+        });
+        let task_upload_limit_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "task-upload-limit".into(),
+                    key_context: "TaskSpeedLimitInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "Task maximum upload speed".into(),
+                    placeholder: "Unlimited (e.g. 1M, 256K)".into(),
+                    leading_icon: Some(IconName::ArrowUp),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: false,
+                },
+                theme,
+                cx,
+            )
+        });
+        let task_speed_limit_subscriptions = [&task_download_limit_input, &task_upload_limit_input]
+            .map(|input| {
+                cx.subscribe(
+                    input,
+                    |this: &mut Self, _input, _event: &SearchInputEvent, cx| {
+                        if let Some(dialog) = &mut this.task_speed_limit_dialog
+                            && this.pending_task_command.is_none()
+                            && dialog.error.take().is_some()
+                        {
+                            cx.notify();
+                        }
+                    },
+                )
+            });
         let settings_directory_input = cx.new(|cx| {
             TextField::new_with_config(
                 TextFieldConfig {
@@ -515,6 +597,32 @@ impl AppShell {
                 cx,
             )
         });
+        let settings_download_limit_input = cx.new(|cx| {
+            TextField::new_with_config(
+                settings_input_config(
+                    "settings-download-limit",
+                    "Maximum download speed",
+                    "Unlimited (e.g. 2M, 512K)",
+                    Some(IconName::ArrowDown),
+                    false,
+                ),
+                theme,
+                cx,
+            )
+        });
+        let settings_upload_limit_input = cx.new(|cx| {
+            TextField::new_with_config(
+                settings_input_config(
+                    "settings-upload-limit",
+                    "Maximum upload speed",
+                    "Unlimited (e.g. 1M, 256K)",
+                    Some(IconName::ArrowUp),
+                    false,
+                ),
+                theme,
+                cx,
+            )
+        });
         let mut settings_subscriptions = [
             &settings_directory_input,
             &settings_all_proxy_input,
@@ -523,6 +631,8 @@ impl AppShell {
             &settings_ftp_proxy_input,
             &settings_no_proxy_input,
             &settings_proxy_username_input,
+            &settings_download_limit_input,
+            &settings_upload_limit_input,
         ]
         .into_iter()
         .map(|input| {
@@ -579,6 +689,8 @@ impl AppShell {
             settings_no_proxy_input,
             settings_proxy_username_input,
             settings_proxy_password_input,
+            settings_download_limit_input,
+            settings_upload_limit_input,
             add_dialog: AddDownloadDialog::default(),
             add_dialog_focus: cx.focus_handle(),
             add_cancel_focus: cx.focus_handle().tab_stop(true),
@@ -596,6 +708,12 @@ impl AppShell {
             output_name_dialog_focus: cx.focus_handle(),
             output_name_cancel_focus: cx.focus_handle().tab_stop(true),
             output_name_submit_focus: cx.focus_handle().tab_stop(true),
+            task_download_limit_input,
+            task_upload_limit_input,
+            task_speed_limit_dialog: None,
+            task_speed_limit_dialog_focus: cx.focus_handle(),
+            task_speed_limit_cancel_focus: cx.focus_handle().tab_stop(true),
+            task_speed_limit_submit_focus: cx.focus_handle().tab_stop(true),
             details_drawer: None,
             remove_confirmation: None,
             remove_dialog_focus: cx.focus_handle(),
@@ -614,6 +732,7 @@ impl AppShell {
             _search_subscription: search_subscription,
             _add_subscription: add_subscription,
             _output_name_subscription: output_name_subscription,
+            _task_speed_limit_subscriptions: task_speed_limit_subscriptions,
             _settings_subscriptions: settings_subscriptions,
             _window_bounds_subscription: window_bounds_subscription,
         }
@@ -751,7 +870,15 @@ impl AppShell {
                 .iter()
                 .find(|task| task.identity == drawer.identity)
             {
+                let left_active_state = drawer.overview.status == TaskStatusView::Active
+                    && task.status != TaskStatusView::Active;
                 drawer.overview = task.clone();
+                if left_active_state
+                    && let TaskDetailsLoadState::Ready { details } = &mut drawer.state
+                {
+                    details.peers.clear();
+                    details.servers.clear();
+                }
             }
             if !self.snapshot.commands_available() {
                 drawer.state = TaskDetailsLoadState::Stale;
@@ -1005,6 +1132,9 @@ impl AppShell {
                     TaskCommandView::SetOutputName { .. } => {
                         self.close_task_output_name(window, cx);
                     }
+                    TaskCommandView::SetSpeedLimit { .. } => {
+                        self.close_task_speed_limit(window, cx);
+                    }
                     TaskCommandView::Pause
                     | TaskCommandView::Resume
                     | TaskCommandView::MoveToQueueTop
@@ -1022,6 +1152,12 @@ impl AppShell {
                 }
                 if matches!(result.command, TaskCommandView::SetOutputName { .. }) {
                     if let Some(dialog) = &mut self.output_name_dialog {
+                        dialog.error = Some(error);
+                    } else {
+                        self.show_notice(error.summary, true, cx);
+                    }
+                } else if matches!(result.command, TaskCommandView::SetSpeedLimit { .. }) {
+                    if let Some(dialog) = &mut self.task_speed_limit_dialog {
                         dialog.error = Some(error);
                     } else {
                         self.show_notice(error.summary, true, cx);
@@ -1321,6 +1457,18 @@ impl AppShell {
                             .update(cx, |input, cx| input.set_text("", cx));
                         self.settings_page.clear_proxy_password = false;
                         "Download proxy settings saved."
+                    }
+                    SettingsSaveSource::SpeedLimit => {
+                        // Reflect the normalized (compact) form back into the fields
+                        // so a saved "2097152" re-renders as "2M".
+                        let speed_limits = self.settings.speed_limits.clone();
+                        self.settings_download_limit_input.update(cx, |input, cx| {
+                            input.set_text(speed_limits.download_limit.clone(), cx);
+                        });
+                        self.settings_upload_limit_input.update(cx, |input, cx| {
+                            input.set_text(speed_limits.upload_limit.clone(), cx);
+                        });
+                        "Speed limits saved."
                     }
                 };
                 self.show_notice(message, false, cx);
@@ -1731,6 +1879,13 @@ impl AppShell {
         });
         self.settings_proxy_password_input
             .update(cx, |input, cx| input.set_text("", cx));
+        let speed_limits = self.settings.speed_limits.clone();
+        self.settings_download_limit_input.update(cx, |input, cx| {
+            input.set_text(speed_limits.download_limit.clone(), cx);
+        });
+        self.settings_upload_limit_input.update(cx, |input, cx| {
+            input.set_text(speed_limits.upload_limit.clone(), cx);
+        });
         self.page = AppPage::Settings;
         self.details_drawer = None;
         self.speed_popover_open = false;
@@ -1893,6 +2048,45 @@ impl AppShell {
             },
         };
         self.request_settings_save(settings, password_update, SettingsSaveSource::Proxy, cx);
+    }
+
+    fn submit_speed_limits(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        let download_limit = self
+            .settings_download_limit_input
+            .read(cx)
+            .text()
+            .trim()
+            .to_owned();
+        let upload_limit = self
+            .settings_upload_limit_input
+            .read(cx)
+            .text()
+            .trim()
+            .to_owned();
+        let draft = SpeedLimitSettingsView {
+            download_limit,
+            upload_limit,
+        };
+        if !draft.is_valid() {
+            self.settings_page.error = Some(OperationErrorView {
+                code: "settings.invalid_speed_limit".into(),
+                summary: "Enter a speed as bytes/second or a K/M/G value, or leave it blank for unlimited.".into(),
+                retryable: false,
+            });
+            cx.notify();
+            return;
+        }
+        let mut settings = self.settings.clone();
+        settings.speed_limits = draft;
+        self.request_settings_save(
+            settings,
+            ProxyPasswordUpdateView::Unchanged,
+            SettingsSaveSource::SpeedLimit,
+            cx,
+        );
     }
 
     fn request_settings_save(
@@ -2425,6 +2619,7 @@ impl AppShell {
             session,
             state: TaskDetailsLoadState::Stale,
             pending: None,
+            tab: TaskDetailsTab::Info,
             file_scroll: UniformListScrollHandle::new(),
             rendered_file_range: 0..0,
         });
@@ -2438,12 +2633,22 @@ impl AppShell {
         let Some(session) = self.snapshot.engine_session() else {
             return;
         };
-        let Some((identity, source_revision)) = self.details_drawer.as_ref().and_then(|drawer| {
-            drawer
-                .pending
-                .is_none()
-                .then(|| (drawer.identity.clone(), drawer.overview.revision))
-        }) else {
+        let Some((identity, source_revision, active, is_bittorrent)) =
+            self.details_drawer.as_ref().and_then(|drawer| {
+                drawer.pending.is_none().then(|| {
+                    (
+                        drawer.identity.clone(),
+                        drawer.overview.revision,
+                        drawer.overview.status == TaskStatusView::Active,
+                        matches!(
+                            drawer.overview.source_kind,
+                            crate::TaskSourceKindView::Magnet
+                                | crate::TaskSourceKindView::BitTorrent
+                        ),
+                    )
+                })
+            })
+        else {
             return;
         };
         if identity.profile_id != session.profile_id || !self.snapshot.commands_available() {
@@ -2466,6 +2671,8 @@ impl AppShell {
                 request_id,
                 session,
                 identity,
+                active,
+                is_bittorrent,
             },
         ));
         cx.notify();
@@ -2658,6 +2865,157 @@ impl AppShell {
         self.begin_task_command(TaskCommandView::SetOutputName { output_name }, cx);
     }
 
+    fn open_task_speed_limit_action(
+        &mut self,
+        _: &OpenTaskSpeedLimit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_task_speed_limit(window, cx);
+    }
+
+    fn open_task_speed_limit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.task_speed_limit_dialog.is_some() {
+            window.focus(&self.task_download_limit_input.focus_handle(cx), cx);
+            return;
+        }
+        if self.add_dialog.open
+            || self.output_name_dialog.is_some()
+            || self.remove_confirmation.is_some()
+            || self.batch_failure_details.is_some()
+            || self.pending_task_command.is_some()
+            || self.pending_batch_command.is_some()
+        {
+            return;
+        }
+        let Some(task) = self.selected_task_view() else {
+            self.show_notice("Select a visible task first.", true, cx);
+            return;
+        };
+        if !task.status.can_set_speed_limit() || !self.snapshot.commands_available() {
+            self.show_notice(
+                "Speed limits can be set only for a task that is still downloading.",
+                true,
+                cx,
+            );
+            return;
+        }
+        // The list projection does not carry per-task limits (that is DETAIL-001's
+        // getOption surface), so the fields start blank and set a fresh value.
+        self.task_download_limit_input
+            .update(cx, |input, cx| input.set_text("", cx));
+        self.task_upload_limit_input
+            .update(cx, |input, cx| input.set_text("", cx));
+        self.task_speed_limit_dialog = Some(TaskSpeedLimitDialog {
+            identity: task.identity.clone(),
+            display_name: task_display_name(&task),
+            previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
+            error: None,
+        });
+        cx.notify();
+        cx.defer_in(window, |this, window, cx| {
+            if this.task_speed_limit_dialog.is_some() {
+                window.focus(&this.task_download_limit_input.focus_handle(cx), cx);
+            }
+        });
+    }
+
+    fn close_task_speed_limit_action(
+        &mut self,
+        _: &CloseTaskSpeedLimit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_task_speed_limit(window, cx);
+    }
+
+    fn close_task_speed_limit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.task_speed_limit_dialog.is_none()
+            || self.pending_task_command.as_ref().is_some_and(|pending| {
+                matches!(&pending.command, TaskCommandView::SetSpeedLimit { .. })
+            })
+        {
+            return;
+        }
+        let previous_focus = self
+            .task_speed_limit_dialog
+            .take()
+            .and_then(|dialog| dialog.previous_focus)
+            .and_then(|focus| focus.upgrade());
+        if let Some(focus) = previous_focus {
+            window.focus(&focus, cx);
+        } else {
+            window.focus(&self.focus_handle, cx);
+        }
+        cx.notify();
+    }
+
+    fn submit_task_speed_limit_action(
+        &mut self,
+        _: &SubmitTaskSpeedLimit,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.submit_task_speed_limit(cx);
+    }
+
+    fn submit_task_speed_limit(&mut self, cx: &mut Context<Self>) {
+        if self.pending_task_command.is_some() {
+            return;
+        }
+        let Some(identity) = self
+            .task_speed_limit_dialog
+            .as_ref()
+            .map(|dialog| dialog.identity.clone())
+        else {
+            return;
+        };
+        let draft = SpeedLimitSettingsView {
+            download_limit: self.task_download_limit_input.read(cx).text().trim().into(),
+            upload_limit: self.task_upload_limit_input.read(cx).text().trim().into(),
+        };
+        let (Some(download_limit), Some(upload_limit)) =
+            (draft.parse_download_limit(), draft.parse_upload_limit())
+        else {
+            if let Some(dialog) = &mut self.task_speed_limit_dialog {
+                dialog.error = Some(OperationErrorView {
+                    code: "validation.invalid_speed_limit".into(),
+                    summary: "Enter a speed as bytes/second or a K/M/G value, or leave it blank for unlimited."
+                        .into(),
+                    retryable: false,
+                });
+            }
+            cx.notify();
+            return;
+        };
+        let current_task = self
+            .snapshot
+            .tasks
+            .iter()
+            .find(|task| task.identity == identity);
+        if self.selected.as_ref() != Some(&identity)
+            || current_task.is_none_or(|task| !task.status.can_set_speed_limit())
+        {
+            if let Some(dialog) = &mut self.task_speed_limit_dialog {
+                dialog.error = Some(OperationErrorView {
+                    code: "command.task_changed".into(),
+                    summary: "The task changed. Close this dialog and review its current state."
+                        .into(),
+                    retryable: false,
+                });
+            }
+            cx.notify();
+            return;
+        }
+        self.begin_task_command(
+            TaskCommandView::SetSpeedLimit {
+                download_limit,
+                upload_limit,
+            },
+            cx,
+        );
+    }
+
     fn remove_selected(
         &mut self,
         _: &RemoveSelectedTask,
@@ -2702,6 +3060,7 @@ impl AppShell {
             }
             TaskCommandView::Retry => task.status.can_retry(),
             TaskCommandView::SetOutputName { .. } => task.can_set_output_name(),
+            TaskCommandView::SetSpeedLimit { .. } => task.status.can_set_speed_limit(),
             TaskCommandView::RemoveTask | TaskCommandView::RemoveTaskAndFiles => {
                 task.status.can_remove()
             }
@@ -4081,6 +4440,24 @@ impl AppShell {
                     }),
                 )
             })
+            .when(task.status.can_set_speed_limit(), |element| {
+                element.child(
+                    toolbar_icon_button(
+                        "task-speed-limit-action",
+                        IconName::ArrowUpDown,
+                        "Set speed limits",
+                        ToolbarButtonState::from_flags(commands_available, false),
+                        false,
+                        None,
+                        colors,
+                    )
+                    .when(commands_available, |button| {
+                        button.on_click(cx.listener(|this, _, window, cx| {
+                            this.open_task_speed_limit(window, cx);
+                        }))
+                    }),
+                )
+            })
             .child(
                 toolbar_icon_button(
                     "remove-task-action",
@@ -4278,6 +4655,7 @@ impl AppShell {
         };
         let identity = drawer.identity.clone();
         let overview = drawer.overview.clone();
+        let selected_tab = drawer.tab;
         let display_name = task_display_name(&overview);
         let overview_progress = overview.progress_basis_points();
         let presentation = match &drawer.state {
@@ -4288,6 +4666,11 @@ impl AppShell {
                 piece_length: details.piece_length,
                 piece_count: details.piece_count,
                 file_count: details.files.len(),
+                trackers: details.trackers.clone(),
+                uris: details.uris.clone(),
+                servers: details.servers.clone(),
+                peers: details.peers.clone(),
+                options: details.options.clone(),
             },
             TaskDetailsLoadState::Failed { error } => {
                 TaskDetailsPresentation::Failed(error.summary.clone())
@@ -4380,63 +4763,216 @@ impl AppShell {
                 piece_length,
                 piece_count,
                 file_count,
+                trackers,
+                uris,
+                servers,
+                peers,
+                options,
             } => {
                 let gid = identity.gid.clone();
-                let files = if file_count == 0 {
-                    div()
+                let shell = cx.entity().downgrade();
+                let tabs = SegmentedControl::new(
+                    "task-details-tabs",
+                    [
+                        Segment::new("Info"),
+                        Segment::new("Files"),
+                        Segment::new("Network"),
+                        Segment::new("Options"),
+                    ],
+                    match selected_tab {
+                        TaskDetailsTab::Info => 0,
+                        TaskDetailsTab::Files => 1,
+                        TaskDetailsTab::Network => 2,
+                        TaskDetailsTab::Options => 3,
+                    },
+                    self.theme,
+                )
+                .on_select(move |index, _window, cx| {
+                    let tab = match index {
+                        1 => TaskDetailsTab::Files,
+                        2 => TaskDetailsTab::Network,
+                        3 => TaskDetailsTab::Options,
+                        _ => TaskDetailsTab::Info,
+                    };
+                    shell
+                        .update(cx, |shell, cx| {
+                            if let Some(drawer) = &mut shell.details_drawer {
+                                drawer.tab = tab;
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                });
+
+                let content = match selected_tab {
+                    TaskDetailsTab::Info => div()
+                        .id("task-details-info-scroll")
                         .flex_1()
                         .min_h_0()
+                        .overflow_y_scroll()
+                        .p_4()
                         .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_xs()
-                        .text_color(colors.text_muted)
-                        .child("No files reported by aria2.")
-                        .into_any_element()
-                } else {
-                    let list_id = SharedString::from(format!("task-files:{}", identity.gid));
-                    div()
-                        .id(list_id.clone())
-                        .role(Role::List)
-                        .aria_label(format!("Task files, {file_count} items"))
+                        .flex_col()
+                        .gap_2()
+                        .child(detail_line_with_action(
+                            "GID",
+                            gid.clone(),
+                            IconButton::new("copy-task-gid", IconName::Copy)
+                                .aria_label("Copy task GID")
+                                .tooltip(Tooltip::new("Copy GID"))
+                                .on_click({
+                                    let gid = gid.clone();
+                                    cx.listener(move |this, _, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            gid.clone(),
+                                        ));
+                                        this.show_notice("GID copied.", false, cx);
+                                    })
+                                })
+                                .render(colors),
+                            colors,
+                        ))
+                        .child(detail_line(
+                            "Directory",
+                            directory.as_deref().unwrap_or("Not reported"),
+                            colors,
+                        ))
+                        .when_some(info_hash.as_deref(), |element, hash| {
+                            element.child(detail_line("Info hash", hash, colors))
+                        })
+                        .when(piece_length.is_some() || piece_count.is_some(), |element| {
+                            element.child(detail_line(
+                                "Pieces",
+                                format!(
+                                    "{} x {}",
+                                    piece_count
+                                        .map_or_else(|| "?".into(), |value| value.to_string()),
+                                    piece_length.map_or_else(|| "unknown".into(), format_bytes)
+                                ),
+                                colors,
+                            ))
+                        })
+                        .into_any_element(),
+                    TaskDetailsTab::Files => {
+                        if file_count == 0 {
+                            drawer_message(
+                                "No files reported",
+                                "aria2 did not return any file entries for this task.",
+                                colors,
+                            )
+                        } else {
+                            let list_id =
+                                SharedString::from(format!("task-files:{}", identity.gid));
+                            div()
+                                .id(list_id.clone())
+                                .role(Role::List)
+                                .aria_label(format!("Task files, {file_count} items"))
+                                .flex_1()
+                                .min_h_0()
+                                .child(
+                                    uniform_list(
+                                        list_id,
+                                        file_count,
+                                        cx.processor(
+                                            move |this, range: Range<usize>, _window, _cx| {
+                                                let colors = this.theme.colors;
+                                                let Some(drawer) = &mut this.details_drawer else {
+                                                    return Vec::new();
+                                                };
+                                                drawer.rendered_file_range = range.clone();
+                                                let TaskDetailsLoadState::Ready { details } =
+                                                    &drawer.state
+                                                else {
+                                                    return Vec::new();
+                                                };
+                                                let gid = drawer.identity.gid.clone();
+                                                range
+                                                    .filter_map(|index| {
+                                                        details.files.get(index).cloned().map(
+                                                            |file| {
+                                                                render_file_row(
+                                                                    &gid, index, file, file_count,
+                                                                    colors,
+                                                                )
+                                                            },
+                                                        )
+                                                    })
+                                                    .collect::<Vec<_>>()
+                                            },
+                                        ),
+                                    )
+                                    .track_scroll(
+                                        &self
+                                            .details_drawer
+                                            .as_ref()
+                                            .expect("details drawer exists while rendering files")
+                                            .file_scroll,
+                                    )
+                                    .size_full(),
+                                )
+                                .into_any_element()
+                        }
+                    }
+                    TaskDetailsTab::Network => div()
+                        .id("task-details-network-scroll")
                         .flex_1()
                         .min_h_0()
-                        .child(
-                            uniform_list(
-                                list_id,
-                                file_count,
-                                cx.processor(move |this, range: Range<usize>, _window, _cx| {
-                                    let colors = this.theme.colors;
-                                    let Some(drawer) = &mut this.details_drawer else {
-                                        return Vec::new();
-                                    };
-                                    drawer.rendered_file_range = range.clone();
-                                    let TaskDetailsLoadState::Ready { details } = &drawer.state
-                                    else {
-                                        return Vec::new();
-                                    };
-                                    let gid = drawer.identity.gid.clone();
-                                    range
-                                        .filter_map(|index| {
-                                            details.files.get(index).cloned().map(|file| {
-                                                render_file_row(
-                                                    &gid, index, file, file_count, colors,
-                                                )
-                                            })
-                                        })
-                                        .collect::<Vec<_>>()
-                                }),
-                            )
-                            .track_scroll(
-                                &self
-                                    .details_drawer
-                                    .as_ref()
-                                    .expect("details drawer exists while rendering files")
-                                    .file_scroll,
-                            )
-                            .size_full(),
-                        )
-                        .into_any_element()
+                        .overflow_y_scroll()
+                        .p_4()
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .child(detail_collection_section(
+                            "Sources and mirrors",
+                            "No source URIs reported.",
+                            uris.into_iter()
+                                .map(|source| render_task_uri(source, colors))
+                                .collect(),
+                            colors,
+                        ))
+                        .child(detail_collection_section(
+                            "Trackers",
+                            "No BitTorrent trackers reported.",
+                            trackers
+                                .into_iter()
+                                .map(|tracker| render_task_tracker(tracker, colors))
+                                .collect(),
+                            colors,
+                        ))
+                        .child(detail_collection_section(
+                            "Servers",
+                            "No active HTTP, HTTPS, or FTP servers.",
+                            servers
+                                .into_iter()
+                                .map(|server| render_task_server(server, colors))
+                                .collect(),
+                            colors,
+                        ))
+                        .child(detail_collection_section(
+                            "Peers",
+                            "No active BitTorrent peers.",
+                            peers
+                                .into_iter()
+                                .map(|peer| render_task_peer(peer, colors))
+                                .collect(),
+                            colors,
+                        ))
+                        .into_any_element(),
+                    TaskDetailsTab::Options => detail_collection_section(
+                        "Read-only task options",
+                        "No task-specific options reported.",
+                        options
+                            .into_iter()
+                            .map(|option| render_task_option(option, colors))
+                            .collect(),
+                        colors,
+                    )
+                    .id("task-details-options-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p_4()
+                    .into_any_element(),
                 };
 
                 div()
@@ -4446,101 +4982,14 @@ impl AppShell {
                     .flex_col()
                     .child(
                         div()
-                            .h(px(34.0))
                             .flex_none()
-                            .flex()
-                            .items_center()
-                            .px_4()
+                            .p_3()
                             .border_b_1()
                             .border_color(colors.border)
                             .bg(colors.toolbar_surface)
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(colors.text_secondary)
-                            .child("Details"),
+                            .child(tabs),
                     )
-                    .child(
-                        div()
-                            .flex_none()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .p_4()
-                            .child(detail_line_with_action(
-                                "GID",
-                                gid.clone(),
-                                IconButton::new("copy-task-gid", IconName::Copy)
-                                    .aria_label("Copy task GID")
-                                    .tooltip(Tooltip::new("Copy GID"))
-                                    .on_click({
-                                        let gid = gid.clone();
-                                        cx.listener(move |this, _, _, cx| {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                gid.clone(),
-                                            ));
-                                            this.show_notice("GID copied.", false, cx);
-                                        })
-                                    })
-                                    .render(colors),
-                                colors,
-                            ))
-                            .child(detail_line(
-                                "Directory",
-                                directory.as_deref().unwrap_or("Not reported"),
-                                colors,
-                            ))
-                            .when_some(info_hash.as_deref(), |element, hash| {
-                                element.child(detail_line("Info hash", hash, colors))
-                            })
-                            .when(piece_length.is_some() || piece_count.is_some(), |element| {
-                                element.child(detail_line(
-                                    "Pieces",
-                                    format!(
-                                        "{} x {}",
-                                        piece_count
-                                            .map_or_else(|| "?".into(), |value| value.to_string()),
-                                        piece_length.map_or_else(|| "unknown".into(), format_bytes)
-                                    ),
-                                    colors,
-                                ))
-                            }),
-                    )
-                    .child(
-                        div()
-                            .h(px(42.0))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .px_4()
-                            .border_t_1()
-                            .border_b_1()
-                            .border_color(colors.border)
-                            .bg(colors.toolbar_surface)
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(colors.text_secondary)
-                                    .child("Files"),
-                            )
-                            .child(
-                                div()
-                                    .h(px(22.0))
-                                    .min_w(px(22.0))
-                                    .px_1()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded_full()
-                                    .bg(colors.surface_active)
-                                    .font_features(tabular_numbers())
-                                    .text_xs()
-                                    .text_color(colors.text_muted)
-                                    .child(file_count.to_string()),
-                            ),
-                    )
-                    .child(files)
+                    .child(content)
                     .into_any_element()
             }
         };
@@ -5574,6 +6023,26 @@ impl AppShell {
         };
         let proxy_dirty =
             proxy_draft != self.settings.download_proxy || password_changed || password_cleared;
+        let speed_limit_saving = self
+            .pending_settings_save
+            .as_ref()
+            .is_some_and(|pending| pending.source == SettingsSaveSource::SpeedLimit);
+        let speed_limit_draft = SpeedLimitSettingsView {
+            download_limit: self
+                .settings_download_limit_input
+                .read(cx)
+                .text()
+                .trim()
+                .into(),
+            upload_limit: self
+                .settings_upload_limit_input
+                .read(cx)
+                .text()
+                .trim()
+                .into(),
+        };
+        let speed_limit_dirty = speed_limit_draft != self.settings.speed_limits;
+        let speed_limit_valid = speed_limit_draft.is_valid();
         let manual_proxy = proxy_draft.mode == ProxyModeView::Manual;
         let selected_scheme = usize::from(draft_scheme == ColorSchemeView::Dark);
         let shell = cx.entity().downgrade();
@@ -5873,6 +6342,68 @@ impl AppShell {
                                         .loading(proxy_saving)
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.submit_proxy_settings(cx);
+                                        }))
+                                        .render(colors),
+                                    ),
+                            ),
+                        )
+                        .child(
+                            settings_section(
+                                "Speed limits",
+                                "Throttle aria2's total transfer rate. These limits affect all current and future downloads on this engine. Leave a field blank for no limit; values accept a K/M/G suffix (for example 2M).",
+                                colors,
+                            )
+                            .child(
+                                div()
+                                    .mt_4()
+                                    .max_w(px(620.0))
+                                    .flex()
+                                    .gap_3()
+                                    .child(
+                                        settings_labeled_input(
+                                            "Download limit",
+                                            self.settings_download_limit_input.clone(),
+                                            colors,
+                                        )
+                                        .flex_1()
+                                        .min_w_0(),
+                                    )
+                                    .child(
+                                        settings_labeled_input(
+                                            "Upload limit",
+                                            self.settings_upload_limit_input.clone(),
+                                            colors,
+                                        )
+                                        .flex_1()
+                                        .min_w_0(),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .mt_4()
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        Button::new(
+                                            "save-speed-limits",
+                                            if speed_limit_saving {
+                                                "Saving..."
+                                            } else {
+                                                "Save limits"
+                                            },
+                                        )
+                                        .aria_label(if speed_limit_saving {
+                                            "Saving speed limits"
+                                        } else {
+                                            "Save speed limits"
+                                        })
+                                        .style(ButtonStyle::Primary)
+                                        .disabled(
+                                            pending || !speed_limit_dirty || !speed_limit_valid,
+                                        )
+                                        .loading(speed_limit_saving)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.submit_speed_limits(cx);
                                         }))
                                         .render(colors),
                                     ),
@@ -6226,6 +6757,105 @@ impl AppShell {
             .into_any_element()
     }
 
+    fn render_task_speed_limit_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = self.theme.colors;
+        let Some(dialog) = self.task_speed_limit_dialog.as_ref() else {
+            return div().into_any_element();
+        };
+        let identity = dialog.identity.clone();
+        let display_name = dialog.display_name.clone();
+        let error = dialog.error.clone();
+        let pending = self.pending_task_command.as_ref().is_some_and(|pending| {
+            pending.identity == identity
+                && matches!(&pending.command, TaskCommandView::SetSpeedLimit { .. })
+        });
+        let content = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .child(
+                        settings_labeled_input(
+                            "Download limit",
+                            self.task_download_limit_input.clone(),
+                            colors,
+                        )
+                        .flex_1()
+                        .min_w_0(),
+                    )
+                    .child(
+                        settings_labeled_input(
+                            "Upload limit",
+                            self.task_upload_limit_input.clone(),
+                            colors,
+                        )
+                        .flex_1()
+                        .min_w_0(),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(
+                        "Applies to this download only. Leave a field blank for no limit; values accept a K/M/G suffix (for example 2M).",
+                    ),
+            )
+            .when_some(error, |element, error| {
+                element.child(
+                    div()
+                        .id("task-speed-limit-error")
+                        .role(Role::Alert)
+                        .aria_label(error.summary.clone())
+                        .text_xs()
+                        .text_color(colors.danger)
+                        .child(error.summary),
+                )
+            });
+
+        Dialog::new("task-speed-limit-dialog", "Set speed limits", self.theme)
+            .description(format!(
+                "Throttle aria2's transfer rate for {display_name}."
+            ))
+            .key_context("TaskSpeedLimitDialog")
+            .track_focus(self.task_speed_limit_dialog_focus.clone())
+            .width(520.0)
+            .child(content)
+            .action(
+                Button::new("cancel-task-speed-limit", "Cancel")
+                    .aria_label("Cancel speed limit change")
+                    .style(ButtonStyle::Secondary)
+                    .disabled(pending)
+                    .track_focus(self.task_speed_limit_cancel_focus.clone())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.close_task_speed_limit(window, cx);
+                    }))
+                    .render(colors),
+            )
+            .action(
+                Button::new(
+                    "submit-task-speed-limit",
+                    if pending { "Saving..." } else { "Save" },
+                )
+                .aria_label(if pending {
+                    "Saving task speed limits"
+                } else {
+                    "Save task speed limits"
+                })
+                .style(ButtonStyle::Primary)
+                .loading(pending)
+                .track_focus(self.task_speed_limit_submit_focus.clone())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.submit_task_speed_limit(cx);
+                }))
+                .render(colors),
+            )
+            .into_any_element()
+    }
+
     fn render_toast(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let Some(notice) = self.status_notice.as_ref() else {
             return div().into_any_element();
@@ -6400,6 +7030,9 @@ impl Render for AppShell {
             .on_action(cx.listener(Self::open_task_output_name_action))
             .on_action(cx.listener(Self::close_task_output_name_action))
             .on_action(cx.listener(Self::submit_task_output_name_action))
+            .on_action(cx.listener(Self::open_task_speed_limit_action))
+            .on_action(cx.listener(Self::close_task_speed_limit_action))
+            .on_action(cx.listener(Self::submit_task_speed_limit_action))
             .on_action(cx.listener(Self::close_batch_failure_details_action))
             .on_action(cx.listener(Self::remove_selected))
             .on_action(cx.listener(Self::focus_next))
@@ -6436,6 +7069,9 @@ impl Render for AppShell {
             })
             .when(self.output_name_dialog.is_some(), |element| {
                 element.child(self.render_task_output_name_dialog(cx))
+            })
+            .when(self.task_speed_limit_dialog.is_some(), |element| {
+                element.child(self.render_task_speed_limit_dialog(cx))
             })
             .when(self.remove_confirmation.is_some(), |element| {
                 element.child(self.render_remove_confirmation(cx))
@@ -7049,6 +7685,177 @@ fn detail_line_with_action(
         .child(action)
 }
 
+fn detail_collection_section(
+    title: &'static str,
+    empty_message: &'static str,
+    rows: Vec<AnyElement>,
+    colors: crate::ThemeColors,
+) -> Div {
+    let count = rows.len();
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(colors.text_secondary)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .font_features(tabular_numbers())
+                        .text_xs()
+                        .text_color(colors.text_muted)
+                        .child(count.to_string()),
+                ),
+        )
+        .when(count == 0, |element| {
+            element.child(
+                div()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.elevated_surface)
+                    .p_3()
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(empty_message),
+            )
+        })
+        .when(count != 0, |element| {
+            element.child(div().flex().flex_col().gap_2().children(rows))
+        })
+}
+
+fn detail_collection_row(
+    primary: impl Into<SharedString>,
+    secondary: impl Into<SharedString>,
+    badge: Option<&'static str>,
+    colors: crate::ThemeColors,
+) -> AnyElement {
+    div()
+        .rounded_md()
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.elevated_surface)
+        .p_3()
+        .flex()
+        .items_start()
+        .gap_2()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(colors.text_secondary)
+                        .font_family("monospace")
+                        .child(primary.into()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(colors.text_muted)
+                        .child(secondary.into()),
+                ),
+        )
+        .when_some(badge, |element, badge| {
+            element.child(
+                div()
+                    .flex_none()
+                    .rounded_full()
+                    .bg(colors.surface_active)
+                    .px_2()
+                    .py_0p5()
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(badge),
+            )
+        })
+        .into_any_element()
+}
+
+fn render_task_uri(source: TaskUriView, colors: crate::ThemeColors) -> AnyElement {
+    detail_collection_row(source.uri, source.status.label(), None, colors)
+}
+
+fn render_task_tracker(tracker: TaskTrackerView, colors: crate::ThemeColors) -> AnyElement {
+    detail_collection_row(
+        tracker.uri,
+        format!("Announce tier {}", tracker.tier),
+        None,
+        colors,
+    )
+}
+
+fn render_task_server(server: TaskServerView, colors: crate::ThemeColors) -> AnyElement {
+    let current_uri = if server.current_uri.is_empty() {
+        server.uri.clone()
+    } else {
+        server.current_uri.clone()
+    };
+    let secondary = if server.uri.is_empty() || server.uri == current_uri {
+        format!(
+            "File {} · Download {}",
+            server.file_index,
+            format_rate(server.download_rate)
+        )
+    } else {
+        format!(
+            "From {} · File {} · Download {}",
+            server.uri,
+            server.file_index,
+            format_rate(server.download_rate)
+        )
+    };
+    detail_collection_row(current_uri, secondary, None, colors)
+}
+
+fn render_task_peer(peer: TaskPeerView, colors: crate::ThemeColors) -> AnyElement {
+    let address = if peer.address.contains(':') {
+        format!("[{}]:{}", peer.address, peer.port)
+    } else {
+        format!("{}:{}", peer.address, peer.port)
+    };
+    detail_collection_row(
+        address,
+        format!(
+            "Down {} · Up {}",
+            format_rate(peer.download_rate),
+            format_rate(peer.upload_rate)
+        ),
+        peer.seeder.then_some("Seed"),
+        colors,
+    )
+}
+
+fn render_task_option(option: TaskOptionView, colors: crate::ThemeColors) -> AnyElement {
+    let value = if option.redacted {
+        "Hidden".to_owned()
+    } else if option.value.is_empty() {
+        "Empty".to_owned()
+    } else {
+        option.value
+    };
+    detail_collection_row(
+        option.key,
+        value,
+        option.redacted.then_some("Sensitive"),
+        colors,
+    )
+}
+
 fn render_file_row(
     gid: &str,
     index: usize,
@@ -7134,6 +7941,7 @@ fn task_command_label(command: &TaskCommandView) -> &'static str {
         TaskCommandView::MoveToQueueBottom => "Move to bottom",
         TaskCommandView::Retry => "Retry",
         TaskCommandView::SetOutputName { .. } => "Change output name",
+        TaskCommandView::SetSpeedLimit { .. } => "Set speed limits",
         TaskCommandView::RemoveTask | TaskCommandView::RemoveTaskAndFiles => "Remove",
     }
 }
@@ -7256,8 +8064,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        AddDownloadMetadataFileView, AddDownloadMetadataPreviewItemView, TaskCountsView,
-        TaskNameStateView, TaskSourceKindView, TaskStatusView,
+        AddDownloadMetadataFileView, AddDownloadMetadataPreviewItemView, SpeedLimitSettingsView,
+        TaskCountsView, TaskNameStateView, TaskSourceKindView, TaskStatusView,
     };
 
     fn task(index: usize) -> DownloadRowView {
@@ -7308,6 +8116,21 @@ mod tests {
             info_hash: Some("0123456789abcdef".into()),
             piece_length: Some(1_048_576),
             piece_count: Some(file_count as u32),
+            trackers: vec![TaskTrackerView {
+                tier: 1,
+                uri: "https://tracker.example/announce".into(),
+            }],
+            uris: vec![TaskUriView {
+                uri: "https://example.test/file.bin".into(),
+                status: crate::TaskUriStatusView::Used,
+            }],
+            servers: Vec::new(),
+            peers: Vec::new(),
+            options: vec![TaskOptionView {
+                key: "max-download-limit".into(),
+                value: "0".into(),
+                redacted: false,
+            }],
             files: (0..file_count)
                 .map(|index| TaskFileView {
                     index: index as u32 + 1,
@@ -8737,6 +9560,7 @@ mod tests {
                 mode: ProxyModeView::Disabled,
                 ..DownloadProxySettingsView::default()
             },
+            speed_limits: SpeedLimitSettingsView::default(),
         };
         let (view, cx) =
             cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
@@ -8952,6 +9776,87 @@ mod tests {
     }
 
     #[gpui::test]
+    fn detail_requests_are_task_scoped_and_clear_active_only_network_data(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            let mut initial = snapshot(1);
+            initial.tasks[0].status = TaskStatusView::Active;
+            initial.tasks[0].source_kind = TaskSourceKindView::BitTorrent;
+            shell.snapshot = initial;
+            shell
+        });
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = view.update(cx, |_, cx| {
+            cx.subscribe(&view, move |_, _, event: &AppShellEvent, _| {
+                if let AppShellEvent::TaskDetailsRequested(request) = event {
+                    sink.lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(request.clone());
+                }
+            })
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.open_details_for(shell.snapshot.tasks[0].clone(), cx);
+        });
+        let first = events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())[0]
+            .clone();
+        assert!(first.active);
+        assert!(first.is_bittorrent);
+
+        let mut loaded = details(1);
+        loaded.servers.push(TaskServerView {
+            file_index: 1,
+            uri: "https://origin.example/file".into(),
+            current_uri: "https://cdn.example/file".into(),
+            download_rate: 1_024,
+        });
+        loaded.peers.push(TaskPeerView {
+            address: "192.0.2.1".into(),
+            port: 6_881,
+            download_rate: 2_048,
+            upload_rate: 512,
+            seeder: true,
+        });
+        view.update(cx, |shell, cx| {
+            shell.set_task_details_result(
+                TaskDetailsResultView {
+                    request_id: first.request_id,
+                    session: first.session.clone(),
+                    identity: first.identity.clone(),
+                    outcome: TaskDetailsOutcomeView::Ready(loaded),
+                },
+                cx,
+            );
+        });
+
+        view.update(cx, |shell, cx| {
+            let mut completed = snapshot(1);
+            completed.tasks[0].status = TaskStatusView::Complete;
+            completed.tasks[0].source_kind = TaskSourceKindView::BitTorrent;
+            completed.tasks[0].revision = 2;
+            shell.set_snapshot(completed, cx);
+        });
+        view.read_with(cx, |shell, _| {
+            let drawer = shell.details_drawer.as_ref().expect("drawer remains open");
+            let TaskDetailsLoadState::Ready { details } = &drawer.state else {
+                panic!("background refresh must keep details visible")
+            };
+            assert!(details.peers.is_empty());
+            assert!(details.servers.is_empty());
+        });
+        let requests = events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(requests.len(), 2);
+        assert!(!requests[1].active);
+        assert!(requests[1].is_bittorrent);
+    }
+
+    #[gpui::test]
     fn details_drawer_survives_filtering_that_hides_its_task(cx: &mut TestAppContext) {
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut shell = AppShell::new(Theme::dark(), window, cx);
@@ -8991,6 +9896,7 @@ mod tests {
                     details: details(10_000),
                 },
                 pending: None,
+                tab: TaskDetailsTab::Files,
                 file_scroll: UniformListScrollHandle::new(),
                 rendered_file_range: 0..0,
             });
@@ -9186,6 +10092,94 @@ mod tests {
                 "D:/Transfers"
             );
             assert_eq!(shell.page, AppPage::Settings);
+            assert!(shell.settings_page.error.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn global_speed_limit_save_emits_parsed_request_and_normalizes_on_success(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = view.update(cx, |_, cx| {
+            cx.subscribe(&view, move |_, _, event: &AppShellEvent, _| {
+                if let AppShellEvent::SettingsSaveRequested(request) = event {
+                    sink.lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(request.clone());
+                }
+            })
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.page = AppPage::Settings;
+            // "2M" and blank (unlimited) both go through the K/M parser.
+            shell.settings_download_limit_input.update(cx, |input, cx| {
+                input.set_text("2M", cx);
+            });
+        });
+        let request_id = view.update(cx, |shell, cx| {
+            shell.submit_speed_limits(cx);
+            shell
+                .pending_settings_save
+                .as_ref()
+                .expect("speed-limit save must become pending")
+                .request_id
+        });
+
+        let request = events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .last()
+            .cloned()
+            .expect("a settings-save event should have been emitted");
+        // The view carries the raw editable text; byte parsing happens in the
+        // desktop mapping layer, not here.
+        assert_eq!(request.settings.speed_limits.download_limit, "2M");
+        assert!(request.settings.speed_limits.upload_limit.is_empty());
+
+        // The desktop persists normalized bytes and echoes back the compact form.
+        let mut normalized = request.settings.clone();
+        normalized.speed_limits.download_limit = crate::format_speed_limit_field(2 * 1024 * 1024);
+        normalized.speed_limits.upload_limit = crate::format_speed_limit_field(0);
+        view.update_in(cx, |shell, window, cx| {
+            shell.set_settings_save_result(
+                SettingsSaveResultView {
+                    request_id,
+                    settings: normalized,
+                    outcome: SettingsSaveOutcomeView::Success,
+                },
+                window,
+                cx,
+            );
+        });
+        view.read_with(cx, |shell, cx| {
+            assert!(shell.pending_settings_save.is_none());
+            assert_eq!(shell.settings.speed_limits.download_limit, "2M");
+            assert_eq!(shell.settings_download_limit_input.read(cx).text(), "2M");
+            assert!(shell.settings_upload_limit_input.read(cx).text().is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn invalid_global_speed_limit_is_rejected_before_a_save_request(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+        // Set the text in its own cycle so the field's change event (which
+        // dismisses stale errors) is flushed before the submit runs, matching
+        // the real "type, then click Save" order.
+        view.update(cx, |shell, cx| {
+            shell.page = AppPage::Settings;
+            shell.settings_download_limit_input.update(cx, |input, cx| {
+                input.set_text("5MB", cx);
+            });
+        });
+        view.update(cx, |shell, cx| {
+            shell.submit_speed_limits(cx);
+        });
+        view.read_with(cx, |shell, _cx| {
+            assert!(shell.pending_settings_save.is_none());
             assert!(shell.settings_page.error.is_some());
         });
     }

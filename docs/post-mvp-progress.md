@@ -507,6 +507,20 @@ closes or the session changes. Task-option projections (`getOption`) are
 read-only display here; editing options is deferred to `RPC-001`'s task-option
 editor.
 
+**Presentation rule:** Follow the properties-panel pattern used by mature
+download clients: the drawer exposes separate Info, Files, Network, and Options
+tabs. Network groups source/mirror URIs, BitTorrent announce tiers, active
+HTTP(S)/FTP servers, and active BitTorrent peers without placing any of those
+queries on the list-refresh path. Leaving aria2's active state clears peer and
+server rows immediately while the revision-bound background refresh catches up.
+
+**Sensitive-option rule:** `getOption` can return HTTP/proxy credentials,
+Cookie/header values, authentication material, certificate/private-key paths,
+and private tracker values. These entries keep their option key but are replaced
+with a redacted marker inside the RPC adapter; the original value never enters
+application, desktop, or UI state. Other options remain read-only and sorted by
+key.
+
 **Evidence:**
 
 - aria2 manual documents `getUris`, `getPeers` (BitTorrent-only, active tasks),
@@ -515,6 +529,13 @@ editor.
 - AriaNg loads peer/server data only for the active-task detail view and
   refreshes it on its detail poll rather than the global list poll:
   https://github.com/mayswind/AriaNg/blob/d6a765377e1eecfbcc387dcb824124df114decfb/src/scripts/services/aria2TaskService.js
+- AriaNg requests `getOption` from its task-detail settings tab instead of the
+  global task list:
+  https://github.com/mayswind/AriaNg/blob/d6a765377e1eecfbcc387dcb824124df114decfb/src/scripts/controllers/task-detail.js
+- qBittorrent separates General, Trackers, Peers, HTTP Sources, and Files in its
+  properties panel and loads peer data only when the Peers tab is selected:
+  https://github.com/qbittorrent/qBittorrent/blob/e70f13d46a42b204559d0e7b16a19eeca522fe9e/src/gui/properties/proptabbar.h
+  https://github.com/qbittorrent/qBittorrent/blob/e70f13d46a42b204559d0e7b16a19eeca522fe9e/src/gui/properties/propertieswidget.cpp
 
 ### D-018 - Seeding is a distinct state from completed download
 
@@ -609,10 +630,17 @@ Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
   offers move-to-top/up/down/bottom, gated to the authoritative unfiltered,
   unsearched, ascending-queue projection (D-014); pause-all/resume-all are
   engine-wide commands with single-flight, no-replay reconciliation.
-- [ ] `RATE-001` Add global/per-task download and upload limits, with aria2
-  capability-aware controls. Typed limits and scope labeling per D-016; depends
-  on `RPC-001` for the `changeOption`/`changeGlobalOption` gateway surface.
-- [ ] `DETAIL-001` Add URI/mirror, peer, tracker, server, and task-option
+- [x] `RATE-001` Add global/per-task download and upload limits, with aria2
+  capability-aware controls. Global limits apply through
+  `aria2.changeGlobalOption` (`max-overall-download-limit`/
+  `max-overall-upload-limit`) on save and on each new session; per-task limits
+  use `aria2.changeOption` (`max-download-limit`/`max-upload-limit`) with the
+  same outcome-unknown reconciliation as other `changeOption` mutations (D-010).
+  Values accept aria2's `K`/`M`/`G` suffix syntax and `0`/blank (unlimited),
+  normalized to bytes on the desktop; each control is scope-labeled
+  ("all current and future downloads" globally, "this download only" per-task)
+  per D-016. Settings persist through schema v3 and reapply on reconnect.
+- [x] `DETAIL-001` Add URI/mirror, peer, tracker, server, and task-option
   projections on demand. Request-scoped and refresh-bounded per D-017; depends
   on `RPC-001` for the `getUris`/`getPeers`/`getServers`/`getOption` surface.
 - [ ] `BT-001` Represent seeding separately from completed download and expose
@@ -646,8 +674,19 @@ through `FNM-003`, `SEL-001`, `SEL-002`, `ADD-001`, `ADD-002`, `ADD-003`,
 `STATE-001`) are complete. `QUEUE-001` (sorting, queue reordering, task
 priority, and pause-all/resume-all) is now complete across the domain, RPC,
 application, desktop, and UI layers, with unit coverage and a live aria2
-`changePosition`/`pauseAll`/`unpauseAll` flow. `RATE-001` is the next active
-slice.
+`changePosition`/`pauseAll`/`unpauseAll` flow. `RATE-001` (typed global and
+per-task download/upload speed limits) is now complete across all layers: a
+`SpeedLimitConfig` domain type and settings schema v3, a session-bound
+`apply_speed_limit` gateway/sync path that applies on save and reapplies on
+reconnect, a per-task `SetTaskSpeedLimit` command with outcome-unknown
+reconciliation, K/M/G-suffix parsing/formatting, scope-labeled settings and
+per-task dialog UI, and a live aria2 `changeGlobalOption`/`changeOption` flow.
+`DETAIL-001` is now complete across the domain, RPC, application, desktop, and
+UI layers. The drawer uses Info/Files/Network/Options tabs, requests URI,
+announce-tier, active server/peer, and sorted read-only option projections only
+while open, refreshes them by visible task revision, clears active-only data on
+state exit, rejects stale session/request results, and redacts sensitive option
+values inside the RPC adapter. `BT-001` is the next active slice.
 The proxy slice includes schema migration, validated endpoint/bypass fields,
 masked password input, system credential storage, session-bound runtime apply,
 new-session reapply, and explicit clearing. `FILE-002` now has
@@ -785,5 +824,11 @@ acceptance outcomes overlap.
 | 2026-07-21 | `QUEUE-001` | `cargo test --workspace --no-fail-fast` | Pass - 218 passed, 9 ignored; adds queue-reordering scope gating (All/no-search/Queue/ascending), selection-preserving sort with query emission, blocked movement outside the authoritative queue, global pause-all pending/emit, application-layer queue-move dispatch and terminal rejection, UI→domain sort mapping, and `changePosition` argument/negative-position mapping |
 | 2026-07-21 | `QUEUE-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 | 2026-07-21 | `QUEUE-001` live queue and regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored` | Pass - all 7 real aria2 flows; a three-task paused queue reorders correctly under `changePosition` move-to-top and move-to-bottom, `unpauseAll`/`pauseAll` apply without error, and authentication, restart, command/removal, proxy, metadata-upload, and cleanup regressions remain green |
+| 2026-07-21 | `RATE-001` | `cargo test --workspace --no-fail-fast` | Pass - 227 passed, 9 ignored; adds K/M/G-suffix parse/format round-trips and malformed/overflow rejection, per-task `changeOption` speed-limit forwarding and terminal-task rejection, global `changeGlobalOption` `max-overall-*` forwarding, and settings-UI parsed-request emission with compact-form normalization and invalid-input rejection |
+| 2026-07-21 | `RATE-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+| 2026-07-21 | `RATE-001` live limits and regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored` | Pass - all 8 real aria2 flows; real aria2 accepted global `max-overall-*` limits and their `0` clear, accepted per-task `max-*-limit` and reported them back through `getOption`, and authentication, restart, queue, command/removal, proxy, metadata-upload, and cleanup regressions remain green |
+| 2026-07-21 | `DETAIL-001` | `cargo test --workspace --no-fail-fast` | Pass - 233 passed, 11 ignored; covers request/session scoping, revision catch-up, immediate active-only peer/server clearing, URI status, announce tiers, server/peer decoding, active-state races, sorted option projection, and adapter-level sensitive-value redaction |
+| 2026-07-21 | `DETAIL-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+| 2026-07-21 | `DETAIL-001` live projections and regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored --nocapture` | Pass - all 9 real aria2 flows; a paused two-mirror task exposed both URIs while HTTP credentials and Cookie/header values were redacted inside the adapter, an active slow HTTP transfer exposed its server projection, and all prior authentication, restart, queue, speed-limit, command/removal, proxy, metadata-upload, and cleanup regressions remain green |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.

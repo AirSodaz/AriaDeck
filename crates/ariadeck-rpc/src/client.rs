@@ -1,9 +1,12 @@
 use ariadeck_application::{
     AddDownloadRequest, AddDownloadSource, DownloadEngineGateway, DownloadProxyConfig,
     DownloadProxyMode, FileConflictPolicy, GatewayError, GatewayErrorKind, QueueMove,
-    TaskDetailsGateway, TaskRemovalTarget,
+    TaskConnectionDetailsGateway, TaskDetailsGateway, TaskRemovalTarget,
 };
-use ariadeck_domain::{Gid, GlobalStat, TaskDetails, TaskSnapshot};
+use ariadeck_domain::{
+    Gid, GlobalStat, SpeedLimitConfig, TaskConnectionDetails, TaskDetails, TaskOptionEntry,
+    TaskSnapshot,
+};
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use secrecy::ExposeSecret;
@@ -12,7 +15,10 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     RpcError, RpcTransport,
-    models::{GlobalStatWire, TaskKey, TaskWire, VersionInfo, VersionWire},
+    models::{
+        DetailUriWire, GlobalStatWire, PeerWire, ServerGroupWire, TaskKey, TaskWire, VersionInfo,
+        VersionWire,
+    },
 };
 
 const WAITING_PAGE_SIZE: u32 = 1_000;
@@ -334,6 +340,102 @@ where
         decode::<TaskWire>(METHOD, value)?.into_details(METHOD)
     }
 
+    /// On-demand connection/source projections for the details drawer.
+    ///
+    /// URIs and read-only options are always fetched. Peers (BitTorrent) and
+    /// servers (HTTP(S)/FTP) exist only while a task is active, so those calls
+    /// run only for `active` tasks and only for the matching source kind. A
+    /// projection that aria2 cannot serve (for example peers on a non-torrent)
+    /// is treated as empty rather than an error.
+    pub async fn connection_details(
+        &self,
+        gid: Gid,
+        active: bool,
+        is_bittorrent: bool,
+    ) -> Result<TaskConnectionDetails, RpcError> {
+        let mut details = TaskConnectionDetails::new(gid);
+        details.uris = self.get_detail_uris(gid).await?;
+        details.options = self.get_option_entries(gid).await?;
+        if active {
+            if is_bittorrent {
+                details.peers = match self.get_peers(gid).await {
+                    Ok(peers) => peers,
+                    Err(RpcError::Remote { .. }) => Vec::new(),
+                    Err(error) => return Err(error),
+                };
+            } else {
+                details.servers = match self.get_servers(gid).await {
+                    Ok(servers) => servers,
+                    Err(RpcError::Remote { .. }) => Vec::new(),
+                    Err(error) => return Err(error),
+                };
+            }
+        }
+        Ok(details)
+    }
+
+    async fn get_detail_uris(&self, gid: Gid) -> Result<Vec<ariadeck_domain::TaskUri>, RpcError> {
+        const METHOD: &str = "aria2.getUris";
+        let value = self
+            .transport
+            .call(METHOD, vec![json!(gid.to_string())])
+            .await?;
+        Ok(decode::<Vec<DetailUriWire>>(METHOD, value)?
+            .into_iter()
+            .map(DetailUriWire::into_domain)
+            .filter(|uri| !uri.uri.is_empty())
+            .collect())
+    }
+
+    async fn get_servers(&self, gid: Gid) -> Result<Vec<ariadeck_domain::TaskServer>, RpcError> {
+        const METHOD: &str = "aria2.getServers";
+        let value = self
+            .transport
+            .call(METHOD, vec![json!(gid.to_string())])
+            .await?;
+        let groups = decode::<Vec<ServerGroupWire>>(METHOD, value)?;
+        let mut servers = Vec::new();
+        for group in groups {
+            servers.extend(group.into_domain(METHOD)?);
+        }
+        Ok(servers)
+    }
+
+    async fn get_peers(&self, gid: Gid) -> Result<Vec<ariadeck_domain::TaskPeer>, RpcError> {
+        const METHOD: &str = "aria2.getPeers";
+        let value = self
+            .transport
+            .call(METHOD, vec![json!(gid.to_string())])
+            .await?;
+        decode::<Vec<PeerWire>>(METHOD, value)?
+            .into_iter()
+            .map(|peer| peer.into_domain(METHOD))
+            .collect()
+    }
+
+    async fn get_option_entries(&self, gid: Gid) -> Result<Vec<TaskOptionEntry>, RpcError> {
+        let options = self.get_options(gid).await?;
+        let mut entries = options
+            .into_iter()
+            .filter_map(|(key, value)| {
+                if task_option_is_sensitive(&key) {
+                    return Some(TaskOptionEntry {
+                        key,
+                        value: String::new(),
+                        redacted: true,
+                    });
+                }
+                value.as_str().map(|value| TaskOptionEntry {
+                    key,
+                    value: value.to_owned(),
+                    redacted: false,
+                })
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.key.cmp(&right.key));
+        Ok(entries)
+    }
+
     pub async fn shutdown(&self) -> Result<(), RpcError> {
         let value = self.transport.call("aria2.shutdown", Vec::new()).await?;
         match value.as_str() {
@@ -545,6 +647,38 @@ where
     }
 }
 
+fn task_option_is_sensitive(key: &str) -> bool {
+    let key = key.trim().to_ascii_lowercase();
+    key.contains("passwd")
+        || key.contains("password")
+        || key.contains("cookie")
+        || key.contains("secret")
+        || key.contains("token")
+        || key.contains("credential")
+        || key.contains("private-key")
+        || key.contains("certificate")
+        || key.contains("netrc")
+        || key.contains("auth")
+        || matches!(
+            key.as_str(),
+            "header"
+                | "referer"
+                | "http-user"
+                | "ftp-user"
+                | "all-proxy"
+                | "all-proxy-user"
+                | "http-proxy"
+                | "http-proxy-user"
+                | "https-proxy"
+                | "https-proxy-user"
+                | "ftp-proxy"
+                | "ftp-proxy-user"
+                | "bt-tracker"
+                | "bt-exclude-tracker"
+                | "metalink-location"
+        )
+}
+
 fn apply_file_conflict_policy(options: &mut Map<String, Value>, policy: FileConflictPolicy) {
     let (allow_overwrite, auto_file_renaming) = match policy {
         FileConflictPolicy::AutoRename => (false, true),
@@ -732,6 +866,12 @@ where
             .map_err(map_mutation_error)
     }
 
+    async fn apply_speed_limit(&self, config: &SpeedLimitConfig) -> Result<(), GatewayError> {
+        self.change_global_options(&speed_limit_options(config))
+            .await
+            .map_err(map_mutation_error)
+    }
+
     async fn remove(&self, gid: Gid, target: TaskRemovalTarget) -> Result<(), GatewayError> {
         match target {
             TaskRemovalTarget::LiveTask => match Aria2Client::remove(self, gid).await {
@@ -745,6 +885,19 @@ where
         }
         .map_err(map_mutation_error)
     }
+}
+
+fn speed_limit_options(config: &SpeedLimitConfig) -> Vec<(String, String)> {
+    vec![
+        (
+            "max-overall-download-limit".into(),
+            config.download_limit.get().to_string(),
+        ),
+        (
+            "max-overall-upload-limit".into(),
+            config.upload_limit.get().to_string(),
+        ),
+    ]
 }
 
 fn download_proxy_options(config: &DownloadProxyConfig) -> Vec<(String, String)> {
@@ -796,6 +949,23 @@ where
 {
     async fn task_details(&self, gid: Gid) -> Result<TaskDetails, GatewayError> {
         Aria2Client::task_details(self, gid)
+            .await
+            .map_err(map_query_error)
+    }
+}
+
+#[async_trait]
+impl<T> TaskConnectionDetailsGateway for Aria2Client<T>
+where
+    T: RpcTransport,
+{
+    async fn connection_details(
+        &self,
+        gid: Gid,
+        active: bool,
+        is_bittorrent: bool,
+    ) -> Result<TaskConnectionDetails, GatewayError> {
+        Aria2Client::connection_details(self, gid, active, is_bittorrent)
             .await
             .map_err(map_query_error)
     }
@@ -1362,6 +1532,12 @@ mod tests {
             "infoHash": "abc123",
             "pieceLength": "1048576",
             "numPieces": "4",
+            "bittorrent": {
+                "announceList": [
+                    ["https://tracker-one.example/announce"],
+                    ["https://tracker-two.example/announce", ""]
+                ]
+            },
             "files": [{
                 "index": "1",
                 "path": "/srv/downloads/archive.iso",
@@ -1389,6 +1565,9 @@ mod tests {
         assert_eq!(details.files.len(), 1);
         assert_eq!(details.files[0].path.as_str(), "/srv/downloads/archive.iso");
         assert!(details.files[0].selected);
+        assert_eq!(details.trackers.len(), 2);
+        assert_eq!(details.trackers[0].tier, 1);
+        assert_eq!(details.trackers[1].tier, 2);
         let calls = client
             .transport()
             .calls
@@ -1403,9 +1582,149 @@ mod tests {
                 "dir",
                 "infoHash",
                 "pieceLength",
-                "numPieces"
+                "numPieces",
+                "bittorrent"
             ])
         );
+    }
+
+    #[tokio::test]
+    async fn connection_details_loads_active_bittorrent_peers_and_redacts_sensitive_options() {
+        let transport = ScriptedTransport::new([
+            Ok(json!([
+                {"uri": "https://mirror-one.example/file", "status": "used"},
+                {"uri": "https://mirror-two.example/file", "status": "waiting"}
+            ])),
+            Ok(json!({
+                "max-download-limit": "1M",
+                "http-passwd": "must-not-leave-the-adapter",
+                "header": ["Cookie: session=secret"],
+                "all-proxy": "http://user:password@proxy.example:8080"
+            })),
+            Ok(json!([{
+                "ip": "2001:db8::1",
+                "port": "6881",
+                "downloadSpeed": "1024",
+                "uploadSpeed": "512",
+                "seeder": "true"
+            }])),
+        ]);
+        let client = Aria2Client::new(transport);
+
+        let details = client
+            .connection_details(Gid::from_u64(9), true, true)
+            .await
+            .expect("connection projections decode");
+
+        assert_eq!(details.uris.len(), 2);
+        assert_eq!(details.uris[0].status, ariadeck_domain::TaskUriStatus::Used);
+        assert_eq!(details.peers.len(), 1);
+        assert!(details.peers[0].seeder);
+        assert!(details.servers.is_empty());
+        assert_eq!(
+            details
+                .options
+                .iter()
+                .find(|entry| entry.key == "max-download-limit")
+                .map(|entry| (entry.value.as_str(), entry.redacted)),
+            Some(("1M", false))
+        );
+        for key in ["all-proxy", "header", "http-passwd"] {
+            let option = details
+                .options
+                .iter()
+                .find(|entry| entry.key == key)
+                .unwrap_or_else(|| panic!("missing {key}"));
+            assert!(option.redacted, "{key} must be redacted in the adapter");
+            assert!(
+                option.value.is_empty(),
+                "{key} value must not leave the adapter"
+            );
+        }
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(
+            calls.iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
+            vec!["aria2.getUris", "aria2.getOption", "aria2.getPeers"]
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_details_loads_servers_only_for_active_non_bittorrent_tasks() {
+        let transport = ScriptedTransport::new([
+            Ok(json!([])),
+            Ok(json!({"split": "4"})),
+            Ok(json!([{
+                "index": "1",
+                "servers": [{
+                    "uri": "https://origin.example/file",
+                    "currentUri": "https://cdn.example/file",
+                    "downloadSpeed": "2048"
+                }]
+            }])),
+        ]);
+        let client = Aria2Client::new(transport);
+
+        let details = client
+            .connection_details(Gid::from_u64(9), true, false)
+            .await
+            .expect("server projection decodes");
+
+        assert_eq!(details.servers.len(), 1);
+        assert!(details.peers.is_empty());
+        assert_eq!(details.servers[0].file_index, 1);
+        assert_eq!(details.servers[0].download_speed.get(), 2_048);
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(calls[2].0, "aria2.getServers");
+    }
+
+    #[tokio::test]
+    async fn connection_details_skips_active_only_projections_for_inactive_tasks() {
+        let transport = ScriptedTransport::new([Ok(json!([])), Ok(json!({}))]);
+        let client = Aria2Client::new(transport);
+
+        let details = client
+            .connection_details(Gid::from_u64(9), false, true)
+            .await
+            .expect("inactive projection decodes");
+
+        assert!(details.peers.is_empty());
+        assert!(details.servers.is_empty());
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(calls.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn connection_details_treats_unavailable_active_only_projection_as_empty() {
+        let transport = ScriptedTransport::new([
+            Ok(json!([])),
+            Ok(json!({"split": "4"})),
+            Err(RpcError::Remote {
+                code: 1,
+                message: "GID is not found in active downloads".into(),
+                data: None,
+            }),
+        ]);
+        let client = Aria2Client::new(transport);
+
+        let details = client
+            .connection_details(Gid::from_u64(9), true, true)
+            .await
+            .expect("an active-state race must keep stable projections available");
+
+        assert!(details.peers.is_empty());
+        assert_eq!(details.options[0].key, "split");
     }
 
     #[tokio::test]

@@ -11,14 +11,14 @@ pub use commands::{
     AddDownloadRequest, AddDownloadSource, AppCommand, ApplicationError, ApplicationErrorCode,
     CommandItem, CommandOutcome, CommandService, DownloadProxyConfig, DownloadProxyMode,
     FileConflictPolicy, ItemFailure, MoveTaskInQueueRequest, QueueMove, RemoveTasksRequest,
-    SetTaskOutputNameRequest, TaskCommandContext, TaskRemovalScope,
+    SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, TaskCommandContext, TaskRemovalScope,
 };
 pub use history::{DEFAULT_SPEED_HISTORY_CAPACITY, SpeedHistory, SpeedHistoryError, SpeedSample};
 pub use ports::{
     DownloadDestinationFile, DownloadDestinationGateway, DownloadDestinationReport,
     DownloadDestinationRequest, DownloadEngineGateway, GatewayError, GatewayErrorKind,
-    TaskDetailsGateway, TaskFileGateway, TaskFileRemovalPreview, TaskFileRemovalReport,
-    TaskFileRemovalRequest, TaskRemovalTarget,
+    TaskConnectionDetailsGateway, TaskDetailsGateway, TaskFileGateway, TaskFileRemovalPreview,
+    TaskFileRemovalReport, TaskFileRemovalRequest, TaskRemovalTarget,
 };
 pub use store::{
     DownloadStore, OrderPatch, StoreError, StorePatch, TaskCollection, TaskFieldPatch,
