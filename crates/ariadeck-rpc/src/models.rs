@@ -23,6 +23,7 @@ pub enum TaskKey {
     UploadLength,
     DownloadSpeed,
     UploadSpeed,
+    Seeder,
     Connections,
     ErrorCode,
     ErrorMessage,
@@ -47,6 +48,7 @@ impl TaskKey {
         Self::UploadLength,
         Self::DownloadSpeed,
         Self::UploadSpeed,
+        Self::Seeder,
         Self::Connections,
         Self::ErrorCode,
         Self::ErrorMessage,
@@ -62,6 +64,7 @@ impl TaskKey {
         Self::UploadLength,
         Self::DownloadSpeed,
         Self::UploadSpeed,
+        Self::Seeder,
         Self::Connections,
         Self::ErrorCode,
         Self::ErrorMessage,
@@ -94,6 +97,7 @@ impl TaskKey {
             Self::UploadLength => "uploadLength",
             Self::DownloadSpeed => "downloadSpeed",
             Self::UploadSpeed => "uploadSpeed",
+            Self::Seeder => "seeder",
             Self::Connections => "connections",
             Self::ErrorCode => "errorCode",
             Self::ErrorMessage => "errorMessage",
@@ -176,6 +180,8 @@ pub(crate) struct TaskWire {
     #[serde(default)]
     upload_speed: String,
     #[serde(default)]
+    seeder: String,
+    #[serde(default)]
     connections: String,
     #[serde(default)]
     error_code: String,
@@ -214,6 +220,8 @@ impl TaskWire {
         let mut status = parse_status(&self.status);
         if status == DownloadStatus::Active && self.verify_integrity_pending == "true" {
             status = DownloadStatus::Verifying;
+        } else if status == DownloadStatus::Active && parse_bool(method, "seeder", &self.seeder)? {
+            status = DownloadStatus::Seeding;
         }
 
         let resolved_name = self
@@ -676,6 +684,60 @@ mod tests {
                 message: "File allocation failed".into(),
             })
         );
+    }
+
+    #[test]
+    fn explicit_aria2_seeder_flag_maps_active_task_to_seeding() {
+        let wire = serde_json::from_value::<TaskWire>(json!({
+            "gid": "0000000000000008",
+            "status": "active",
+            "seeder": "true",
+            "uploadLength": "200",
+            "uploadSpeed": "0"
+        }))
+        .expect("valid seeding task fixture");
+
+        let task = wire
+            .into_domain("aria2.tellActive")
+            .expect("valid seeding task conversion");
+
+        assert_eq!(task.status, DownloadStatus::Seeding);
+        assert_eq!(task.upload_length, ByteCount::new(200));
+        assert_eq!(task.upload_speed, ByteRate::new(0));
+    }
+
+    #[test]
+    fn upload_activity_without_seeder_flag_stays_active() {
+        let wire = serde_json::from_value::<TaskWire>(json!({
+            "gid": "0000000000000008",
+            "status": "active",
+            "uploadLength": "200",
+            "uploadSpeed": "50"
+        }))
+        .expect("valid active task fixture");
+
+        let task = wire
+            .into_domain("aria2.tellActive")
+            .expect("valid active task conversion");
+
+        assert_eq!(task.status, DownloadStatus::Active);
+    }
+
+    #[test]
+    fn integrity_verification_takes_precedence_over_seeding() {
+        let wire = serde_json::from_value::<TaskWire>(json!({
+            "gid": "0000000000000008",
+            "status": "active",
+            "seeder": "true",
+            "verifyIntegrityPending": "true"
+        }))
+        .expect("valid verifying seeder fixture");
+
+        let task = wire
+            .into_domain("aria2.tellActive")
+            .expect("valid verifying seeder conversion");
+
+        assert_eq!(task.status, DownloadStatus::Verifying);
     }
 
     #[test]

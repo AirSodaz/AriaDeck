@@ -10,6 +10,7 @@ pub struct TaskIdentity {
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum TaskStatusView {
     Active,
+    Seeding,
     Waiting,
     Paused,
     Complete,
@@ -54,11 +55,25 @@ pub enum TaskSourceKindView {
     Metalink,
 }
 
+impl TaskSourceKindView {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "Unknown",
+            Self::DirectUri => "Direct URL",
+            Self::Magnet => "Magnet",
+            Self::BitTorrent => "BitTorrent",
+            Self::Metalink => "Metalink",
+        }
+    }
+}
+
 impl TaskStatusView {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Active => "Active",
+            Self::Seeding => "Seeding",
             Self::Waiting => "Waiting",
             Self::Paused => "Paused",
             Self::Complete => "Complete",
@@ -71,7 +86,10 @@ impl TaskStatusView {
 
     #[must_use]
     pub const fn can_pause(self) -> bool {
-        matches!(self, Self::Active | Self::Waiting | Self::Verifying)
+        matches!(
+            self,
+            Self::Active | Self::Seeding | Self::Waiting | Self::Verifying
+        )
     }
 
     #[must_use]
@@ -93,7 +111,7 @@ impl TaskStatusView {
     pub const fn can_move_in_queue(self) -> bool {
         matches!(
             self,
-            Self::Active | Self::Waiting | Self::Paused | Self::Verifying
+            Self::Active | Self::Seeding | Self::Waiting | Self::Paused | Self::Verifying
         )
     }
 
@@ -104,8 +122,13 @@ impl TaskStatusView {
     pub const fn can_set_speed_limit(self) -> bool {
         matches!(
             self,
-            Self::Active | Self::Waiting | Self::Paused | Self::Verifying
+            Self::Active | Self::Seeding | Self::Waiting | Self::Paused | Self::Verifying
         )
+    }
+
+    #[must_use]
+    pub const fn uses_active_connections(self) -> bool {
+        matches!(self, Self::Active | Self::Seeding)
     }
 
     #[must_use]
@@ -118,6 +141,7 @@ impl TaskStatusView {
 pub struct TaskErrorView {
     pub code: Option<u32>,
     pub summary: String,
+    pub details: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -126,15 +150,19 @@ pub struct DownloadRowView {
     pub display_name: String,
     pub name_state: TaskNameStateView,
     pub source_kind: TaskSourceKindView,
+    pub primary_source: Option<String>,
+    pub directory: Option<String>,
     pub followed_by: Vec<String>,
     pub belongs_to: Option<String>,
     pub status: TaskStatusView,
     pub error: Option<TaskErrorView>,
     pub total_bytes: u64,
     pub completed_bytes: u64,
+    pub uploaded_bytes: u64,
     pub download_rate: u64,
     pub upload_rate: u64,
     pub eta_seconds: Option<u64>,
+    pub observed_seeding_seconds: Option<u64>,
     pub revision: u64,
 }
 
@@ -158,6 +186,17 @@ impl DownloadRowView {
                     | TaskStatusView::Paused
                     | TaskStatusView::Verifying
             )
+    }
+
+    /// Share ratio as fixed thousandths (1.000 == 1000), without floating
+    /// point rounding in the underlying byte calculation.
+    #[must_use]
+    pub fn share_ratio_milli(&self) -> Option<u64> {
+        if self.total_bytes == 0 {
+            return None;
+        }
+        let value = (u128::from(self.uploaded_bytes) * 1_000) / u128::from(self.total_bytes);
+        Some(u64::try_from(value).unwrap_or(u64::MAX))
     }
 }
 
@@ -263,6 +302,7 @@ pub struct WorkspaceSnapshot {
     pub source_revision: u64,
     pub connection: ConnectionView,
     pub stale: bool,
+    pub local_path_actions_available: bool,
     pub download_rate: u64,
     pub upload_rate: u64,
     pub speed_history: Vec<SpeedSampleView>,
@@ -279,6 +319,7 @@ impl Default for WorkspaceSnapshot {
             source_revision: 0,
             connection: ConnectionView::Disconnected,
             stale: false,
+            local_path_actions_available: false,
             download_rate: 0,
             upload_rate: 0,
             speed_history: Vec::new(),
@@ -527,6 +568,7 @@ pub enum AddDownloadSourceView {
         path: PathBuf,
         kind: AddDownloadMetadataKindView,
         content_sha256: String,
+        info_hash: Option<String>,
         selected_file_indices: Vec<u32>,
     },
 }
@@ -559,6 +601,7 @@ pub struct AddDownloadMetadataPreviewView {
     pub path: PathBuf,
     pub kind: AddDownloadMetadataKindView,
     pub content_sha256: String,
+    pub info_hash: Option<String>,
     pub files: Vec<AddDownloadMetadataFileView>,
     pub selected_file_indices: Vec<u32>,
 }
@@ -630,6 +673,35 @@ pub struct TaskDetailsRequestView {
     pub is_bittorrent: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TaskOpenTargetView {
+    Download,
+    Folder,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskOpenRequestView {
+    pub request_id: RequestId,
+    pub session: EngineSessionView,
+    pub identity: TaskIdentity,
+    pub target: TaskOpenTargetView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TaskOpenOutcomeView {
+    Success,
+    Failure(OperationErrorView),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskOpenResultView {
+    pub request_id: RequestId,
+    pub session: EngineSessionView,
+    pub identity: TaskIdentity,
+    pub target: TaskOpenTargetView,
+    pub outcome: TaskOpenOutcomeView,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationErrorView {
     pub code: String,
@@ -673,6 +745,7 @@ pub enum BatchCommandOutcomeView {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AddDownloadItemResultView {
     pub sources: Vec<AddDownloadSourceView>,
+    pub existing_task: Option<TaskIdentity>,
     pub outcome: CommandOutcomeView,
 }
 
@@ -776,6 +849,9 @@ pub struct TaskOptionView {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaskDetailsView {
     pub directory: Option<String>,
+    pub primary_source: Option<String>,
+    pub output_path: Option<String>,
+    pub path_validation: TaskPathValidationView,
     pub info_hash: Option<String>,
     pub piece_length: Option<u64>,
     pub piece_count: Option<u32>,
@@ -787,9 +863,20 @@ pub struct TaskDetailsView {
     pub files: Vec<TaskFileView>,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum TaskPathValidationView {
+    #[default]
+    Unavailable,
+    Valid {
+        existing_files: usize,
+        missing_paths: usize,
+    },
+    Warning(OperationErrorView),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TaskDetailsOutcomeView {
-    Ready(TaskDetailsView),
+    Ready(Box<TaskDetailsView>),
     Failed(OperationErrorView),
 }
 
@@ -1182,6 +1269,17 @@ pub fn format_percent(basis_points: Option<u16>) -> String {
     )
 }
 
+#[must_use]
+pub fn format_share_ratio(milli: Option<u64>) -> String {
+    milli.map_or_else(
+        || "—".into(),
+        |value| {
+            let hundredths = value.saturating_add(5) / 10;
+            format!("{}.{:02}", hundredths / 100, hundredths % 100)
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1229,19 +1327,25 @@ mod tests {
             display_name: "archive".into(),
             name_state: TaskNameStateView::Resolved,
             source_kind: TaskSourceKindView::DirectUri,
+            primary_source: None,
+            directory: None,
             followed_by: Vec::new(),
             belongs_to: None,
             status: TaskStatusView::Active,
             error: None,
             total_bytes: 100,
             completed_bytes: 120,
+            uploaded_bytes: 250,
             download_rate: 0,
             upload_rate: 0,
             eta_seconds: None,
+            observed_seeding_seconds: None,
             revision: 1,
         };
 
         assert_eq!(row.progress_basis_points(), Some(10_000));
+        assert_eq!(row.share_ratio_milli(), Some(2_500));
+        assert_eq!(format_share_ratio(row.share_ratio_milli()), "2.50");
         assert!(row.can_set_output_name());
 
         row.source_kind = TaskSourceKindView::Magnet;
@@ -1256,6 +1360,15 @@ mod tests {
         assert!(TaskStatusView::Failed.can_retry());
         assert!(!TaskStatusView::Paused.can_retry());
         assert!(!TaskStatusView::Complete.can_retry());
+    }
+
+    #[test]
+    fn seeding_keeps_live_task_controls_and_active_connections() {
+        assert!(TaskStatusView::Seeding.can_pause());
+        assert!(TaskStatusView::Seeding.can_move_in_queue());
+        assert!(TaskStatusView::Seeding.can_set_speed_limit());
+        assert!(TaskStatusView::Seeding.uses_active_connections());
+        assert!(!TaskStatusView::Seeding.is_terminal());
     }
 
     #[test]

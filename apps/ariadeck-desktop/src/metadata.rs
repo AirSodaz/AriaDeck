@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetadataPreview {
     pub content_sha256: String,
+    pub info_hash: Option<String>,
     pub files: Vec<MetadataPreviewFile>,
 }
 
@@ -26,24 +27,29 @@ pub fn parse_metadata(
     kind: AddDownloadMetadataKindView,
     content: &[u8],
 ) -> Result<MetadataPreview, String> {
-    let files = match kind {
-        AddDownloadMetadataKindView::Torrent => parse_torrent(content)?,
-        AddDownloadMetadataKindView::Metalink => parse_metalink(content)?,
+    let (files, info_hash) = match kind {
+        AddDownloadMetadataKindView::Torrent => {
+            let (files, info_hash) = parse_torrent(content)?;
+            (files, Some(info_hash))
+        }
+        AddDownloadMetadataKindView::Metalink => (parse_metalink(content)?, None),
     };
     if files.is_empty() {
         return Err("Metadata does not contain any downloadable files.".into());
     }
     Ok(MetadataPreview {
         content_sha256: HEXLOWER.encode(&Sha256::digest(content)),
+        info_hash,
         files,
     })
 }
 
-fn parse_torrent(content: &[u8]) -> Result<Vec<MetadataPreviewFile>, String> {
+fn parse_torrent(content: &[u8]) -> Result<(Vec<MetadataPreviewFile>, String), String> {
     let torrent = Torrent::read_from_bytes(content)
         .map_err(|error| format!("Invalid Torrent metadata: {error}"))?;
+    let info_hash = torrent.info_hash();
     let root = normalize_relative_path(Path::new(&torrent.name))?;
-    match torrent.files {
+    let files = match torrent.files {
         Some(files) => files
             .into_iter()
             .enumerate()
@@ -54,17 +60,18 @@ fn parse_torrent(content: &[u8]) -> Result<Vec<MetadataPreviewFile>, String> {
                 preview_file(offset, format!("{root}/{relative}"), Some(length))
             })
             .collect::<Result<Vec<_>, _>>()
-            .and_then(validate_unique_paths),
+            .and_then(validate_unique_paths)?,
         None => {
             let length = u64::try_from(torrent.length)
                 .map_err(|_| format!("Torrent file has a negative length: {root}"))?;
-            Ok(vec![MetadataPreviewFile {
+            vec![MetadataPreviewFile {
                 index: 1,
                 path: root,
                 length: Some(length),
-            }])
+            }]
         }
-    }
+    };
+    Ok((files, info_hash))
 }
 
 fn parse_metalink(content: &[u8]) -> Result<Vec<MetadataPreviewFile>, String> {
@@ -241,6 +248,7 @@ mod tests {
         assert_eq!(single.files[0].path, "fixture.bin");
         assert_eq!(single.files[0].length, Some(1));
         assert_eq!(single.content_sha256.len(), 64);
+        assert_eq!(single.info_hash.as_deref().map(str::len), Some(40));
 
         let multi_content = torrent_fixture(
             Some(vec![
@@ -275,6 +283,7 @@ mod tests {
                 },
             ]
         );
+        assert_eq!(multi.info_hash.as_deref().map(str::len), Some(40));
     }
 
     #[test]
@@ -290,6 +299,7 @@ mod tests {
         assert_eq!(preview.files[0].length, Some(12));
         assert_eq!(preview.files[1].path, "nested/two.bin");
         assert_eq!(preview.files[1].length, None);
+        assert_eq!(preview.info_hash, None);
     }
 
     #[test]

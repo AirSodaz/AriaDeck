@@ -38,11 +38,12 @@ pub use model::{
     SettingsView, SpeedLimitSettingsView, SpeedSampleView, TaskCommandRequestView,
     TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
     TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
-    TaskIdentity, TaskNameStateView, TaskOptionView, TaskPeerView, TaskServerView,
+    TaskIdentity, TaskNameStateView, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
+    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
     TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
     WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
-    format_bytes, format_eta, format_percent, format_rate, format_speed_limit_field,
-    parse_speed_limit_field,
+    format_bytes, format_eta, format_percent, format_rate, format_share_ratio,
+    format_speed_limit_field, parse_speed_limit_field,
 };
 pub use search_input::{SearchInput, SearchInputEvent, TextField, TextFieldConfig, TextFieldEvent};
 pub use shell::{AppShell, AppShellEvent};

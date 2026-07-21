@@ -113,6 +113,19 @@ pub struct TaskFileRemovalReport {
     pub missing_paths: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TaskOpenTarget {
+    Download,
+    Folder,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskOpenRequest {
+    pub directory: EnginePath,
+    pub files: Vec<EnginePath>,
+    pub target: TaskOpenTarget,
+}
+
 /// Local filesystem capability supplied only for a locally managed engine.
 #[async_trait]
 pub trait TaskFileGateway: Send + Sync {
@@ -125,6 +138,14 @@ pub trait TaskFileGateway: Send + Sync {
         &self,
         request: &TaskFileRemovalRequest,
     ) -> Result<TaskFileRemovalReport, GatewayError>;
+
+    async fn open(&self, _request: &TaskOpenRequest) -> Result<(), GatewayError> {
+        Err(GatewayError::new(
+            GatewayErrorKind::Unsupported,
+            "Opening task paths is unavailable for this engine profile.",
+            false,
+        ))
+    }
 }
 
 /// On-demand, potentially expensive task data kept outside list refreshes.

@@ -1840,6 +1840,7 @@ mod tests {
                 "uploadLength",
                 "downloadSpeed",
                 "uploadSpeed",
+                "seeder",
                 "connections",
                 "errorCode",
                 "errorMessage",

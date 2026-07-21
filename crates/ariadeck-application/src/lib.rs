@@ -18,7 +18,8 @@ pub use ports::{
     DownloadDestinationFile, DownloadDestinationGateway, DownloadDestinationReport,
     DownloadDestinationRequest, DownloadEngineGateway, GatewayError, GatewayErrorKind,
     TaskConnectionDetailsGateway, TaskDetailsGateway, TaskFileGateway, TaskFileRemovalPreview,
-    TaskFileRemovalReport, TaskFileRemovalRequest, TaskRemovalTarget,
+    TaskFileRemovalReport, TaskFileRemovalRequest, TaskOpenRequest, TaskOpenTarget,
+    TaskRemovalTarget,
 };
 pub use store::{
     DownloadStore, OrderPatch, StoreError, StorePatch, TaskCollection, TaskFieldPatch,

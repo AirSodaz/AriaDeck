@@ -23,6 +23,7 @@ use ariadeck_rpc::{
     Aria2Client, AuthenticatedTransport, RpcError, RpcSecret, RpcSyncConnector, TaskKey,
     WebSocketConfig, WebSocketTransport,
 };
+use lava_torrent::torrent::v1::TorrentBuilder;
 use secrecy::SecretString;
 use tempfile::TempDir;
 use url::Url;
@@ -499,6 +500,86 @@ async fn uploads_torrent_and_metalink_metadata_to_live_aria2() -> Result<(), Tes
     client.shutdown().await?;
     transport.close().await;
     let _status = process.wait_for_exit(Duration::from_secs(5))?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires ARIA2C_PATH and launches a real local aria2 process"]
+async fn projects_explicit_seeding_state_and_stop_rules_on_live_aria2() -> Result<(), TestError> {
+    let executable = env::var("ARIA2C_PATH")?;
+    let data_dir = TempDir::new()?;
+    let payload_path = data_dir.path().join("seed-fixture.bin");
+    std::fs::write(&payload_path, b"AriaDeck live seeding fixture")?;
+    let torrent = TorrentBuilder::new(&payload_path, 16_384)
+        .build()?
+        .encode()?;
+
+    let port = reserve_loopback_port()?;
+    let secret = Uuid::new_v4().simple().to_string();
+    let mut process = ChildGuard::spawn(Path::new(&executable), data_dir.path(), port, &secret)?;
+    let endpoint = Url::parse(&format!("ws://127.0.0.1:{port}/jsonrpc"))?;
+    let transport = connect_with_retry(endpoint, Duration::from_secs(5)).await?;
+    let client = Aria2Client::new(AuthenticatedTransport::new(
+        transport.clone(),
+        Some(RpcSecret::new(secret)),
+    ));
+
+    let gid = client
+        .add_torrent(&AddDownloadRequest {
+            source: AddDownloadSource::Torrent(Arc::<[u8]>::from(torrent)),
+            destination: Some(EnginePath::new(data_dir.path().to_string_lossy())),
+            file_conflict: ariadeck_application::FileConflictPolicy::Overwrite,
+            selected_file_indices: None,
+            options: vec![
+                ("check-integrity".into(), "true".into()),
+                ("seed-ratio".into(), "1000.0".into()),
+                ("seed-time".into(), "60".into()),
+            ],
+        })
+        .await?;
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let seeding = loop {
+        if let Some(task) = client
+            .tell_active(TaskKey::LIST_PROJECTION)
+            .await?
+            .into_iter()
+            .find(|task| task.gid == gid && task.status == DownloadStatus::Seeding)
+        {
+            break task;
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("task {gid} did not expose seeder=true as Seeding"),
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(
+        seeding.upload_speed.get(),
+        0,
+        "a seeder with no leecher must remain Seeding at zero upload speed"
+    );
+    assert_eq!(seeding.completed_length, seeding.total_length);
+
+    let options = client.get_options(gid).await?;
+    assert_eq!(
+        options.get("seed-ratio").and_then(|value| value.as_str()),
+        Some("1000.0")
+    );
+    assert_eq!(
+        options.get("seed-time").and_then(|value| value.as_str()),
+        Some("60")
+    );
+
+    client.remove(gid).await.ok();
+    client.remove_download_result(gid).await.ok();
+    client.shutdown().await?;
+    transport.close().await;
+    let status = process.wait_for_exit(Duration::from_secs(5))?;
+    assert!(status.success());
     Ok(())
 }
 

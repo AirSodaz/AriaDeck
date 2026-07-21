@@ -85,7 +85,9 @@ impl DownloadStore {
             };
             counts.all += 1;
             match task.status {
-                DownloadStatus::Active | DownloadStatus::Verifying => counts.active += 1,
+                DownloadStatus::Active | DownloadStatus::Seeding | DownloadStatus::Verifying => {
+                    counts.active += 1
+                }
                 DownloadStatus::Waiting => counts.waiting += 1,
                 DownloadStatus::Paused => counts.paused += 1,
                 DownloadStatus::Complete => counts.completed += 1,
@@ -134,13 +136,14 @@ fn compare_progress(left: &DownloadTask, right: &DownloadTask) -> Ordering {
 const fn status_rank(status: DownloadStatus) -> u8 {
     match status {
         DownloadStatus::Active => 0,
-        DownloadStatus::Verifying => 1,
-        DownloadStatus::Waiting => 2,
-        DownloadStatus::Paused => 3,
-        DownloadStatus::Error => 4,
-        DownloadStatus::Complete => 5,
-        DownloadStatus::Removed => 6,
-        DownloadStatus::Unknown => 7,
+        DownloadStatus::Seeding => 1,
+        DownloadStatus::Verifying => 2,
+        DownloadStatus::Waiting => 3,
+        DownloadStatus::Paused => 4,
+        DownloadStatus::Error => 5,
+        DownloadStatus::Complete => 6,
+        DownloadStatus::Removed => 7,
+        DownloadStatus::Unknown => 8,
     }
 }
 
@@ -205,6 +208,41 @@ mod tests {
         assert_eq!(
             store.view(&query).visible_gids,
             vec![Gid::from_u64(2), Gid::from_u64(1)]
+        );
+    }
+
+    #[test]
+    fn seeding_is_counted_and_filtered_as_active() {
+        let generation = SessionGeneration::initial();
+        let mut store = DownloadStore::new(EngineSession::new(
+            ProfileId::new(),
+            EngineSessionId::new(),
+            generation,
+        ));
+        store
+            .reconcile_live(
+                generation,
+                vec![TaskSnapshot::new(
+                    Gid::from_u64(3),
+                    DownloadStatus::Seeding,
+                    "seed.iso",
+                )],
+                Vec::new(),
+            )
+            .expect("seeding fixture");
+
+        let counts = store.counts();
+        assert_eq!(counts.all, 1);
+        assert_eq!(counts.active, 1);
+        assert_eq!(counts.completed, 0);
+        assert_eq!(
+            store
+                .view(&TaskListQuery {
+                    filter: DownloadFilter::Active,
+                    ..TaskListQuery::default()
+                })
+                .visible_gids,
+            vec![Gid::from_u64(3)]
         );
     }
 }

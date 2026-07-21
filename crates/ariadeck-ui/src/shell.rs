@@ -32,11 +32,12 @@ use crate::{
     SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator,
     SubmitAddDownload, SubmitTaskOutputName, SubmitTaskSpeedLimit, TaskCommandRequestView,
     TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView, TaskDetailsRequestView,
-    TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity, TaskOptionView,
-    TaskPeerView, TaskServerView, TaskStatusView, TaskTrackerView, TaskUriView, TextField,
-    TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Tooltip, WorkspaceFilter, WorkspaceQuery,
-    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, format_bytes, format_eta,
-    format_percent, format_rate,
+    TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity, TaskOpenOutcomeView,
+    TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView, TaskOptionView,
+    TaskPathValidationView, TaskPeerView, TaskServerView, TaskStatusView, TaskTrackerView,
+    TaskUriView, TextField, TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Tooltip,
+    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    format_bytes, format_eta, format_percent, format_rate, format_share_ratio,
 };
 
 const SPEED_CHART_SAMPLES: usize = 120;
@@ -92,6 +93,7 @@ pub enum AppShellEvent {
     GlobalTaskCommandRequested(GlobalTaskCommandRequestView),
     BatchTaskCommandRequested(BatchTaskCommandRequestView),
     TaskDetailsRequested(TaskDetailsRequestView),
+    TaskOpenRequested(TaskOpenRequestView),
     SettingsSaveRequested(SettingsSaveRequestView),
 }
 
@@ -143,7 +145,7 @@ struct PendingBatchTaskCommand {
 
 enum TaskDetailsLoadState {
     Loading,
-    Ready { details: TaskDetailsView },
+    Ready { details: Box<TaskDetailsView> },
     Failed { error: OperationErrorView },
     Stale,
 }
@@ -153,20 +155,14 @@ struct PendingTaskDetails {
     source_revision: u64,
 }
 
+struct PendingTaskOpen {
+    request_id: RequestId,
+    target: TaskOpenTargetView,
+}
+
 enum TaskDetailsPresentation {
     Loading,
-    Ready {
-        directory: Option<String>,
-        info_hash: Option<String>,
-        piece_length: Option<u64>,
-        piece_count: Option<u32>,
-        file_count: usize,
-        trackers: Vec<TaskTrackerView>,
-        uris: Vec<TaskUriView>,
-        servers: Vec<TaskServerView>,
-        peers: Vec<TaskPeerView>,
-        options: Vec<TaskOptionView>,
-    },
+    Ready(Box<TaskDetailsView>),
     Failed(String),
     Stale,
 }
@@ -186,6 +182,7 @@ struct TaskDetailsDrawer {
     session: EngineSessionView,
     state: TaskDetailsLoadState,
     pending: Option<PendingTaskDetails>,
+    open_pending: Option<PendingTaskOpen>,
     tab: TaskDetailsTab,
     file_scroll: UniformListScrollHandle,
     rendered_file_range: Range<usize>,
@@ -870,8 +867,8 @@ impl AppShell {
                 .iter()
                 .find(|task| task.identity == drawer.identity)
             {
-                let left_active_state = drawer.overview.status == TaskStatusView::Active
-                    && task.status != TaskStatusView::Active;
+                let left_active_state = drawer.overview.status.uses_active_connections()
+                    && !task.status.uses_active_connections();
                 drawer.overview = task.clone();
                 if left_active_state
                     && let TaskDetailsLoadState::Ready { details } = &mut drawer.state
@@ -959,9 +956,18 @@ impl AppShell {
             .filter(|item| matches!(item.outcome, CommandOutcomeView::Failure(_)))
             .count();
         let all_succeeded = failed_count == 0;
+        let existing_duplicates = result
+            .items
+            .iter()
+            .filter_map(|item| item.existing_task.clone())
+            .collect::<Vec<_>>();
         if !accepted.is_empty() {
             self.selected_tasks = accepted.iter().cloned().collect();
             self.selected = accepted.first().cloned();
+            self.range_anchor = self.selected.clone();
+        } else if !existing_duplicates.is_empty() {
+            self.selected_tasks = existing_duplicates.iter().cloned().collect();
+            self.selected = existing_duplicates.first().cloned();
             self.range_anchor = self.selected.clone();
         }
 
@@ -975,6 +981,24 @@ impl AppShell {
                     "{} download{} accepted by aria2.",
                     accepted.len(),
                     if accepted.len() == 1 { "" } else { "s" }
+                ),
+                false,
+                cx,
+            );
+            self.close_add_download(window, cx);
+            return;
+        }
+
+        if accepted.is_empty() && existing_duplicates.len() == result.items.len() {
+            self.show_notice(
+                format!(
+                    "{} download{} already in the transfer list.",
+                    existing_duplicates.len(),
+                    if existing_duplicates.len() == 1 {
+                        " is"
+                    } else {
+                        "s are"
+                    }
                 ),
                 false,
                 cx,
@@ -1427,6 +1451,40 @@ impl AppShell {
             );
         } else {
             cx.notify();
+        }
+    }
+
+    pub fn set_task_open_result(&mut self, result: TaskOpenResultView, cx: &mut Context<Self>) {
+        let Some(drawer) = &mut self.details_drawer else {
+            return;
+        };
+        let Some(pending) = drawer.open_pending.as_ref() else {
+            return;
+        };
+        if pending.request_id != result.request_id
+            || pending.target != result.target
+            || drawer.session != result.session
+            || drawer.identity != result.identity
+        {
+            return;
+        }
+        drawer.open_pending = None;
+        match result.outcome {
+            TaskOpenOutcomeView::Success => self.show_notice(
+                match result.target {
+                    TaskOpenTargetView::Download => "Opened the downloaded item.",
+                    TaskOpenTargetView::Folder => "Opened the download folder.",
+                },
+                false,
+                cx,
+            ),
+            TaskOpenOutcomeView::Failure(error) => {
+                self.show_notice(
+                    format!("Could not open the task path: {}", error.summary),
+                    true,
+                    cx,
+                );
+            }
         }
     }
 
@@ -2277,6 +2335,7 @@ impl AppShell {
                     path: preview.path.clone(),
                     kind: preview.kind,
                     content_sha256: preview.content_sha256.clone(),
+                    info_hash: preview.info_hash.clone(),
                     selected_file_indices: preview.selected_file_indices.clone(),
                 })
                 .collect(),
@@ -2619,6 +2678,7 @@ impl AppShell {
             session,
             state: TaskDetailsLoadState::Stale,
             pending: None,
+            open_pending: None,
             tab: TaskDetailsTab::Info,
             file_scroll: UniformListScrollHandle::new(),
             rendered_file_range: 0..0,
@@ -2639,12 +2699,12 @@ impl AppShell {
                     (
                         drawer.identity.clone(),
                         drawer.overview.revision,
-                        drawer.overview.status == TaskStatusView::Active,
+                        drawer.overview.status.uses_active_connections(),
                         matches!(
                             drawer.overview.source_kind,
                             crate::TaskSourceKindView::Magnet
                                 | crate::TaskSourceKindView::BitTorrent
-                        ),
+                        ) || drawer.overview.status == TaskStatusView::Seeding,
                     )
                 })
             })
@@ -2675,6 +2735,42 @@ impl AppShell {
                 is_bittorrent,
             },
         ));
+        cx.notify();
+    }
+
+    fn request_task_open(&mut self, target: TaskOpenTargetView, cx: &mut Context<Self>) {
+        if !self.snapshot.commands_available() || !self.snapshot.local_path_actions_available {
+            self.show_notice(
+                "Opening task paths is available only for the managed local engine.",
+                true,
+                cx,
+            );
+            return;
+        }
+        let Some(session) = self.snapshot.engine_session() else {
+            return;
+        };
+        let Some(identity) = self.details_drawer.as_ref().and_then(|drawer| {
+            drawer
+                .open_pending
+                .is_none()
+                .then(|| drawer.identity.clone())
+        }) else {
+            return;
+        };
+        if identity.profile_id != session.profile_id {
+            return;
+        }
+        let request_id = self.allocate_request_id();
+        if let Some(drawer) = &mut self.details_drawer {
+            drawer.open_pending = Some(PendingTaskOpen { request_id, target });
+        }
+        cx.emit(AppShellEvent::TaskOpenRequested(TaskOpenRequestView {
+            request_id,
+            session,
+            identity,
+            target,
+        }));
         cx.notify();
     }
 
@@ -2769,7 +2865,7 @@ impl AppShell {
         self.output_name_dialog = Some(TaskOutputNameDialog {
             identity: task.identity.clone(),
             display_name: task_display_name(&task),
-            active: task.status == TaskStatusView::Active,
+            active: task.status.uses_active_connections(),
             previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
             error: None,
         });
@@ -3785,10 +3881,10 @@ impl AppShell {
         match layout {
             TaskLayoutMode::Wide => header
                 .child(div().flex_1().min_w_0().child("Name"))
-                .child(div().w(px(132.0)).flex_none().child("Progress"))
-                .child(div().w(px(88.0)).flex_none().child("Speed"))
+                .child(div().w(px(132.0)).flex_none().child("Progress / ratio"))
+                .child(div().w(px(88.0)).flex_none().child("Down / up"))
                 .child(div().w(px(124.0)).flex_none().child("Size"))
-                .child(div().w(px(72.0)).flex_none().child("ETA"))
+                .child(div().w(px(72.0)).flex_none().child("ETA / seed"))
                 .child(div().w(px(86.0)).flex_none().text_center().child("Status")),
             TaskLayoutMode::Compact => header
                 .child(div().flex_1().min_w_0().child("Task"))
@@ -4658,20 +4754,14 @@ impl AppShell {
         let selected_tab = drawer.tab;
         let display_name = task_display_name(&overview);
         let overview_progress = overview.progress_basis_points();
+        let path_actions_available =
+            self.snapshot.commands_available() && self.snapshot.local_path_actions_available;
+        let path_open_pending = drawer.open_pending.is_some();
         let presentation = match &drawer.state {
             TaskDetailsLoadState::Loading => TaskDetailsPresentation::Loading,
-            TaskDetailsLoadState::Ready { details } => TaskDetailsPresentation::Ready {
-                directory: details.directory.clone(),
-                info_hash: details.info_hash.clone(),
-                piece_length: details.piece_length,
-                piece_count: details.piece_count,
-                file_count: details.files.len(),
-                trackers: details.trackers.clone(),
-                uris: details.uris.clone(),
-                servers: details.servers.clone(),
-                peers: details.peers.clone(),
-                options: details.options.clone(),
-            },
+            TaskDetailsLoadState::Ready { details } => {
+                TaskDetailsPresentation::Ready(details.clone())
+            }
             TaskDetailsLoadState::Failed { error } => {
                 TaskDetailsPresentation::Failed(error.summary.clone())
             }
@@ -4757,19 +4847,41 @@ impl AppShell {
                     )
                 })
                 .into_any_element(),
-            TaskDetailsPresentation::Ready {
-                directory,
-                info_hash,
-                piece_length,
-                piece_count,
-                file_count,
-                trackers,
-                uris,
-                servers,
-                peers,
-                options,
-            } => {
+            TaskDetailsPresentation::Ready(details) => {
+                let TaskDetailsView {
+                    directory,
+                    primary_source,
+                    output_path,
+                    path_validation,
+                    info_hash,
+                    piece_length,
+                    piece_count,
+                    trackers,
+                    uris,
+                    servers,
+                    peers,
+                    options,
+                    files,
+                } = *details;
+                let file_count = files.len();
                 let gid = identity.gid.clone();
+                let is_bittorrent = matches!(
+                    overview.source_kind,
+                    crate::TaskSourceKindView::Magnet | crate::TaskSourceKindView::BitTorrent
+                ) || overview.status == TaskStatusView::Seeding;
+                let seed_stop_rules = format_seed_stop_rules(&options);
+                let path_validation_label = match path_validation {
+                    TaskPathValidationView::Unavailable => {
+                        "Unavailable for an external or remote engine profile.".into()
+                    }
+                    TaskPathValidationView::Valid {
+                        existing_files,
+                        missing_paths,
+                    } => format!(
+                        "Validated locally: {existing_files} existing, {missing_paths} missing."
+                    ),
+                    TaskPathValidationView::Warning(error) => error.summary,
+                };
                 let shell = cx.entity().downgrade();
                 let tabs = SegmentedControl::new(
                     "task-details-tabs",
@@ -4833,10 +4945,86 @@ impl AppShell {
                             colors,
                         ))
                         .child(detail_line(
+                            "Source type",
+                            overview.source_kind.label(),
+                            colors,
+                        ))
+                        .when_some(
+                            primary_source
+                                .as_deref()
+                                .or(overview.primary_source.as_deref()),
+                            |element, source| element.child(detail_line("Source", source, colors)),
+                        )
+                        .child(detail_line(
                             "Directory",
                             directory.as_deref().unwrap_or("Not reported"),
                             colors,
                         ))
+                        .when_some(output_path.as_deref(), |element, path| {
+                            element.child(detail_line("Output", path, colors))
+                        })
+                        .child(detail_line(
+                            "Local path check",
+                            path_validation_label,
+                            colors,
+                        ))
+                        .when_some(overview.error.as_ref(), |element, error| {
+                            element
+                                .child(detail_line("Failure", error.summary.clone(), colors))
+                                .when_some(error.details.as_deref(), |element, details| {
+                                    element.child(detail_line("aria2 details", details, colors))
+                                })
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .pt_2()
+                                .child(
+                                    toolbar_icon_button(
+                                        "open-task-download",
+                                        IconName::Download,
+                                        "Open download",
+                                        if path_actions_available && !path_open_pending {
+                                            ToolbarButtonState::Enabled
+                                        } else {
+                                            ToolbarButtonState::Disabled
+                                        },
+                                        false,
+                                        None,
+                                        colors,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.request_task_open(
+                                                TaskOpenTargetView::Download,
+                                                cx,
+                                            );
+                                        },
+                                    )),
+                                )
+                                .child(
+                                    toolbar_icon_button(
+                                        "open-task-folder",
+                                        IconName::FolderDown,
+                                        "Open folder",
+                                        if path_actions_available && !path_open_pending {
+                                            ToolbarButtonState::Enabled
+                                        } else {
+                                            ToolbarButtonState::Disabled
+                                        },
+                                        false,
+                                        None,
+                                        colors,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.request_task_open(TaskOpenTargetView::Folder, cx);
+                                        },
+                                    )),
+                                ),
+                        )
                         .when_some(info_hash.as_deref(), |element, hash| {
                             element.child(detail_line("Info hash", hash, colors))
                         })
@@ -4849,6 +5037,13 @@ impl AppShell {
                                         .map_or_else(|| "?".into(), |value| value.to_string()),
                                     piece_length.map_or_else(|| "unknown".into(), format_bytes)
                                 ),
+                                colors,
+                            ))
+                        })
+                        .when(is_bittorrent, |element| {
+                            element.child(detail_line(
+                                "Effective seed limits",
+                                seed_stop_rules,
                                 colors,
                             ))
                         })
@@ -5095,6 +5290,9 @@ impl AppShell {
         let task_count = self.snapshot.tasks.len();
         let basis_points = task.progress_basis_points();
         let progress = f32::from(basis_points.unwrap_or(0)) / 10_000.0;
+        let seeding = task.status == TaskStatusView::Seeding;
+        let share_ratio = format_share_ratio(task.share_ratio_milli());
+        let observed_seeding = format_eta(task.observed_seeding_seconds);
         let status_color = task_status_color(task.status, colors);
         let display_name = task_display_name(&task);
         let size_label = if task.total_bytes == 0 {
@@ -5112,14 +5310,25 @@ impl AppShell {
                 |code| format!("Error {code}: {}", error.summary),
             )
         });
-        let mut aria_label = format!(
-            "{}, {}, {}, download speed {}, ETA {}",
-            display_name.as_str(),
-            task.status.label(),
-            format_percent(basis_points),
-            format_rate(task.download_rate),
-            format_eta(task.eta_seconds)
-        );
+        let mut aria_label = if seeding {
+            format!(
+                "{}, Seeding, share ratio {}, uploaded {}, upload speed {}, observed seeding time {} in this session",
+                display_name.as_str(),
+                share_ratio,
+                format_bytes(task.uploaded_bytes),
+                format_rate(task.upload_rate),
+                observed_seeding
+            )
+        } else {
+            format!(
+                "{}, {}, {}, download speed {}, ETA {}",
+                display_name.as_str(),
+                task.status.label(),
+                format_percent(basis_points),
+                format_rate(task.download_rate),
+                format_eta(task.eta_seconds)
+            )
+        };
         if let Some(error) = &task_error_label {
             aria_label.push_str(", ");
             aria_label.push_str(error);
@@ -5128,20 +5337,41 @@ impl AppShell {
             .clone()
             .unwrap_or_else(|| format!("GID {}", task.identity.gid));
         let compact_secondary_label = task_error_label.clone().unwrap_or_else(|| {
-            format!(
-                "{size_label} · {} · {}",
-                format_rate(task.download_rate),
-                format_eta(task.eta_seconds)
-            )
+            if seeding {
+                format!(
+                    "Uploaded {} · Up {} · {}",
+                    format_bytes(task.uploaded_bytes),
+                    format_rate(task.upload_rate),
+                    observed_seeding
+                )
+            } else {
+                format!(
+                    "{size_label} · {} · {}",
+                    format_rate(task.download_rate),
+                    format_eta(task.eta_seconds)
+                )
+            }
         });
         let secondary_color = if task_error_label.is_some() {
             colors.danger
         } else {
             colors.text_muted
         };
-        let progress_label = format_percent(basis_points);
-        let rate_label = format_rate(task.download_rate);
-        let eta_label = format_eta(task.eta_seconds);
+        let progress_label = if seeding {
+            format!("Ratio {share_ratio}")
+        } else {
+            format_percent(basis_points)
+        };
+        let rate_label = if seeding {
+            format!("Up {}", format_rate(task.upload_rate))
+        } else {
+            format_rate(task.download_rate)
+        };
+        let eta_label = if seeding {
+            observed_seeding
+        } else {
+            format_eta(task.eta_seconds)
+        };
         let status_badge = task_status_badge(task.status, colors);
         let row = div()
             .id(stable_id)
@@ -7376,6 +7606,7 @@ fn filter_icon(filter: WorkspaceFilter) -> IconName {
 fn task_status_icon(status: TaskStatusView) -> IconName {
     match status {
         TaskStatusView::Active => IconName::Activity,
+        TaskStatusView::Seeding => IconName::ArrowUp,
         TaskStatusView::Waiting => IconName::Clock3,
         TaskStatusView::Paused => IconName::Pause,
         TaskStatusView::Complete => IconName::CircleCheck,
@@ -7515,6 +7746,7 @@ fn successor_task(
 fn task_overview_summary(task: &DownloadRowView, colors: crate::ThemeColors) -> Div {
     let basis_points = task.progress_basis_points();
     let progress = f32::from(basis_points.unwrap_or(0)) / 10_000.0;
+    let seeding = task.status == TaskStatusView::Seeding;
     let size_label = if task.total_bytes == 0 {
         format_bytes(task.completed_bytes)
     } else {
@@ -7524,10 +7756,17 @@ fn task_overview_summary(task: &DownloadRowView, colors: crate::ThemeColors) -> 
             format_bytes(task.total_bytes)
         )
     };
-    let eta_label = task.eta_seconds.filter(|seconds| *seconds > 0).map_or_else(
-        || task.status.label().to_owned(),
-        |seconds| format!("{} remaining", format_eta(Some(seconds))),
-    );
+    let eta_label = if seeding {
+        format!(
+            "{} observed this session",
+            format_eta(task.observed_seeding_seconds)
+        )
+    } else {
+        task.eta_seconds.filter(|seconds| *seconds > 0).map_or_else(
+            || task.status.label().to_owned(),
+            |seconds| format!("{} remaining", format_eta(Some(seconds))),
+        )
+    };
     let error_label = task.error.as_ref().map(|error| {
         error.code.map_or_else(
             || error.summary.clone(),
@@ -7555,7 +7794,7 @@ fn task_overview_summary(task: &DownloadRowView, colors: crate::ThemeColors) -> 
                         .text_xs()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_secondary)
-                        .child("Progress"),
+                        .child(if seeding { "Share ratio" } else { "Progress" }),
                 )
                 .child(task_status_badge(task.status, colors)),
         )
@@ -7569,7 +7808,11 @@ fn task_overview_summary(task: &DownloadRowView, colors: crate::ThemeColors) -> 
                     div()
                         .text_size(px(24.0))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(format_percent(basis_points)),
+                        .child(if seeding {
+                            format_share_ratio(task.share_ratio_milli())
+                        } else {
+                            format_percent(basis_points)
+                        }),
                 )
                 .child(
                     div()
@@ -7587,8 +7830,16 @@ fn task_overview_summary(task: &DownloadRowView, colors: crate::ThemeColors) -> 
                 .font_features(tabular_numbers())
                 .text_xs()
                 .text_color(colors.text_muted)
-                .child(size_label)
-                .child(format_rate(task.download_rate)),
+                .child(if seeding {
+                    format!("Uploaded {}", format_bytes(task.uploaded_bytes))
+                } else {
+                    size_label
+                })
+                .child(if seeding {
+                    format!("Up {}", format_rate(task.upload_rate))
+                } else {
+                    format_rate(task.download_rate)
+                }),
         )
         .when_some(error_label, |element, error| {
             element.child(
@@ -7856,6 +8107,26 @@ fn render_task_option(option: TaskOptionView, colors: crate::ThemeColors) -> Any
     )
 }
 
+fn format_seed_stop_rules(options: &[TaskOptionView]) -> String {
+    let value = |key: &str| {
+        options
+            .iter()
+            .find(|option| option.key.eq_ignore_ascii_case(key))
+            .map(|option| option.value.as_str())
+            .unwrap_or("not reported")
+    };
+    let ratio = value("seed-ratio");
+    let ratio = if ratio.parse::<f64>().is_ok_and(|value| value == 0.0) {
+        "ratio disabled (0.0)".to_owned()
+    } else {
+        format!("ratio {ratio}")
+    };
+    format!(
+        "Stops at the first reached limit: {ratio} · time {} min",
+        value("seed-time")
+    )
+}
+
 fn render_file_row(
     gid: &str,
     index: usize,
@@ -7994,6 +8265,7 @@ fn engine_health_color(health: &EngineHealthView, colors: crate::ThemeColors) ->
 fn task_status_color(status: TaskStatusView, colors: crate::ThemeColors) -> Hsla {
     match status {
         TaskStatusView::Active => colors.accent,
+        TaskStatusView::Seeding => colors.progress_upload,
         TaskStatusView::Waiting | TaskStatusView::Paused => colors.warning,
         TaskStatusView::Complete => colors.success,
         TaskStatusView::Failed | TaskStatusView::Removed => colors.danger,
@@ -8006,6 +8278,7 @@ fn task_progress_bar(progress: f32, status: TaskStatusView, colors: crate::Theme
     let fill = match status {
         TaskStatusView::Failed | TaskStatusView::Removed => colors.danger,
         TaskStatusView::Complete => colors.success,
+        TaskStatusView::Seeding => colors.progress_upload,
         _ => colors.progress_download,
     };
     div()
@@ -8077,15 +8350,19 @@ mod tests {
             display_name: format!("archive-{index:05}.bin"),
             name_state: TaskNameStateView::Resolved,
             source_kind: TaskSourceKindView::DirectUri,
+            primary_source: Some("https://example.test/file.bin".into()),
+            directory: Some("C:/downloads".into()),
             followed_by: Vec::new(),
             belongs_to: None,
             status: TaskStatusView::Complete,
             error: None,
             total_bytes: 1_048_576,
             completed_bytes: 1_048_576,
+            uploaded_bytes: 0,
             download_rate: 0,
             upload_rate: 0,
             eta_seconds: Some(0),
+            observed_seeding_seconds: None,
             revision: 1,
         }
     }
@@ -8098,6 +8375,7 @@ mod tests {
             source_revision: 1,
             connection: ConnectionView::Connected,
             stale: false,
+            local_path_actions_available: true,
             download_rate: 0,
             upload_rate: 0,
             speed_history: Vec::new(),
@@ -8113,6 +8391,12 @@ mod tests {
     fn details(file_count: usize) -> TaskDetailsView {
         TaskDetailsView {
             directory: Some("C:/downloads".into()),
+            primary_source: Some("https://example.test/file.bin".into()),
+            output_path: Some("C:/downloads".into()),
+            path_validation: TaskPathValidationView::Valid {
+                existing_files: file_count,
+                missing_paths: 0,
+            },
             info_hash: Some("0123456789abcdef".into()),
             piece_length: Some(1_048_576),
             piece_count: Some(file_count as u32),
@@ -8152,6 +8436,8 @@ mod tests {
             path: PathBuf::from(path),
             kind,
             content_sha256: "digest".into(),
+            info_hash: (kind == AddDownloadMetadataKindView::Torrent)
+                .then(|| "0123456789abcdef0123456789abcdef01234567".into()),
             files: (1..=file_count)
                 .map(|index| AddDownloadMetadataFileView {
                     index,
@@ -9241,6 +9527,7 @@ mod tests {
                                 line: 1,
                                 uri: "https://example.test/accepted".into(),
                             }],
+                            existing_task: None,
                             outcome: CommandOutcomeView::Success {
                                 tasks: vec![accepted.clone(), accepted_second.clone()],
                             },
@@ -9250,6 +9537,7 @@ mod tests {
                                 line: 2,
                                 uri: "https://example.test/retry".into(),
                             }],
+                            existing_task: None,
                             outcome: CommandOutcomeView::Failure(OperationErrorView {
                                 code: "rpc.add_not_observed".into(),
                                 summary: "Safe to retry".into(),
@@ -9261,6 +9549,7 @@ mod tests {
                                 line: 3,
                                 uri: "https://example.test/unknown".into(),
                             }],
+                            existing_task: None,
                             outcome: CommandOutcomeView::Failure(OperationErrorView {
                                 code: "rpc.command_outcome_unknown".into(),
                                 summary: "Still unknown".into(),
@@ -9285,6 +9574,55 @@ mod tests {
                 HashSet::from([accepted.clone(), accepted_second])
             );
             assert_eq!(shell.selected.as_ref(), Some(&accepted));
+        });
+    }
+
+    #[gpui::test]
+    fn duplicate_add_result_focuses_the_existing_task_and_closes_the_dialog(
+        cx: &mut TestAppContext,
+    ) {
+        let existing = task(0).identity;
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell.add_dialog.open = true;
+            shell.add_input.update(cx, |input, cx| {
+                input.set_text("https://example.test/existing", cx);
+            });
+            shell.submit_add_download(cx);
+            shell
+        });
+        let (request_id, session) = view.read_with(cx, |shell, _| {
+            let pending = shell.add_dialog.pending.as_ref().expect("add pending");
+            (pending.request_id, pending.session.clone())
+        });
+
+        view.update_in(cx, |shell, window, cx| {
+            shell.set_add_download_result(
+                AddDownloadResultView {
+                    request_id,
+                    session,
+                    items: vec![AddDownloadItemResultView {
+                        sources: vec![AddDownloadSourceView::Uri {
+                            line: 1,
+                            uri: "https://example.test/existing".into(),
+                        }],
+                        existing_task: Some(existing.clone()),
+                        outcome: CommandOutcomeView::Failure(OperationErrorView {
+                            code: "validation.duplicate_task".into(),
+                            summary: "Already present".into(),
+                            retryable: false,
+                        }),
+                    }],
+                },
+                window,
+                cx,
+            );
+        });
+        view.read_with(cx, |shell, _| {
+            assert!(!shell.add_dialog.open);
+            assert_eq!(shell.selected.as_ref(), Some(&existing));
+            assert_eq!(shell.selected_tasks, HashSet::from([existing.clone()]));
         });
     }
 
@@ -9627,7 +9965,7 @@ mod tests {
                     request_id: RequestId::from_u64(request_id.get() + 1),
                     session: session.clone(),
                     identity: identity.clone(),
-                    outcome: TaskDetailsOutcomeView::Ready(details(1)),
+                    outcome: TaskDetailsOutcomeView::Ready(Box::new(details(1))),
                 },
                 cx,
             );
@@ -9647,7 +9985,7 @@ mod tests {
                     request_id,
                     session,
                     identity,
-                    outcome: TaskDetailsOutcomeView::Ready(details(1)),
+                    outcome: TaskDetailsOutcomeView::Ready(Box::new(details(1))),
                 },
                 cx,
             );
@@ -9685,7 +10023,7 @@ mod tests {
                     request_id: initial_request,
                     session: session.clone(),
                     identity: identity.clone(),
-                    outcome: TaskDetailsOutcomeView::Ready(first_details),
+                    outcome: TaskDetailsOutcomeView::Ready(Box::new(first_details)),
                 },
                 cx,
             );
@@ -9732,7 +10070,7 @@ mod tests {
                     request_id: refresh_request,
                     session: session.clone(),
                     identity: identity.clone(),
-                    outcome: TaskDetailsOutcomeView::Ready(second_details),
+                    outcome: TaskDetailsOutcomeView::Ready(Box::new(second_details)),
                 },
                 cx,
             );
@@ -9757,7 +10095,7 @@ mod tests {
                     request_id: refresh_request,
                     session: session.clone(),
                     identity: identity.clone(),
-                    outcome: TaskDetailsOutcomeView::Ready(stale_details),
+                    outcome: TaskDetailsOutcomeView::Ready(Box::new(stale_details)),
                 },
                 cx,
             );
@@ -9780,8 +10118,8 @@ mod tests {
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut shell = AppShell::new(Theme::dark(), window, cx);
             let mut initial = snapshot(1);
-            initial.tasks[0].status = TaskStatusView::Active;
-            initial.tasks[0].source_kind = TaskSourceKindView::BitTorrent;
+            initial.tasks[0].status = TaskStatusView::Seeding;
+            initial.tasks[0].source_kind = TaskSourceKindView::Unknown;
             shell.snapshot = initial;
             shell
         });
@@ -9827,7 +10165,7 @@ mod tests {
                     request_id: first.request_id,
                     session: first.session.clone(),
                     identity: first.identity.clone(),
-                    outcome: TaskDetailsOutcomeView::Ready(loaded),
+                    outcome: TaskDetailsOutcomeView::Ready(Box::new(loaded)),
                 },
                 cx,
             );
@@ -9893,9 +10231,10 @@ mod tests {
                 overview,
                 session: shell.snapshot.engine_session().expect("test session"),
                 state: TaskDetailsLoadState::Ready {
-                    details: details(10_000),
+                    details: Box::new(details(10_000)),
                 },
                 pending: None,
+                open_pending: None,
                 tab: TaskDetailsTab::Files,
                 file_scroll: UniformListScrollHandle::new(),
                 rendered_file_range: 0..0,

@@ -13,6 +13,7 @@ use crate::{ByteCount, ByteRate, Gid, TaskProgress};
 #[serde(rename_all = "snake_case")]
 pub enum DownloadStatus {
     Active,
+    Seeding,
     Waiting,
     Paused,
     Complete,
@@ -387,9 +388,10 @@ impl DownloadTask {
             TaskFields::ERROR,
             &mut changed,
         );
+        let metadata = merge_task_metadata(&self.metadata, snapshot.metadata);
         update_field(
             &mut self.metadata,
-            snapshot.metadata,
+            metadata,
             TaskFields::METADATA,
             &mut changed,
         );
@@ -423,6 +425,30 @@ impl DownloadTask {
     #[must_use]
     pub const fn progress(&self) -> TaskProgress {
         TaskProgress::new(self.completed_length, self.total_length)
+    }
+}
+
+fn merge_task_metadata(current: &TaskMetadata, incoming: TaskMetadata) -> TaskMetadata {
+    TaskMetadata {
+        directory: incoming.directory.or_else(|| current.directory.clone()),
+        primary_uri: incoming.primary_uri.or_else(|| current.primary_uri.clone()),
+        info_hash: incoming.info_hash.or_else(|| current.info_hash.clone()),
+        file_count: if incoming.file_count == 0 {
+            current.file_count
+        } else {
+            incoming.file_count
+        },
+        followed_by: if incoming.followed_by.is_empty() {
+            current.followed_by.clone()
+        } else {
+            incoming.followed_by
+        },
+        belongs_to: incoming.belongs_to.or(current.belongs_to),
+        source_kind: if incoming.source_kind == TaskSourceKind::Unknown {
+            current.source_kind
+        } else {
+            incoming.source_kind
+        },
     }
 }
 
@@ -461,7 +487,10 @@ impl DownloadFilter {
     pub const fn matches(self, status: DownloadStatus) -> bool {
         match self {
             Self::All => true,
-            Self::Active => matches!(status, DownloadStatus::Active | DownloadStatus::Verifying),
+            Self::Active => matches!(
+                status,
+                DownloadStatus::Active | DownloadStatus::Seeding | DownloadStatus::Verifying
+            ),
             Self::Waiting => matches!(status, DownloadStatus::Waiting),
             Self::Paused => matches!(status, DownloadStatus::Paused),
             Self::Completed => matches!(status, DownloadStatus::Complete),
@@ -512,6 +541,13 @@ mod tests {
 
         assert!(changed.is_empty());
         assert_eq!(task.revision, 1);
+    }
+
+    #[test]
+    fn seeding_is_live_and_matches_the_active_filter() {
+        assert!(!DownloadStatus::Seeding.is_terminal());
+        assert!(DownloadFilter::Active.matches(DownloadStatus::Seeding));
+        assert!(!DownloadFilter::Completed.matches(DownloadStatus::Seeding));
     }
 
     #[test]
@@ -583,5 +619,53 @@ mod tests {
         assert_eq!(changed, TaskFields::STATUS);
         assert_eq!(task.display_name, "renamed.bin");
         assert_eq!(task.name_state, TaskNameState::Custom);
+    }
+
+    #[test]
+    fn sparse_list_snapshot_preserves_discovered_metadata() {
+        let mut initial =
+            TaskSnapshot::new(Gid::from_u64(5), DownloadStatus::Waiting, "archive.torrent");
+        initial.metadata = TaskMetadata {
+            directory: Some(EnginePath::new("D:/Downloads")),
+            primary_uri: Some("magnet:?xt=urn:btih:0123456789abcdef".into()),
+            info_hash: Some("0123456789abcdef".into()),
+            file_count: 3,
+            followed_by: vec![Gid::from_u64(6)],
+            belongs_to: Some(Gid::from_u64(4)),
+            source_kind: TaskSourceKind::BitTorrent,
+        };
+        let expected = initial.metadata.clone();
+        let mut task = DownloadTask::from_snapshot(initial);
+
+        let sparse = TaskSnapshot::new(Gid::from_u64(5), DownloadStatus::Active, "archive.torrent");
+        let changed = task
+            .apply_snapshot(sparse)
+            .expect("matching sparse list snapshot");
+
+        assert_eq!(changed, TaskFields::STATUS);
+        assert_eq!(task.metadata, expected);
+    }
+
+    #[test]
+    fn later_known_metadata_values_replace_previous_values() {
+        let mut initial = TaskSnapshot::new(Gid::from_u64(6), DownloadStatus::Waiting, "item");
+        initial.metadata.directory = Some(EnginePath::new("D:/Old"));
+        initial.metadata.source_kind = TaskSourceKind::DirectUri;
+        let mut task = DownloadTask::from_snapshot(initial);
+
+        let mut discovered = TaskSnapshot::new(Gid::from_u64(6), DownloadStatus::Active, "item");
+        discovered.metadata.directory = Some(EnginePath::new("D:/New"));
+        discovered.metadata.info_hash = Some("fedcba9876543210".into());
+        discovered.metadata.file_count = 2;
+        discovered.metadata.source_kind = TaskSourceKind::BitTorrent;
+        let changed = task
+            .apply_snapshot(discovered)
+            .expect("matching discovery snapshot");
+
+        assert!(changed.contains(TaskFields::METADATA));
+        assert_eq!(task.metadata.directory, Some(EnginePath::new("D:/New")));
+        assert_eq!(task.metadata.info_hash.as_deref(), Some("fedcba9876543210"));
+        assert_eq!(task.metadata.file_count, 2);
+        assert_eq!(task.metadata.source_kind, TaskSourceKind::BitTorrent);
     }
 }

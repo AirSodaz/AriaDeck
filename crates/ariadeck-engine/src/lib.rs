@@ -24,7 +24,8 @@ use std::{
 use ariadeck_application::{
     DownloadDestinationFile, DownloadDestinationGateway, DownloadDestinationReport,
     DownloadDestinationRequest, GatewayError, GatewayErrorKind, TaskFileGateway,
-    TaskFileRemovalPreview, TaskFileRemovalReport, TaskFileRemovalRequest,
+    TaskFileRemovalPreview, TaskFileRemovalReport, TaskFileRemovalRequest, TaskOpenRequest,
+    TaskOpenTarget,
 };
 use ariadeck_domain::ProfileId;
 use async_trait::async_trait;
@@ -519,6 +520,82 @@ impl TaskFileGateway for LocalTaskFileGateway {
             moved_to_trash,
             missing_paths,
         })
+    }
+
+    async fn open(&self, request: &TaskOpenRequest) -> Result<(), GatewayError> {
+        let (root, raw_task_dir, task_dir) =
+            resolve_authorized_task_directory(&self.download_roots, &request.directory)?;
+        let (target, is_file) = match request.target {
+            TaskOpenTarget::Folder => (task_dir, false),
+            TaskOpenTarget::Download if request.files.len() == 1 => {
+                let raw_path = resolve_engine_path(&raw_task_dir, request.files[0].as_str())?;
+                let path = safe_existing_file(&raw_path, &root, &task_dir)?.ok_or_else(|| {
+                    filesystem_gateway_error(
+                        format!("downloaded file does not exist: {}", raw_path.display()),
+                        false,
+                    )
+                })?;
+                (path, true)
+            }
+            TaskOpenTarget::Download => (task_dir, false),
+        };
+        tokio::task::spawn_blocking(move || open_local_path(&target, is_file))
+            .await
+            .map_err(|error| {
+                filesystem_gateway_error(format!("local path opener stopped: {error}"), true)
+            })?
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct OpenCommandSpec {
+    program: &'static str,
+    arguments: Vec<String>,
+}
+
+fn open_local_path(path: &Path, is_file: bool) -> Result<(), GatewayError> {
+    let spec = open_command_spec(path, is_file);
+    Command::new(spec.program)
+        .args(&spec.arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| filesystem_error("open task path", path, error, true))
+}
+
+fn open_command_spec(path: &Path, is_file: bool) -> OpenCommandSpec {
+    let value = path.to_string_lossy().into_owned();
+    #[cfg(target_os = "windows")]
+    {
+        if is_file {
+            OpenCommandSpec {
+                program: "rundll32.exe",
+                arguments: vec!["url.dll,FileProtocolHandler".into(), value],
+            }
+        } else {
+            OpenCommandSpec {
+                program: "explorer.exe",
+                arguments: vec![value],
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = is_file;
+        OpenCommandSpec {
+            program: "open",
+            arguments: vec![value],
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = is_file;
+        OpenCommandSpec {
+            program: "xdg-open",
+            arguments: vec![value],
+        }
     }
 }
 
@@ -1597,6 +1674,27 @@ mod tests {
         assert!(arguments.contains(&"--rpc-save-upload-metadata=true".to_owned()));
         assert!(arguments.contains(&"--rpc-max-request-size=32M".to_owned()));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_path_opening_passes_the_path_as_one_process_argument() {
+        let path = Path::new(r"C:\Downloads\name & more.bin");
+        let file = open_command_spec(path, true);
+        let folder = open_command_spec(path, false);
+
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(file.program, "rundll32.exe");
+            assert_eq!(file.arguments[0], "url.dll,FileProtocolHandler");
+            assert_eq!(file.arguments[1], path.to_string_lossy());
+            assert_eq!(folder.program, "explorer.exe");
+            assert_eq!(folder.arguments, vec![path.to_string_lossy()]);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(file.arguments, vec![path.to_string_lossy()]);
+            assert_eq!(folder.arguments, vec![path.to_string_lossy()]);
+        }
     }
 
     #[derive(Default)]

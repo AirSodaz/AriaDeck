@@ -15,7 +15,8 @@ use ariadeck_application::{
     DownloadProxyMode as ApplicationProxyMode, FileConflictPolicy, ItemFailure,
     MoveTaskInQueueRequest, QueueMove, ReconnectPolicy, RemoveTasksRequest,
     SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, StoreSnapshot, SyncHandle, TaskFileGateway,
-    TaskFileRemovalRequest, TaskListQuery, TaskRemovalScope, spawn_sync_coordinator,
+    TaskFileRemovalRequest, TaskListQuery, TaskOpenRequest, TaskOpenTarget, TaskRemovalScope,
+    spawn_sync_coordinator,
 };
 use ariadeck_domain::{
     ByteRate, ConnectionState, DownloadFilter, DownloadSort, DownloadStatus, DownloadTask,
@@ -51,9 +52,10 @@ use ariadeck_ui::{
     SpeedLimitSettingsView, SpeedSampleView, TaskCommandRequestView, TaskCommandResultView,
     TaskCommandView, TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView,
     TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity,
-    TaskNameStateView, TaskOptionView, TaskPeerView, TaskServerView, TaskSourceKindView,
-    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, WorkspaceFilter,
-    WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    TaskNameStateView, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
+    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
+    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
+    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
     format_speed_limit_field,
 };
 use data_encoding::BASE32_NOPAD;
@@ -146,7 +148,7 @@ impl DesktopRoot {
             settings.download_directory = PathBuf::from(download_directory);
         }
 
-        let (sync, local_engine, initial_snapshot) =
+        let (sync, local_engine, mut initial_snapshot) =
             match create_sync_handle(&runtime, &data_dir, &settings) {
                 Ok((handle, local_engine)) => {
                     let snapshot = WorkspaceSnapshot {
@@ -180,6 +182,7 @@ impl DesktopRoot {
         let task_file_gateway = local_download_roots.map(|roots| {
             Arc::new(LocalTaskFileGateway::with_roots(roots)) as Arc<dyn TaskFileGateway>
         });
+        initial_snapshot.local_path_actions_available = task_file_gateway.is_some();
         let credential_store =
             Arc::new(SystemProxyCredentialStore::default()) as Arc<dyn ProxyCredentialStore>;
         let proxy_reapply_store = settings_store.clone();
@@ -244,6 +247,9 @@ impl DesktopRoot {
                 AppShellEvent::TaskDetailsRequested(request) => {
                     this.spawn_task_details(request.clone(), window, cx);
                 }
+                AppShellEvent::TaskOpenRequested(request) => {
+                    this.spawn_task_open(request.clone(), window, cx);
+                }
                 AppShellEvent::SettingsSaveRequested(request) => {
                     this.enqueue_settings_save(request.clone(), window, cx);
                 }
@@ -251,7 +257,7 @@ impl DesktopRoot {
         );
 
         if let Some(handle) = sync.clone() {
-            spawn_snapshot_bridge(handle, query_receiver, cx);
+            spawn_snapshot_bridge(handle, query_receiver, task_file_gateway.is_some(), cx);
         }
         if let Some(results) = settings_results {
             spawn_settings_result_bridge(results, window, cx);
@@ -468,11 +474,33 @@ impl DesktopRoot {
         cx: &mut Context<Self>,
     ) {
         let sync = self.sync.clone();
+        let runtime = self.runtime.handle().clone();
+        let task_file_gateway = self.task_file_gateway.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let result = execute_task_details(sync, request).await;
+            let result = execute_task_details(runtime, sync, task_file_gateway, request).await;
             this.update_in(cx, |this, _window, cx| {
                 this.workspace.update(cx, |workspace, cx| {
                     workspace.set_task_details_result(result, cx);
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn spawn_task_open(
+        &self,
+        request: TaskOpenRequestView,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let sync = self.sync.clone();
+        let task_file_gateway = self.task_file_gateway.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = execute_task_open(sync, task_file_gateway, request).await;
+            this.update_in(cx, |this, _window, cx| {
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.set_task_open_result(result, cx);
                 });
             })
             .ok();
@@ -551,22 +579,19 @@ async fn execute_add_download(
         }
         _ => None,
     };
-    let mut known_gids = match (&sync, &mapped_session) {
+    let known_tasks = match (&sync, &mapped_session) {
         (Some(handle), Ok(_)) => handle
             .snapshot(ariadeck_application::TaskListQuery::default())
             .await
             .filter(|snapshot| {
                 !snapshot.stale && matches!(snapshot.connection_state, ConnectionState::Connected)
             })
-            .map(|snapshot| {
-                snapshot
-                    .tasks
-                    .into_iter()
-                    .map(|task| task.gid)
-                    .collect::<HashSet<_>>()
-            }),
+            .map(|snapshot| snapshot.tasks),
         _ => None,
     };
+    let mut known_gids = known_tasks
+        .as_ref()
+        .map(|tasks| tasks.iter().map(|task| task.gid).collect::<HashSet<_>>());
     let groups = match mode {
         AddDownloadModeView::SeparateTasks => {
             sources.into_iter().map(|source| vec![source]).collect()
@@ -578,15 +603,32 @@ async fn execute_add_download(
     let mut has_successes = false;
 
     for group in groups {
-        let duplicate = mode == AddDownloadModeView::SeparateTasks
+        let duplicate_in_submission = mode == AddDownloadModeView::SeparateTasks
             && group
                 .first()
                 .is_some_and(|source| !seen.insert(add_source_submission_key(source)));
-        let outcome = if duplicate {
+        let existing_task = (!duplicate_in_submission)
+            .then(|| {
+                known_tasks
+                    .as_deref()
+                    .and_then(|tasks| find_matching_add_task(tasks, &group))
+                    .map(|task| TaskIdentity {
+                        profile_id: session.profile_id.clone(),
+                        gid: task.gid.to_string(),
+                    })
+            })
+            .flatten();
+        let outcome = if duplicate_in_submission {
             CommandOutcomeView::Failure(OperationErrorView {
                 code: ApplicationErrorCode::Validation.as_str().into(),
                 summary: "Duplicate source in this submission; the first occurrence was used."
                     .into(),
+                retryable: false,
+            })
+        } else if existing_task.is_some() {
+            CommandOutcomeView::Failure(OperationErrorView {
+                code: ApplicationErrorCode::Duplicate.as_str().into(),
+                summary: "This download is already present in the transfer list.".into(),
                 retryable: false,
             })
         } else if let Some(error) = &destination_error {
@@ -681,6 +723,7 @@ async fn execute_add_download(
         has_successes |= matches!(outcome, CommandOutcomeView::Success { .. });
         items.push(AddDownloadItemResultView {
             sources: group,
+            existing_task,
             outcome,
         });
     }
@@ -728,6 +771,7 @@ fn preview_metadata_file(path: PathBuf) -> AddDownloadMetadataPreviewItemView {
                 path: path.clone(),
                 kind,
                 content_sha256: preview.content_sha256,
+                info_hash: preview.info_hash,
                 files: preview
                     .files
                     .into_iter()
@@ -784,6 +828,7 @@ async fn prepare_add_download_request(
                 path,
                 kind,
                 content_sha256,
+                info_hash: _,
                 selected_file_indices,
             },
         ] => {
@@ -1069,10 +1114,16 @@ fn add_sources_are_uris(sources: &[AddDownloadSourceView]) -> bool {
 
 fn add_source_submission_key(source: &AddDownloadSourceView) -> String {
     match source {
-        AddDownloadSourceView::Uri { uri, .. } => {
-            format!("uri:{}", normalize_add_uri_key(uri))
-        }
-        AddDownloadSourceView::MetadataFile { path, .. } => {
+        AddDownloadSourceView::Uri { uri, .. } => magnet_info_hash(uri).map_or_else(
+            || format!("uri:{}", normalize_add_uri_key(uri)),
+            |info_hash| format!("info-hash:{}", info_hash.to_ascii_lowercase()),
+        ),
+        AddDownloadSourceView::MetadataFile {
+            path, info_hash, ..
+        } => {
+            if let Some(info_hash) = info_hash {
+                return format!("info-hash:{}", info_hash.to_ascii_lowercase());
+            }
             let path = path.to_string_lossy().replace('\\', "/");
             let path = if cfg!(windows) {
                 path.to_ascii_lowercase()
@@ -1140,6 +1191,15 @@ fn find_new_matching_add_task<'a>(
         .find(|task| !known_gids.contains(&task.gid) && task_matches_add_sources(task, sources))
 }
 
+fn find_matching_add_task<'a>(
+    tasks: &'a [DownloadTask],
+    sources: &[AddDownloadSourceView],
+) -> Option<&'a DownloadTask> {
+    tasks
+        .iter()
+        .find(|task| task_matches_add_sources(task, sources))
+}
+
 fn task_matches_add_sources(task: &DownloadTask, sources: &[AddDownloadSourceView]) -> bool {
     if let Some(primary_uri) = task.metadata.primary_uri.as_deref()
         && sources
@@ -1152,14 +1212,15 @@ fn task_matches_add_sources(task: &DownloadTask, sources: &[AddDownloadSourceVie
     {
         return true;
     }
-    let Some(info_hash) = task.metadata.info_hash.as_deref() else {
+    let Some(task_info_hash) = task.metadata.info_hash.as_deref() else {
         return false;
     };
     sources.iter().any(|source| match source {
-        AddDownloadSourceView::Uri { uri, .. } => {
-            magnet_info_hash(uri).is_some_and(|candidate| candidate.eq_ignore_ascii_case(info_hash))
-        }
-        AddDownloadSourceView::MetadataFile { .. } => false,
+        AddDownloadSourceView::Uri { uri, .. } => magnet_info_hash(uri)
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(task_info_hash)),
+        AddDownloadSourceView::MetadataFile { info_hash, .. } => info_hash
+            .as_deref()
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(task_info_hash)),
     })
 }
 
@@ -1844,7 +1905,9 @@ fn finish_reconciled_outcome(
 }
 
 async fn execute_task_details(
+    runtime: tokio::runtime::Handle,
     sync: Option<SyncHandle>,
+    task_file_gateway: Option<Arc<dyn TaskFileGateway>>,
     request: TaskDetailsRequestView,
 ) -> TaskDetailsResultView {
     let TaskDetailsRequestView {
@@ -1863,7 +1926,13 @@ async fn execute_task_details(
                 handle.connection_details(engine_session, task, active, is_bittorrent);
             match tokio::join!(task_details, connection_details) {
                 (Ok(details), Ok(connection)) if details.gid == connection.gid => {
-                    TaskDetailsOutcomeView::Ready(map_task_details(details, connection))
+                    let path_validation =
+                        validate_task_paths(&runtime, task_file_gateway, &details).await;
+                    TaskDetailsOutcomeView::Ready(Box::new(map_task_details(
+                        details,
+                        connection,
+                        path_validation,
+                    )))
                 }
                 (Ok(_), Ok(_)) => TaskDetailsOutcomeView::Failed(OperationErrorView {
                     code: ApplicationErrorCode::Internal.as_str().into(),
@@ -1882,6 +1951,120 @@ async fn execute_task_details(
         request_id,
         session,
         identity,
+        outcome,
+    }
+}
+
+async fn validate_task_paths(
+    runtime: &tokio::runtime::Handle,
+    gateway: Option<Arc<dyn TaskFileGateway>>,
+    details: &TaskDetails,
+) -> TaskPathValidationView {
+    let Some(gateway) = gateway else {
+        return TaskPathValidationView::Unavailable;
+    };
+    let Some(directory) = details.directory.clone() else {
+        return TaskPathValidationView::Warning(OperationErrorView {
+            code: ApplicationErrorCode::Validation.as_str().into(),
+            summary:
+                "aria2 did not report a task directory, so the local path could not be validated."
+                    .into(),
+            retryable: true,
+        });
+    };
+    if details.files.is_empty() {
+        return TaskPathValidationView::Warning(OperationErrorView {
+            code: ApplicationErrorCode::Validation.as_str().into(),
+            summary:
+                "aria2 did not report any task files, so the local path could not be validated."
+                    .into(),
+            retryable: true,
+        });
+    }
+    let request = TaskFileRemovalRequest {
+        directory,
+        files: details.files.iter().map(|file| file.path.clone()).collect(),
+        include_control_files: false,
+    };
+    match runtime
+        .spawn_blocking(move || gateway.preflight(&request))
+        .await
+    {
+        Ok(Ok(preview)) => TaskPathValidationView::Valid {
+            existing_files: preview.content_files,
+            missing_paths: preview.missing_paths,
+        },
+        Ok(Err(error)) => TaskPathValidationView::Warning(map_application_error(error.into())),
+        Err(error) => TaskPathValidationView::Warning(OperationErrorView {
+            code: ApplicationErrorCode::Internal.as_str().into(),
+            summary: format!("Local path validation worker stopped unexpectedly: {error}"),
+            retryable: true,
+        }),
+    }
+}
+
+async fn execute_task_open(
+    sync: Option<SyncHandle>,
+    task_file_gateway: Option<Arc<dyn TaskFileGateway>>,
+    request: TaskOpenRequestView,
+) -> TaskOpenResultView {
+    let mapped = map_engine_session(&request.session)
+        .and_then(|session| map_task_identity(&request.identity).map(|task| (session, task)));
+    let outcome = match (sync, task_file_gateway, mapped) {
+        (Some(handle), Some(gateway), Ok((session, task))) => {
+            match handle.task_details(session, task).await {
+                Ok(details) if details.gid == task.gid => {
+                    let Some(directory) = details.directory else {
+                        return TaskOpenResultView {
+                            request_id: request.request_id,
+                            session: request.session,
+                            identity: request.identity,
+                            target: request.target,
+                            outcome: TaskOpenOutcomeView::Failure(OperationErrorView {
+                                code: ApplicationErrorCode::Validation.as_str().into(),
+                                summary: "aria2 did not report a task directory.".into(),
+                                retryable: true,
+                            }),
+                        };
+                    };
+                    let open_request = TaskOpenRequest {
+                        directory,
+                        files: details.files.into_iter().map(|file| file.path).collect(),
+                        target: match request.target {
+                            TaskOpenTargetView::Download => TaskOpenTarget::Download,
+                            TaskOpenTargetView::Folder => TaskOpenTarget::Folder,
+                        },
+                    };
+                    match gateway.open(&open_request).await {
+                        Ok(()) => TaskOpenOutcomeView::Success,
+                        Err(error) => {
+                            TaskOpenOutcomeView::Failure(map_application_error(error.into()))
+                        }
+                    }
+                }
+                Ok(_) => TaskOpenOutcomeView::Failure(OperationErrorView {
+                    code: ApplicationErrorCode::Internal.as_str().into(),
+                    summary: "aria2 returned details for a different task.".into(),
+                    retryable: false,
+                }),
+                Err(error) => TaskOpenOutcomeView::Failure(map_application_error(error)),
+            }
+        }
+        (_, None, _) => TaskOpenOutcomeView::Failure(OperationErrorView {
+            code: ApplicationErrorCode::Unsupported.as_str().into(),
+            summary: "Opening downloads is available only for the managed local engine.".into(),
+            retryable: false,
+        }),
+        (None, _, _) => TaskOpenOutcomeView::Failure(unavailable_operation_error()),
+        (Some(_), Some(_), Err(error)) => {
+            TaskOpenOutcomeView::Failure(map_application_error(error))
+        }
+    };
+    TaskOpenResultView {
+        request_id: request.request_id,
+        session: request.session,
+        identity: request.identity,
+        target: request.target,
         outcome,
     }
 }
@@ -2027,9 +2210,26 @@ fn internal_operation_error() -> OperationErrorView {
     }
 }
 
-fn map_task_details(details: TaskDetails, connection: TaskConnectionDetails) -> TaskDetailsView {
+fn map_task_details(
+    details: TaskDetails,
+    connection: TaskConnectionDetails,
+    path_validation: TaskPathValidationView,
+) -> TaskDetailsView {
+    let directory = details.directory.as_ref().map(ToString::to_string);
+    let output_path = if details.files.len() == 1 {
+        details.files.first().map(|file| file.path.to_string())
+    } else {
+        directory.clone()
+    };
+    let primary_source = connection
+        .uris
+        .first()
+        .map(|source| sanitize_source_uri(&source.uri));
     TaskDetailsView {
-        directory: details.directory.map(|path| path.to_string()),
+        directory,
+        primary_source,
+        output_path,
+        path_validation,
         info_hash: details.info_hash,
         piece_length: details.piece_length.map(|length| length.get()),
         piece_count: details.piece_count,
@@ -3026,6 +3226,7 @@ fn spawn_local_engine_health_bridge(
 fn spawn_snapshot_bridge(
     handle: SyncHandle,
     mut query_receiver: watch::Receiver<TaskListQuery>,
+    local_path_actions_available: bool,
     cx: &mut Context<DesktopRoot>,
 ) {
     let mut events = handle.subscribe();
@@ -3036,7 +3237,7 @@ fn spawn_snapshot_bridge(
                 break;
             };
             if *query_receiver.borrow() == query {
-                let snapshot = map_snapshot(snapshot);
+                let snapshot = map_snapshot(snapshot, local_path_actions_available);
                 if this
                     .update(cx, |this, cx| {
                         this.workspace.update(cx, |workspace, cx| {
@@ -3093,8 +3294,9 @@ fn map_query(query: &WorkspaceQuery) -> TaskListQuery {
     }
 }
 
-fn map_snapshot(snapshot: StoreSnapshot) -> WorkspaceSnapshot {
+fn map_snapshot(snapshot: StoreSnapshot, local_path_actions_available: bool) -> WorkspaceSnapshot {
     let profile_id = snapshot.session.profile_id.to_string();
+    let observed_seeding_seconds = snapshot.observed_seeding_seconds;
     WorkspaceSnapshot {
         profile_id: profile_id.clone(),
         session_id: snapshot.session.session_id.to_string(),
@@ -3102,6 +3304,7 @@ fn map_snapshot(snapshot: StoreSnapshot) -> WorkspaceSnapshot {
         source_revision: snapshot.view.source_revision,
         connection: map_connection(snapshot.connection_state),
         stale: snapshot.stale,
+        local_path_actions_available,
         download_rate: snapshot.global_stat.download_speed.get(),
         upload_rate: snapshot.global_stat.upload_speed.get(),
         speed_history: snapshot
@@ -3124,7 +3327,10 @@ fn map_snapshot(snapshot: StoreSnapshot) -> WorkspaceSnapshot {
         tasks: snapshot
             .tasks
             .into_iter()
-            .map(|task| map_task(&profile_id, task))
+            .map(|task| {
+                let observed = observed_seeding_seconds.get(&task.gid).copied();
+                map_task(&profile_id, task, observed)
+            })
             .collect(),
     }
 }
@@ -3152,10 +3358,24 @@ fn map_local_engine_health(health: LocalEngineHealth) -> EngineHealthView {
     }
 }
 
-fn map_task(profile_id: &str, task: DownloadTask) -> DownloadRowView {
-    let eta_seconds = TaskProgress::new(task.completed_length, task.total_length)
-        .eta(task.download_speed)
-        .map(|duration| duration.as_secs());
+fn map_task(
+    profile_id: &str,
+    task: DownloadTask,
+    observed_seeding_seconds: Option<u64>,
+) -> DownloadRowView {
+    let eta_seconds = (task.status != DownloadStatus::Seeding)
+        .then(|| {
+            TaskProgress::new(task.completed_length, task.total_length)
+                .eta(task.download_speed)
+                .map(|duration| duration.as_secs())
+        })
+        .flatten();
+    let primary_source = task
+        .metadata
+        .primary_uri
+        .as_deref()
+        .map(sanitize_source_uri);
+    let directory = task.metadata.directory.as_ref().map(ToString::to_string);
     DownloadRowView {
         identity: TaskIdentity {
             profile_id: profile_id.into(),
@@ -3174,6 +3394,8 @@ fn map_task(profile_id: &str, task: DownloadTask) -> DownloadRowView {
             ariadeck_domain::TaskSourceKind::BitTorrent => TaskSourceKindView::BitTorrent,
             ariadeck_domain::TaskSourceKind::Metalink => TaskSourceKindView::Metalink,
         },
+        primary_source,
+        directory,
         followed_by: task
             .metadata
             .followed_by
@@ -3183,6 +3405,7 @@ fn map_task(profile_id: &str, task: DownloadTask) -> DownloadRowView {
         belongs_to: task.metadata.belongs_to.map(|gid| gid.to_string()),
         status: match task.status {
             DownloadStatus::Active => TaskStatusView::Active,
+            DownloadStatus::Seeding => TaskStatusView::Seeding,
             DownloadStatus::Waiting => TaskStatusView::Waiting,
             DownloadStatus::Paused => TaskStatusView::Paused,
             DownloadStatus::Complete => TaskStatusView::Complete,
@@ -3191,22 +3414,76 @@ fn map_task(profile_id: &str, task: DownloadTask) -> DownloadRowView {
             DownloadStatus::Verifying => TaskStatusView::Verifying,
             DownloadStatus::Unknown => TaskStatusView::Unknown,
         },
-        error: task.error.map(|error| TaskErrorView {
-            code: error.code,
-            summary: match (error.code, error.message.trim()) {
-                (Some(9), _) => "Not enough disk space in the download directory.".into(),
-                (_, message) if !message.is_empty() => message.into(),
-                (Some(code), _) => format!("aria2 reported error code {code}."),
-                (None, _) => "aria2 reported an unspecified download error.".into(),
-            },
-        }),
+        error: task.error.map(classify_task_error),
         total_bytes: task.total_length.get(),
         completed_bytes: task.completed_length.get(),
+        uploaded_bytes: task.upload_length.get(),
         download_rate: task.download_speed.get(),
         upload_rate: task.upload_speed.get(),
         eta_seconds,
+        observed_seeding_seconds,
         revision: task.revision,
     }
+}
+
+fn classify_task_error(error: ariadeck_domain::TaskError) -> TaskErrorView {
+    let message = error.message.trim();
+    let normalized = message.to_ascii_lowercase();
+    let summary = if normalized.contains("permission denied")
+        || normalized.contains("access is denied")
+        || normalized.contains("access denied")
+    {
+        "Permission denied. Check the download directory and file permissions.".into()
+    } else if normalized.contains("file name too long")
+        || normalized.contains("filename too long")
+        || normalized.contains("path too long")
+        || normalized.contains("error 206")
+    {
+        "The output path is too long. Choose a shorter directory or filename.".into()
+    } else {
+        match error.code {
+            Some(9) => "Not enough disk space in the download directory.".into(),
+            Some(10) => "The downloaded piece length does not match the expected metadata.".into(),
+            Some(11) => "Output conflict: another task is downloading the same file.".into(),
+            Some(12) => "Output conflict: the same Torrent is already downloading.".into(),
+            Some(13) => "Output conflict: the destination file already exists.".into(),
+            Some(14) => {
+                "aria2 could not rename the output file. Check the path and permissions.".into()
+            }
+            Some(15) => {
+                "aria2 could not open the output file. Check that it exists and is accessible."
+                    .into()
+            }
+            Some(16) => {
+                "aria2 could not create the output file. Check the directory and permissions."
+                    .into()
+            }
+            Some(17) => "A filesystem input/output error interrupted the download.".into(),
+            Some(18) => "aria2 could not create the download directory.".into(),
+            _ if !message.is_empty() => message.into(),
+            Some(code) => format!("aria2 reported error code {code}."),
+            None => "aria2 reported an unspecified download error.".into(),
+        }
+    };
+    TaskErrorView {
+        code: error.code,
+        summary,
+        details: (!message.is_empty()).then(|| message.to_owned()),
+    }
+}
+
+fn sanitize_source_uri(uri: &str) -> String {
+    if let Some(info_hash) = magnet_info_hash(uri) {
+        return format!("magnet:?xt=urn:btih:{}", info_hash.to_ascii_lowercase());
+    }
+    let Ok(mut parsed) = Url::parse(uri.trim()) else {
+        return "Source available (details redacted)".into();
+    };
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    parsed.to_string()
 }
 
 #[cfg(test)]
@@ -3924,12 +4201,31 @@ mod tests {
         snapshot.download_speed = ByteRate::new(100);
         let task = DownloadTask::from_snapshot(snapshot);
 
-        let mapped = map_task("profile", task);
+        let mapped = map_task("profile", task, None);
 
         assert_eq!(mapped.identity.profile_id, "profile");
         assert_eq!(mapped.identity.gid, "0000000000000009");
         assert_eq!(mapped.status, TaskStatusView::Active);
         assert_eq!(mapped.eta_seconds, Some(6));
+    }
+
+    #[test]
+    fn domain_seeding_mapping_preserves_upload_metrics_and_observed_time() {
+        let mut snapshot =
+            TaskSnapshot::new(Gid::from_u64(10), DownloadStatus::Seeding, "seed.bin");
+        snapshot.total_length = ByteCount::new(100);
+        snapshot.completed_length = ByteCount::new(100);
+        snapshot.upload_length = ByteCount::new(250);
+        snapshot.upload_speed = ByteRate::new(64);
+
+        let mapped = map_task("profile", DownloadTask::from_snapshot(snapshot), Some(65));
+
+        assert_eq!(mapped.status, TaskStatusView::Seeding);
+        assert_eq!(mapped.uploaded_bytes, 250);
+        assert_eq!(mapped.upload_rate, 64);
+        assert_eq!(mapped.share_ratio_milli(), Some(2_500));
+        assert_eq!(mapped.observed_seeding_seconds, Some(65));
+        assert_eq!(mapped.eta_seconds, None);
     }
 
     #[test]
@@ -4092,7 +4388,7 @@ mod tests {
             value: String::new(),
             redacted: true,
         });
-        let mapped = map_task_details(details, connection);
+        let mapped = map_task_details(details, connection, TaskPathValidationView::Unavailable);
 
         assert_eq!(mapped.directory.as_deref(), Some("/srv/downloads"));
         assert_eq!(mapped.files[0].path, "/srv/downloads/archive.bin");
@@ -4103,6 +4399,51 @@ mod tests {
         assert!(mapped.options[0].value.is_empty());
     }
 
+    #[tokio::test]
+    async fn managed_details_reuse_the_safe_file_preflight_without_blocking_remote_profiles() {
+        let gid = Gid::from_u64(12);
+        let details = TaskDetails {
+            gid,
+            directory: Some(EnginePath::new("D:/Downloads")),
+            info_hash: None,
+            piece_length: None,
+            piece_count: None,
+            trackers: Vec::new(),
+            files: vec![TaskFile {
+                index: 1,
+                path: EnginePath::new("D:/Downloads/item.bin"),
+                length: ByteCount::new(10),
+                completed_length: ByteCount::new(5),
+                selected: true,
+            }],
+        };
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let gateway = Arc::new(RecordingTaskFileGateway {
+            events: events.clone(),
+        }) as Arc<dyn TaskFileGateway>;
+
+        let local =
+            validate_task_paths(&tokio::runtime::Handle::current(), Some(gateway), &details).await;
+        assert_eq!(
+            local,
+            TaskPathValidationView::Valid {
+                existing_files: 1,
+                missing_paths: 0,
+            }
+        );
+        assert_eq!(
+            events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_slice(),
+            ["preflight"]
+        );
+        assert_eq!(
+            validate_task_paths(&tokio::runtime::Handle::current(), None, &details).await,
+            TaskPathValidationView::Unavailable
+        );
+    }
+
     #[test]
     fn task_mapping_exposes_a_specific_disk_space_failure() {
         let mut snapshot = TaskSnapshot::new(Gid::from_u64(9), DownloadStatus::Error, "large.iso");
@@ -4111,7 +4452,7 @@ mod tests {
             message: "File allocation failed".into(),
         });
 
-        let mapped = map_task("profile", DownloadTask::from_snapshot(snapshot));
+        let mapped = map_task("profile", DownloadTask::from_snapshot(snapshot), None);
 
         assert_eq!(mapped.status, TaskStatusView::Failed);
         assert_eq!(
@@ -4119,6 +4460,7 @@ mod tests {
             Some(TaskErrorView {
                 code: Some(9),
                 summary: "Not enough disk space in the download directory.".into(),
+                details: Some("File allocation failed".into()),
             })
         );
     }
@@ -4168,6 +4510,7 @@ mod tests {
                 path,
                 kind: AddDownloadMetadataKindView::Metalink,
                 content_sha256: preview.content_sha256,
+                info_hash: preview.info_hash,
                 selected_file_indices: vec![1],
             }],
             Some("D:/Transfers".into()),
@@ -4223,6 +4566,7 @@ mod tests {
                     path,
                     kind,
                     content_sha256: String::new(),
+                    info_hash: None,
                     selected_file_indices: Vec::new(),
                 }],
                 None,
@@ -4240,6 +4584,7 @@ mod tests {
                 path: oversized,
                 kind: AddDownloadMetadataKindView::Metalink,
                 content_sha256: String::new(),
+                info_hash: None,
                 selected_file_indices: Vec::new(),
             }],
             None,
@@ -4423,11 +4768,99 @@ mod tests {
     }
 
     #[test]
+    fn torrent_metadata_matches_an_existing_task_by_info_hash() {
+        let mut snapshot = TaskSnapshot::new(
+            Gid::from_u64(10),
+            DownloadStatus::Waiting,
+            "archive.torrent",
+        );
+        snapshot.metadata.info_hash = Some("0123456789abcdef0123456789abcdef01234567".into());
+        let task = DownloadTask::from_snapshot(snapshot);
+        let source = AddDownloadSourceView::MetadataFile {
+            path: PathBuf::from("archive.torrent"),
+            kind: AddDownloadMetadataKindView::Torrent,
+            content_sha256: "digest".into(),
+            info_hash: Some("0123456789ABCDEF0123456789ABCDEF01234567".into()),
+            selected_file_indices: vec![1],
+        };
+
+        assert!(task_matches_add_sources(&task, &[source]));
+    }
+
+    #[test]
+    fn magnet_tracker_variants_share_one_submission_key() {
+        let first = AddDownloadSourceView::Uri {
+            line: 1,
+            uri: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&tr=https%3A%2F%2Fone.test".into(),
+        };
+        let second = AddDownloadSourceView::Uri {
+            line: 2,
+            uri: "magnet:?tr=https%3A%2F%2Ftwo.test&xt=URN:BTIH:0123456789ABCDEF0123456789ABCDEF01234567".into(),
+        };
+
+        assert_eq!(
+            add_source_submission_key(&first),
+            add_source_submission_key(&second)
+        );
+    }
+
+    #[test]
     fn equivalent_uri_spellings_share_one_submission_duplicate_key() {
         assert_eq!(
             normalize_add_uri_key("HTTP://EXAMPLE.TEST:80/archive.iso"),
             normalize_add_uri_key("http://example.test/archive.iso")
         );
+    }
+
+    #[test]
+    fn task_sources_are_sanitized_before_entering_row_or_info_views() {
+        assert_eq!(
+            sanitize_source_uri(
+                "https://user:secret@example.test/archive.iso?token=private#fragment"
+            ),
+            "https://example.test/archive.iso"
+        );
+        assert_eq!(
+            sanitize_source_uri(
+                "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&tr=https%3A%2F%2Ftracker.test&dn=private"
+            ),
+            "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"
+        );
+    }
+
+    #[test]
+    fn aria2_filesystem_errors_keep_raw_details_and_actionable_summaries() {
+        let expected = [
+            (9, "Not enough disk space"),
+            (10, "piece length"),
+            (11, "Output conflict"),
+            (12, "Output conflict"),
+            (13, "Output conflict"),
+            (14, "rename"),
+            (15, "open"),
+            (16, "create"),
+            (17, "filesystem input/output"),
+            (18, "create the download directory"),
+        ];
+        for (code, summary_fragment) in expected {
+            let mapped = classify_task_error(ariadeck_domain::TaskError {
+                code: Some(code),
+                message: format!("raw aria2 error {code}"),
+            });
+            assert!(mapped.summary.contains(summary_fragment));
+            assert_eq!(mapped.details, Some(format!("raw aria2 error {code}")));
+        }
+
+        let permission = classify_task_error(ariadeck_domain::TaskError {
+            code: Some(17),
+            message: "Access is denied".into(),
+        });
+        assert!(permission.summary.contains("Permission denied"));
+        let path_length = classify_task_error(ariadeck_domain::TaskError {
+            code: Some(17),
+            message: "Windows error 206: path too long".into(),
+        });
+        assert!(path_length.summary.contains("too long"));
     }
 
     #[tokio::test]

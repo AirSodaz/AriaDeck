@@ -541,25 +541,44 @@ key.
 
 **Decision:** `BT-001` represents a BitTorrent task that has finished
 downloading but is still seeding as a separate presentation state from a
-terminal `Complete` download. aria2 keeps such a task `active` with upload
-activity, so the row must not be shown as finished while it still uploads.
-Expose seed ratio, seed time, and the effective stop rule
-(`seed-ratio`/`seed-time`) for the task.
+terminal `Complete` download. The authoritative signal is aria2's top-level
+`seeder=true` on an `active` task. Upload speed and uploaded bytes are display
+metrics only: a seeder with no connected leecher can legitimately report zero
+upload speed, so neither value participates in state detection. Integrity
+verification remains the more specific transient presentation when
+`verifyIntegrityPending=true`.
 
-**Runtime rule:** Do not derive seeding purely from a zero download rate. Use
-aria2's task status plus the presence of a BitTorrent `bittorrent` projection
-and non-zero upload activity, and surface the configured seed stop rule so the
-user understands why a completed download is still running. Changing
-seed-ratio/seed-time on a live task follows `RATE-001`/`RPC-001`
-`changeOption` semantics.
+**Runtime rule:** A seeding row remains in the Active filter/count and keeps
+live-task controls, but presents upload speed, uploaded bytes, and share ratio
+instead of download speed and ETA. Share ratio is calculated as
+`uploadLength / totalLength` with fixed-point integer arithmetic. aria2 does
+not expose authoritative elapsed seeding time, so AriaDeck displays an
+explicitly session-bound observed duration that starts when the current engine
+session first sees `Seeding` and resets on state exit, removal, or engine-
+session change. qBittorrent can show lifetime seeding time because its native
+engine exposes that value; AriaDeck must not imply the same authority over an
+aria2 boundary.
+
+**Stop-rule rule:** The details drawer reads the effective `seed-ratio` and
+`seed-time` values from the existing on-demand `getOption` projection. When
+both are set, aria2 stops at the first satisfied condition; `seed-ratio=0.0`
+disables the ratio condition. The Options tab retains the raw values while the
+Info tab explains the combined rule. Editing these values is deferred to the
+typed advanced-control portion of `RPC-001` rather than exposing a free-form
+option mutation.
 
 **Evidence:**
 
-- aria2 manual documents `seed-ratio` and `seed-time`, and that a completed
-  BitTorrent download continues seeding until the stop rule is met:
+- aria2 documents the top-level `seeder` tellStatus field, `uploadLength`, and
+  the `seed-ratio`/`seed-time` first-satisfied stop behavior:
+  https://aria2.github.io/manual/en/html/aria2c.html#aria2.tellStatus
   https://aria2.github.io/manual/en/html/aria2c.html#cmdoption-seed-ratio
-- qBittorrent presents seeding as a distinct state with ratio and seeding-time
-  columns separate from completed:
+  https://aria2.github.io/manual/en/html/aria2c.html#cmdoption-seed-time
+- Motrix maps `status=active` plus `seeder=true` to its distinct `SEEDING`
+  presentation state rather than inferring from transfer speed:
+  https://github.com/agalwood/Motrix/blob/7012040fec926e16fe8f6c403cf038527f5c18b9/src/shared/utils/index.js
+- qBittorrent presents seeding as a distinct state and can expose authoritative
+  native-engine seeding time and share limits:
   https://github.com/qbittorrent/qBittorrent/blob/bc42af9fd8fb9f39df04ed6747e82f912aff4cc0/src/base/bittorrent/torrentimpl.cpp
 
 ### D-019 - Post-metadata output conflicts are surfaced, not silently resolved
@@ -567,11 +586,15 @@ seed-ratio/seed-time on a live task follows `RATE-001`/`RPC-001`
 **Decision:** D-008 defers the per-file conflict and containment flow for
 Magnet/Torrent/Metalink tasks until metadata is available at runtime. That
 runtime path is owned by `TASK-001`: once aria2 reports authoritative file
-paths, AriaDeck re-runs selected-file containment against the authorized-root
-registry and presents aria2's own overwrite/disk error (error code 9 and
-existing-file handling) as a specific task-row and details reason. AriaDeck does
-not force `allow-overwrite=true` for these tasks and does not silently delete or
-rename engine-side files.
+paths, the managed-local details request re-runs exact-file containment against
+the authorized-root registry. The result is displayed as a local-path
+validation status without blocking remote task details. AriaDeck presents
+aria2's disk-full and output-conflict codes as specific task-row/detail reasons:
+code 9 is insufficient space, while codes 11, 12, and 13 identify concurrent
+same-output, concurrent same-Torrent, and existing-output conflicts. The raw
+aria2 message remains available as diagnostic detail. AriaDeck does not force
+`allow-overwrite=true` for these tasks and does not silently delete or rename
+engine-side files.
 
 **Evidence:**
 
@@ -582,6 +605,45 @@ rename engine-side files.
 - D-008 and D-009 in this document define the add-time policy and the runtime
   disk-full presentation that this decision extends to post-metadata file
   paths.
+- AriaNg maps aria2 filesystem/output codes 9 through 18 separately rather than
+  collapsing them into one generic failure:
+  https://github.com/mayswind/AriaNg/blob/master/src/scripts/config/aria2Errors.js
+
+### D-020 - Duplicate and local-path actions are identity- and capability-scoped
+
+**Duplicate rule:** Compare new sources only against a connected, non-stale,
+authoritative task snapshot. Direct URIs use normalized URL equality; Magnet
+and uploaded Torrent sources use normalized BitTorrent info hashes. An exact
+duplicate is not submitted. AriaDeck returns the existing task identity,
+selects it when the request accepted no new task, and does not offer tracker
+merging until a typed tracker-mutation contract exists. Stable discovery
+metadata is retained across sparse list refreshes so directory, source, and
+info-hash values do not disappear between polls.
+
+**Source rule:** Task rows retain a sanitized primary source and engine
+directory. The Info tab shows source type, sanitized source, directory, and
+effective output path. User-info, passwords, URL query values, fragments, and
+Magnet tracker/display-name parameters are excluded from the new source field.
+
+**Open rule:** `Open download` and `Open folder` exist only for the managed
+local engine. The desktop refetches exact-session task details immediately
+before the action, validates the task directory against accumulated authorized
+roots, and passes the path as a process argument without shell interpolation.
+For a one-file task, `Open download` opens the file; for a multi-file task it
+opens the task directory. External RPC profiles keep both actions visible but
+unavailable because their engine paths are not assumed to exist locally.
+
+**Evidence:**
+
+- qBittorrent blocks an already-present Torrent and identifies the existing
+  transfer; its optional tracker merge is intentionally deferred here:
+  https://github.com/qbittorrent/qBittorrent/blob/master/src/gui/guiaddtorrentmanager.cpp
+- qBittorrent exposes separate Open, Open containing folder, and Copy path
+  actions:
+  https://github.com/qbittorrent/qBittorrent/blob/master/src/gui/torrentcontentwidget.cpp
+- Motrix resolves task files/directories through its native shell boundary,
+  checks existence before showing a path, and reports missing-file failures:
+  https://github.com/agalwood/Motrix/blob/7012040fec926e16fe8f6c403cf038527f5c18b9/src/renderer/utils/native.js
 
 ## Task Matrix
 
@@ -643,10 +705,11 @@ Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
 - [x] `DETAIL-001` Add URI/mirror, peer, tracker, server, and task-option
   projections on demand. Request-scoped and refresh-bounded per D-017; depends
   on `RPC-001` for the `getUris`/`getPeers`/`getServers`/`getOption` surface.
-- [ ] `BT-001` Represent seeding separately from completed download and expose
-  seed ratio/time/upload rules. Distinct seeding state per D-018; depends on
-  `RPC-001` for the `bittorrent`/seed-option projections.
-- [ ] `TASK-001` Add duplicate detection, source/path display, open-file/open-
+- [x] `BT-001` Represent seeding separately from completed download and expose
+  share ratio, session-observed seeding time, upload activity, and effective
+  stop rules. Distinct seeding state per D-018; depends on `RPC-001` for the
+  top-level `seeder` and seed-option projections.
+- [x] `TASK-001` Add duplicate detection, source/path display, open-file/open-
   folder actions, disk/permission/path-length error details, and the
   post-metadata output-conflict surfacing defined in D-019.
 - [ ] `RPC-001` Extend the typed RPC adapter for addTorrent/addMetalink,
@@ -686,7 +749,22 @@ UI layers. The drawer uses Info/Files/Network/Options tabs, requests URI,
 announce-tier, active server/peer, and sorted read-only option projections only
 while open, refreshes them by visible task revision, clears active-only data on
 state exit, rejects stale session/request results, and redacts sensitive option
-values inside the RPC adapter. `BT-001` is the next active slice.
+values inside the RPC adapter.
+`BT-001` is now complete across the domain, RPC, application, desktop, and UI
+layers. aria2's explicit top-level `seeder=true` maps an active task to the
+distinct Seeding state even at zero upload speed; integrity verification keeps
+priority when both flags are present. Seeding stays in the Active filter and
+retains live-task controls while rows/details show fixed-point share ratio,
+uploaded bytes, upload speed, and explicitly session-observed seeding time.
+The Info tab explains the effective `seed-ratio`/`seed-time` first-satisfied
+rule while Options preserves the raw values. `TASK-001` is now complete:
+authoritative duplicate detection covers normalized URLs and Magnet/Torrent
+info hashes; sparse list refreshes preserve stable discovery metadata; task
+details show sanitized source/directory/output fields, exact local-path
+validation, aria2 codes 9-18 with raw details, and managed-local Open download/
+Open folder actions that refetch exact-session details before touching the
+filesystem. External profiles expose the capability as unavailable rather than
+assuming their paths are local. `RPC-001` is the next active matrix slice.
 The proxy slice includes schema migration, validated endpoint/bypass fields,
 masked password input, system credential storage, session-bound runtime apply,
 new-session reapply, and explicit clearing. `FILE-002` now has
@@ -830,5 +908,11 @@ acceptance outcomes overlap.
 | 2026-07-21 | `DETAIL-001` | `cargo test --workspace --no-fail-fast` | Pass - 233 passed, 11 ignored; covers request/session scoping, revision catch-up, immediate active-only peer/server clearing, URI status, announce tiers, server/peer decoding, active-state races, sorted option projection, and adapter-level sensitive-value redaction |
 | 2026-07-21 | `DETAIL-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 | 2026-07-21 | `DETAIL-001` live projections and regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored --nocapture` | Pass - all 9 real aria2 flows; a paused two-mirror task exposed both URIs while HTTP credentials and Cookie/header values were redacted inside the adapter, an active slow HTTP transfer exposed its server projection, and all prior authentication, restart, queue, speed-limit, command/removal, proxy, metadata-upload, and cleanup regressions remain green |
+| 2026-07-21 | `BT-001` | `cargo test --workspace --no-fail-fast` | Pass - 239 passed, 12 ignored; covers explicit seeder mapping at zero upload speed, verification priority, Active filtering/counting and controls, session-bound timer reset, fixed-point share ratio, desktop projection, and Seeding-aware detail requests/network cleanup |
+| 2026-07-21 | `BT-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+| 2026-07-21 | `BT-001` live seeding and regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored --nocapture` | Pass - all 10 real aria2 flows; a complete local Torrent entered Seeding from top-level `seeder=true` with no leecher and zero upload speed, retained configured `seed-ratio`/`seed-time`, and all prior authentication, restart, queue, limits, details, command/removal, proxy, metadata-upload, and cleanup regressions remained green |
+| 2026-07-21 | `TASK-001`, final `BT-001` checkpoint | `cargo test --workspace --no-fail-fast` | Pass - 250 passed, 12 ignored; adds stable sparse-refresh metadata, normalized URL/Magnet/Torrent duplicate matching, existing-task focus, sanitized source fields, aria2 code 9-18 classification with raw details, managed-local post-details path validation, safe process-argument path opening, and external-profile capability gating |
+| 2026-07-21 | `TASK-001`, final `BT-001` checkpoint | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+| 2026-07-21 | `TASK-001` live regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored --nocapture` | Pass - all 10 real aria2 flows; authenticated state, restart recovery, command/removal, proxy, queue, limits, metadata upload, task details, explicit seeding, and cleanup remain green after the task/source/path changes |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.

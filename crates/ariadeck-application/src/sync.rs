@@ -279,6 +279,7 @@ pub struct StoreSnapshot {
     pub counts: TaskCounts,
     pub view: TaskListView,
     pub tasks: Vec<DownloadTask>,
+    pub observed_seeding_seconds: HashMap<Gid, u64>,
 }
 
 #[derive(Clone)]
@@ -1424,6 +1425,14 @@ fn build_snapshot(
         .visible_gids
         .iter()
         .filter_map(|gid| store.task(*gid).cloned())
+        .collect::<Vec<_>>();
+    let observed_seeding_seconds = tasks
+        .iter()
+        .filter_map(|task| {
+            store
+                .observed_seeding_seconds(task.gid)
+                .map(|seconds| (task.gid, seconds))
+        })
         .collect();
     StoreSnapshot {
         session: store.session(),
@@ -1434,6 +1443,7 @@ fn build_snapshot(
         counts: store.counts(),
         view,
         tasks,
+        observed_seeding_seconds,
     }
 }
 

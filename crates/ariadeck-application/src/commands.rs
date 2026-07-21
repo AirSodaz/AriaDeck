@@ -340,6 +340,7 @@ impl CommandOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplicationErrorCode {
     Validation,
+    Duplicate,
     WrongProfile,
     StaleSession,
     Disconnected,
@@ -361,6 +362,7 @@ impl ApplicationErrorCode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Validation => "validation.invalid_request",
+            Self::Duplicate => "validation.duplicate_task",
             Self::WrongProfile => "command.wrong_profile",
             Self::StaleSession => "command.stale_session",
             Self::Disconnected => "rpc.disconnected",
@@ -747,7 +749,10 @@ impl CommandService {
             let allowed = match operation {
                 TaskOperation::Pause => matches!(
                     context.status,
-                    DownloadStatus::Active | DownloadStatus::Waiting | DownloadStatus::Verifying
+                    DownloadStatus::Active
+                        | DownloadStatus::Seeding
+                        | DownloadStatus::Waiting
+                        | DownloadStatus::Verifying
                 ),
                 TaskOperation::Resume => matches!(context.status, DownloadStatus::Paused),
                 TaskOperation::MoveInQueue(_) => !matches!(

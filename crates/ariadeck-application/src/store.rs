@@ -93,6 +93,7 @@ pub struct DownloadStore {
     global_stat: GlobalStat,
     speed_history: SpeedHistory,
     speed_history_started_at: Instant,
+    seeding_started_at: HashMap<Gid, Instant>,
     stale: bool,
     revision: u64,
 }
@@ -112,6 +113,7 @@ impl DownloadStore {
             global_stat: GlobalStat::default(),
             speed_history: SpeedHistory::default(),
             speed_history_started_at: Instant::now(),
+            seeding_started_at: HashMap::new(),
             stale: false,
             revision: 0,
         }
@@ -166,6 +168,18 @@ impl DownloadStore {
         self.stopped_total
     }
 
+    /// Application-observed seeding duration for the current engine session.
+    ///
+    /// aria2 does not expose authoritative elapsed seeding time, so this value
+    /// starts when this store first observes `DownloadStatus::Seeding` and is
+    /// cleared on state exit, removal, or engine-session change.
+    #[must_use]
+    pub fn observed_seeding_seconds(&self, gid: Gid) -> Option<u64> {
+        self.seeding_started_at
+            .get(&gid)
+            .map(|started_at| started_at.elapsed().as_secs())
+    }
+
     /// Starts a new connection generation while preserving last-known tasks.
     pub fn begin_session(&mut self, session: EngineSession) -> Result<StorePatch, StoreError> {
         if session.profile_id != self.session.profile_id {
@@ -178,6 +192,7 @@ impl DownloadStore {
         let mut patch = StorePatch::new(session.generation, self.revision);
         if self.session != session {
             self.session = session;
+            self.seeding_started_at.clear();
             patch.session_changed = true;
         }
         if !self.stale {
@@ -229,6 +244,7 @@ impl DownloadStore {
         for gid in old_live.difference(&new_live).copied() {
             if !stopped.contains(&gid) && self.tasks.remove(&gid).is_some() {
                 self.search_index.remove(&gid);
+                self.seeding_started_at.remove(&gid);
                 patch.removed.push(gid);
             }
         }
@@ -390,6 +406,7 @@ impl DownloadStore {
         for gid in &remove_set {
             if self.tasks.remove(gid).is_some() {
                 self.search_index.remove(gid);
+                self.seeding_started_at.remove(gid);
                 patch.removed.push(*gid);
             }
         }
@@ -432,6 +449,7 @@ impl DownloadStore {
         if let Some(task) = self.tasks.get_mut(&gid) {
             let fields = task.apply_snapshot(snapshot)?;
             let task_revision = task.revision;
+            let status = task.status;
             let search_name = fields
                 .contains(TaskFields::DISPLAY_NAME)
                 .then(|| task.display_name.to_lowercase());
@@ -445,14 +463,27 @@ impl DownloadStore {
             if let Some(search_name) = search_name {
                 self.search_index.insert(gid, search_name);
             }
+            self.update_seeding_observation(gid, status);
         } else {
             let task = DownloadTask::from_snapshot(snapshot);
+            let status = task.status;
             self.search_index
                 .insert(gid, task.display_name.to_lowercase());
             self.tasks.insert(gid, task);
+            self.update_seeding_observation(gid, status);
             patch.inserted.push(gid);
         }
         Ok(())
+    }
+
+    fn update_seeding_observation(&mut self, gid: Gid, status: ariadeck_domain::DownloadStatus) {
+        if status == ariadeck_domain::DownloadStatus::Seeding {
+            self.seeding_started_at
+                .entry(gid)
+                .or_insert_with(Instant::now);
+        } else {
+            self.seeding_started_at.remove(&gid);
+        }
     }
 
     fn rebuild_stopped_order(&mut self) {
@@ -715,6 +746,53 @@ mod tests {
                 .map(|sample| sample.download),
             Some(ByteRate::new(crate::DEFAULT_SPEED_HISTORY_CAPACITY as u64))
         );
+    }
+
+    #[test]
+    fn observed_seeding_time_is_session_bound_and_cleared_on_state_exit() {
+        let mut store = store();
+        let gid = Gid::from_u64(12);
+        store
+            .reconcile_live(
+                generation(),
+                vec![task(12, DownloadStatus::Seeding, "seed.bin")],
+                Vec::new(),
+            )
+            .expect("initial seeding task");
+        store
+            .seeding_started_at
+            .insert(gid, Instant::now() - std::time::Duration::from_secs(65));
+        assert!(
+            store
+                .observed_seeding_seconds(gid)
+                .is_some_and(|value| value >= 65)
+        );
+
+        store
+            .reconcile_live(
+                generation(),
+                Vec::new(),
+                vec![task(12, DownloadStatus::Paused, "seed.bin")],
+            )
+            .expect("paused task");
+        assert_eq!(store.observed_seeding_seconds(gid), None);
+
+        store
+            .reconcile_live(
+                generation(),
+                vec![task(12, DownloadStatus::Seeding, "seed.bin")],
+                Vec::new(),
+            )
+            .expect("resumed seeding task");
+        let next_session = EngineSession::new(
+            store.session().profile_id,
+            EngineSessionId::new(),
+            generation().next(),
+        );
+        store
+            .begin_session(next_session)
+            .expect("new engine session");
+        assert_eq!(store.observed_seeding_seconds(gid), None);
     }
 
     #[test]
