@@ -14,15 +14,15 @@ use ariadeck_application::{
     DownloadDestinationFile, DownloadDestinationGateway, DownloadDestinationRequest,
     DownloadProxyConfig, DownloadProxyMode as ApplicationProxyMode, FileConflictPolicy,
     ItemFailure, MoveTaskInQueueRequest, QueueMove, ReconnectPolicy, RemoveTasksRequest,
-    SetTaskOptionsRequest, SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, StoreSnapshot,
-    SyncHandle, TaskFileGateway, TaskFileRemovalRequest, TaskListQuery, TaskOpenRequest,
-    TaskOpenTarget, TaskRemovalScope, spawn_sync_coordinator,
+    SetTaskConnectionPolicyRequest, SetTaskOptionsRequest, SetTaskOutputNameRequest,
+    SetTaskSpeedLimitRequest, StoreSnapshot, SyncHandle, TaskFileGateway, TaskFileRemovalRequest,
+    TaskListQuery, TaskOpenRequest, TaskOpenTarget, TaskRemovalScope, spawn_sync_coordinator,
 };
 use ariadeck_domain::{
     ByteRate, ConnectionState, DownloadFilter, DownloadSort, DownloadStatus, DownloadTask,
     EnginePath, EngineSession, EngineSessionId, Gid, ProfileId, SessionGeneration, SortDirection,
-    SortKey, SpeedLimitConfig, TaskConnectionDetails, TaskDetails,
-    TaskIdentity as DomainTaskIdentity, TaskProgress, TaskUriStatus,
+    SortKey, SpeedLimitConfig, TaskConnectionDetails, TaskConnectionPolicy, TaskDetails,
+    TaskIdentity as DomainTaskIdentity, TaskProgress, TaskUriStatus, TransferPolicyConfig,
 };
 use ariadeck_engine::{
     ExternalEngineProfile, JsonProfileStore, LocalDownloadDestinationGateway,
@@ -34,8 +34,9 @@ use ariadeck_rpc::{
     WebSocketTransport,
 };
 use ariadeck_settings::{
-    AppSettings, ColorScheme, DownloadProxyMode, DownloadProxySettings, JsonSettingsStore,
-    ProxyCredentialRef, ProxyCredentialStore, SpeedLimitSettings, SystemProxyCredentialStore,
+    AppSettings, ColorScheme, DownloadProxyMode, DownloadProxySettings, FileAllocationSetting,
+    JsonSettingsStore, ProxyCredentialRef, ProxyCredentialStore, SpeedLimitSettings,
+    SystemProxyCredentialStore, TransferPolicySettings,
 };
 use ariadeck_ui::{
     AddDownloadAdvancedOptionsView, AddDownloadItemResultView, AddDownloadMetadataFileView,
@@ -46,7 +47,7 @@ use ariadeck_ui::{
     BatchCommandOutcomeView, BatchTaskCommandRequestView, BatchTaskCommandResultView,
     BatchTaskCommandView, BatchTaskFailureView, ColorSchemeView, CommandOutcomeView,
     ConnectionView, DownloadProxySettingsView, DownloadRowView, EngineHealthView,
-    EngineSessionView, FileConflictPolicyView, GlobalTaskCommandRequestView,
+    EngineSessionView, FileAllocationView, FileConflictPolicyView, GlobalTaskCommandRequestView,
     GlobalTaskCommandResultView, GlobalTaskCommandView, OperationErrorView, ProxyModeView,
     ProxyPasswordUpdateView, SettingsSaveOutcomeView, SettingsSaveRequestView,
     SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView,
@@ -55,8 +56,8 @@ use ariadeck_ui::{
     TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
     TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
     TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
-    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, WorkspaceFilter,
-    WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TransferPolicySettingsView,
+    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
     format_speed_limit_field,
 };
 use data_encoding::BASE32_NOPAD;
@@ -93,6 +94,7 @@ struct SettingsPersistenceRequest {
     proxy_password: ProxyPasswordUpdate,
     apply_proxy: bool,
     apply_speed_limit: bool,
+    apply_transfer_policy: bool,
 }
 
 #[derive(Clone)]
@@ -314,6 +316,7 @@ impl DesktopRoot {
         let apply_proxy = settings.download_proxy != self.settings.download_proxy
             || !matches!(proxy_password, ProxyPasswordUpdate::Unchanged);
         let apply_speed_limit = settings.speed_limits != self.settings.speed_limits;
+        let apply_transfer_policy = settings.transfer_policy != self.settings.transfer_policy;
         let Some(sender) = &self.settings_sender else {
             self.deliver_settings_error(
                 request,
@@ -331,6 +334,7 @@ impl DesktopRoot {
                 proxy_password,
                 apply_proxy,
                 apply_speed_limit,
+                apply_transfer_policy,
             })
             .is_err()
         {
@@ -1491,6 +1495,18 @@ async fn execute_task_command(
                     task,
                     download_limit: ByteRate::new(*download_limit),
                     upload_limit: ByteRate::new(*upload_limit),
+                }),
+                TaskCommandView::SetConnectionPolicy {
+                    max_connection_per_server,
+                    split,
+                    min_split_size,
+                } => AppCommand::SetTaskConnectionPolicy(SetTaskConnectionPolicyRequest {
+                    task,
+                    policy: TaskConnectionPolicy {
+                        max_connection_per_server: *max_connection_per_server,
+                        split: *split,
+                        min_split_size: *min_split_size,
+                    },
                 }),
                 TaskCommandView::SetOptions {
                     seed_ratio,
@@ -2739,6 +2755,25 @@ fn map_settings(settings: &AppSettings) -> SettingsView {
             download_limit: format_speed_limit_field(settings.speed_limits.download_limit),
             upload_limit: format_speed_limit_field(settings.speed_limits.upload_limit),
         },
+        transfer_policy: TransferPolicySettingsView {
+            max_concurrent_downloads: settings
+                .transfer_policy
+                .max_concurrent_downloads
+                .to_string(),
+            max_connection_per_server: settings
+                .transfer_policy
+                .max_connection_per_server
+                .to_string(),
+            split: settings.transfer_policy.split.to_string(),
+            min_split_size: format_speed_limit_field(settings.transfer_policy.min_split_size),
+            file_allocation: match settings.transfer_policy.file_allocation {
+                FileAllocationSetting::None => FileAllocationView::None,
+                FileAllocationSetting::Prealloc => FileAllocationView::Prealloc,
+                FileAllocationSetting::Trunc => FileAllocationView::Trunc,
+                FileAllocationSetting::Falloc => FileAllocationView::Falloc,
+            },
+            check_integrity: settings.transfer_policy.check_integrity,
+        },
     }
 }
 
@@ -2799,6 +2834,35 @@ fn map_settings_request(
                 .parse_upload_limit()
                 .ok_or_else(|| "Upload speed limit must be bytes/second or a K/M/G value (or empty for unlimited).".to_owned())?,
         },
+        transfer_policy: TransferPolicySettings {
+            max_concurrent_downloads: settings
+                .transfer_policy
+                .parse_max_concurrent_downloads()
+                .ok_or_else(|| "Maximum concurrent downloads must be a positive integer.".to_owned())?,
+            max_connection_per_server: settings
+                .transfer_policy
+                .parse_max_connection_per_server()
+                .ok_or_else(|| {
+                    "Maximum connections per server must be an integer from 1 to 16.".to_owned()
+                })?,
+            split: settings
+                .transfer_policy
+                .parse_split()
+                .ok_or_else(|| "Split count must be a positive integer.".to_owned())?,
+            min_split_size: settings
+                .transfer_policy
+                .parse_min_split_size()
+                .ok_or_else(|| {
+                    "Minimum split size must be a positive byte count or K/M/G value.".to_owned()
+                })?,
+            file_allocation: match settings.transfer_policy.file_allocation {
+                FileAllocationView::None => FileAllocationSetting::None,
+                FileAllocationView::Prealloc => FileAllocationSetting::Prealloc,
+                FileAllocationView::Trunc => FileAllocationSetting::Trunc,
+                FileAllocationView::Falloc => FileAllocationSetting::Falloc,
+            },
+            check_integrity: settings.transfer_policy.check_integrity,
+        },
     };
     mapped.validate().map_err(|error| error.to_string())?;
     Ok((mapped, password))
@@ -2856,12 +2920,13 @@ async fn persist_settings_request(
     .await
     .map_err(|error| format!("settings preflight task failed: {error}"))??;
 
-    // Speed limits carry no credentials, so they are applied independently of
-    // the proxy credential dance. When only speed limits change we still push
-    // them to the running engine before persisting, then persist and roll the
-    // engine back on a save failure so disk and engine stay consistent.
-    if request.apply_speed_limit && !request.apply_proxy {
-        return apply_speed_limit_only(store, sync, request).await;
+    // Speed limits and transfer policy carry no credentials, so they are
+    // applied independently of the proxy credential dance. When only those
+    // engine options change we still push them to the running engine before
+    // persisting, then persist and roll the engine back on a save failure so
+    // disk and engine stay consistent.
+    if (request.apply_speed_limit || request.apply_transfer_policy) && !request.apply_proxy {
+        return apply_engine_policy_only(store, sync, request).await;
     }
 
     if !request.apply_proxy {
@@ -2941,6 +3006,48 @@ async fn persist_settings_request(
         return Err(summary);
     }
 
+    if request.apply_transfer_policy
+        && let Err(error) = sync
+            .apply_transfer_policy(
+                snapshot.session,
+                map_transfer_policy_config(&request.settings),
+            )
+            .await
+    {
+        let rollback_proxy =
+            map_download_proxy_config(&request.previous_settings, previous_password);
+        let proxy_rollback = sync
+            .apply_download_proxy(snapshot.session, rollback_proxy)
+            .await
+            .err()
+            .map(|error| error.summary);
+        let speed_rollback = if request.apply_speed_limit {
+            sync.apply_speed_limit(
+                snapshot.session,
+                map_speed_limit_config(&request.previous_settings),
+            )
+            .await
+            .err()
+            .map(|error| error.summary)
+        } else {
+            None
+        };
+        let credential_rollback = rollback_credential_async(credential_store, mutation)
+            .await
+            .err();
+        let mut summary = error.summary;
+        if let Some(error) = proxy_rollback {
+            summary.push_str(&format!(" Proxy rollback also failed: {error}"));
+        }
+        if let Some(error) = speed_rollback {
+            summary.push_str(&format!(" Speed-limit rollback also failed: {error}"));
+        }
+        if let Some(error) = credential_rollback {
+            summary.push_str(&format!(" Credential rollback also failed: {error}"));
+        }
+        return Err(summary);
+    }
+
     let settings_to_save = request.settings.clone();
     let save_store = store.clone();
     if let Err(error) = tokio::task::spawn_blocking(move || {
@@ -2969,6 +3076,17 @@ async fn persist_settings_request(
         } else {
             None
         };
+        let policy_rollback = if request.apply_transfer_policy {
+            sync.apply_transfer_policy(
+                snapshot.session,
+                map_transfer_policy_config(&request.previous_settings),
+            )
+            .await
+            .err()
+            .map(|error| error.summary)
+        } else {
+            None
+        };
         let credential_rollback = rollback_credential_async(credential_store, mutation)
             .await
             .err();
@@ -2979,6 +3097,9 @@ async fn persist_settings_request(
         if let Some(error) = speed_rollback {
             summary.push_str(&format!(" Speed-limit rollback also failed: {error}"));
         }
+        if let Some(error) = policy_rollback {
+            summary.push_str(&format!(" Transfer-policy rollback also failed: {error}"));
+        }
         if let Some(error) = credential_rollback {
             summary.push_str(&format!(" Credential rollback also failed: {error}"));
         }
@@ -2987,29 +3108,50 @@ async fn persist_settings_request(
     Ok(())
 }
 
-/// Apply and persist a speed-limit-only settings change.
+/// Apply and persist a speed-limit and/or transfer-policy settings change.
 ///
-/// Pushes the new limits to the running engine first, then persists to disk and
-/// rolls the engine back to the previous limits if persistence fails, so the
-/// engine never diverges from the source-of-truth settings file.
-async fn apply_speed_limit_only(
+/// Pushes the new options to the running engine first, then persists to disk
+/// and rolls the engine back if persistence fails, so the engine never
+/// diverges from the source-of-truth settings file.
+async fn apply_engine_policy_only(
     store: JsonSettingsStore,
     sync: Option<SyncHandle>,
     request: SettingsPersistenceRequest,
 ) -> Result<(), String> {
     let Some(sync) = sync else {
-        return Err("Speed limits cannot be applied because aria2 is unavailable.".into());
+        return Err(
+            "Engine transfer settings cannot be applied because aria2 is unavailable.".into(),
+        );
     };
     let Some(snapshot) = sync.snapshot(TaskListQuery::default()).await else {
         return Err(
-            "Speed limits cannot be applied because the synchronization coordinator is unavailable."
+            "Engine transfer settings cannot be applied because the synchronization coordinator is unavailable."
                 .into(),
         );
     };
-    if let Err(error) = sync
-        .apply_speed_limit(snapshot.session, map_speed_limit_config(&request.settings))
-        .await
+    if request.apply_speed_limit
+        && let Err(error) = sync
+            .apply_speed_limit(snapshot.session, map_speed_limit_config(&request.settings))
+            .await
     {
+        return Err(error.summary);
+    }
+    if request.apply_transfer_policy
+        && let Err(error) = sync
+            .apply_transfer_policy(
+                snapshot.session,
+                map_transfer_policy_config(&request.settings),
+            )
+            .await
+    {
+        if request.apply_speed_limit {
+            let _ = sync
+                .apply_speed_limit(
+                    snapshot.session,
+                    map_speed_limit_config(&request.previous_settings),
+                )
+                .await;
+        }
         return Err(error.summary);
     }
 
@@ -3023,17 +3165,30 @@ async fn apply_speed_limit_only(
     .await
     .map_err(|error| format!("settings persistence task failed: {error}"))?
     {
-        let engine_rollback = sync
-            .apply_speed_limit(
-                snapshot.session,
-                map_speed_limit_config(&request.previous_settings),
-            )
-            .await
-            .err()
-            .map(|error| error.summary);
-        let mut summary = format!("Failed to persist speed limits: {error}");
-        if let Some(error) = engine_rollback {
-            summary.push_str(&format!(" Engine rollback also failed: {error}"));
+        let mut summary = format!("Failed to persist transfer settings: {error}");
+        if request.apply_speed_limit
+            && let Some(error) = sync
+                .apply_speed_limit(
+                    snapshot.session,
+                    map_speed_limit_config(&request.previous_settings),
+                )
+                .await
+                .err()
+                .map(|error| error.summary)
+        {
+            summary.push_str(&format!(" Speed-limit rollback also failed: {error}"));
+        }
+        if request.apply_transfer_policy
+            && let Some(error) = sync
+                .apply_transfer_policy(
+                    snapshot.session,
+                    map_transfer_policy_config(&request.previous_settings),
+                )
+                .await
+                .err()
+                .map(|error| error.summary)
+        {
+            summary.push_str(&format!(" Transfer-policy rollback also failed: {error}"));
         }
         return Err(summary);
     }
@@ -3161,6 +3316,22 @@ fn map_speed_limit_config(settings: &AppSettings) -> SpeedLimitConfig {
     }
 }
 
+fn map_transfer_policy_config(settings: &AppSettings) -> TransferPolicyConfig {
+    TransferPolicyConfig {
+        max_concurrent_downloads: settings.transfer_policy.max_concurrent_downloads,
+        max_connection_per_server: settings.transfer_policy.max_connection_per_server,
+        split: settings.transfer_policy.split,
+        min_split_size: settings.transfer_policy.min_split_size,
+        file_allocation: match settings.transfer_policy.file_allocation {
+            FileAllocationSetting::None => ariadeck_domain::FileAllocationMethod::None,
+            FileAllocationSetting::Prealloc => ariadeck_domain::FileAllocationMethod::Prealloc,
+            FileAllocationSetting::Trunc => ariadeck_domain::FileAllocationMethod::Trunc,
+            FileAllocationSetting::Falloc => ariadeck_domain::FileAllocationMethod::Falloc,
+        },
+        check_integrity: settings.transfer_policy.check_integrity,
+    }
+}
+
 #[cfg(test)]
 fn persist_settings(
     store: &JsonSettingsStore,
@@ -3279,16 +3450,25 @@ fn spawn_proxy_reapply_bridge(
                                     error.summary
                                 )
                             });
-                        // Reapply persisted speed limits on the fresh session so
-                        // a reconnect restores the user's throttle. Zero limits
-                        // are still sent so aria2 explicitly clears any default.
+                        // Reapply persisted speed limits and transfer policy on
+                        // the fresh session so a reconnect restores the user's
+                        // throttle and connection defaults.
                         let speed_result = handle
                             .apply_speed_limit(snapshot.session, map_speed_limit_config(&settings))
                             .await
                             .map_err(|error| {
                                 format!("Speed limits were not applied: {}", error.summary)
                             });
-                        proxy_result.and(speed_result)
+                        let policy_result = handle
+                            .apply_transfer_policy(
+                                snapshot.session,
+                                map_transfer_policy_config(&settings),
+                            )
+                            .await
+                            .map_err(|error| {
+                                format!("Transfer policy was not applied: {}", error.summary)
+                            });
+                        proxy_result.and(speed_result).and(policy_result)
                     }
                     Err(error) => Err(error),
                 };
@@ -5553,6 +5733,7 @@ Accept: */*"
                 ..DownloadProxySettingsView::default()
             },
             speed_limits: SpeedLimitSettingsView::default(),
+            transfer_policy: TransferPolicySettingsView::default(),
         };
 
         let (mapped, password) = map_settings_request(
@@ -5685,12 +5866,14 @@ Accept: */*"
             download_directory: root.path().join("first"),
             download_proxy: DownloadProxySettings::default(),
             speed_limits: SpeedLimitSettings::default(),
+            transfer_policy: TransferPolicySettings::default(),
         };
         let second = AppSettings {
             color_scheme: ColorScheme::Light,
             download_directory: root.path().join("second"),
             download_proxy: DownloadProxySettings::default(),
             speed_limits: SpeedLimitSettings::default(),
+            transfer_policy: TransferPolicySettings::default(),
         };
         sender
             .send(SettingsPersistenceRequest {
@@ -5700,6 +5883,7 @@ Accept: */*"
                 proxy_password: ProxyPasswordUpdate::Unchanged,
                 apply_proxy: false,
                 apply_speed_limit: false,
+                apply_transfer_policy: false,
             })
             .expect("queue first settings");
         sender
@@ -5710,6 +5894,7 @@ Accept: */*"
                 proxy_password: ProxyPasswordUpdate::Unchanged,
                 apply_proxy: false,
                 apply_speed_limit: false,
+                apply_transfer_policy: false,
             })
             .expect("queue second settings");
         drop(sender);
@@ -5747,6 +5932,7 @@ Accept: */*"
             download_directory: remote_path.clone(),
             download_proxy: DownloadProxySettings::default(),
             speed_limits: SpeedLimitSettings::default(),
+            transfer_policy: TransferPolicySettings::default(),
         };
 
         persist_settings(&store, &settings, None).expect("persist external engine path");

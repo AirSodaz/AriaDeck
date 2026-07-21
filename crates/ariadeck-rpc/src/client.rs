@@ -5,7 +5,7 @@ use ariadeck_application::{
 };
 use ariadeck_domain::{
     Gid, GlobalStat, SpeedLimitConfig, TaskConnectionDetails, TaskDetails, TaskOptionEntry,
-    TaskSnapshot,
+    TaskSnapshot, TransferPolicyConfig,
 };
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -1063,6 +1063,15 @@ where
             .map_err(map_mutation_error)
     }
 
+    async fn apply_transfer_policy(
+        &self,
+        config: &TransferPolicyConfig,
+    ) -> Result<(), GatewayError> {
+        self.change_global_options(&transfer_policy_options(config))
+            .await
+            .map_err(map_mutation_error)
+    }
+
     async fn remove(&self, gid: Gid, target: TaskRemovalTarget) -> Result<(), GatewayError> {
         match target {
             TaskRemovalTarget::LiveTask => match Aria2Client::remove(self, gid).await {
@@ -1103,6 +1112,33 @@ fn speed_limit_options(config: &SpeedLimitConfig) -> Vec<(String, String)> {
         (
             "max-overall-upload-limit".into(),
             config.upload_limit.get().to_string(),
+        ),
+    ]
+}
+
+fn transfer_policy_options(config: &TransferPolicyConfig) -> Vec<(String, String)> {
+    vec![
+        (
+            "max-concurrent-downloads".into(),
+            config.max_concurrent_downloads.to_string(),
+        ),
+        (
+            "max-connection-per-server".into(),
+            config.max_connection_per_server.to_string(),
+        ),
+        ("split".into(), config.split.to_string()),
+        ("min-split-size".into(), config.min_split_size.to_string()),
+        (
+            "file-allocation".into(),
+            config.file_allocation.as_aria2().to_owned(),
+        ),
+        (
+            "check-integrity".into(),
+            if config.check_integrity {
+                "true".into()
+            } else {
+                "false".into()
+            },
         ),
     ]
 }
@@ -1725,6 +1761,38 @@ mod tests {
         assert_eq!(options["all-proxy-user"], "proxy-user");
         assert_eq!(options["all-proxy-passwd"], "secret-value");
         assert_eq!(options["ftp-proxy-passwd"], "secret-value");
+    }
+
+    #[tokio::test]
+    async fn transfer_policy_uses_global_options_with_aria2_names() {
+        let transport = ScriptedTransport::new([Ok(json!("OK"))]);
+        let client = Aria2Client::new(transport);
+        let config = TransferPolicyConfig {
+            max_concurrent_downloads: 3,
+            max_connection_per_server: 8,
+            split: 16,
+            min_split_size: 1024 * 1024,
+            file_allocation: ariadeck_domain::FileAllocationMethod::Falloc,
+            check_integrity: true,
+        };
+
+        DownloadEngineGateway::apply_transfer_policy(&client, &config)
+            .await
+            .expect("changeGlobalOption succeeds");
+
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(calls[0].0, "aria2.changeGlobalOption");
+        let options = calls[0].1[0].as_object().expect("global option object");
+        assert_eq!(options["max-concurrent-downloads"], "3");
+        assert_eq!(options["max-connection-per-server"], "8");
+        assert_eq!(options["split"], "16");
+        assert_eq!(options["min-split-size"], (1024 * 1024).to_string());
+        assert_eq!(options["file-allocation"], "falloc");
+        assert_eq!(options["check-integrity"], "true");
     }
 
     #[tokio::test]

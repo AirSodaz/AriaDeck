@@ -164,6 +164,19 @@ async fn applies_global_and_per_task_speed_limits_on_live_aria2() -> Result<(), 
         ])
         .await?;
 
+    // RATE-002 transfer policy: concurrent downloads apply immediately; the
+    // remaining options become engine defaults for new downloads.
+    client
+        .change_global_options(&[
+            ("max-concurrent-downloads".into(), "3".into()),
+            ("max-connection-per-server".into(), "4".into()),
+            ("split".into(), "8".into()),
+            ("min-split-size".into(), (1024 * 1024).to_string()),
+            ("file-allocation".into(), "falloc".into()),
+            ("check-integrity".into(), "true".into()),
+        ])
+        .await?;
+
     // Add a paused task and apply per-task limits through the same option names
     // the adapter uses (aria2.changeOption with max-*-limit), then read them
     // back from aria2's own getOption projection.
@@ -182,6 +195,9 @@ async fn applies_global_and_per_task_speed_limits_on_live_aria2() -> Result<(), 
             &[
                 ("max-download-limit".into(), (1024 * 1024).to_string()),
                 ("max-upload-limit".into(), (256 * 1024).to_string()),
+                ("max-connection-per-server".into(), "4".into()),
+                ("split".into(), "8".into()),
+                ("min-split-size".into(), (1024 * 1024).to_string()),
             ],
         )
         .await?;
@@ -199,6 +215,18 @@ async fn applies_global_and_per_task_speed_limits_on_live_aria2() -> Result<(), 
             .and_then(|value| value.as_str()),
         Some((256 * 1024).to_string().as_str()),
         "aria2 must report the per-task upload limit it accepted"
+    );
+    assert_eq!(
+        options
+            .get("max-connection-per-server")
+            .and_then(|value| value.as_str()),
+        Some("4"),
+        "aria2 must report the per-task connection count it accepted"
+    );
+    assert_eq!(
+        options.get("split").and_then(|value| value.as_str()),
+        Some("8"),
+        "aria2 must report the per-task split count it accepted"
     );
 
     client.remove(gid).await.ok();

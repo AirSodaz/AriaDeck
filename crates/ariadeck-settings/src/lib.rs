@@ -12,7 +12,7 @@ use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -169,6 +169,92 @@ pub struct SpeedLimitSettings {
     pub upload_limit: u64,
 }
 
+/// Persisted aria2 file-allocation method. Values match aria2's option strings.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileAllocationSetting {
+    None,
+    #[default]
+    Prealloc,
+    Trunc,
+    Falloc,
+}
+
+impl FileAllocationSetting {
+    #[must_use]
+    pub const fn as_aria2(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Prealloc => "prealloc",
+            Self::Trunc => "trunc",
+            Self::Falloc => "falloc",
+        }
+    }
+}
+
+/// Persisted transfer-policy defaults for connection, split, allocation, and
+/// integrity checks. Applied through `aria2.changeGlobalOption` on save and
+/// reconnect. Defaults match aria2 1.37.0 documented values.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransferPolicySettings {
+    /// Maximum simultaneously active downloads (`max-concurrent-downloads`).
+    pub max_concurrent_downloads: u32,
+    /// Default max connections per server for new downloads (1–16).
+    pub max_connection_per_server: u32,
+    /// Default multi-connection split count for new downloads.
+    pub split: u32,
+    /// Default minimum split size in bytes.
+    pub min_split_size: u64,
+    /// Default file allocation method for new downloads.
+    pub file_allocation: FileAllocationSetting,
+    /// Default integrity-check policy for new downloads.
+    pub check_integrity: bool,
+}
+
+impl Default for TransferPolicySettings {
+    fn default() -> Self {
+        Self {
+            max_concurrent_downloads: 5,
+            max_connection_per_server: 1,
+            split: 5,
+            min_split_size: 20 * 1024 * 1024,
+            file_allocation: FileAllocationSetting::Prealloc,
+            check_integrity: false,
+        }
+    }
+}
+
+impl TransferPolicySettings {
+    pub fn validate(&self) -> Result<(), SettingsError> {
+        if self.max_concurrent_downloads == 0 {
+            return Err(SettingsError::InvalidTransferPolicy {
+                field: "max_concurrent_downloads",
+                reason: "must be at least 1".into(),
+            });
+        }
+        if !(1..=16).contains(&self.max_connection_per_server) {
+            return Err(SettingsError::InvalidTransferPolicy {
+                field: "max_connection_per_server",
+                reason: "must be between 1 and 16".into(),
+            });
+        }
+        if self.split == 0 {
+            return Err(SettingsError::InvalidTransferPolicy {
+                field: "split",
+                reason: "must be at least 1".into(),
+            });
+        }
+        if self.min_split_size == 0 {
+            return Err(SettingsError::InvalidTransferPolicy {
+                field: "min_split_size",
+                reason: "must be greater than 0".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 impl DownloadProxySettings {
     pub fn validate(&self) -> Result<(), SettingsError> {
         for (label, endpoint) in [
@@ -205,6 +291,7 @@ pub struct AppSettings {
     pub download_directory: PathBuf,
     pub download_proxy: DownloadProxySettings,
     pub speed_limits: SpeedLimitSettings,
+    pub transfer_policy: TransferPolicySettings,
 }
 
 impl AppSettings {
@@ -215,6 +302,7 @@ impl AppSettings {
             download_directory: download_directory.into(),
             download_proxy: DownloadProxySettings::default(),
             speed_limits: SpeedLimitSettings::default(),
+            transfer_policy: TransferPolicySettings::default(),
         }
     }
 
@@ -223,6 +311,7 @@ impl AppSettings {
             return Err(SettingsError::EmptyDownloadDirectory);
         }
         self.download_proxy.validate()?;
+        self.transfer_policy.validate()?;
         Ok(())
     }
 }
@@ -253,6 +342,8 @@ pub enum SettingsError {
     InvalidProxyEndpoint { label: &'static str, reason: String },
     #[error("invalid no-proxy entry {entry:?}: {reason}")]
     InvalidNoProxyEntry { entry: String, reason: String },
+    #[error("invalid transfer policy field {field}: {reason}")]
+    InvalidTransferPolicy { field: &'static str, reason: String },
     #[error("unsupported settings schema version {found}; this build supports {supported}")]
     UnsupportedSchemaVersion { found: u32, supported: u32 },
     #[error("malformed settings document at {path}: {message}")]
@@ -371,6 +462,16 @@ struct SettingsDocumentV2 {
     download_proxy: DownloadProxySettings,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsDocumentV3 {
+    schema_version: u32,
+    color_scheme: ColorScheme,
+    download_directory: PathBuf,
+    download_proxy: DownloadProxySettings,
+    speed_limits: SpeedLimitSettings,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SettingsDocument {
@@ -379,6 +480,7 @@ struct SettingsDocument {
     download_directory: PathBuf,
     download_proxy: DownloadProxySettings,
     speed_limits: SpeedLimitSettings,
+    transfer_policy: TransferPolicySettings,
 }
 
 impl From<&AppSettings> for SettingsDocument {
@@ -389,6 +491,7 @@ impl From<&AppSettings> for SettingsDocument {
             download_directory: settings.download_directory.clone(),
             download_proxy: settings.download_proxy.clone(),
             speed_limits: settings.speed_limits,
+            transfer_policy: settings.transfer_policy,
         }
     }
 }
@@ -408,6 +511,7 @@ impl TryFrom<SettingsDocument> for AppSettings {
             download_directory: document.download_directory,
             download_proxy: document.download_proxy,
             speed_limits: document.speed_limits,
+            transfer_policy: document.transfer_policy,
         };
         settings.validate()?;
         Ok(settings)
@@ -457,6 +561,7 @@ impl JsonSettingsStore {
                     download_directory: document.download_directory,
                     download_proxy: DownloadProxySettings::default(),
                     speed_limits: SpeedLimitSettings::default(),
+                    transfer_policy: TransferPolicySettings::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -475,6 +580,26 @@ impl JsonSettingsStore {
                     download_directory: document.download_directory,
                     download_proxy: document.download_proxy,
                     speed_limits: SpeedLimitSettings::default(),
+                    transfer_policy: TransferPolicySettings::default(),
+                };
+                settings.validate()?;
+                Ok((settings, true))
+            }
+            3 => {
+                let document: SettingsDocumentV3 =
+                    serde_json::from_slice(&bytes).map_err(malformed)?;
+                if document.schema_version != 3 {
+                    return Err(SettingsError::UnsupportedSchemaVersion {
+                        found: document.schema_version,
+                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
+                    });
+                }
+                let settings = AppSettings {
+                    color_scheme: document.color_scheme,
+                    download_directory: document.download_directory,
+                    download_proxy: document.download_proxy,
+                    speed_limits: document.speed_limits,
+                    transfer_policy: TransferPolicySettings::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -642,6 +767,7 @@ mod tests {
             download_directory: root.join("downloads"),
             download_proxy: DownloadProxySettings::default(),
             speed_limits: SpeedLimitSettings::default(),
+            transfer_policy: TransferPolicySettings::default(),
         }
     }
 
@@ -659,7 +785,8 @@ mod tests {
         assert_eq!(store.load().expect("load settings"), expected);
 
         let document = fs::read_to_string(store.path()).expect("read settings JSON");
-        assert!(document.contains("\"schema_version\": 3"));
+        assert!(document.contains("\"schema_version\": 4"));
+        assert!(document.contains("\"transfer_policy\""));
         assert!(document.ends_with('\n'));
     }
 
@@ -682,11 +809,16 @@ mod tests {
             DownloadProxySettings::default()
         );
         assert_eq!(loaded.settings.speed_limits, SpeedLimitSettings::default());
+        assert_eq!(
+            loaded.settings.transfer_policy,
+            TransferPolicySettings::default()
+        );
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 3"));
+        assert!(migrated.contains("\"schema_version\": 4"));
         assert!(migrated.contains("\"download_proxy\""));
         assert!(migrated.contains("\"speed_limits\""));
+        assert!(migrated.contains("\"transfer_policy\""));
     }
 
     #[test]
@@ -704,10 +836,47 @@ mod tests {
             .expect("migrate version two settings");
 
         assert_eq!(loaded.settings.speed_limits, SpeedLimitSettings::default());
+        assert_eq!(
+            loaded.settings.transfer_policy,
+            TransferPolicySettings::default()
+        );
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 3"));
+        assert!(migrated.contains("\"schema_version\": 4"));
         assert!(migrated.contains("\"speed_limits\""));
+        assert!(migrated.contains("\"transfer_policy\""));
+    }
+
+    #[test]
+    fn version_three_document_is_migrated_with_default_transfer_policy() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        fs::write(
+            store.path(),
+            r#"{"schema_version":3,"color_scheme":"dark","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":1048576,"upload_limit":0}}"#,
+        )
+        .expect("seed version three settings");
+
+        let loaded = store
+            .load_or_initialize(&settings(root.path()))
+            .expect("migrate version three settings");
+
+        assert_eq!(
+            loaded.settings.speed_limits,
+            SpeedLimitSettings {
+                download_limit: 1_048_576,
+                upload_limit: 0,
+            }
+        );
+        assert_eq!(
+            loaded.settings.transfer_policy,
+            TransferPolicySettings::default()
+        );
+        assert!(loaded.recovery.is_none());
+        let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
+        assert!(migrated.contains("\"schema_version\": 4"));
+        assert!(migrated.contains("\"transfer_policy\""));
+        assert!(migrated.contains("\"max_concurrent_downloads\""));
     }
 
     #[test]

@@ -1,4 +1,6 @@
-use ariadeck_domain::{EnginePath, Gid, SpeedLimitConfig, TaskConnectionDetails, TaskDetails};
+use ariadeck_domain::{
+    EnginePath, Gid, SpeedLimitConfig, TaskConnectionDetails, TaskDetails, TransferPolicyConfig,
+};
 use async_trait::async_trait;
 use thiserror::Error;
 
@@ -70,6 +72,16 @@ pub trait DownloadEngineGateway: Send + Sync {
         Err(GatewayError::new(
             GatewayErrorKind::Unsupported,
             "The connected engine does not expose global speed limits.",
+            false,
+        ))
+    }
+    async fn apply_transfer_policy(
+        &self,
+        _config: &TransferPolicyConfig,
+    ) -> Result<(), GatewayError> {
+        Err(GatewayError::new(
+            GatewayErrorKind::Unsupported,
+            "The connected engine does not expose transfer-policy settings.",
             false,
         ))
     }

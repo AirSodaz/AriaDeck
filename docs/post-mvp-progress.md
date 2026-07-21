@@ -713,6 +713,44 @@ A separate browser-extension protocol is deferred.
 - AriaNg maps sensitive option keys separately and keeps them out of ordinary
   task presentation.
 
+### D-023 - Transfer policy is typed, scope-labeled, and session-reapplied
+
+**Decision:** `RATE-002` exposes aria2 transfer policy as typed controls beyond
+speed limits. Global settings cover `max-concurrent-downloads`,
+`max-connection-per-server`, `split`, `min-split-size`, `file-allocation`, and
+`check-integrity`. Values are validated on the desktop against aria2's
+documented ranges (connections 1–16; concurrent/split/min-split ≥ 1) before
+`aria2.changeGlobalOption`. Defaults match aria2 1.37.0 (`-j 5`, `-x 1`,
+`-s 5`, `-k 20M`, `prealloc`, integrity off). Settings persist in schema v4 and
+reapply on each connected engine session with the same save/reconnect/rollback
+pattern as speed limits.
+
+**Scope rule:** Each control states its authority:
+- `max-concurrent-downloads` affects the live engine queue immediately (all
+  current and future downloads).
+- connection count, split, min-split size, file allocation, and integrity check
+  act as engine defaults for new downloads; existing tasks keep their own
+  options until mutated.
+- Per-task connection policy (`max-connection-per-server`/`split`/
+  `min-split-size`) uses `aria2.changeOption` and affects only the targeted
+  live download, with the same outcome-unknown reconciliation as other
+  `changeOption` mutations (D-010).
+
+**Out of scope:** Pause/resume scheduling remains deferred (no client-side
+cron). Piece-length and stream-piece-selector stay at aria2 defaults for this
+splice; free-form option bags are not exposed.
+
+**Evidence:**
+
+- aria2 manual: `max-concurrent-downloads` is immediately effective via
+  `changeGlobalOption`; connection/split/file-allocation/check-integrity are
+  both global defaults and per-download changeable options:
+  https://aria2.github.io/manual/en/html/aria2c.html
+- Motrix Basic preferences expose max concurrent downloads and max connections
+  per server as distinct task-manage controls.
+- Real aria2 1.37.0 verification accepts the RATE-002 global option set and
+  echoes per-task connection/split values through `getOption`.
+
 ## Task Matrix
 
 Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
@@ -837,7 +875,7 @@ details show sanitized source/directory/output fields, exact local-path
 validation, aria2 codes 9-18 with raw details, and managed-local Open download/
 Open folder actions that refetch exact-session details before touching the
 filesystem. External profiles expose the capability as unavailable rather than
-assuming their paths are local. `RPC-001` is now complete: force pause/remove (and force-pause-all) sit on the shared gateway with capability-safe Unsupported defaults; `system.multicall` batches on-demand URI/option/peer/server projections with nested-only authentication; `system.listMethods` feeds `EngineCapabilities.methods`; and the typed task-option editor applies seed-ratio/seed-time through `changeOption` with the same outcome-unknown reconciliation as other mutations. `HISTORY-001` is now complete: stopped-history state exposes loaded/total/next-offset, SyncHandle.load_more_stopped appends pages without dropping earlier ones, the status bar shows History loaded/total with single-flight Load more, and managed aria2 keeps 5000 terminal results in memory. `ADD-005` is now complete: typed advanced add controls cover referer, user-agent, custom headers, cookie, HTTP auth, and checksum for direct URL tasks; secrets stay redacted; multi-value headers collapse at the RPC boundary. Remaining P1 audit items and P2 platform work are next.
+assuming their paths are local. `RPC-001` is now complete: force pause/remove (and force-pause-all) sit on the shared gateway with capability-safe Unsupported defaults; `system.multicall` batches on-demand URI/option/peer/server projections with nested-only authentication; `system.listMethods` feeds `EngineCapabilities.methods`; and the typed task-option editor applies seed-ratio/seed-time through `changeOption` with the same outcome-unknown reconciliation as other mutations. `HISTORY-001` is now complete: stopped-history state exposes loaded/total/next-offset, SyncHandle.load_more_stopped appends pages without dropping earlier ones, the status bar shows History loaded/total with single-flight Load more, and managed aria2 keeps 5000 terminal results in memory. `ADD-005` is now complete: typed advanced add controls cover referer, user-agent, custom headers, cookie, HTTP auth, and checksum for direct URL tasks; secrets stay redacted; multi-value headers collapse at the RPC boundary. `RATE-002` is now complete: typed transfer policy covers max concurrent downloads, connections per server, split, min-split size, file allocation, and integrity check with schema v4 persistence, session-bound apply/reapply/rollback, scope-labeled settings UI, and per-task connection-policy command surface (D-023). Pause/resume scheduling remains deferred. Remaining P1 audit items and P2 platform work are next.
 The proxy slice includes schema migration, validated endpoint/bypass fields,
 masked password input, system credential storage, session-bound runtime apply,
 new-session reapply, and explicit clearing. `FILE-002` now has
@@ -901,10 +939,13 @@ several can be shared by more than one feature.
   auth/checksum; secure secret fields; existing Keep both/Reject/Overwrite
   policy retained; scheduling deferred; multi-value headers collapsed for
   `aria2.addUri`.
-- [ ] `RATE-002` Expose capability-aware transfer policy controls beyond a
-  single speed limit: connection and split counts, piece/file allocation and
-  integrity-check policy, and pause/resume scheduling. Each control must state
-  whether it affects existing tasks, new tasks, or both.
+- [x] `RATE-002` Expose capability-aware transfer policy controls beyond a
+  single speed limit: connection and split counts, file allocation and
+  integrity-check policy. Typed global settings (schema v4) apply through
+  `aria2.changeGlobalOption` on save and reconnect; per-task connection policy
+  uses `aria2.changeOption` with outcome-unknown reconciliation (D-010/D-023).
+  Each control is scope-labeled (live concurrent queue vs new-download
+  defaults vs this download only). Pause/resume scheduling remains deferred.
 - [ ] `UI-002` Close list ergonomics around the selection work: deterministic
   sorting, action availability for mixed states, hidden-selection disclosure
   after filtering, context-menu parity, keyboard shortcuts, focus restoration,
@@ -1008,5 +1049,9 @@ acceptance outcomes overlap.
 | 2026-07-21 | `ADD-005` | `cargo test --workspace --no-fail-fast` | Pass - 265 passed, 13 ignored; adds typed advanced add options (referer/UA/headers/cookie/HTTP auth/checksum), secret redaction, multi-value header array collapse, collapsed Advanced add-dialog section, and URI-only validation (D-022) |
 | 2026-07-21 | `ADD-005` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 | 2026-07-21 | `ADD-005` live regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored` | Pass - all 11 real aria2 flows remain green after advanced add-option mapping and multi-header collapse |
+
+| 2026-07-21 | `RATE-002` | `cargo test --workspace --no-fail-fast` | Pass - 274 passed, 13 ignored; adds TransferPolicyConfig/TaskConnectionPolicy domain validation, settings schema v4 migration, global `changeGlobalOption` transfer-policy mapping, per-task connection-policy `changeOption` forwarding and terminal/out-of-range rejection, settings-UI draft parsing (counts + K/M/G min-split), and live-test coverage for concurrent/connection/split options |
+| 2026-07-21 | `RATE-002` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+| 2026-07-21 | `RATE-002` live transfer policy and regression | `env ARIA2C_PATH=... cargo test -p ariadeck-rpc --test live_aria2 -- --ignored` | Pass - all 11 real aria2 flows remain green; the speed-limit flow also accepts RATE-002 global concurrent/connection/split/allocation/integrity options and echoes per-task connection/split values through `getOption` |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.

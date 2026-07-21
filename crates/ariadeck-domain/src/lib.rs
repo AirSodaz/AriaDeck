@@ -21,4 +21,7 @@ pub use task::{
     TaskNameState, TaskOptionEntry, TaskPeer, TaskServer, TaskSnapshot, TaskSourceKind,
     TaskTracker, TaskUpdateError, TaskUri, TaskUriStatus,
 };
-pub use transfer::{ByteCount, ByteRate, GlobalStat, SpeedLimitConfig, TaskProgress};
+pub use transfer::{
+    ByteCount, ByteRate, FileAllocationMethod, GlobalStat, SpeedLimitConfig, TaskConnectionPolicy,
+    TaskProgress, TransferPolicyConfig, TransferPolicyError,
+};

@@ -11,8 +11,9 @@ pub use commands::{
     AddDownloadAdvancedOptions, AddDownloadRequest, AddDownloadSource, AppCommand,
     ApplicationError, ApplicationErrorCode, CommandItem, CommandOutcome, CommandService,
     DownloadProxyConfig, DownloadProxyMode, FileConflictPolicy, ItemFailure,
-    MoveTaskInQueueRequest, QueueMove, RemoveTasksRequest, SetTaskOptionsRequest,
-    SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, TaskCommandContext, TaskRemovalScope,
+    MoveTaskInQueueRequest, QueueMove, RemoveTasksRequest, SetTaskConnectionPolicyRequest,
+    SetTaskOptionsRequest, SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, TaskCommandContext,
+    TaskRemovalScope,
 };
 pub use history::{DEFAULT_SPEED_HISTORY_CAPACITY, SpeedHistory, SpeedHistoryError, SpeedSample};
 pub use ports::{

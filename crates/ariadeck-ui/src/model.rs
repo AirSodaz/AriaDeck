@@ -126,6 +126,12 @@ impl TaskStatusView {
         )
     }
 
+    /// Per-task connection policy uses the same live-task changeOption surface.
+    #[must_use]
+    pub const fn can_set_connection_policy(self) -> bool {
+        self.can_set_speed_limit()
+    }
+
     #[must_use]
     pub const fn uses_active_connections(self) -> bool {
         matches!(self, Self::Active | Self::Seeding)
@@ -415,6 +421,11 @@ pub enum TaskCommandView {
         download_limit: u64,
         upload_limit: u64,
     },
+    SetConnectionPolicy {
+        max_connection_per_server: u32,
+        split: u32,
+        min_split_size: u64,
+    },
     SetOptions {
         seed_ratio: Option<String>,
         seed_time_minutes: Option<String>,
@@ -507,6 +518,7 @@ impl TaskCommandView {
             Self::Retry => "Creating a new task from the failed source...",
             Self::SetOutputName { .. } => "Updating output name...",
             Self::SetSpeedLimit { .. } => "Updating speed limits...",
+            Self::SetConnectionPolicy { .. } => "Updating connection policy...",
             Self::SetOptions { .. } => "Updating task options...",
             Self::RemoveTask => "Removing task...",
             Self::ForceRemoveTask => "Force-removing task...",
@@ -529,6 +541,7 @@ impl TaskCommandView {
             Self::Retry => "New retry task created; the failed result was kept.",
             Self::SetOutputName { .. } => "Output name updated.",
             Self::SetSpeedLimit { .. } => "Speed limits updated for this task.",
+            Self::SetConnectionPolicy { .. } => "Connection policy updated for this task.",
             Self::SetOptions { .. } => "Task options updated.",
             Self::RemoveTask => "Task removed from aria2; downloaded files were kept.",
             Self::ForceRemoveTask => "Task force-removed from aria2; downloaded files were kept.",
@@ -1030,6 +1043,102 @@ pub struct SpeedLimitSettingsView {
     pub upload_limit: String,
 }
 
+/// File allocation method for transfer-policy settings (RATE-002).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FileAllocationView {
+    None,
+    #[default]
+    Prealloc,
+    Trunc,
+    Falloc,
+}
+
+impl FileAllocationView {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Prealloc => "Prealloc",
+            Self::Trunc => "Trunc",
+            Self::Falloc => "Falloc",
+        }
+    }
+
+    #[must_use]
+    pub const fn all() -> [Self; 4] {
+        [Self::None, Self::Prealloc, Self::Trunc, Self::Falloc]
+    }
+}
+
+/// Transfer-policy settings as user-editable text fields (RATE-002).
+///
+/// Count fields are plain positive integers. `min_split_size` reuses aria2's
+/// `K`/`M`/`G` size syntax (same as speed limits, but 0 is invalid). Scope
+/// labels are fixed in the settings page: concurrent downloads affect the live
+/// queue; connection/split/allocation/integrity are defaults for new downloads.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferPolicySettingsView {
+    pub max_concurrent_downloads: String,
+    pub max_connection_per_server: String,
+    pub split: String,
+    pub min_split_size: String,
+    pub file_allocation: FileAllocationView,
+    pub check_integrity: bool,
+}
+
+impl Default for TransferPolicySettingsView {
+    fn default() -> Self {
+        Self {
+            max_concurrent_downloads: "5".into(),
+            max_connection_per_server: "1".into(),
+            split: "5".into(),
+            min_split_size: "20M".into(),
+            file_allocation: FileAllocationView::Prealloc,
+            check_integrity: false,
+        }
+    }
+}
+
+impl TransferPolicySettingsView {
+    #[must_use]
+    pub fn parse_max_concurrent_downloads(&self) -> Option<u32> {
+        parse_positive_u32(&self.max_concurrent_downloads)
+    }
+
+    #[must_use]
+    pub fn parse_max_connection_per_server(&self) -> Option<u32> {
+        parse_positive_u32(&self.max_connection_per_server).filter(|value| (1..=16).contains(value))
+    }
+
+    #[must_use]
+    pub fn parse_split(&self) -> Option<u32> {
+        parse_positive_u32(&self.split)
+    }
+
+    /// Parse min-split-size to bytes. Empty is invalid (unlike speed limits).
+    #[must_use]
+    pub fn parse_min_split_size(&self) -> Option<u64> {
+        let value = parse_speed_limit_field(&self.min_split_size)?;
+        (value > 0).then_some(value)
+    }
+
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.parse_max_concurrent_downloads().is_some()
+            && self.parse_max_connection_per_server().is_some()
+            && self.parse_split().is_some()
+            && self.parse_min_split_size().is_some()
+    }
+}
+
+fn parse_positive_u32(value: &str) -> Option<u32> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || !trimmed.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    trimmed.parse::<u32>().ok().filter(|value| *value > 0)
+}
+
 impl SpeedLimitSettingsView {
     /// Parse `download_limit` to bytes/second. Empty string yields 0 (unlimited).
     #[must_use]
@@ -1134,6 +1243,7 @@ pub struct SettingsView {
     pub download_directory: String,
     pub download_proxy: DownloadProxySettingsView,
     pub speed_limits: SpeedLimitSettingsView,
+    pub transfer_policy: TransferPolicySettingsView,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1502,5 +1612,29 @@ mod tests {
                 Some(value)
             );
         }
+    }
+
+    #[test]
+    fn transfer_policy_view_parses_counts_and_size_with_aria2_ranges() {
+        let mut view = TransferPolicySettingsView::default();
+        assert!(view.is_valid());
+        assert_eq!(view.parse_max_concurrent_downloads(), Some(5));
+        assert_eq!(view.parse_max_connection_per_server(), Some(1));
+        assert_eq!(view.parse_split(), Some(5));
+        assert_eq!(view.parse_min_split_size(), Some(20 * 1024 * 1024));
+
+        view.max_connection_per_server = "16".into();
+        assert_eq!(view.parse_max_connection_per_server(), Some(16));
+        view.max_connection_per_server = "17".into();
+        assert_eq!(view.parse_max_connection_per_server(), None);
+        view.max_connection_per_server = "0".into();
+        assert_eq!(view.parse_max_connection_per_server(), None);
+
+        view.min_split_size = "1M".into();
+        assert_eq!(view.parse_min_split_size(), Some(1024 * 1024));
+        view.min_split_size = "".into();
+        assert_eq!(view.parse_min_split_size(), None);
+        view.min_split_size = "0".into();
+        assert_eq!(view.parse_min_split_size(), None);
     }
 }

@@ -7,7 +7,7 @@ use std::{
 use ariadeck_domain::{
     ConnectionState, DownloadTask, EngineSession, EngineSessionId, Gid, GlobalStat, ProfileId,
     SessionGeneration, SpeedLimitConfig, TaskConnectionDetails, TaskDetails, TaskIdentity,
-    TaskSnapshot,
+    TaskSnapshot, TransferPolicyConfig,
 };
 use async_trait::async_trait;
 use thiserror::Error;
@@ -402,6 +402,25 @@ impl SyncHandle {
         })?
     }
 
+    pub async fn apply_transfer_policy(
+        &self,
+        session: EngineSession,
+        config: TransferPolicyConfig,
+    ) -> Result<(), ApplicationError> {
+        let (sender, receiver) = oneshot::channel();
+        self.commands
+            .send(Control::ApplyTransferPolicy {
+                session,
+                config,
+                sender,
+            })
+            .await
+            .map_err(|_| unavailable_error("The synchronization coordinator is unavailable."))?;
+        receiver.await.map_err(|_| {
+            unavailable_error("The synchronization coordinator stopped unexpectedly.")
+        })?
+    }
+
     pub async fn task_details(
         &self,
         session: EngineSession,
@@ -483,6 +502,11 @@ enum Control {
         config: SpeedLimitConfig,
         sender: oneshot::Sender<Result<(), ApplicationError>>,
     },
+    ApplyTransferPolicy {
+        session: EngineSession,
+        config: TransferPolicyConfig,
+        sender: oneshot::Sender<Result<(), ApplicationError>>,
+    },
     TaskDetails {
         session: EngineSession,
         task: TaskIdentity,
@@ -542,6 +566,12 @@ fn handle_unavailable_control(
         Some(Control::ApplySpeedLimit { sender, .. }) => {
             let _ = sender.send(Err(unavailable_error(
                 "Speed limits cannot be applied until aria2 is connected and synchronized.",
+            )));
+            UnavailableControlDisposition::Continue
+        }
+        Some(Control::ApplyTransferPolicy { sender, .. }) => {
+            let _ = sender.send(Err(unavailable_error(
+                "Transfer policy cannot be applied until aria2 is connected and synchronized.",
             )));
             UnavailableControlDisposition::Continue
         }
@@ -1007,18 +1037,27 @@ async fn run_connected(
                         };
                         let service = CommandService::new(config.profile_id, gateway.clone());
                         let task_contexts = match &command {
-                            AppCommand::PauseTasks(tasks) | AppCommand::ResumeTasks(tasks) => {
-                                Some(tasks.as_slice())
-                            }
+                            AppCommand::PauseTasks(tasks)
+                            | AppCommand::ForcePauseTasks(tasks)
+                            | AppCommand::ResumeTasks(tasks) => Some(tasks.as_slice()),
                             AppCommand::MoveTaskInQueue(request) => {
                                 Some(std::slice::from_ref(&request.task))
                             }
-                            AppCommand::RemoveTasks(request) => Some(request.tasks.as_slice()),
+                            AppCommand::RemoveTasks(request)
+                            | AppCommand::ForceRemoveTasks(request) => {
+                                Some(request.tasks.as_slice())
+                            }
                             AppCommand::RetryTasks(tasks) => Some(tasks.as_slice()),
                             AppCommand::SetTaskOutputName(request) => {
                                 Some(std::slice::from_ref(&request.task))
                             }
                             AppCommand::SetTaskSpeedLimit(request) => {
+                                Some(std::slice::from_ref(&request.task))
+                            }
+                            AppCommand::SetTaskConnectionPolicy(request) => {
+                                Some(std::slice::from_ref(&request.task))
+                            }
+                            AppCommand::SetTaskOptions(request) => {
                                 Some(std::slice::from_ref(&request.task))
                             }
                             _ => None,
@@ -1045,6 +1084,12 @@ async fn run_connected(
                                 RefreshHint::Task(request.task.gid)
                             }
                             AppCommand::SetTaskSpeedLimit(request) => {
+                                RefreshHint::Task(request.task.gid)
+                            }
+                            AppCommand::SetTaskConnectionPolicy(request) => {
+                                RefreshHint::Task(request.task.gid)
+                            }
+                            AppCommand::SetTaskOptions(request) => {
                                 RefreshHint::Task(request.task.gid)
                             }
                             _ => RefreshHint::Full,
@@ -1125,6 +1170,29 @@ async fn run_connected(
                             biased;
                             () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
                             result = service.apply_speed_limit(&speed_limit) => result,
+                        };
+                        let _ = sender.send(result);
+                    }
+                    Some(Control::ApplyTransferPolicy {
+                        session: expected_session,
+                        config: transfer_policy,
+                        sender,
+                    }) => {
+                        if expected_session != store.session() {
+                            let _ = sender.send(Err(stale_session_error()));
+                            continue;
+                        }
+                        let Some(gateway) = command_gateway else {
+                            let _ = sender.send(Err(unsupported_error(
+                                "The connected engine does not expose transfer-policy settings.",
+                            )));
+                            continue;
+                        };
+                        let service = CommandService::new(config.profile_id, gateway.clone());
+                        let result = tokio::select! {
+                            biased;
+                            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
+                            result = service.apply_transfer_policy(&transfer_policy) => result,
                         };
                         let _ = sender.send(result);
                     }

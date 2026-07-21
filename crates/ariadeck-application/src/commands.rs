@@ -5,8 +5,8 @@ use std::{
 };
 
 use ariadeck_domain::{
-    DownloadStatus, EnginePath, ProfileId, SpeedLimitConfig, TaskIdentity, TaskMetadata,
-    TaskSourceKind,
+    DownloadStatus, EnginePath, ProfileId, SpeedLimitConfig, TaskConnectionPolicy, TaskIdentity,
+    TaskMetadata, TaskSourceKind, TransferPolicyConfig,
 };
 use secrecy::{ExposeSecret, SecretString};
 use url::Url;
@@ -561,6 +561,16 @@ pub struct SetTaskSpeedLimitRequest {
     pub upload_limit: ariadeck_domain::ByteRate,
 }
 
+/// Per-task connection policy applied through `aria2.changeOption` (RATE-002).
+///
+/// Affects only the targeted live download. Values are validated against aria2's
+/// documented ranges before the gateway call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SetTaskConnectionPolicyRequest {
+    pub task: TaskIdentity,
+    pub policy: TaskConnectionPolicy,
+}
+
 /// Typed subset of dynamically changeable aria2 task options (RPC-001).
 ///
 /// Free-form option bags are intentionally not exposed: each field maps to a
@@ -702,6 +712,7 @@ pub enum AppCommand {
     RemoveTasks(RemoveTasksRequest),
     ForceRemoveTasks(RemoveTasksRequest),
     SetTaskSpeedLimit(SetTaskSpeedLimitRequest),
+    SetTaskConnectionPolicy(SetTaskConnectionPolicyRequest),
     SetTaskOptions(SetTaskOptionsRequest),
 }
 
@@ -914,6 +925,10 @@ impl CommandService {
             AppCommand::SetTaskSpeedLimit(request) => {
                 self.set_task_speed_limit(request, task_contexts).await
             }
+            AppCommand::SetTaskConnectionPolicy(request) => {
+                self.set_task_connection_policy(request, task_contexts)
+                    .await
+            }
             AppCommand::SetTaskOptions(request) => {
                 self.set_task_options(request, task_contexts).await
             }
@@ -937,6 +952,23 @@ impl CommandService {
     ) -> Result<(), ApplicationError> {
         self.gateway
             .apply_speed_limit(config)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn apply_transfer_policy(
+        &self,
+        config: &TransferPolicyConfig,
+    ) -> Result<(), ApplicationError> {
+        if let Err(error) = config.validate() {
+            return Err(ApplicationError::new(
+                ApplicationErrorCode::Validation,
+                error.message(),
+                false,
+            ));
+        }
+        self.gateway
+            .apply_transfer_policy(config)
             .await
             .map_err(Into::into)
     }
@@ -991,6 +1023,88 @@ impl CommandService {
             (
                 "max-upload-limit".to_owned(),
                 request.upload_limit.get().to_string(),
+            ),
+        ];
+        match self
+            .gateway
+            .change_options(request.task.gid, &options)
+            .await
+        {
+            Ok(()) => CommandOutcome::Success {
+                succeeded: vec![item],
+            },
+            Err(error) => CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: error.into(),
+                }],
+            },
+        }
+    }
+
+    async fn set_task_connection_policy(
+        &self,
+        request: SetTaskConnectionPolicyRequest,
+        task_contexts: &HashMap<TaskIdentity, TaskCommandContext>,
+    ) -> CommandOutcome {
+        let item = CommandItem::Task(request.task);
+        if let Err(error) = request.policy.validate() {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Validation,
+                        error.message(),
+                        false,
+                    ),
+                }],
+            };
+        }
+        if request.task.profile_id != self.profile_id {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::WrongProfile,
+                        "The task belongs to a different engine profile.",
+                        false,
+                    ),
+                }],
+            };
+        }
+        let Some(context) = task_contexts.get(&request.task) else {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Rejected,
+                        "The task is no longer present in the current engine session.",
+                        false,
+                    ),
+                }],
+            };
+        };
+        if context.status.is_terminal() {
+            return CommandOutcome::Failure {
+                failed: vec![ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Rejected,
+                        "A completed or failed task cannot change its connection policy.",
+                        false,
+                    ),
+                }],
+            };
+        }
+        let options = [
+            (
+                "max-connection-per-server".to_owned(),
+                request.policy.max_connection_per_server.to_string(),
+            ),
+            ("split".to_owned(), request.policy.split.to_string()),
+            (
+                "min-split-size".to_owned(),
+                request.policy.min_split_size.to_string(),
             ),
         ];
         match self
@@ -1672,6 +1786,40 @@ mod tests {
                     (
                         "max-overall-upload-limit".into(),
                         config.upload_limit.get().to_string(),
+                    ),
+                ]);
+            Ok(())
+        }
+
+        async fn apply_transfer_policy(
+            &self,
+            config: &TransferPolicyConfig,
+        ) -> Result<(), GatewayError> {
+            self.global_options
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(vec![
+                    (
+                        "max-concurrent-downloads".into(),
+                        config.max_concurrent_downloads.to_string(),
+                    ),
+                    (
+                        "max-connection-per-server".into(),
+                        config.max_connection_per_server.to_string(),
+                    ),
+                    ("split".into(), config.split.to_string()),
+                    ("min-split-size".into(), config.min_split_size.to_string()),
+                    (
+                        "file-allocation".into(),
+                        config.file_allocation.as_aria2().to_owned(),
+                    ),
+                    (
+                        "check-integrity".into(),
+                        if config.check_integrity {
+                            "true".into()
+                        } else {
+                            "false".into()
+                        },
                     ),
                 ]);
             Ok(())
@@ -2400,6 +2548,134 @@ mod tests {
                     (5 * 1024 * 1024).to_string()
                 ),
                 ("max-overall-upload-limit".into(), (512 * 1024).to_string()),
+            ]]
+        );
+    }
+
+    #[test]
+    fn task_connection_policy_forwards_typed_change_options_for_a_live_task() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+        let task = TaskIdentity::new(profile_id, Gid::from_u64(21));
+        let contexts = HashMap::from([(
+            task,
+            TaskCommandContext {
+                status: DownloadStatus::Active,
+                metadata: TaskMetadata::default(),
+            },
+        )]);
+
+        let outcome = block_on(service.execute(
+            AppCommand::SetTaskConnectionPolicy(SetTaskConnectionPolicyRequest {
+                task,
+                policy: TaskConnectionPolicy {
+                    max_connection_per_server: 8,
+                    split: 16,
+                    min_split_size: 1024 * 1024,
+                },
+            }),
+            &contexts,
+        ));
+
+        assert_eq!(
+            outcome,
+            CommandOutcome::Success {
+                succeeded: vec![CommandItem::Task(task)]
+            }
+        );
+        assert_eq!(
+            *gateway
+                .changed_options
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![(
+                task.gid,
+                vec![
+                    ("max-connection-per-server".into(), "8".into()),
+                    ("split".into(), "16".into()),
+                    ("min-split-size".into(), (1024 * 1024).to_string()),
+                ]
+            )]
+        );
+    }
+
+    #[test]
+    fn task_connection_policy_rejects_terminal_and_out_of_range_values() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+        let task = TaskIdentity::new(profile_id, Gid::from_u64(22));
+        let contexts = HashMap::from([(
+            task,
+            TaskCommandContext {
+                status: DownloadStatus::Error,
+                metadata: TaskMetadata::default(),
+            },
+        )]);
+
+        let invalid = block_on(service.execute(
+            AppCommand::SetTaskConnectionPolicy(SetTaskConnectionPolicyRequest {
+                task,
+                policy: TaskConnectionPolicy {
+                    max_connection_per_server: 32,
+                    split: 5,
+                    min_split_size: 1024,
+                },
+            }),
+            &contexts,
+        ));
+        assert!(matches!(invalid, CommandOutcome::Failure { .. }));
+
+        let terminal = block_on(service.execute(
+            AppCommand::SetTaskConnectionPolicy(SetTaskConnectionPolicyRequest {
+                task,
+                policy: TaskConnectionPolicy {
+                    max_connection_per_server: 4,
+                    split: 5,
+                    min_split_size: 1024,
+                },
+            }),
+            &contexts,
+        ));
+        assert!(matches!(terminal, CommandOutcome::Failure { .. }));
+        assert!(
+            gateway
+                .changed_options
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn global_transfer_policy_forwards_typed_options_to_the_gateway() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let service = CommandService::new(profile_id, gateway.clone());
+
+        let result = block_on(service.apply_transfer_policy(&TransferPolicyConfig {
+            max_concurrent_downloads: 3,
+            max_connection_per_server: 8,
+            split: 16,
+            min_split_size: 1024 * 1024,
+            file_allocation: ariadeck_domain::FileAllocationMethod::Falloc,
+            check_integrity: true,
+        }));
+
+        assert!(result.is_ok());
+        assert_eq!(
+            *gateway
+                .global_options
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![vec![
+                ("max-concurrent-downloads".into(), "3".into()),
+                ("max-connection-per-server".into(), "8".into()),
+                ("split".into(), "16".into()),
+                ("min-split-size".into(), (1024 * 1024).to_string()),
+                ("file-allocation".into(), "falloc".into()),
+                ("check-integrity".into(), "true".into()),
             ]]
         );
     }

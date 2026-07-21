@@ -23,9 +23,9 @@ use crate::{
     BatchTaskFailureView, Button, ButtonStyle, ClearSearch, CloseAddDownload, CloseBatchFailures,
     CloseSettings, CloseTaskOutputName, CloseTaskSpeedLimit, ColorSchemeView, CommandOutcomeView,
     ConnectionView, Dialog, DownloadProxySettingsView, DownloadRowView, EngineHealthView,
-    EngineSessionView, FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch,
-    GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView, Icon,
-    IconButton, IconName, IconSize, OpenAddDownload, OpenSettings, OpenTaskDetails,
+    EngineSessionView, FileAllocationView, FileConflictPolicyView, FocusNext, FocusPrevious,
+    FocusSearch, GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView,
+    Icon, IconButton, IconName, IconSize, OpenAddDownload, OpenSettings, OpenTaskDetails,
     OpenTaskOutputName, OpenTaskSpeedLimit, OperationErrorView, PauseSelectedTask, ProxyModeView,
     ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask,
     SaveSettings, SearchInputEvent, SecretStringView, Segment, SegmentedControl, SelectAllTasks,
@@ -37,8 +37,9 @@ use crate::{
     TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView, TaskOptionView,
     TaskPathValidationView, TaskPeerView, TaskServerView, TaskStatusView, TaskTrackerView,
     TaskUriView, TextField, TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Tooltip,
-    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
-    format_bytes, format_eta, format_percent, format_rate, format_share_ratio,
+    TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
+    WorkspaceSortDirection, WorkspaceSortKey, format_bytes, format_eta, format_percent,
+    format_rate, format_share_ratio,
 };
 
 const SPEED_CHART_SAMPLES: usize = 120;
@@ -211,6 +212,8 @@ struct SettingsPage {
     previous_focus: Option<WeakFocusHandle>,
     draft_color_scheme: ColorSchemeView,
     draft_proxy_mode: ProxyModeView,
+    draft_file_allocation: FileAllocationView,
+    draft_check_integrity: bool,
     clear_proxy_password: bool,
     error: Option<OperationErrorView>,
 }
@@ -221,6 +224,7 @@ enum SettingsSaveSource {
     Directory,
     Proxy,
     SpeedLimit,
+    TransferPolicy,
 }
 
 struct PendingSettingsSave {
@@ -297,6 +301,10 @@ pub struct AppShell {
     settings_proxy_password_input: Entity<TextField>,
     settings_download_limit_input: Entity<TextField>,
     settings_upload_limit_input: Entity<TextField>,
+    settings_max_concurrent_input: Entity<TextField>,
+    settings_max_connection_input: Entity<TextField>,
+    settings_split_input: Entity<TextField>,
+    settings_min_split_size_input: Entity<TextField>,
     add_dialog: AddDownloadDialog,
     add_dialog_focus: FocusHandle,
     add_cancel_focus: FocusHandle,
@@ -838,6 +846,52 @@ impl AppShell {
                 cx,
             )
         });
+        let settings_max_concurrent_input = cx.new(|cx| {
+            TextField::new_with_config(
+                settings_input_config(
+                    "settings-max-concurrent",
+                    "Maximum concurrent downloads",
+                    "5",
+                    None,
+                    false,
+                ),
+                theme,
+                cx,
+            )
+        });
+        let settings_max_connection_input = cx.new(|cx| {
+            TextField::new_with_config(
+                settings_input_config(
+                    "settings-max-connection",
+                    "Maximum connections per server",
+                    "1-16",
+                    None,
+                    false,
+                ),
+                theme,
+                cx,
+            )
+        });
+        let settings_split_input = cx.new(|cx| {
+            TextField::new_with_config(
+                settings_input_config("settings-split", "Split count", "5", None, false),
+                theme,
+                cx,
+            )
+        });
+        let settings_min_split_size_input = cx.new(|cx| {
+            TextField::new_with_config(
+                settings_input_config(
+                    "settings-min-split-size",
+                    "Minimum split size",
+                    "20M",
+                    None,
+                    false,
+                ),
+                theme,
+                cx,
+            )
+        });
         let mut settings_subscriptions = [
             &settings_directory_input,
             &settings_all_proxy_input,
@@ -848,6 +902,10 @@ impl AppShell {
             &settings_proxy_username_input,
             &settings_download_limit_input,
             &settings_upload_limit_input,
+            &settings_max_concurrent_input,
+            &settings_max_connection_input,
+            &settings_split_input,
+            &settings_min_split_size_input,
         ]
         .into_iter()
         .map(|input| {
@@ -913,6 +971,10 @@ impl AppShell {
             settings_proxy_password_input,
             settings_download_limit_input,
             settings_upload_limit_input,
+            settings_max_concurrent_input,
+            settings_max_connection_input,
+            settings_split_input,
+            settings_min_split_size_input,
             add_dialog: AddDownloadDialog::default(),
             add_dialog_focus: cx.focus_handle(),
             add_cancel_focus: cx.focus_handle().tab_stop(true),
@@ -1398,6 +1460,7 @@ impl AppShell {
                     TaskCommandView::SetSpeedLimit { .. } => {
                         self.close_task_speed_limit(window, cx);
                     }
+                    TaskCommandView::SetConnectionPolicy { .. } => {}
                     TaskCommandView::SetOptions { .. } => {
                         self.close_task_options(window, cx);
                     }
@@ -1778,6 +1841,22 @@ impl AppShell {
                         });
                         "Speed limits saved."
                     }
+                    SettingsSaveSource::TransferPolicy => {
+                        let policy = self.settings.transfer_policy.clone();
+                        self.settings_max_concurrent_input.update(cx, |input, cx| {
+                            input.set_text(policy.max_concurrent_downloads.clone(), cx);
+                        });
+                        self.settings_max_connection_input.update(cx, |input, cx| {
+                            input.set_text(policy.max_connection_per_server.clone(), cx);
+                        });
+                        self.settings_split_input.update(cx, |input, cx| {
+                            input.set_text(policy.split.clone(), cx);
+                        });
+                        self.settings_min_split_size_input.update(cx, |input, cx| {
+                            input.set_text(policy.min_split_size.clone(), cx);
+                        });
+                        "Transfer policy saved."
+                    }
                 };
                 self.show_notice(message, false, cx);
             }
@@ -2096,6 +2175,8 @@ impl AppShell {
         self.theme = theme_for_scheme(settings.color_scheme);
         self.settings = settings.clone();
         self.settings_page.draft_color_scheme = settings.color_scheme;
+        self.settings_page.draft_file_allocation = settings.transfer_policy.file_allocation;
+        self.settings_page.draft_check_integrity = settings.transfer_policy.check_integrity;
         self.search_input
             .update(cx, |input, cx| input.set_theme(self.theme, cx));
         self.add_input
@@ -2123,6 +2204,12 @@ impl AppShell {
             &self.settings_no_proxy_input,
             &self.settings_proxy_username_input,
             &self.settings_proxy_password_input,
+            &self.settings_download_limit_input,
+            &self.settings_upload_limit_input,
+            &self.settings_max_concurrent_input,
+            &self.settings_max_connection_input,
+            &self.settings_split_input,
+            &self.settings_min_split_size_input,
         ] {
             input.update(cx, |input, cx| input.set_theme(self.theme, cx));
         }
@@ -2209,6 +2296,19 @@ impl AppShell {
         self.settings_upload_limit_input.update(cx, |input, cx| {
             input.set_text(speed_limits.upload_limit.clone(), cx);
         });
+        let transfer_policy = self.settings.transfer_policy.clone();
+        self.settings_max_concurrent_input.update(cx, |input, cx| {
+            input.set_text(transfer_policy.max_concurrent_downloads.clone(), cx);
+        });
+        self.settings_max_connection_input.update(cx, |input, cx| {
+            input.set_text(transfer_policy.max_connection_per_server.clone(), cx);
+        });
+        self.settings_split_input.update(cx, |input, cx| {
+            input.set_text(transfer_policy.split.clone(), cx);
+        });
+        self.settings_min_split_size_input.update(cx, |input, cx| {
+            input.set_text(transfer_policy.min_split_size.clone(), cx);
+        });
         self.page = AppPage::Settings;
         self.details_drawer = None;
         self.speed_popover_open = false;
@@ -2216,6 +2316,8 @@ impl AppShell {
             previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
             draft_color_scheme: self.settings.color_scheme,
             draft_proxy_mode: proxy.mode,
+            draft_file_allocation: transfer_policy.file_allocation,
+            draft_check_integrity: transfer_policy.check_integrity,
             clear_proxy_password: false,
             error: None,
         };
@@ -2410,6 +2512,73 @@ impl AppShell {
             SettingsSaveSource::SpeedLimit,
             cx,
         );
+    }
+
+    fn submit_transfer_policy(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        let draft = TransferPolicySettingsView {
+            max_concurrent_downloads: self
+                .settings_max_concurrent_input
+                .read(cx)
+                .text()
+                .trim()
+                .into(),
+            max_connection_per_server: self
+                .settings_max_connection_input
+                .read(cx)
+                .text()
+                .trim()
+                .into(),
+            split: self.settings_split_input.read(cx).text().trim().into(),
+            min_split_size: self
+                .settings_min_split_size_input
+                .read(cx)
+                .text()
+                .trim()
+                .into(),
+            file_allocation: self.settings_page.draft_file_allocation,
+            check_integrity: self.settings_page.draft_check_integrity,
+        };
+        if !draft.is_valid() {
+            self.settings_page.error = Some(OperationErrorView {
+                code: "settings.invalid_transfer_policy".into(),
+                summary: "Enter positive integers for concurrent downloads, connections (1-16), and split, plus a positive min-split size (for example 1M).".into(),
+                retryable: false,
+            });
+            cx.notify();
+            return;
+        }
+        let mut settings = self.settings.clone();
+        settings.transfer_policy = draft;
+        self.request_settings_save(
+            settings,
+            ProxyPasswordUpdateView::Unchanged,
+            SettingsSaveSource::TransferPolicy,
+            cx,
+        );
+    }
+
+    fn select_file_allocation(&mut self, method: FileAllocationView, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        if self.settings_page.draft_file_allocation == method {
+            return;
+        }
+        self.settings_page.draft_file_allocation = method;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    fn toggle_check_integrity(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        self.settings_page.draft_check_integrity = !self.settings_page.draft_check_integrity;
+        self.settings_page.error = None;
+        cx.notify();
     }
 
     fn request_settings_save(
@@ -3697,6 +3866,7 @@ impl AppShell {
             TaskCommandView::Retry => task.status.can_retry(),
             TaskCommandView::SetOutputName { .. } => task.can_set_output_name(),
             TaskCommandView::SetSpeedLimit { .. } => task.status.can_set_speed_limit(),
+            TaskCommandView::SetConnectionPolicy { .. } => task.status.can_set_connection_policy(),
             TaskCommandView::SetOptions { .. } => task.status.can_set_speed_limit(),
             TaskCommandView::RemoveTask
             | TaskCommandView::ForceRemoveTask
@@ -7081,6 +7251,39 @@ impl AppShell {
         };
         let speed_limit_dirty = speed_limit_draft != self.settings.speed_limits;
         let speed_limit_valid = speed_limit_draft.is_valid();
+        let transfer_policy_saving = self
+            .pending_settings_save
+            .as_ref()
+            .is_some_and(|pending| pending.source == SettingsSaveSource::TransferPolicy);
+        let transfer_policy_draft = TransferPolicySettingsView {
+            max_concurrent_downloads: self
+                .settings_max_concurrent_input
+                .read(cx)
+                .text()
+                .trim()
+                .into(),
+            max_connection_per_server: self
+                .settings_max_connection_input
+                .read(cx)
+                .text()
+                .trim()
+                .into(),
+            split: self.settings_split_input.read(cx).text().trim().into(),
+            min_split_size: self
+                .settings_min_split_size_input
+                .read(cx)
+                .text()
+                .trim()
+                .into(),
+            file_allocation: self.settings_page.draft_file_allocation,
+            check_integrity: self.settings_page.draft_check_integrity,
+        };
+        let transfer_policy_dirty = transfer_policy_draft != self.settings.transfer_policy;
+        let transfer_policy_valid = transfer_policy_draft.is_valid();
+        let allocation_selected = FileAllocationView::all()
+            .iter()
+            .position(|method| *method == self.settings_page.draft_file_allocation)
+            .unwrap_or(1);
         let manual_proxy = proxy_draft.mode == ProxyModeView::Manual;
         let selected_scheme = usize::from(draft_scheme == ColorSchemeView::Dark);
         let shell = cx.entity().downgrade();
@@ -7447,6 +7650,160 @@ impl AppShell {
                                     ),
                             ),
                         )
+                        .child({
+                            let allocation_shell = cx.entity().downgrade();
+                            let allocation_control = SegmentedControl::new(
+                                "settings-file-allocation",
+                                FileAllocationView::all().map(|method| Segment::new(method.label())),
+                                allocation_selected,
+                                self.theme,
+                            )
+                            .disabled(pending)
+                            .on_select(move |index, _window, cx| {
+                                let method = FileAllocationView::all()
+                                    .get(index)
+                                    .copied()
+                                    .unwrap_or_default();
+                                allocation_shell
+                                    .update(cx, |shell, cx| {
+                                        shell.select_file_allocation(method, cx)
+                                    })
+                                    .ok();
+                            });
+                            settings_section(
+                                "Transfer policy",
+                                "Connection and allocation defaults for aria2. Maximum concurrent downloads affects the live queue immediately; connections, split, allocation, and integrity checks apply as defaults for new downloads.",
+                                colors,
+                            )
+                            .child(
+                                div()
+                                    .mt_4()
+                                    .max_w(px(620.0))
+                                    .flex()
+                                    .flex_col()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .gap_3()
+                                            .child(
+                                                settings_labeled_input(
+                                                    "Max concurrent downloads",
+                                                    self.settings_max_concurrent_input.clone(),
+                                                    colors,
+                                                )
+                                                .flex_1()
+                                                .min_w_0(),
+                                            )
+                                            .child(
+                                                settings_labeled_input(
+                                                    "Connections per server",
+                                                    self.settings_max_connection_input.clone(),
+                                                    colors,
+                                                )
+                                                .flex_1()
+                                                .min_w_0(),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .gap_3()
+                                            .child(
+                                                settings_labeled_input(
+                                                    "Split",
+                                                    self.settings_split_input.clone(),
+                                                    colors,
+                                                )
+                                                .flex_1()
+                                                .min_w_0(),
+                                            )
+                                            .child(
+                                                settings_labeled_input(
+                                                    "Min split size",
+                                                    self.settings_min_split_size_input.clone(),
+                                                    colors,
+                                                )
+                                                .flex_1()
+                                                .min_w_0(),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(colors.text_muted)
+                                                    .child("File allocation"),
+                                            )
+                                            .child(allocation_control),
+                                    )
+                                    .child(
+                                        Button::new(
+                                            "toggle-check-integrity",
+                                            if self.settings_page.draft_check_integrity {
+                                                "Integrity check: On"
+                                            } else {
+                                                "Integrity check: Off"
+                                            },
+                                        )
+                                        .aria_label(if self.settings_page.draft_check_integrity {
+                                            "Disable integrity check for new downloads"
+                                        } else {
+                                            "Enable integrity check for new downloads"
+                                        })
+                                        .style(ButtonStyle::Secondary)
+                                        .disabled(pending)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_check_integrity(cx);
+                                        }))
+                                        .render(colors),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(colors.text_muted)
+                                            .child(
+                                                "Concurrent downloads: all current and future downloads. Connections/split/allocation/integrity: new downloads by default.",
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .mt_4()
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        Button::new(
+                                            "save-transfer-policy",
+                                            if transfer_policy_saving {
+                                                "Saving..."
+                                            } else {
+                                                "Save transfer policy"
+                                            },
+                                        )
+                                        .aria_label(if transfer_policy_saving {
+                                            "Saving transfer policy"
+                                        } else {
+                                            "Save transfer policy"
+                                        })
+                                        .style(ButtonStyle::Primary)
+                                        .disabled(
+                                            pending
+                                                || !transfer_policy_dirty
+                                                || !transfer_policy_valid,
+                                        )
+                                        .loading(transfer_policy_saving)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.submit_transfer_policy(cx);
+                                        }))
+                                        .render(colors),
+                                    ),
+                            )
+                        })
                         .when_some(error, |element, error| {
                             element.child(
                                 div()
@@ -9158,6 +9515,7 @@ fn task_command_label(command: &TaskCommandView) -> &'static str {
         TaskCommandView::Retry => "Retry",
         TaskCommandView::SetOutputName { .. } => "Change output name",
         TaskCommandView::SetSpeedLimit { .. } => "Set speed limits",
+        TaskCommandView::SetConnectionPolicy { .. } => "Set connection policy",
         TaskCommandView::SetOptions { .. } => "Edit task options",
         TaskCommandView::RemoveTask | TaskCommandView::RemoveTaskAndFiles => "Remove",
         TaskCommandView::ForceRemoveTask => "Force remove",
@@ -10981,6 +11339,7 @@ mod tests {
                 ..DownloadProxySettingsView::default()
             },
             speed_limits: SpeedLimitSettingsView::default(),
+            transfer_policy: TransferPolicySettingsView::default(),
         };
         let (view, cx) =
             cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
