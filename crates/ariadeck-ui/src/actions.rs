@@ -48,57 +48,36 @@ actions!(
     ]
 );
 
+/// Shared key context for every `TextField` so paste/copy/select-all work everywhere.
+pub const TEXT_FIELD_KEY_CONTEXT: &str = "TextField";
+
+fn text_field_bindings() -> Vec<KeyBinding> {
+    let context = Some(TEXT_FIELD_KEY_CONTEXT);
+    vec![
+        KeyBinding::new("backspace", Backspace, context),
+        KeyBinding::new("delete", Delete, context),
+        KeyBinding::new("left", MoveLeft, context),
+        KeyBinding::new("right", MoveRight, context),
+        KeyBinding::new("shift-left", SelectLeft, context),
+        KeyBinding::new("shift-right", SelectRight, context),
+        KeyBinding::new("secondary-a", SelectAll, context),
+        KeyBinding::new("home", MoveHome, context),
+        KeyBinding::new("end", MoveEnd, context),
+        KeyBinding::new("secondary-v", Paste, context),
+        KeyBinding::new("secondary-x", Cut, context),
+        KeyBinding::new("secondary-c", Copy, context),
+        // Common Windows/Linux aliases for clipboard when secondary-* is unavailable.
+        KeyBinding::new("ctrl-v", Paste, context),
+        KeyBinding::new("ctrl-c", Copy, context),
+        KeyBinding::new("ctrl-x", Cut, context),
+        KeyBinding::new("ctrl-a", SelectAll, context),
+        KeyBinding::new("shift-enter", InsertNewline, context),
+    ]
+}
+
 pub fn init(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("backspace", Backspace, Some("SearchInput")),
-        KeyBinding::new("delete", Delete, Some("SearchInput")),
-        KeyBinding::new("left", MoveLeft, Some("SearchInput")),
-        KeyBinding::new("right", MoveRight, Some("SearchInput")),
-        KeyBinding::new("shift-left", SelectLeft, Some("SearchInput")),
-        KeyBinding::new("shift-right", SelectRight, Some("SearchInput")),
-        KeyBinding::new("secondary-a", SelectAll, Some("SearchInput")),
-        KeyBinding::new("home", MoveHome, Some("SearchInput")),
-        KeyBinding::new("end", MoveEnd, Some("SearchInput")),
-        KeyBinding::new("secondary-v", Paste, Some("SearchInput")),
-        KeyBinding::new("secondary-x", Cut, Some("SearchInput")),
-        KeyBinding::new("secondary-c", Copy, Some("SearchInput")),
-        KeyBinding::new("backspace", Backspace, Some("AddDownloadInput")),
-        KeyBinding::new("delete", Delete, Some("AddDownloadInput")),
-        KeyBinding::new("left", MoveLeft, Some("AddDownloadInput")),
-        KeyBinding::new("right", MoveRight, Some("AddDownloadInput")),
-        KeyBinding::new("shift-left", SelectLeft, Some("AddDownloadInput")),
-        KeyBinding::new("shift-right", SelectRight, Some("AddDownloadInput")),
-        KeyBinding::new("shift-enter", InsertNewline, Some("AddDownloadInput")),
-        KeyBinding::new("secondary-a", SelectAll, Some("AddDownloadInput")),
-        KeyBinding::new("home", MoveHome, Some("AddDownloadInput")),
-        KeyBinding::new("end", MoveEnd, Some("AddDownloadInput")),
-        KeyBinding::new("secondary-v", Paste, Some("AddDownloadInput")),
-        KeyBinding::new("secondary-x", Cut, Some("AddDownloadInput")),
-        KeyBinding::new("secondary-c", Copy, Some("AddDownloadInput")),
-        KeyBinding::new("backspace", Backspace, Some("OutputNameInput")),
-        KeyBinding::new("delete", Delete, Some("OutputNameInput")),
-        KeyBinding::new("left", MoveLeft, Some("OutputNameInput")),
-        KeyBinding::new("right", MoveRight, Some("OutputNameInput")),
-        KeyBinding::new("shift-left", SelectLeft, Some("OutputNameInput")),
-        KeyBinding::new("shift-right", SelectRight, Some("OutputNameInput")),
-        KeyBinding::new("secondary-a", SelectAll, Some("OutputNameInput")),
-        KeyBinding::new("home", MoveHome, Some("OutputNameInput")),
-        KeyBinding::new("end", MoveEnd, Some("OutputNameInput")),
-        KeyBinding::new("secondary-v", Paste, Some("OutputNameInput")),
-        KeyBinding::new("secondary-x", Cut, Some("OutputNameInput")),
-        KeyBinding::new("secondary-c", Copy, Some("OutputNameInput")),
-        KeyBinding::new("backspace", Backspace, Some("TaskSpeedLimitInput")),
-        KeyBinding::new("delete", Delete, Some("TaskSpeedLimitInput")),
-        KeyBinding::new("left", MoveLeft, Some("TaskSpeedLimitInput")),
-        KeyBinding::new("right", MoveRight, Some("TaskSpeedLimitInput")),
-        KeyBinding::new("shift-left", SelectLeft, Some("TaskSpeedLimitInput")),
-        KeyBinding::new("shift-right", SelectRight, Some("TaskSpeedLimitInput")),
-        KeyBinding::new("secondary-a", SelectAll, Some("TaskSpeedLimitInput")),
-        KeyBinding::new("home", MoveHome, Some("TaskSpeedLimitInput")),
-        KeyBinding::new("end", MoveEnd, Some("TaskSpeedLimitInput")),
-        KeyBinding::new("secondary-v", Paste, Some("TaskSpeedLimitInput")),
-        KeyBinding::new("secondary-x", Cut, Some("TaskSpeedLimitInput")),
-        KeyBinding::new("secondary-c", Copy, Some("TaskSpeedLimitInput")),
+    let mut bindings = text_field_bindings();
+    bindings.extend([
         KeyBinding::new("cmd-f", FocusSearch, None),
         KeyBinding::new("secondary-a", SelectAllTasks, Some("DownloadWorkspace")),
         KeyBinding::new("cmd-n", OpenAddDownload, Some("DownloadWorkspace")),
@@ -149,19 +128,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-,", OpenSettings, Some("DownloadWorkspace")),
         KeyBinding::new("escape", CloseSettings, Some("SettingsPage")),
         KeyBinding::new("cmd-enter", SaveSettings, Some("SettingsPage")),
-        KeyBinding::new("backspace", Backspace, Some("SettingsDirectoryInput")),
-        KeyBinding::new("delete", Delete, Some("SettingsDirectoryInput")),
-        KeyBinding::new("left", MoveLeft, Some("SettingsDirectoryInput")),
-        KeyBinding::new("right", MoveRight, Some("SettingsDirectoryInput")),
-        KeyBinding::new("shift-left", SelectLeft, Some("SettingsDirectoryInput")),
-        KeyBinding::new("shift-right", SelectRight, Some("SettingsDirectoryInput")),
-        KeyBinding::new("secondary-a", SelectAll, Some("SettingsDirectoryInput")),
-        KeyBinding::new("home", MoveHome, Some("SettingsDirectoryInput")),
-        KeyBinding::new("end", MoveEnd, Some("SettingsDirectoryInput")),
-        KeyBinding::new("secondary-v", Paste, Some("SettingsDirectoryInput")),
-        KeyBinding::new("secondary-x", Cut, Some("SettingsDirectoryInput")),
-        KeyBinding::new("secondary-c", Copy, Some("SettingsDirectoryInput")),
         KeyBinding::new("tab", FocusNext, None),
         KeyBinding::new("shift-tab", FocusPrevious, None),
     ]);
+    cx.bind_keys(bindings);
 }

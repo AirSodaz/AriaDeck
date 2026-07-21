@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{ops::Range, time::Duration};
 
 use gpui::{
     A11ySubtreeBuilder, AccessibleAction, App, Bounds, ClipboardItem, Context, CursorStyle,
@@ -15,8 +15,11 @@ use gpui::{
 use crate::{
     Backspace, Copy, Cut, Delete, InsertNewline, MoveEnd, MoveHome, MoveLeft, MoveRight, Paste,
     SelectAll, SelectLeft, SelectRight, Theme,
+    actions::TEXT_FIELD_KEY_CONTEXT,
     components::{Icon, IconButton, IconName, IconSize, Tooltip},
 };
+
+const CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct TextFieldEvent {
@@ -72,6 +75,18 @@ impl TextFieldConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TextFieldContextAction {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
+struct TextFieldContextMenu {
+    position: Point<Pixels>,
+}
+
 pub struct TextField {
     focus_handle: FocusHandle,
     content: SharedString,
@@ -91,6 +106,11 @@ pub struct TextField {
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
     theme: Theme,
+    /// When focused, toggles so the caret blinks. Always true while unfocused.
+    cursor_visible: bool,
+    blink_epoch: u64,
+    blink_enabled: bool,
+    context_menu: Option<TextFieldContextMenu>,
 }
 
 pub type SearchInput = TextField;
@@ -105,11 +125,20 @@ impl TextField {
 
     #[must_use]
     pub fn new_with_config(config: TextFieldConfig, theme: Theme, cx: &mut Context<Self>) -> Self {
+        // Shared TextField context for clipboard shortcuts, plus any field-specific
+        // context from the config (e.g. SearchInput for Escape-to-clear).
+        let key_context: SharedString = if config.key_context.as_ref() == TEXT_FIELD_KEY_CONTEXT
+            || config.key_context.is_empty()
+        {
+            TEXT_FIELD_KEY_CONTEXT.into()
+        } else {
+            format!("{TEXT_FIELD_KEY_CONTEXT} {}", config.key_context).into()
+        };
         Self {
             focus_handle: cx.focus_handle().tab_stop(true),
             content: SharedString::default(),
             element_id: config.element_id,
-            key_context: config.key_context,
+            key_context,
             role: config.role,
             accessibility_label: config.accessibility_label,
             placeholder: config.placeholder,
@@ -124,6 +153,10 @@ impl TextField {
             last_bounds: None,
             is_selecting: false,
             theme,
+            cursor_visible: true,
+            blink_epoch: 0,
+            blink_enabled: false,
+            context_menu: None,
         }
     }
 
@@ -142,7 +175,9 @@ impl TextField {
         self.selected_range = end..end;
         self.selection_reversed = false;
         self.marked_range = None;
+        self.close_context_menu(cx);
         self.emit_change(cx);
+        self.pause_and_show_cursor(cx);
     }
 
     pub fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
@@ -150,6 +185,188 @@ impl TextField {
             self.theme = theme;
             cx.notify();
         }
+    }
+
+    fn pause_and_show_cursor(&mut self, cx: &mut Context<Self>) {
+        self.cursor_visible = true;
+        self.blink_epoch = self.blink_epoch.wrapping_add(1);
+        let epoch = self.blink_epoch;
+        cx.notify();
+        if !self.blink_enabled {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(CARET_BLINK_INTERVAL).await;
+            this.update(cx, |this, cx| {
+                if this.blink_epoch == epoch && this.blink_enabled {
+                    this.schedule_cursor_blink(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn schedule_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        if !self.blink_enabled {
+            return;
+        }
+        self.blink_epoch = self.blink_epoch.wrapping_add(1);
+        let epoch = self.blink_epoch;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(CARET_BLINK_INTERVAL).await;
+            this.update(cx, |this, cx| {
+                if this.blink_epoch != epoch || !this.blink_enabled {
+                    return;
+                }
+                this.cursor_visible = !this.cursor_visible;
+                cx.notify();
+                this.schedule_cursor_blink(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn stop_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.blink_enabled = false;
+        self.blink_epoch = self.blink_epoch.wrapping_add(1);
+        self.cursor_visible = true;
+        cx.notify();
+    }
+
+    fn enable_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        if self.blink_enabled {
+            return;
+        }
+        self.blink_enabled = true;
+        self.pause_and_show_cursor(cx);
+    }
+
+    fn close_context_menu(&mut self, cx: &mut Context<Self>) {
+        if self.context_menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn open_context_menu(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        self.context_menu = Some(TextFieldContextMenu { position });
+        cx.notify();
+    }
+
+    fn run_context_action(
+        &mut self,
+        action: TextFieldContextAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.context_menu = None;
+        match action {
+            TextFieldContextAction::Cut => self.cut(&Cut, window, cx),
+            TextFieldContextAction::Copy => self.copy(&Copy, window, cx),
+            TextFieldContextAction::Paste => self.paste(&Paste, window, cx),
+            TextFieldContextAction::SelectAll => self.select_all(&SelectAll, window, cx),
+        }
+        self.pause_and_show_cursor(cx);
+    }
+
+    fn render_context_menu(&self, cx: &Context<Self>) -> impl IntoElement {
+        let colors = self.theme.colors;
+        let Some(menu) = self.context_menu.as_ref() else {
+            return div().into_any_element();
+        };
+        let position = menu.position;
+        let has_selection = !self.selected_range.is_empty();
+        let can_copy = has_selection && !self.secure;
+        let can_cut = can_copy;
+        let can_paste = true;
+        let can_select_all = !self.content.is_empty();
+
+        let entry =
+            |action: TextFieldContextAction, label: &'static str, enabled: bool, danger: bool| {
+                let id = match action {
+                    TextFieldContextAction::Cut => "text-field-ctx-cut",
+                    TextFieldContextAction::Copy => "text-field-ctx-copy",
+                    TextFieldContextAction::Paste => "text-field-ctx-paste",
+                    TextFieldContextAction::SelectAll => "text-field-ctx-select-all",
+                };
+                div()
+                    .id(id)
+                    .role(Role::MenuItem)
+                    .aria_label(label)
+                    .px_3()
+                    .py_1p5()
+                    .rounded_sm()
+                    .text_sm()
+                    .text_color(if !enabled {
+                        colors.text_muted
+                    } else if danger {
+                        colors.danger
+                    } else {
+                        colors.text_primary
+                    })
+                    .when(enabled, |element| {
+                        element
+                            .cursor_pointer()
+                            .hover(|style| style.bg(colors.surface_active))
+                            .on_mouse_down(MouseButton::Left, {
+                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    window.prevent_default();
+                                    let _ = event;
+                                    this.run_context_action(action, window, cx);
+                                })
+                            })
+                    })
+                    .child(label)
+            };
+
+        div()
+            .id("text-field-context-menu-layer")
+            .absolute()
+            .inset_0()
+            .size_full()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.close_context_menu(cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, _, cx| this.close_context_menu(cx)),
+            )
+            .child(
+                div()
+                    .id("text-field-context-menu")
+                    .role(Role::Menu)
+                    .aria_label("Text field menu")
+                    .absolute()
+                    .left(position.x)
+                    .top(position.y)
+                    .min_w(px(160.0))
+                    .py_1()
+                    .px_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.elevated_surface)
+                    .shadow_md()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(entry(TextFieldContextAction::Cut, "Cut", can_cut, false))
+                    .child(entry(TextFieldContextAction::Copy, "Copy", can_copy, false))
+                    .child(entry(
+                        TextFieldContextAction::Paste,
+                        "Paste",
+                        can_paste,
+                        false,
+                    ))
+                    .child(entry(
+                        TextFieldContextAction::SelectAll,
+                        "Select all",
+                        can_select_all,
+                        false,
+                    )),
+            )
+            .into_any_element()
     }
 
     #[cfg(test)]
@@ -285,6 +502,20 @@ impl TextField {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus_handle, cx);
+        if event.button == MouseButton::Right {
+            // Keep existing selection when right-clicking inside it; otherwise
+            // place the caret under the pointer before opening the menu.
+            let index = self.index_for_mouse_position(event.position);
+            let inside_selection = !self.selected_range.is_empty()
+                && index >= self.selected_range.start
+                && index <= self.selected_range.end;
+            if !inside_selection {
+                self.move_to(index, cx);
+            }
+            self.open_context_menu(event.position, cx);
+            return;
+        }
+        self.close_context_menu(cx);
         self.is_selecting = true;
         let index = self.index_for_mouse_position(event.position);
         if event.modifiers.shift {
@@ -307,7 +538,7 @@ impl TextField {
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.selected_range = offset..offset;
         self.selection_reversed = false;
-        cx.notify();
+        self.pause_and_show_cursor(cx);
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -320,7 +551,7 @@ impl TextField {
             self.selection_reversed = !self.selection_reversed;
             self.selected_range = self.selected_range.end..self.selected_range.start;
         }
-        cx.notify();
+        self.pause_and_show_cursor(cx);
     }
 
     fn cursor_offset(&self) -> usize {
@@ -700,7 +931,9 @@ impl Element for TextFieldElement {
             window,
             cx,
         );
+        let cursor_visible = self.input.read(cx).cursor_visible;
         if focus_handle.is_focused(window)
+            && cursor_visible
             && let Some(cursor) = prepaint.cursor.take()
         {
             window.paint_quad(cursor);
@@ -725,18 +958,25 @@ impl gpui::Render for TextField {
         } else {
             self.content.to_string()
         };
+        let is_focused = self.focus_handle.is_focused(window);
+        // Drive caret blink while focused; keep it solid when not.
+        if is_focused {
+            self.enable_cursor_blink(cx);
+        } else if self.blink_enabled || !self.cursor_visible {
+            self.stop_cursor_blink(cx);
+        }
         let (a11y_value, a11y_text_runs) = text_field_a11y_state(
             self.element_id.clone(),
             accessible_content,
             selection_tail,
             selection_head,
-            self.focus_handle.is_focused(window),
+            is_focused,
             window,
             cx,
         );
         let weak_input = cx.entity().downgrade();
         let clear_input = weak_input.clone();
-        let is_focused = self.focus_handle.is_focused(window);
+        let show_context_menu = self.context_menu.is_some();
         let input = div()
             .h_full()
             .flex_1()
@@ -778,6 +1018,7 @@ impl gpui::Render for TextField {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
@@ -824,11 +1065,17 @@ impl gpui::Render for TextField {
                             return;
                         };
                         let focus = input.read(cx).focus_handle.clone();
-                        input.update(cx, |input, cx| input.set_text("", cx));
+                        input.update(cx, |input, cx| {
+                            input.close_context_menu(cx);
+                            input.set_text("", cx);
+                        });
                         window.focus(&focus, cx);
                     })
                     .render(colors),
                 )
+            })
+            .when(show_context_menu, |field| {
+                field.child(self.render_context_menu(cx))
             })
     }
 }
