@@ -6,8 +6,8 @@ AriaDeck is a native Rust desktop client for aria2. It uses GPUI for rendering
 and communicates with an independent aria2 process through JSON-RPC.
 
 The project is under active development. See
-[`docs/implementation-progress.md`](docs/implementation-progress.md) for the
-current milestone, completed checks, and known gaps.
+[`docs/project-context.md`](docs/project-context.md) for architecture,
+accepted decisions, current capability, and remaining work.
 
 ## Development
 
@@ -73,4 +73,4 @@ Current package boundaries:
 - `ariadeck-telemetry`: structured diagnostics setup.
 - `ariadeck-desktop`: process bootstrap and composition root.
 
-The source architecture is defined in [`docs/design.md`](docs/design.md).
+Architecture and product context: [`docs/project-context.md`](docs/project-context.md).
