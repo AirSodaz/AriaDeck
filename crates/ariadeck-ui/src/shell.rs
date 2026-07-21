@@ -251,6 +251,14 @@ struct PendingProfileDelete {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PathPickTarget {
+    DownloadDirectory,
+    CoreExecutable,
+    ProfileExecutable,
+    ProfileDownloadDirectory,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SettingsSaveSource {
     Theme,
     Directory,
@@ -4071,6 +4079,87 @@ impl AppShell {
             });
         })
         .detach();
+    }
+
+    fn pick_path_for_field(
+        &mut self,
+        target: PathPickTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (files, directories, prompt) = match target {
+            PathPickTarget::DownloadDirectory | PathPickTarget::ProfileDownloadDirectory => {
+                (false, true, "Choose download directory")
+            }
+            PathPickTarget::CoreExecutable | PathPickTarget::ProfileExecutable => (
+                true,
+                false,
+                if cfg!(windows) {
+                    "Choose aria2c.exe"
+                } else {
+                    "Choose aria2c"
+                },
+            ),
+        };
+        let selected = cx.prompt_for_paths(PathPromptOptions {
+            files,
+            directories,
+            multiple: false,
+            prompt: Some(prompt.into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let selected = selected.await;
+            let _ = this.update_in(cx, |this, window, cx| match selected {
+                Ok(Ok(Some(paths))) => {
+                    if let Some(path) = paths.into_iter().next() {
+                        this.apply_picked_path(target, path, window, cx);
+                    }
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(error)) => {
+                    this.settings_page.error = Some(OperationErrorView {
+                        code: "settings.path_picker_failed".into(),
+                        summary: format!("Path picker failed: {error}"),
+                        retryable: true,
+                    });
+                    cx.notify();
+                }
+                Err(error) => {
+                    this.settings_page.error = Some(OperationErrorView {
+                        code: "settings.path_picker_closed".into(),
+                        summary: format!("Path picker closed unexpectedly: {error}"),
+                        retryable: true,
+                    });
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn apply_picked_path(
+        &mut self,
+        target: PathPickTarget,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let display = path.to_string_lossy().into_owned();
+        let field = match target {
+            PathPickTarget::DownloadDirectory => self.settings_directory_input.clone(),
+            PathPickTarget::CoreExecutable => self.settings_core_path_input.clone(),
+            PathPickTarget::ProfileExecutable => self.settings_profile_executable_input.clone(),
+            PathPickTarget::ProfileDownloadDirectory => {
+                self.settings_profile_download_input.clone()
+            }
+        };
+        field.update(cx, |input, cx| input.set_text(display, cx));
+        window.focus(&field.focus_handle(cx), cx);
+        // Clear stale settings form error once the user picks a path.
+        if self.page == AppPage::Settings {
+            self.settings_page.error = None;
+        }
+        cx.notify();
     }
 
     fn add_metadata_paths(
@@ -9468,10 +9557,16 @@ impl AppShell {
                                                                 "Executable (optional — empty uses managed core)",
                                                             ),
                                                     )
-                                                    .child(
+                                                    .child(settings_path_field_row(
                                                         self.settings_profile_executable_input
                                                             .clone(),
-                                                    )
+                                                        "browse-profile-executable",
+                                                        "Browse",
+                                                        "Choose pinned aria2c executable",
+                                                        PathPickTarget::ProfileExecutable,
+                                                        colors,
+                                                        cx,
+                                                    ))
                                                     .into_any_element()
                                             } else {
                                                 let has_secret = self
@@ -9563,9 +9658,16 @@ impl AppShell {
                                                             .text_color(colors.text_muted)
                                                             .child("Download directory"),
                                                     )
-                                                    .child(
-                                                        self.settings_profile_download_input.clone(),
-                                                    ),
+                                                    .child(settings_path_field_row(
+                                                        self.settings_profile_download_input
+                                                            .clone(),
+                                                        "browse-profile-download",
+                                                        "Browse",
+                                                        "Choose profile download directory",
+                                                        PathPickTarget::ProfileDownloadDirectory,
+                                                        colors,
+                                                        cx,
+                                                    )),
                                             )
                                             .child(
                                                 div()
@@ -9921,7 +10023,15 @@ impl AppShell {
                                             .text_color(colors.text_primary)
                                             .child("Import or link local aria2c"),
                                     )
-                                    .child(self.settings_core_path_input.clone())
+                                    .child(settings_path_field_row(
+                                        self.settings_core_path_input.clone(),
+                                        "browse-core-path",
+                                        "Browse",
+                                        "Choose aria2c executable to import or link",
+                                        PathPickTarget::CoreExecutable,
+                                        colors,
+                                        cx,
+                                    ))
                                     .child(
                                         div()
                                             .flex()
@@ -9989,10 +10099,15 @@ impl AppShell {
                                     .items_center()
                                     .gap_2()
                                     .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .child(self.settings_directory_input.clone()),
+                                        div().flex_1().min_w_0().child(settings_path_field_row(
+                                            self.settings_directory_input.clone(),
+                                            "browse-download-directory",
+                                            "Browse",
+                                            "Choose default download directory",
+                                            PathPickTarget::DownloadDirectory,
+                                            colors,
+                                            cx,
+                                        )),
                                     )
                                     .child(
                                         Button::new(
@@ -11970,6 +12085,32 @@ fn settings_labeled_input(
         .gap_1()
         .child(div().text_xs().text_color(colors.text_muted).child(label))
         .child(input)
+}
+
+fn settings_path_field_row(
+    input: Entity<TextField>,
+    browse_id: &'static str,
+    browse_label: &'static str,
+    browse_aria: &'static str,
+    target: PathPickTarget,
+    colors: crate::ThemeColors,
+    cx: &mut Context<AppShell>,
+) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(div().flex_1().min_w_0().child(input))
+        .child(
+            Button::new(browse_id, browse_label)
+                .icon(IconName::FolderDown)
+                .aria_label(browse_aria)
+                .style(ButtonStyle::Secondary)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.pick_path_for_field(target, window, cx);
+                }))
+                .render(colors),
+        )
 }
 
 fn filter_icon(filter: WorkspaceFilter) -> IconName {
