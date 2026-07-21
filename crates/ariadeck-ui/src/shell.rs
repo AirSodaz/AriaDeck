@@ -2865,11 +2865,21 @@ impl AppShell {
         self.settings_page.draft_notify_on_error = settings.notifications.notify_on_error;
         self.settings_page.draft_notify_on_engine_events =
             settings.notifications.notify_on_engine_events;
-        self.search_input
-            .update(cx, |input, cx| input.set_theme(self.theme, cx));
-        self.add_input
-            .update(cx, |input, cx| input.set_theme(self.theme, cx));
-        for input in [
+        self.apply_theme_to_text_fields(cx);
+    }
+
+    /// Push the current shell theme into every TextField so light/dark chrome stays in sync.
+    fn apply_theme_to_text_fields(&mut self, cx: &mut Context<Self>) {
+        let theme = self.theme;
+        for input in self.all_text_fields() {
+            input.update(cx, |input, cx| input.set_theme(theme, cx));
+        }
+    }
+
+    fn all_text_fields(&self) -> [&Entity<TextField>; 34] {
+        [
+            &self.search_input,
+            &self.add_input,
             &self.add_referer_input,
             &self.add_user_agent_input,
             &self.add_headers_input,
@@ -2877,14 +2887,14 @@ impl AppShell {
             &self.add_http_user_input,
             &self.add_http_passwd_input,
             &self.add_checksum_input,
-        ] {
-            input.update(cx, |input, cx| input.set_theme(self.theme, cx));
-        }
-        self.output_name_input
-            .update(cx, |input, cx| input.set_theme(self.theme, cx));
-        self.settings_directory_input
-            .update(cx, |input, cx| input.set_theme(self.theme, cx));
-        for input in [
+            &self.output_name_input,
+            &self.settings_directory_input,
+            &self.settings_core_path_input,
+            &self.settings_profile_name_input,
+            &self.settings_profile_executable_input,
+            &self.settings_profile_endpoint_input,
+            &self.settings_profile_download_input,
+            &self.settings_profile_secret_input,
             &self.settings_all_proxy_input,
             &self.settings_http_proxy_input,
             &self.settings_https_proxy_input,
@@ -2898,9 +2908,11 @@ impl AppShell {
             &self.settings_max_connection_input,
             &self.settings_split_input,
             &self.settings_min_split_size_input,
-        ] {
-            input.update(cx, |input, cx| input.set_theme(self.theme, cx));
-        }
+            &self.task_download_limit_input,
+            &self.task_upload_limit_input,
+            &self.task_seed_ratio_input,
+            &self.task_seed_time_input,
+        ]
     }
 
     fn focus_next(&mut self, _: &FocusNext, window: &mut Window, cx: &mut Context<Self>) {
@@ -3088,6 +3100,9 @@ impl AppShell {
             return;
         }
         self.settings_page.draft_color_scheme = scheme;
+        // Apply chrome immediately so TextFields switch light/dark before save returns.
+        self.theme = theme_for_scheme(scheme);
+        self.apply_theme_to_text_fields(cx);
         let mut settings = self.settings.clone();
         settings.color_scheme = scheme;
         self.request_settings_save(

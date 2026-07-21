@@ -7,7 +7,7 @@ use gpui::{
     MouseUpEvent, PaintQuad, Pixels, Point, Role, ShapedLine, SharedString, Style, TextRun,
     UTF16Selection, UnderlineStyle, Window,
     accesskit::{self, ActionData},
-    div, fill, point,
+    deferred, div, fill, point,
     prelude::*,
     px, relative, size,
 };
@@ -250,6 +250,7 @@ impl TextField {
     }
 
     fn open_context_menu(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        // Store window coordinates; convert to field-local space at paint time.
         self.context_menu = Some(TextFieldContextMenu { position });
         cx.notify();
     }
@@ -275,98 +276,114 @@ impl TextField {
         let Some(menu) = self.context_menu.as_ref() else {
             return div().into_any_element();
         };
-        let position = menu.position;
+        // Deferred draws keep this element's layout offset, so convert the stored
+        // window coordinates into field-local space. last_bounds is the text row
+        // inside the field; that origin is close enough for menu placement.
+        let (local_x, local_y) = if let Some(bounds) = self.last_bounds {
+            (
+                menu.position.x - bounds.left(),
+                menu.position.y - bounds.top(),
+            )
+        } else {
+            (px(8.0), px(8.0))
+        };
+        // Expand dismiss layer outward with negative margin; compensate menu offset.
+        let margin = px(64.0);
+        let menu_left = local_x + margin;
+        let menu_top = local_y + margin;
         let has_selection = !self.selected_range.is_empty();
         let can_copy = has_selection && !self.secure;
         let can_cut = can_copy;
         let can_paste = true;
         let can_select_all = !self.content.is_empty();
 
-        let entry =
-            |action: TextFieldContextAction, label: &'static str, enabled: bool, danger: bool| {
-                let id = match action {
-                    TextFieldContextAction::Cut => "text-field-ctx-cut",
-                    TextFieldContextAction::Copy => "text-field-ctx-copy",
-                    TextFieldContextAction::Paste => "text-field-ctx-paste",
-                    TextFieldContextAction::SelectAll => "text-field-ctx-select-all",
-                };
-                div()
-                    .id(id)
-                    .role(Role::MenuItem)
-                    .aria_label(label)
-                    .px_3()
-                    .py_1p5()
-                    .rounded_sm()
-                    .text_sm()
-                    .text_color(if !enabled {
-                        colors.text_muted
-                    } else if danger {
-                        colors.danger
-                    } else {
-                        colors.text_primary
-                    })
-                    .when(enabled, |element| {
-                        element
-                            .cursor_pointer()
-                            .hover(|style| style.bg(colors.surface_active))
-                            .on_mouse_down(MouseButton::Left, {
-                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    window.prevent_default();
-                                    let _ = event;
-                                    this.run_context_action(action, window, cx);
-                                })
-                            })
-                    })
-                    .child(label)
+        let entry = |action: TextFieldContextAction, label: &'static str, enabled: bool| {
+            let id = match action {
+                TextFieldContextAction::Cut => "text-field-ctx-cut",
+                TextFieldContextAction::Copy => "text-field-ctx-copy",
+                TextFieldContextAction::Paste => "text-field-ctx-paste",
+                TextFieldContextAction::SelectAll => "text-field-ctx-select-all",
             };
+            div()
+                .id(id)
+                .role(Role::MenuItem)
+                .aria_label(label)
+                .w_full()
+                .px_3()
+                .py_1p5()
+                .rounded_sm()
+                .text_sm()
+                .text_color(if enabled {
+                    colors.text_primary
+                } else {
+                    colors.text_muted
+                })
+                .when(enabled, |element| {
+                    element
+                        .cursor_pointer()
+                        .hover(|style| style.bg(colors.surface_active))
+                        .on_mouse_down(MouseButton::Left, {
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                window.prevent_default();
+                                let _ = event;
+                                this.run_context_action(action, window, cx);
+                            })
+                        })
+                })
+                .child(label)
+        };
 
-        div()
-            .id("text-field-context-menu-layer")
-            .absolute()
-            .inset_0()
-            .size_full()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.close_context_menu(cx)),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(|this, _, _, cx| this.close_context_menu(cx)),
-            )
-            .child(
-                div()
-                    .id("text-field-context-menu")
-                    .role(Role::Menu)
-                    .aria_label("Text field menu")
-                    .absolute()
-                    .left(position.x)
-                    .top(position.y)
-                    .min_w(px(160.0))
-                    .py_1()
-                    .px_1()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(colors.border)
-                    .bg(colors.elevated_surface)
-                    .shadow_md()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(entry(TextFieldContextAction::Cut, "Cut", can_cut, false))
-                    .child(entry(TextFieldContextAction::Copy, "Copy", can_copy, false))
-                    .child(entry(
-                        TextFieldContextAction::Paste,
-                        "Paste",
-                        can_paste,
-                        false,
-                    ))
-                    .child(entry(
-                        TextFieldContextAction::SelectAll,
-                        "Select all",
-                        can_select_all,
-                        false,
-                    )),
-            )
-            .into_any_element()
+        // Deferred paint avoids ancestor overflow clipping of the popup.
+        deferred(
+            div()
+                .id("text-field-context-menu-layer")
+                .absolute()
+                .m_neg_16()
+                .w(px(4000.0))
+                .h(px(4000.0))
+                .occlude()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| this.close_context_menu(cx)),
+                )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(|this, _, _, cx| this.close_context_menu(cx)),
+                )
+                .child(
+                    div()
+                        .id("text-field-context-menu")
+                        .role(Role::Menu)
+                        .aria_label("Text field menu")
+                        .absolute()
+                        .left(menu_left)
+                        .top(menu_top)
+                        .min_w(px(168.0))
+                        .py_1()
+                        .px_1()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(colors.border_strong)
+                        .bg(colors.elevated_surface)
+                        .shadow_md()
+                        .flex()
+                        .flex_col()
+                        .gap_0p5()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                        .child(entry(TextFieldContextAction::Cut, "Cut", can_cut))
+                        .child(entry(TextFieldContextAction::Copy, "Copy", can_copy))
+                        .child(entry(TextFieldContextAction::Paste, "Paste", can_paste))
+                        .child(entry(
+                            TextFieldContextAction::SelectAll,
+                            "Select all",
+                            can_select_all,
+                        )),
+                ),
+        )
+        .with_priority(100)
+        .into_any_element()
     }
 
     #[cfg(test)]
@@ -503,6 +520,8 @@ impl TextField {
     ) {
         window.focus(&self.focus_handle, cx);
         if event.button == MouseButton::Right {
+            cx.stop_propagation();
+            window.prevent_default();
             // Keep existing selection when right-clicking inside it; otherwise
             // place the caret under the pointer before opening the menu.
             let index = self.index_for_mouse_position(event.position);
@@ -1027,6 +1046,7 @@ impl gpui::Render for TextField {
             .w_full()
             .min_w(px(180.0))
             .max_w(px(460.0))
+            .relative()
             .flex()
             .items_center()
             .gap_2()
