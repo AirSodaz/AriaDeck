@@ -427,11 +427,15 @@ impl Button {
         }
         button
             .when(self.loading, |button| {
-                button.child(LoadingIndicator::new(foreground).size(IconSize::Small))
+                button.child(LoadingIndicator::new(foreground).size(IconSize::Medium))
             })
             .when(!self.loading, |button| {
                 button.when_some(self.icon, |button, icon| {
-                    button.child(Icon::new(icon).size(IconSize::Small).color(foreground))
+                    button.child(
+                        Icon::new(icon)
+                            .size(IconSize::Medium)
+                            .color(foreground),
+                    )
                 })
             })
             .child(self.label)
@@ -601,12 +605,17 @@ impl IconButton {
         if enabled && let Some(handler) = self.on_click {
             button = button.on_click(move |event, window, cx| handler(event, window, cx));
         }
+        // Toolbar / chrome icon buttons are 32px hit targets; keep the glyph
+        // at a fixed 16px so every action reads the same optical size.
         button.child(if self.loading {
             LoadingIndicator::new(foreground)
                 .size(IconSize::Medium)
                 .into_any_element()
         } else {
-            Icon::new(self.icon).color(foreground).into_any_element()
+            Icon::new(self.icon)
+                .size(IconSize::Medium)
+                .color(foreground)
+                .into_any_element()
         })
     }
 }
