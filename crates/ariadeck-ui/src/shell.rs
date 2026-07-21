@@ -4337,7 +4337,8 @@ impl AppShell {
     /// inside a filtered, searched, reversed, or value-sorted projection would
     /// imply a position that is not authoritative.
     fn queue_reordering_available(&self) -> bool {
-        self.query.filter == WorkspaceFilter::All
+        self.snapshot.capabilities.queue_positioning
+            && self.query.filter == WorkspaceFilter::All
             && self.query.search.trim().is_empty()
             && self.query.sort_key == WorkspaceSortKey::Queue
             && self.query.sort_direction == WorkspaceSortDirection::Ascending
@@ -4355,6 +4356,40 @@ impl AppShell {
             self.show_notice("Select a visible task first.", true, cx);
             return;
         };
+        let capability_block = match command {
+            TaskCommandView::ForcePause if !self.snapshot.capabilities.force_pause => {
+                Some(self.snapshot.capabilities.unsupported_force_pause_message())
+            }
+            TaskCommandView::ForceRemoveTask if !self.snapshot.capabilities.force_remove => Some(
+                self.snapshot
+                    .capabilities
+                    .unsupported_force_remove_message(),
+            ),
+            TaskCommandView::MoveToQueueTop
+            | TaskCommandView::MoveUpInQueue
+            | TaskCommandView::MoveDownInQueue
+            | TaskCommandView::MoveToQueueBottom
+                if !self.snapshot.capabilities.queue_positioning =>
+            {
+                Some(self.snapshot.capabilities.unsupported_queue_message())
+            }
+            TaskCommandView::SetSpeedLimit { .. }
+            | TaskCommandView::SetConnectionPolicy { .. }
+            | TaskCommandView::SetOptions { .. }
+                if !self.snapshot.capabilities.change_option =>
+            {
+                Some(
+                    self.snapshot
+                        .capabilities
+                        .unsupported_change_option_message(),
+                )
+            }
+            _ => None,
+        };
+        if let Some(message) = capability_block {
+            self.show_notice(message, true, cx);
+            return;
+        }
         let allowed = match command {
             TaskCommandView::Pause | TaskCommandView::ForcePause => task.status.can_pause(),
             TaskCommandView::Resume => task.status.can_resume(),
@@ -4436,6 +4471,18 @@ impl AppShell {
             self.show_notice("The engine is not ready for commands.", true, cx);
             return;
         };
+        if matches!(command, GlobalTaskCommandView::ForcePauseAll)
+            && !self.snapshot.capabilities.force_pause_all
+        {
+            self.show_notice(
+                self.snapshot
+                    .capabilities
+                    .unsupported_force_pause_all_message(),
+                true,
+                cx,
+            );
+            return;
+        }
         let request_id = self.allocate_request_id();
         self.pending_global_task_command = Some(PendingGlobalTaskCommand {
             request_id,
@@ -4485,6 +4532,23 @@ impl AppShell {
             self.show_notice("The engine is not ready for commands.", true, cx);
             return;
         };
+        let capability_block = match command {
+            BatchTaskCommandView::ForcePause if !self.snapshot.capabilities.force_pause => {
+                Some(self.snapshot.capabilities.unsupported_force_pause_message())
+            }
+            BatchTaskCommandView::ForceRemoveTask if !self.snapshot.capabilities.force_remove => {
+                Some(
+                    self.snapshot
+                        .capabilities
+                        .unsupported_force_remove_message(),
+                )
+            }
+            _ => None,
+        };
+        if let Some(message) = capability_block {
+            self.show_notice(message, true, cx);
+            return;
+        }
         let request_id = self.allocate_request_id();
         self.pending_batch_command = Some(PendingBatchTaskCommand {
             request_id,
@@ -5482,6 +5546,7 @@ impl AppShell {
         let commands_available = self.snapshot.commands_available() && idle;
         let path_actions = commands_available && self.snapshot.local_path_actions_available;
         let can_pause = commands_available && task.status.can_pause();
+        let can_force_pause = can_pause && self.snapshot.capabilities.force_pause;
         let can_resume = commands_available && task.status.can_resume();
         let can_retry = commands_available && task.status.can_retry();
         let can_remove = commands_available && task.status.can_remove();
@@ -5489,7 +5554,9 @@ impl AppShell {
             && task.status.can_move_in_queue()
             && self.queue_reordering_available();
         let can_output = commands_available && task.can_set_output_name();
-        let can_speed = commands_available && task.status.can_set_speed_limit();
+        let can_speed = commands_available
+            && task.status.can_set_speed_limit()
+            && self.snapshot.capabilities.change_option;
         let has_source = task
             .primary_source
             .as_deref()
@@ -5544,7 +5611,7 @@ impl AppShell {
                 ContextMenuAction::ForcePause,
                 "Force pause",
                 None,
-                can_pause,
+                can_force_pause,
                 false,
             ));
         }
@@ -5783,18 +5850,29 @@ impl AppShell {
                 IconButton::new("force-pause-all-action", IconName::Square)
                     .aria_label("Force pause all tasks")
                     .style(ButtonStyle::Ghost)
-                    .disabled(!commands_available)
+                    .disabled(!commands_available || !self.snapshot.capabilities.force_pause_all)
                     .loading(pending_global == Some(GlobalTaskCommandView::ForcePauseAll))
-                    .tooltip(Tooltip::new("Force pause all"))
+                    .tooltip(Tooltip::new(
+                        if self.snapshot.capabilities.force_pause_all {
+                            "Force pause all"
+                        } else {
+                            self.snapshot
+                                .capabilities
+                                .unsupported_force_pause_all_message()
+                        },
+                    ))
                     .render(colors)
-                    .when(commands_available, |button| {
-                        button.on_click(cx.listener(|this, _, _, cx| {
-                            this.begin_global_task_command(
-                                GlobalTaskCommandView::ForcePauseAll,
-                                cx,
-                            );
-                        }))
-                    }),
+                    .when(
+                        commands_available && self.snapshot.capabilities.force_pause_all,
+                        |button| {
+                            button.on_click(cx.listener(|this, _, _, cx| {
+                                this.begin_global_task_command(
+                                    GlobalTaskCommandView::ForcePauseAll,
+                                    cx,
+                                );
+                            }))
+                        },
+                    ),
             )
             .child(
                 IconButton::new("resume-all-action", IconName::Play)
@@ -6000,6 +6078,7 @@ impl AppShell {
         let commands_available = self.snapshot.commands_available() && idle;
         let details_enabled = self.snapshot.commands_available();
         let pause_enabled = commands_available && task.status.can_pause();
+        let force_pause_enabled = pause_enabled && self.snapshot.capabilities.force_pause;
         let resume_enabled = commands_available && task.status.can_resume();
         let retry_enabled = commands_available && task.status.can_retry();
         let remove_enabled = commands_available && task.status.can_remove();
@@ -6051,16 +6130,20 @@ impl AppShell {
                         toolbar_icon_button(
                             "force-pause-task-action",
                             IconName::Square,
-                            "Force pause",
+                            if self.snapshot.capabilities.force_pause {
+                                "Force pause"
+                            } else {
+                                self.snapshot.capabilities.unsupported_force_pause_message()
+                            },
                             ToolbarButtonState::from_flags(
-                                pause_enabled,
+                                force_pause_enabled,
                                 pending_command == Some(TaskCommandView::ForcePause),
                             ),
                             false,
                             None,
                             colors,
                         )
-                        .when(pause_enabled, |button| {
+                        .when(force_pause_enabled, |button| {
                             button.on_click(cx.listener(|this, _, _window, cx| {
                                 this.begin_task_command(TaskCommandView::ForcePause, cx);
                             }))
@@ -6255,6 +6338,7 @@ impl AppShell {
             && self.remove_confirmation.is_none();
         let commands_available = self.snapshot.commands_available() && idle;
         let can_pause = selected.iter().any(|task| task.status.can_pause());
+        let can_force_pause = can_pause && self.snapshot.capabilities.force_pause;
         let can_resume = selected.iter().any(|task| task.status.can_resume());
         let can_retry = selected.iter().any(|task| task.status.can_retry());
         let can_remove = selected.iter().any(|task| task.status.can_remove());
@@ -6298,16 +6382,20 @@ impl AppShell {
                 toolbar_icon_button(
                     "batch-force-pause-action",
                     IconName::Square,
-                    "Force pause selected",
+                    if self.snapshot.capabilities.force_pause {
+                        "Force pause selected"
+                    } else {
+                        self.snapshot.capabilities.unsupported_force_pause_message()
+                    },
                     ToolbarButtonState::from_flags(
-                        commands_available && can_pause,
+                        commands_available && can_force_pause,
                         pending == Some(BatchTaskCommandView::ForcePause),
                     ),
                     false,
                     None,
                     colors,
                 )
-                .when(commands_available && can_pause, |button| {
+                .when(commands_available && can_force_pause, |button| {
                     button.on_click(cx.listener(|this, _, _, cx| {
                         this.begin_batch_task_command(BatchTaskCommandView::ForcePause, cx);
                     }))
@@ -10953,6 +11041,7 @@ mod tests {
                 can_load_more: false,
             },
             tasks: (0..count).map(task).collect(),
+            capabilities: crate::EngineCapabilitiesView::unknown(),
         }
     }
 
@@ -13438,6 +13527,44 @@ mod tests {
             assert!(shell.activity_log.is_empty());
             shell.close_activity_panel(window, cx);
             assert!(!shell.activity_panel_open);
+        });
+    }
+
+    #[gpui::test]
+    fn force_pause_is_blocked_when_capabilities_omit_the_method(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell.snapshot.tasks[0].status = TaskStatusView::Active;
+            shell.selected = Some(task(0).identity);
+            shell.selected_tasks = std::collections::HashSet::from([task(0).identity]);
+            // Probed methods without forcePause: UI must explain and not submit.
+            shell.snapshot.capabilities = crate::EngineCapabilitiesView {
+                version: "1.37.0".into(),
+                methods_probed: true,
+                force_pause: false,
+                force_pause_all: false,
+                force_remove: false,
+                queue_positioning: true,
+                change_option: true,
+                change_global_option: true,
+                get_peers: true,
+                get_servers: true,
+                multicall: true,
+            };
+            shell
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.begin_task_command(TaskCommandView::ForcePause, cx);
+            assert!(shell.pending_task_command.is_none());
+            let notice = shell.status_notice.as_ref().expect("capability notice");
+            assert!(notice.is_error);
+            assert!(
+                notice.message.contains("force-pause") || notice.message.contains("forcePause"),
+                "{}",
+                notice.message
+            );
         });
     }
 }

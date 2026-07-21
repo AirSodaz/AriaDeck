@@ -865,6 +865,38 @@ profile directory remains addressable.
 
 Legend: `[ ]` planned, `[-]` in progress, `[x]` implemented and verified.
 
+
+### D-027 - Advanced controls are gated by listMethods, not raw RPC failures
+
+**Decision:** RPC-002 publishes system.listMethods into EngineCapabilities on
+connect and uses that probe to preflight advanced write paths before they reach
+the RPC adapter. Unsupported methods produce ApplicationErrorCode::Unsupported
+explanations and disabled UI affordances rather than transport/protocol errors.
+
+**Probe rule:** Empty methods means the probe was unavailable; allows_method
+stays open-handed so older remotes keep working. When the probe returns a
+non-empty list, missing methods are fail-closed for force pause/remove,
+queue positioning, changeOption/changeGlobalOption, and related advanced
+controls.
+
+**UI rule:** Force pause (task/batch/global), queue moves, and option editors
+consult WorkspaceSnapshot.capabilities. Disabled controls carry the same
+explanation string the command layer would return.
+
+**Compatibility rule:** Live aria2 coverage continues to require the force and
+multicall method set on real builds. Unit tests cover the empty-probe vs
+probed-missing matrix and preflight rejection before FakeGateway is called.
+Download-proxy smoke remains the live changeGlobalOption path; remote engines
+use the same ARIADECK_RPC_URL connection-only handoff from PROFILE-002.
+
+**Evidence:**
+
+- aria2 system.listMethods is the engine-published capability surface.
+- D-015 established Unsupported-defaulted gateway methods; this decision wires
+  the probe into command preflight and UI.
+- Motrix/AriaNg degrade or hide controls that the connected aria2 cannot offer.
+
+
 ### P0 - Correctness and Core Workflow
 
 - [x] `FNM-001` Add resolving/final/custom filename state and preserve the
@@ -985,7 +1017,7 @@ details show sanitized source/directory/output fields, exact local-path
 validation, aria2 codes 9-18 with raw details, and managed-local Open download/
 Open folder actions that refetch exact-session details before touching the
 filesystem. External profiles expose the capability as unavailable rather than
-assuming their paths are local. `RPC-001` is now complete: force pause/remove (and force-pause-all) sit on the shared gateway with capability-safe Unsupported defaults; `system.multicall` batches on-demand URI/option/peer/server projections with nested-only authentication; `system.listMethods` feeds `EngineCapabilities.methods`; and the typed task-option editor applies seed-ratio/seed-time through `changeOption` with the same outcome-unknown reconciliation as other mutations. `HISTORY-001` is now complete: stopped-history state exposes loaded/total/next-offset, SyncHandle.load_more_stopped appends pages without dropping earlier ones, the status bar shows History loaded/total with single-flight Load more, and managed aria2 keeps 5000 terminal results in memory. `ADD-005` is now complete: typed advanced add controls cover referer, user-agent, custom headers, cookie, HTTP auth, and checksum for direct URL tasks; secrets stay redacted; multi-value headers collapse at the RPC boundary. `RATE-002` is now complete: typed transfer policy covers max concurrent downloads, connections per server, split, min-split size, file allocation, and integrity check with schema v4 persistence, session-bound apply/reapply/rollback, scope-labeled settings UI, and per-task connection-policy command surface (D-023). Pause/resume scheduling remains deferred. `UI-002` is now complete: right-click task context menu mirrors toolbar/details actions while preserving multi-selection, queue-move shortcuts are workspace-bound, remove restores list focus, and existing sort/hidden-selection/mixed-state batch paths remain the authority (D-024). `OBS-001` is now complete: snapshot-diff completion/error grouping, schema v5 notification preferences (Normal/Quiet/Silent + category toggles), session activity history panel, and preference-gated automatic toasts (D-025). OS-native notifications remain deferred. `PROFILE-002` is now complete: exclusive managed-profile ownership lock, corrupt session/profile recovery with backups and startup notices, preserved profile identity, and external RPC connection-only handoff (D-026). Multi-profile switching UI remains PROFILE-001. Remaining P1 audit items and P2 platform work are next.
+assuming their paths are local. `RPC-001` is now complete: force pause/remove (and force-pause-all) sit on the shared gateway with capability-safe Unsupported defaults; `system.multicall` batches on-demand URI/option/peer/server projections with nested-only authentication; `system.listMethods` feeds `EngineCapabilities.methods`; and the typed task-option editor applies seed-ratio/seed-time through `changeOption` with the same outcome-unknown reconciliation as other mutations. `HISTORY-001` is now complete: stopped-history state exposes loaded/total/next-offset, SyncHandle.load_more_stopped appends pages without dropping earlier ones, the status bar shows History loaded/total with single-flight Load more, and managed aria2 keeps 5000 terminal results in memory. `ADD-005` is now complete: typed advanced add controls cover referer, user-agent, custom headers, cookie, HTTP auth, and checksum for direct URL tasks; secrets stay redacted; multi-value headers collapse at the RPC boundary. `RATE-002` is now complete: typed transfer policy covers max concurrent downloads, connections per server, split, min-split size, file allocation, and integrity check with schema v4 persistence, session-bound apply/reapply/rollback, scope-labeled settings UI, and per-task connection-policy command surface (D-023). Pause/resume scheduling remains deferred. `UI-002` is now complete: right-click task context menu mirrors toolbar/details actions while preserving multi-selection, queue-move shortcuts are workspace-bound, remove restores list focus, and existing sort/hidden-selection/mixed-state batch paths remain the authority (D-024). `OBS-001` is now complete: snapshot-diff completion/error grouping, schema v5 notification preferences (Normal/Quiet/Silent + category toggles), session activity history panel, and preference-gated automatic toasts (D-025). OS-native notifications remain deferred. `PROFILE-002` is now complete: exclusive managed-profile ownership lock, corrupt session/profile recovery with backups and startup notices, preserved profile identity, and external RPC connection-only handoff (D-026). Multi-profile switching UI remains PROFILE-001. `RPC-002` is now complete: listMethods-backed EngineCapabilities gate force/queue/option controls in command preflight and UI, with empty-probe open-handed fallback and live force/proxy/multicall smoke coverage (D-027). Remaining P1 audit items and P2 platform work are next.
 The proxy slice includes schema migration, validated endpoint/bypass fields,
 masked password input, system credential storage, session-bound runtime apply,
 new-session reapply, and explicit clearing. `FILE-002` now has
@@ -1070,10 +1102,11 @@ several can be shared by more than one feature.
   lock, corrupt session/profile metadata recovery with preserved backups,
   managed-engine shutdown ownership on close, and external RPC endpoint handoff
   without shared session files (D-026). Multi-profile UI remains PROFILE-001.
-- [ ] `RPC-002` Gate advanced controls by detected aria2 capabilities and add
-  compatibility tests across supported versions/builds. Unsupported methods
-  must become disabled explanations rather than raw RPC failures; include real
-  download-proxy and remote-engine smoke paths.
+- [x] `RPC-002` Gate advanced controls by detected aria2 capabilities and add
+  compatibility tests across supported versions/builds. listMethods fills
+  EngineCapabilities; force/queue/option controls preflight and disable with
+  explanations when missing; empty probe stays open-handed (D-027). Live
+  proxy/force/multicall coverage remains the real-engine smoke path.
 
 ### P2 - Platform, Security, and Release Readiness
 
@@ -1175,5 +1208,8 @@ acceptance outcomes overlap.
 
 | 2026-07-21 | `PROFILE-002` | `cargo test --workspace --no-fail-fast` | Pass - 286 passed, 13 ignored; adds profile ownership lock (fail-closed live owner, stale reclaim), session corruption recovery, profiles.json load_or_recover with identity preservation, and managed-start startup notices |
 | 2026-07-21 | `PROFILE-002` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+
+| 2026-07-21 | `RPC-002` | `cargo test --workspace --no-fail-fast` | Pass - 290 passed, 13 ignored; adds EngineCapabilities helpers and StoreSnapshot/UI projection, command preflight for force/queue/global/option methods, disabled UI explanations, and empty-probe vs probed-missing unit coverage |
+| 2026-07-21 | `RPC-002` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.

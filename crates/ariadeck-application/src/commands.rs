@@ -11,7 +11,9 @@ use ariadeck_domain::{
 use secrecy::{ExposeSecret, SecretString};
 use url::Url;
 
-use crate::{DownloadEngineGateway, GatewayError, GatewayErrorKind, TaskRemovalTarget};
+use crate::{
+    DownloadEngineGateway, EngineCapabilities, GatewayError, GatewayErrorKind, TaskRemovalTarget,
+};
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum AddDownloadSource {
@@ -858,15 +860,39 @@ impl From<GatewayError> for ApplicationError {
 pub struct CommandService {
     profile_id: ProfileId,
     gateway: Arc<dyn DownloadEngineGateway>,
+    capabilities: EngineCapabilities,
 }
 
 impl CommandService {
     #[must_use]
-    pub fn new(profile_id: ProfileId, gateway: Arc<dyn DownloadEngineGateway>) -> Self {
+    pub fn new(
+        profile_id: ProfileId,
+        gateway: Arc<dyn DownloadEngineGateway>,
+        capabilities: EngineCapabilities,
+    ) -> Self {
         Self {
             profile_id,
             gateway,
+            capabilities,
         }
+    }
+
+    /// Unit-test helper when capability gates are not under exercise.
+    #[cfg(test)]
+    #[must_use]
+    pub fn new_unprobed(profile_id: ProfileId, gateway: Arc<dyn DownloadEngineGateway>) -> Self {
+        Self::new(profile_id, gateway, EngineCapabilities::default())
+    }
+
+    fn require_method(&self, method: &str) -> Result<(), ApplicationError> {
+        if self.capabilities.allows_method(method) {
+            return Ok(());
+        }
+        Err(ApplicationError::new(
+            ApplicationErrorCode::Unsupported,
+            EngineCapabilities::unsupported_method_message(method),
+            false,
+        ))
     }
 
     pub async fn execute(
@@ -940,6 +966,7 @@ impl CommandService {
         config: &DownloadProxyConfig,
     ) -> Result<(), ApplicationError> {
         config.validate()?;
+        self.require_method("aria2.changeGlobalOption")?;
         self.gateway
             .apply_download_proxy(config)
             .await
@@ -950,6 +977,7 @@ impl CommandService {
         &self,
         config: &SpeedLimitConfig,
     ) -> Result<(), ApplicationError> {
+        self.require_method("aria2.changeGlobalOption")?;
         self.gateway
             .apply_speed_limit(config)
             .await
@@ -967,10 +995,26 @@ impl CommandService {
                 false,
             ));
         }
+        self.require_method("aria2.changeGlobalOption")?;
         self.gateway
             .apply_transfer_policy(config)
             .await
             .map_err(Into::into)
+    }
+
+    async fn change_options_gated(
+        &self,
+        gid: ariadeck_domain::Gid,
+        options: &[(String, String)],
+    ) -> Result<(), GatewayError> {
+        if let Err(error) = self.require_method("aria2.changeOption") {
+            return Err(GatewayError::new(
+                GatewayErrorKind::Unsupported,
+                error.summary,
+                false,
+            ));
+        }
+        self.gateway.change_options(gid, options).await
     }
 
     async fn set_task_speed_limit(
@@ -1025,11 +1069,7 @@ impl CommandService {
                 request.upload_limit.get().to_string(),
             ),
         ];
-        match self
-            .gateway
-            .change_options(request.task.gid, &options)
-            .await
-        {
+        match self.change_options_gated(request.task.gid, &options).await {
             Ok(()) => CommandOutcome::Success {
                 succeeded: vec![item],
             },
@@ -1107,11 +1147,7 @@ impl CommandService {
                 request.policy.min_split_size.to_string(),
             ),
         ];
-        match self
-            .gateway
-            .change_options(request.task.gid, &options)
-            .await
-        {
+        match self.change_options_gated(request.task.gid, &options).await {
             Ok(()) => CommandOutcome::Success {
                 succeeded: vec![item],
             },
@@ -1249,11 +1285,7 @@ impl CommandService {
             };
         }
         let options = request.to_option_pairs();
-        match self
-            .gateway
-            .change_options(request.task.gid, &options)
-            .await
-        {
+        match self.change_options_gated(request.task.gid, &options).await {
             Ok(()) => CommandOutcome::Success {
                 succeeded: vec![item],
             },
@@ -1267,6 +1299,14 @@ impl CommandService {
     }
 
     async fn execute_global(&self, operation: GlobalTaskOperation) -> CommandOutcome {
+        let required = match operation {
+            GlobalTaskOperation::PauseAll => "aria2.pauseAll",
+            GlobalTaskOperation::ForcePauseAll => "aria2.forcePauseAll",
+            GlobalTaskOperation::ResumeAll => "aria2.unpauseAll",
+        };
+        if let Err(error) = self.require_method(required) {
+            return CommandOutcome::failure(error);
+        }
         let result = match operation {
             GlobalTaskOperation::PauseAll => self.gateway.pause_all().await,
             GlobalTaskOperation::ForcePauseAll => self.gateway.force_pause_all().await,
@@ -1353,11 +1393,7 @@ impl CommandService {
         }
 
         let options = [("out".to_owned(), output_name.to_owned())];
-        match self
-            .gateway
-            .change_options(request.task.gid, &options)
-            .await
-        {
+        match self.change_options_gated(request.task.gid, &options).await {
             Ok(()) => CommandOutcome::Success {
                 succeeded: vec![item],
             },
@@ -1453,6 +1489,21 @@ impl CommandService {
                 continue;
             }
 
+            let required = match operation {
+                TaskOperation::Pause => "aria2.pause",
+                TaskOperation::ForcePause => "aria2.forcePause",
+                TaskOperation::Resume => "aria2.unpause",
+                TaskOperation::MoveInQueue(_) => "aria2.changePosition",
+                TaskOperation::Remove(_) => "aria2.remove",
+                TaskOperation::ForceRemove(_) => "aria2.forceRemove",
+            };
+            if let Err(error) = self.require_method(required) {
+                failed.push(ItemFailure {
+                    item: Some(item),
+                    error,
+                });
+                continue;
+            }
             let result = match operation {
                 TaskOperation::Pause => self.gateway.pause(identity.gid).await,
                 TaskOperation::ForcePause => self.gateway.force_pause(identity.gid).await,
@@ -1878,7 +1929,7 @@ mod tests {
             queue_moves: Mutex::default(),
             fail_gid: Some(Gid::from_u64(2)),
         });
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let one = TaskIdentity::new(profile_id, Gid::from_u64(1));
         let two = TaskIdentity::new(profile_id, Gid::from_u64(2));
         let contexts = HashMap::from([
@@ -1920,7 +1971,7 @@ mod tests {
     fn batch_command_skips_ineligible_tasks_without_calling_the_gateway() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let active = TaskIdentity::new(profile_id, Gid::from_u64(1));
         let complete = TaskIdentity::new(profile_id, Gid::from_u64(2));
         let contexts = HashMap::from([
@@ -1964,7 +2015,7 @@ mod tests {
     fn wrong_profile_is_rejected_before_gateway_call() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let foreign = TaskIdentity::new(ProfileId::new(), Gid::from_u64(1));
 
         let outcome = block_on(service.execute(
@@ -1992,7 +2043,7 @@ mod tests {
     fn add_download_rejects_unsupported_or_malformed_uris() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway);
+        let service = CommandService::new_unprobed(profile_id, gateway);
 
         for uri in ["not a uri", "file:///tmp/item.bin", "javascript:alert(1)"] {
             let outcome = block_on(service.execute(
@@ -2017,7 +2068,7 @@ mod tests {
     fn add_download_rejects_duplicate_mirror_sources_before_gateway_call() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
 
         let outcome = block_on(service.execute(
             AppCommand::AddDownload(AddDownloadRequest {
@@ -2051,7 +2102,7 @@ mod tests {
     fn add_download_rejects_empty_metadata_before_gateway_call() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
 
         let outcome = block_on(service.execute(
             AppCommand::AddDownload(AddDownloadRequest {
@@ -2082,7 +2133,7 @@ mod tests {
     fn add_download_rejects_invalid_or_non_metadata_file_selection() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
 
         for selected_file_indices in [
             Some(Vec::new()),
@@ -2140,7 +2191,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) =
             Some(vec![Gid::from_u64(11), Gid::from_u64(12)]);
-        let service = CommandService::new(profile_id, gateway);
+        let service = CommandService::new_unprobed(profile_id, gateway);
 
         let outcome = block_on(service.execute(
             AppCommand::AddDownload(AddDownloadRequest {
@@ -2174,7 +2225,7 @@ mod tests {
             .add_gids
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Vec::new());
-        let service = CommandService::new(profile_id, gateway);
+        let service = CommandService::new_unprobed(profile_id, gateway);
 
         let outcome = block_on(service.execute(
             AppCommand::AddDownload(AddDownloadRequest {
@@ -2199,7 +2250,7 @@ mod tests {
     fn removal_targets_live_tasks_and_terminal_results_separately() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let live = TaskIdentity::new(profile_id, Gid::from_u64(1));
         let complete = TaskIdentity::new(profile_id, Gid::from_u64(2));
         let removed = TaskIdentity::new(profile_id, Gid::from_u64(3));
@@ -2253,7 +2304,7 @@ mod tests {
     fn queue_move_dispatches_to_the_gateway_for_a_live_task() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let waiting = TaskIdentity::new(profile_id, Gid::from_u64(4));
         let contexts = HashMap::from([(
             waiting,
@@ -2290,7 +2341,7 @@ mod tests {
     fn queue_move_is_rejected_for_terminal_tasks_before_the_gateway() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let complete = TaskIdentity::new(profile_id, Gid::from_u64(5));
         let contexts = HashMap::from([(
             complete,
@@ -2325,7 +2376,7 @@ mod tests {
     fn retry_creates_a_new_task_from_the_known_source_and_destination() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let failed_task = TaskIdentity::new(profile_id, Gid::from_u64(7));
         let contexts = HashMap::from([(
             failed_task,
@@ -2376,7 +2427,7 @@ mod tests {
     fn direct_uri_output_name_change_is_validated_and_forwarded() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let task = TaskIdentity::new(profile_id, Gid::from_u64(8));
         let contexts = HashMap::from([(
             task,
@@ -2416,7 +2467,7 @@ mod tests {
     fn output_name_change_rejects_paths_and_non_uri_tasks() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let task = TaskIdentity::new(profile_id, Gid::from_u64(9));
         let contexts = HashMap::from([(
             task,
@@ -2452,7 +2503,7 @@ mod tests {
     fn task_speed_limit_forwards_typed_change_options_for_a_live_task() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let task = TaskIdentity::new(profile_id, Gid::from_u64(11));
         let contexts = HashMap::from([(
             task,
@@ -2496,7 +2547,7 @@ mod tests {
     fn task_speed_limit_rejects_terminal_tasks_before_the_gateway() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let task = TaskIdentity::new(profile_id, Gid::from_u64(12));
         let contexts = HashMap::from([(
             task,
@@ -2529,7 +2580,7 @@ mod tests {
     fn global_speed_limit_forwards_overall_options_to_the_gateway() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
 
         let result = block_on(service.apply_speed_limit(&SpeedLimitConfig {
             download_limit: ariadeck_domain::ByteRate::new(5 * 1024 * 1024),
@@ -2556,7 +2607,7 @@ mod tests {
     fn task_connection_policy_forwards_typed_change_options_for_a_live_task() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let task = TaskIdentity::new(profile_id, Gid::from_u64(21));
         let contexts = HashMap::from([(
             task,
@@ -2604,7 +2655,7 @@ mod tests {
     fn task_connection_policy_rejects_terminal_and_out_of_range_values() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let task = TaskIdentity::new(profile_id, Gid::from_u64(22));
         let contexts = HashMap::from([(
             task,
@@ -2652,7 +2703,7 @@ mod tests {
     fn global_transfer_policy_forwards_typed_options_to_the_gateway() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
 
         let result = block_on(service.apply_transfer_policy(&TransferPolicyConfig {
             max_concurrent_downloads: 3,
@@ -2684,7 +2735,7 @@ mod tests {
     fn retry_rejects_non_failed_or_unreplayable_tasks_before_the_gateway() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let active = TaskIdentity::new(profile_id, Gid::from_u64(1));
         let missing_source = TaskIdentity::new(profile_id, Gid::from_u64(2));
         let contexts = HashMap::from([
@@ -2727,7 +2778,7 @@ mod tests {
     fn force_pause_and_force_remove_forward_to_the_gateway() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let task = TaskIdentity::new(profile_id, Gid::from_u64(21));
         let contexts = HashMap::from([(
             task,
@@ -2775,7 +2826,7 @@ mod tests {
     fn set_task_options_maps_typed_seed_and_file_selection_fields() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let task = TaskIdentity::new(profile_id, Gid::from_u64(22));
         let contexts = HashMap::from([(
             task,
@@ -2824,7 +2875,7 @@ mod tests {
     fn set_task_options_rejects_seed_rules_for_direct_uri_tasks() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let task = TaskIdentity::new(profile_id, Gid::from_u64(23));
         let contexts = HashMap::from([(
             task,
@@ -2933,7 +2984,7 @@ mod tests {
     fn add_download_forwards_typed_advanced_options_only_for_direct_uris() {
         let profile_id = ProfileId::new();
         let gateway = Arc::new(FakeGateway::default());
-        let service = CommandService::new(profile_id, gateway.clone());
+        let service = CommandService::new_unprobed(profile_id, gateway.clone());
         let advanced = AddDownloadAdvancedOptions {
             referer: Some("https://cdn.example/ref".into()),
             headers: vec!["X-Request-Id: 1".into()],
@@ -2982,6 +3033,71 @@ mod tests {
                 .len(),
             1,
             "invalid metadata advanced options must not reach the gateway"
+        );
+    }
+
+    #[test]
+    fn force_pause_is_rejected_before_the_gateway_when_list_methods_omits_it() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let capabilities = EngineCapabilities {
+            version: "1.37.0".into(),
+            enabled_features: Vec::new(),
+            methods: vec![
+                "aria2.pause".into(),
+                "aria2.unpause".into(),
+                "aria2.remove".into(),
+            ],
+        };
+        let service = CommandService::new(profile_id, gateway.clone(), capabilities);
+        let task = TaskIdentity::new(profile_id, Gid::from_u64(99));
+        let contexts = HashMap::from([(
+            task,
+            TaskCommandContext {
+                status: DownloadStatus::Active,
+                metadata: TaskMetadata::default(),
+            },
+        )]);
+
+        let outcome = block_on(service.execute(AppCommand::ForcePauseTasks(vec![task]), &contexts));
+        match outcome {
+            CommandOutcome::Failure { failed } => {
+                assert_eq!(failed.len(), 1);
+                assert_eq!(failed[0].error.code, ApplicationErrorCode::Unsupported);
+                assert!(
+                    failed[0].error.summary.contains("force-pause")
+                        || failed[0].error.summary.contains("forcePause"),
+                    "{}",
+                    failed[0].error.summary
+                );
+            }
+            other => panic!("expected capability rejection, got {other:?}"),
+        }
+        assert!(
+            gateway
+                .calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty(),
+            "unsupported force-pause must not reach the gateway"
+        );
+    }
+
+    #[test]
+    fn change_global_option_controls_are_gated_when_missing_from_list_methods() {
+        let profile_id = ProfileId::new();
+        let gateway = Arc::new(FakeGateway::default());
+        let capabilities = EngineCapabilities {
+            version: "1.36.0".into(),
+            enabled_features: Vec::new(),
+            methods: vec!["aria2.getVersion".into(), "aria2.tellActive".into()],
+        };
+        let service = CommandService::new(profile_id, gateway.clone(), capabilities);
+        let err = block_on(service.apply_download_proxy(&DownloadProxyConfig::default()))
+            .expect_err("proxy apply must be gated");
+        assert_eq!(err.code, ApplicationErrorCode::Unsupported);
+        assert!(
+            err.summary.contains("changeGlobalOption") || err.summary.contains("global option")
         );
     }
 }

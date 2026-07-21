@@ -1318,8 +1318,9 @@ async fn force_ops_multicall_and_typed_seed_options_on_live_aria2() -> Result<()
         Some(RpcSecret::new(secret)),
     ));
 
-    // Capability probe: every supported aria2 build publishes the force and
-    // multicall methods AriaDeck now depends on for RPC-001.
+    // Capability probe (RPC-002): every supported aria2 build publishes the force
+    // and multicall methods AriaDeck gates advanced controls against. listMethods
+    // feeds EngineCapabilities; missing methods become disabled explanations.
     let methods = client.list_methods().await?;
     for required in [
         "aria2.forcePause",

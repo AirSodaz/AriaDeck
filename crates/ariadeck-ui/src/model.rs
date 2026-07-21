@@ -324,6 +324,67 @@ impl EngineHealthView {
     }
 }
 
+/// UI projection of aria2 capabilities from system.listMethods (RPC-002).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EngineCapabilitiesView {
+    pub version: String,
+    pub methods_probed: bool,
+    pub force_pause: bool,
+    pub force_pause_all: bool,
+    pub force_remove: bool,
+    pub queue_positioning: bool,
+    pub change_option: bool,
+    pub change_global_option: bool,
+    pub get_peers: bool,
+    pub get_servers: bool,
+    pub multicall: bool,
+}
+
+impl EngineCapabilitiesView {
+    /// Open-handed defaults used before the first successful capability probe.
+    #[must_use]
+    pub fn unknown() -> Self {
+        Self {
+            version: String::new(),
+            methods_probed: false,
+            force_pause: true,
+            force_pause_all: true,
+            force_remove: true,
+            queue_positioning: true,
+            change_option: true,
+            change_global_option: true,
+            get_peers: true,
+            get_servers: true,
+            multicall: true,
+        }
+    }
+
+    #[must_use]
+    pub fn unsupported_force_pause_message(&self) -> &'static str {
+        "This aria2 build does not expose force-pause."
+    }
+
+    #[must_use]
+    pub fn unsupported_force_pause_all_message(&self) -> &'static str {
+        "This aria2 build does not expose force-pause-all."
+    }
+
+    #[must_use]
+    pub fn unsupported_force_remove_message(&self) -> &'static str {
+        "This aria2 build does not expose force-remove."
+    }
+
+    #[must_use]
+    pub fn unsupported_queue_message(&self) -> &'static str {
+        "This aria2 build does not expose queue positioning."
+    }
+
+    #[must_use]
+    pub fn unsupported_change_option_message(&self) -> &'static str {
+        "This aria2 build does not expose per-task option changes."
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceSnapshot {
     pub profile_id: String,
@@ -339,6 +400,7 @@ pub struct WorkspaceSnapshot {
     pub counts: TaskCountsView,
     pub stopped_history: StoppedHistoryView,
     pub tasks: Vec<DownloadRowView>,
+    pub capabilities: EngineCapabilitiesView,
 }
 
 impl Default for WorkspaceSnapshot {
@@ -357,6 +419,7 @@ impl Default for WorkspaceSnapshot {
             counts: TaskCountsView::default(),
             stopped_history: StoppedHistoryView::default(),
             tasks: Vec::new(),
+            capabilities: EngineCapabilitiesView::unknown(),
         }
     }
 }

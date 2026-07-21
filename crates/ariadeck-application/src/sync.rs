@@ -23,7 +23,7 @@ use crate::{
     TaskListQuery, TaskListView,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EngineCapabilities {
     pub version: String,
     pub enabled_features: Vec<String>,
@@ -34,15 +34,121 @@ pub struct EngineCapabilities {
 }
 
 impl EngineCapabilities {
+    /// True when `system.listMethods` returned a non-empty method list.
+    #[must_use]
+    pub fn methods_probed(&self) -> bool {
+        !self.methods.is_empty()
+    }
+
+    /// Whether the engine is known to publish `method`.
+    ///
+    /// When the method list was not probed (empty), returns `true` so core
+    /// paths keep working against older remotes. Prefer
+    /// [`Self::supports_method_strict`] when a control must stay disabled until
+    /// support is proven.
     #[must_use]
     pub fn supports_method(&self, method: &str) -> bool {
-        if self.methods.is_empty() {
-            // When the probe is unavailable, degrade open-handedly only for
-            // methods that every supported aria2 build exposes. Callers that
-            // need a hard gate should treat empty as "unknown".
+        if !self.methods_probed() {
             return true;
         }
         self.methods.iter().any(|name| name == method)
+    }
+
+    /// Strict probe: only true when listMethods explicitly published `method`.
+    ///
+    /// Returns `false` when the probe is unavailable. Use this for advanced
+    /// controls that should not offer a write path until capability is known.
+    #[must_use]
+    pub fn supports_method_strict(&self, method: &str) -> bool {
+        self.methods_probed() && self.methods.iter().any(|name| name == method)
+    }
+
+    /// True when support is unknown (probe missing) or explicitly published.
+    #[must_use]
+    pub fn allows_method(&self, method: &str) -> bool {
+        !self.methods_probed() || self.supports_method_strict(method)
+    }
+
+    #[must_use]
+    pub fn supports_force_pause(&self) -> bool {
+        self.allows_method("aria2.forcePause")
+    }
+
+    #[must_use]
+    pub fn supports_force_pause_all(&self) -> bool {
+        self.allows_method("aria2.forcePauseAll")
+    }
+
+    #[must_use]
+    pub fn supports_force_remove(&self) -> bool {
+        self.allows_method("aria2.forceRemove")
+    }
+
+    #[must_use]
+    pub fn supports_queue_positioning(&self) -> bool {
+        self.allows_method("aria2.changePosition")
+    }
+
+    #[must_use]
+    pub fn supports_change_option(&self) -> bool {
+        self.allows_method("aria2.changeOption")
+    }
+
+    #[must_use]
+    pub fn supports_change_global_option(&self) -> bool {
+        self.allows_method("aria2.changeGlobalOption")
+    }
+
+    #[must_use]
+    pub fn supports_get_peers(&self) -> bool {
+        self.allows_method("aria2.getPeers")
+    }
+
+    #[must_use]
+    pub fn supports_get_servers(&self) -> bool {
+        self.allows_method("aria2.getServers")
+    }
+
+    #[must_use]
+    pub fn supports_multicall(&self) -> bool {
+        self.allows_method("system.multicall")
+    }
+
+    /// User-facing explanation when a method is missing from the probe.
+    #[must_use]
+    pub fn unsupported_method_message(method: &str) -> String {
+        match method {
+            "aria2.forcePause" => {
+                "This aria2 build does not expose force-pause (aria2.forcePause).".into()
+            }
+            "aria2.forcePauseAll" => {
+                "This aria2 build does not expose force-pause-all (aria2.forcePauseAll).".into()
+            }
+            "aria2.forceRemove" => {
+                "This aria2 build does not expose force-remove (aria2.forceRemove).".into()
+            }
+            "aria2.changePosition" => {
+                "This aria2 build does not expose queue positioning (aria2.changePosition).".into()
+            }
+            "aria2.changeOption" => {
+                "This aria2 build does not expose per-task option changes (aria2.changeOption)."
+                    .into()
+            }
+            "aria2.changeGlobalOption" => {
+                "This aria2 build does not expose global option changes (aria2.changeGlobalOption)."
+                    .into()
+            }
+            "aria2.getPeers" => {
+                "This aria2 build does not expose peer details (aria2.getPeers).".into()
+            }
+            "aria2.getServers" => {
+                "This aria2 build does not expose server details (aria2.getServers).".into()
+            }
+            "system.multicall" => {
+                "This aria2 build does not expose multicall (system.multicall).".into()
+            }
+            other => format!("This aria2 build does not expose {other}."),
+        }
     }
 }
 
@@ -299,6 +405,8 @@ pub struct StoreSnapshot {
     pub view: TaskListView,
     pub tasks: Vec<DownloadTask>,
     pub observed_seeding_seconds: HashMap<Gid, u64>,
+    /// Last probed engine capabilities for this session (empty before connect).
+    pub capabilities: EngineCapabilities,
 }
 
 #[derive(Clone)]
@@ -548,7 +656,12 @@ fn handle_unavailable_control(
             UnavailableControlDisposition::Continue
         }
         Some(Control::Snapshot { query, sender }) => {
-            let _ = sender.send(build_snapshot(store, state, &query));
+            let _ = sender.send(build_snapshot(
+                store,
+                state,
+                &query,
+                &EngineCapabilities::default(),
+            ));
             UnavailableControlDisposition::Continue
         }
         Some(Control::Execute { sender, .. }) => {
@@ -833,23 +946,27 @@ async fn run_coordinator(
         };
 
         set_state(&events, &mut state, ConnectionState::Synchronizing);
-        if let Err(error) = apply_initial_snapshot(&mut store, generation, initial, &events) {
-            session.close().await;
-            let _ = handle_connection_failure(&events, &mut state, &mut store, generation, &error);
-            if wait_for_manual_retry(
-                &mut commands,
-                &store,
-                &state,
-                &mut activity,
-                &mut cancellation,
-            )
-            .await
-            {
-                backoff.reset();
-                continue;
+        let capabilities = match apply_initial_snapshot(&mut store, generation, initial, &events) {
+            Ok(capabilities) => capabilities,
+            Err(error) => {
+                session.close().await;
+                let _ =
+                    handle_connection_failure(&events, &mut state, &mut store, generation, &error);
+                if wait_for_manual_retry(
+                    &mut commands,
+                    &store,
+                    &state,
+                    &mut activity,
+                    &mut cancellation,
+                )
+                .await
+                {
+                    backoff.reset();
+                    continue;
+                }
+                return;
             }
-            return;
-        }
+        };
         set_state(&events, &mut state, ConnectionState::Connected);
         let connected_at = Instant::now();
 
@@ -867,6 +984,7 @@ async fn run_coordinator(
             &config,
             &events,
             &mut cancellation,
+            &capabilities,
         )
         .await
         {
@@ -953,6 +1071,7 @@ async fn run_connected(
     config: &CoordinatorConfig,
     events: &broadcast::Sender<SyncEvent>,
     cancellation: &mut watch::Receiver<bool>,
+    capabilities: &EngineCapabilities,
 ) -> ConnectedExit {
     let mut timers = PollTimers::new(config.refresh, *activity);
     let mut pending_tasks = HashSet::new();
@@ -1018,7 +1137,7 @@ async fn run_connected(
                         }
                     }
                     Some(Control::Snapshot { query, sender }) => {
-                        let _ = sender.send(build_snapshot(store, state, &query));
+                        let _ = sender.send(build_snapshot(store, state, &query, capabilities));
                     }
                     Some(Control::Execute {
                         session: expected_session,
@@ -1035,7 +1154,11 @@ async fn run_connected(
                             )));
                             continue;
                         };
-                        let service = CommandService::new(config.profile_id, gateway.clone());
+                        let service = CommandService::new(
+                            config.profile_id,
+                            gateway.clone(),
+                            capabilities.clone(),
+                        );
                         let task_contexts = match &command {
                             AppCommand::PauseTasks(tasks)
                             | AppCommand::ForcePauseTasks(tasks)
@@ -1142,7 +1265,7 @@ async fn run_connected(
                             )));
                             continue;
                         };
-                        let service = CommandService::new(config.profile_id, gateway.clone());
+                        let service = CommandService::new(config.profile_id, gateway.clone(), capabilities.clone());
                         let result = tokio::select! {
                             biased;
                             () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
@@ -1165,7 +1288,7 @@ async fn run_connected(
                             )));
                             continue;
                         };
-                        let service = CommandService::new(config.profile_id, gateway.clone());
+                        let service = CommandService::new(config.profile_id, gateway.clone(), capabilities.clone());
                         let result = tokio::select! {
                             biased;
                             () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
@@ -1188,7 +1311,7 @@ async fn run_connected(
                             )));
                             continue;
                         };
-                        let service = CommandService::new(config.profile_id, gateway.clone());
+                        let service = CommandService::new(config.profile_id, gateway.clone(), capabilities.clone());
                         let result = tokio::select! {
                             biased;
                             () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
@@ -1442,9 +1565,10 @@ fn apply_initial_snapshot(
     generation: SessionGeneration,
     initial: InitialSyncSnapshot,
     events: &broadcast::Sender<SyncEvent>,
-) -> Result<(), SyncError> {
+) -> Result<EngineCapabilities, SyncError> {
     validate_capabilities(&initial.capabilities)?;
-    let _ = events.send(SyncEvent::CapabilitiesChanged(initial.capabilities));
+    let capabilities = initial.capabilities.clone();
+    let _ = events.send(SyncEvent::CapabilitiesChanged(capabilities.clone()));
     store
         .record_speed_sample(generation, initial.global_stat)
         .map_err(SyncError::store)?;
@@ -1477,7 +1601,7 @@ fn apply_initial_snapshot(
             .set_stale(generation, false)
             .map_err(SyncError::store)?,
     );
-    Ok(())
+    Ok(capabilities)
 }
 
 fn validate_capabilities(capabilities: &EngineCapabilities) -> Result<(), SyncError> {
@@ -1591,6 +1715,7 @@ fn build_snapshot(
     store: &DownloadStore,
     state: &ConnectionState,
     query: &TaskListQuery,
+    capabilities: &EngineCapabilities,
 ) -> StoreSnapshot {
     let view = store.view(query);
     let tasks = view
@@ -1617,6 +1742,7 @@ fn build_snapshot(
         view,
         tasks,
         observed_seeding_seconds,
+        capabilities: capabilities.clone(),
     }
 }
 
@@ -2189,6 +2315,38 @@ mod tests {
     }
 
     #[test]
+    fn capability_helpers_treat_empty_probe_as_unknown_and_strict_as_false() {
+        let unknown = EngineCapabilities {
+            version: "1.37.0".into(),
+            enabled_features: Vec::new(),
+            methods: Vec::new(),
+        };
+        assert!(!unknown.methods_probed());
+        assert!(unknown.supports_method("aria2.forcePause"));
+        assert!(!unknown.supports_method_strict("aria2.forcePause"));
+        assert!(unknown.allows_method("aria2.forcePause"));
+        assert!(unknown.supports_force_pause());
+
+        let probed = EngineCapabilities {
+            version: "1.37.0".into(),
+            enabled_features: vec!["BitTorrent".into()],
+            methods: vec![
+                "aria2.pause".into(),
+                "aria2.changeGlobalOption".into(),
+                "system.listMethods".into(),
+            ],
+        };
+        assert!(probed.methods_probed());
+        assert!(probed.supports_change_global_option());
+        assert!(!probed.supports_force_pause());
+        assert!(!probed.supports_queue_positioning());
+        assert!(
+            EngineCapabilities::unsupported_method_message("aria2.forcePause")
+                .contains("force-pause")
+        );
+    }
+
+    #[test]
     fn reconnect_backoff_is_bounded_and_resettable() {
         let policy = ReconnectPolicy {
             base_delay: Duration::from_millis(100),
@@ -2254,6 +2412,7 @@ mod tests {
             &store,
             &ConnectionState::Connected,
             &TaskListQuery::default(),
+            &EngineCapabilities::default(),
         );
         assert_eq!(snapshot.speed_history.samples().len(), 1);
     }

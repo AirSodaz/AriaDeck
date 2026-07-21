@@ -12,11 +12,12 @@ use ariadeck_application::{
     AddDownloadAdvancedOptions, AddDownloadRequest, AddDownloadSource, AppCommand,
     ApplicationError, ApplicationErrorCode, CommandItem, CommandOutcome, CoordinatorConfig,
     DownloadDestinationFile, DownloadDestinationGateway, DownloadDestinationRequest,
-    DownloadProxyConfig, DownloadProxyMode as ApplicationProxyMode, FileConflictPolicy,
-    ItemFailure, MoveTaskInQueueRequest, QueueMove, ReconnectPolicy, RemoveTasksRequest,
-    SetTaskConnectionPolicyRequest, SetTaskOptionsRequest, SetTaskOutputNameRequest,
-    SetTaskSpeedLimitRequest, StoreSnapshot, SyncHandle, TaskFileGateway, TaskFileRemovalRequest,
-    TaskListQuery, TaskOpenRequest, TaskOpenTarget, TaskRemovalScope, spawn_sync_coordinator,
+    DownloadProxyConfig, DownloadProxyMode as ApplicationProxyMode, EngineCapabilities,
+    FileConflictPolicy, ItemFailure, MoveTaskInQueueRequest, QueueMove, ReconnectPolicy,
+    RemoveTasksRequest, SetTaskConnectionPolicyRequest, SetTaskOptionsRequest,
+    SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, StoreSnapshot, SyncHandle, TaskFileGateway,
+    TaskFileRemovalRequest, TaskListQuery, TaskOpenRequest, TaskOpenTarget, TaskRemovalScope,
+    spawn_sync_coordinator,
 };
 use ariadeck_domain::{
     ByteRate, ConnectionState, DownloadFilter, DownloadSort, DownloadStatus, DownloadTask,
@@ -46,19 +47,20 @@ use ariadeck_ui::{
     AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView, AppShell, AppShellEvent,
     BatchCommandOutcomeView, BatchTaskCommandRequestView, BatchTaskCommandResultView,
     BatchTaskCommandView, BatchTaskFailureView, ColorSchemeView, CommandOutcomeView,
-    ConnectionView, DownloadProxySettingsView, DownloadRowView, EngineHealthView,
-    EngineSessionView, FileAllocationView, FileConflictPolicyView, GlobalTaskCommandRequestView,
-    GlobalTaskCommandResultView, GlobalTaskCommandView, NotificationSettingsView,
-    NotificationVolumeView, OperationErrorView, ProxyModeView, ProxyPasswordUpdateView,
-    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView, TaskCommandRequestView,
-    TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
-    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
-    TaskIdentity, TaskNameStateView, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
-    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
-    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
-    TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
-    WorkspaceSortDirection, WorkspaceSortKey, format_speed_limit_field,
+    ConnectionView, DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView,
+    EngineHealthView, EngineSessionView, FileAllocationView, FileConflictPolicyView,
+    GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView,
+    NotificationSettingsView, NotificationVolumeView, OperationErrorView, ProxyModeView,
+    ProxyPasswordUpdateView, SettingsSaveOutcomeView, SettingsSaveRequestView,
+    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView,
+    StoppedHistoryView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
+    TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
+    TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
+    TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
+    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TransferPolicySettingsView,
+    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    format_speed_limit_field,
 };
 use data_encoding::BASE32_NOPAD;
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
@@ -3709,6 +3711,23 @@ fn map_snapshot(snapshot: StoreSnapshot, local_path_actions_available: bool) -> 
                 map_task(&profile_id, task, observed)
             })
             .collect(),
+        capabilities: map_capabilities(&snapshot.capabilities),
+    }
+}
+
+fn map_capabilities(capabilities: &EngineCapabilities) -> EngineCapabilitiesView {
+    EngineCapabilitiesView {
+        version: capabilities.version.clone(),
+        methods_probed: capabilities.methods_probed(),
+        force_pause: capabilities.supports_force_pause(),
+        force_pause_all: capabilities.supports_force_pause_all(),
+        force_remove: capabilities.supports_force_remove(),
+        queue_positioning: capabilities.supports_queue_positioning(),
+        change_option: capabilities.supports_change_option(),
+        change_global_option: capabilities.supports_change_global_option(),
+        get_peers: capabilities.supports_get_peers(),
+        get_servers: capabilities.supports_get_servers(),
+        multicall: capabilities.supports_multicall(),
     }
 }
 
