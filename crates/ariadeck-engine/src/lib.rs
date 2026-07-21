@@ -126,6 +126,8 @@ pub enum EngineError {
     AlreadyOnLastWorkingCore {
         id: ariadeck_domain::CoreInstallationId,
     },
+    #[error("cannot remove the last remaining profile")]
+    CannotRemoveLastProfile,
 }
 
 fn io_error(operation: &'static str, path: &Path, source: io::Error) -> EngineError {
@@ -2003,15 +2005,8 @@ impl ProfileEntry {
         }
         match self.kind {
             ProfileKind::LocalManaged => {
-                if self
-                    .executable
-                    .as_ref()
-                    .is_none_or(|path| path.as_os_str().is_empty())
-                {
-                    return Err(EngineError::ExecutableNotFound {
-                        path: PathBuf::new(),
-                    });
-                }
+                // Empty executable means "resolve from the active managed core
+                // (or PATH discovery) at spawn time" — not a validation error.
                 if self
                     .data_dir
                     .as_ref()
@@ -2030,6 +2025,17 @@ impl ProfileEntry {
             }
         }
         Ok(())
+    }
+
+    /// Local profiles with no explicit executable path use the active managed
+    /// core (or discovery) at process start.
+    #[must_use]
+    pub fn uses_managed_core(&self) -> bool {
+        self.kind == ProfileKind::LocalManaged
+            && self
+                .executable
+                .as_ref()
+                .is_none_or(|path| path.as_os_str().is_empty())
     }
 
     #[must_use]
@@ -2051,7 +2057,8 @@ impl ProfileEntry {
         Some(LocalEngineConfig {
             profile_id: self.profile_id,
             name: self.name.clone(),
-            executable: self.executable.clone()?,
+            // Empty path is intentional for managed-core resolution.
+            executable: self.executable.clone().unwrap_or_default(),
             data_dir: self.data_dir.clone()?,
             download_dir: self.download_dir.clone(),
         })
@@ -2187,13 +2194,26 @@ impl ProfileCatalog {
             .position(|profile| profile.profile_id == profile_id)
             .ok_or(EngineError::ProfileNotFound { profile_id })?;
         if self.profiles.len() == 1 {
-            return Err(EngineError::EmptyProfileCatalog);
+            return Err(EngineError::CannotRemoveLastProfile);
         }
         let removed = self.profiles.remove(index);
         if self.active_profile_id == profile_id {
             self.active_profile_id = self.profiles[0].profile_id;
         }
         Ok(removed)
+    }
+
+    #[must_use]
+    pub fn get(&self, profile_id: ProfileId) -> Option<&ProfileEntry> {
+        self.profiles
+            .iter()
+            .find(|profile| profile.profile_id == profile_id)
+    }
+
+    pub fn get_mut(&mut self, profile_id: ProfileId) -> Option<&mut ProfileEntry> {
+        self.profiles
+            .iter_mut()
+            .find(|profile| profile.profile_id == profile_id)
     }
 }
 
@@ -3215,13 +3235,33 @@ mod tests {
     }
 
     #[test]
+    fn local_profile_allows_empty_executable_for_managed_core() {
+        let root = temporary_directory();
+        let mut entry = ProfileEntry::local_managed(
+            ProfileId::new(),
+            "Managed",
+            PathBuf::new(),
+            root.clone(),
+            root.join("downloads"),
+        );
+        entry.executable = None;
+        entry
+            .validate()
+            .expect("empty executable is managed-core opt-in");
+        assert!(entry.uses_managed_core());
+        let config = entry.as_local_config().expect("local config");
+        assert!(config.executable.as_os_str().is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn catalog_refuses_to_remove_the_last_profile() {
         let root = temporary_directory();
         let profile = sample_profile(&root);
         let mut catalog = ProfileCatalog::from_single(profile.clone());
         assert!(matches!(
             catalog.remove(profile.profile_id),
-            Err(EngineError::EmptyProfileCatalog)
+            Err(EngineError::CannotRemoveLastProfile)
         ));
         let _ = fs::remove_dir_all(root);
     }

@@ -199,15 +199,8 @@ impl DesktopRoot {
                             if entry.data_dir.is_none() {
                                 entry.data_dir = Some(data_dir.clone());
                             }
-                            if entry.executable.is_none() {
-                                entry.executable = Some(
-                                    env::var_os("ARIADECK_ARIA2C_PATH")
-                                        .map(PathBuf::from)
-                                        .or(managed_executable.clone())
-                                        .or_else(discover_aria2_executable)
-                                        .unwrap_or_else(|| PathBuf::from("aria2c")),
-                                );
-                            }
+                            // Leave empty executable as managed-core opt-in;
+                            // resolve_local_executable handles spawn-time path.
                         }
                         let _ = profile_store.save_catalog(&catalog);
                         (catalog, notice)
@@ -806,19 +799,8 @@ impl DesktopRoot {
         match result {
             Ok(()) => {
                 let registry = map_core_registry(&self.core_store);
-                // Keep local profile executable aligned with active managed core when env is unset.
-                if env::var_os("ARIADECK_ARIA2C_PATH").is_none()
-                    && let Ok(Some(managed)) = self.core_store.resolve_active_executable()
-                    && let Some(entry) = self.profile_catalog.active_mut()
-                    && entry.kind == ProfileKind::LocalManaged
-                {
-                    entry.executable = Some(managed);
-                    let _ = self.profile_store.save_catalog(&self.profile_catalog);
-                    let profiles = map_profile_catalog(&self.profile_catalog);
-                    self.workspace.update(cx, |shell, cx| {
-                        shell.set_profiles(profiles, cx);
-                    });
-                }
+                // Profiles that opt into the managed core keep an empty executable
+                // path so Activate-core does not rewrite them to a pinned binary.
                 self.workspace.update(cx, |shell, cx| {
                     shell.set_core_command_result(
                         CoreCommandResultView {
@@ -2833,21 +2815,17 @@ fn create_sync_handle(
         let secret = load_profile_rpc_secret(active)?;
         (endpoint, secret, None, active.profile_id)
     } else {
-        let config = active.as_local_config().ok_or_else(|| {
-            "Active local profile is missing executable or data directory.".to_owned()
-        })?;
+        let config = active
+            .as_local_config()
+            .ok_or_else(|| "Active local profile is missing a data directory.".to_owned())?;
         // Prefer settings download directory for the live session.
         let mut config = config;
         config.download_dir = settings.download_directory.clone();
         if config.data_dir.as_os_str().is_empty() {
             config.data_dir = data_dir.to_path_buf();
         }
-        // Managed core wins when ARIADECK_ARIA2C_PATH is unset and an active core exists.
-        if env::var_os("ARIADECK_ARIA2C_PATH").is_none()
-            && let Ok(Some(managed)) = CoreStore::new(data_dir).resolve_active_executable()
-        {
-            config.executable = managed;
-        }
+        // Executable resolution: env override → profile pin → managed core → discovery.
+        config.executable = resolve_local_executable(data_dir, &config.executable)?;
         let process = LocalEngineSupervisor::spawn(&config)
             .map_err(|error| format!("Failed to start local aria2: {error}"))?;
         // Successful start: remember the active managed core as last working when present.
@@ -3072,6 +3050,23 @@ fn discover_aria2_executable() -> Option<PathBuf> {
         })
 }
 
+/// Resolve the aria2 binary for a local managed profile.
+///
+/// Order: `ARIADECK_ARIA2C_PATH` → non-empty profile pin → active managed core
+/// → PATH/scoop discovery → bare `aria2c` name.
+fn resolve_local_executable(data_dir: &Path, profile_executable: &Path) -> Result<PathBuf, String> {
+    if let Some(path) = env::var_os("ARIADECK_ARIA2C_PATH") {
+        return Ok(PathBuf::from(path));
+    }
+    if !profile_executable.as_os_str().is_empty() {
+        return Ok(profile_executable.to_path_buf());
+    }
+    if let Ok(Some(managed)) = CoreStore::new(data_dir).resolve_active_executable() {
+        return Ok(managed);
+    }
+    Ok(discover_aria2_executable().unwrap_or_else(|| PathBuf::from("aria2c")))
+}
+
 fn default_data_dir() -> PathBuf {
     if let Some(path) = env::var_os("LOCALAPPDATA") {
         return PathBuf::from(path).join("AriaDeck");
@@ -3162,41 +3157,46 @@ fn map_profile_catalog_request(
     if view.profiles.is_empty() {
         return Err("At least one profile is required.".into());
     }
-    let active_profile_id = view
-        .active_profile_id
-        .parse::<ProfileId>()
-        .map_err(|error| format!("Invalid active profile id: {error}"))?;
     let mut profiles = Vec::with_capacity(view.profiles.len());
+    let mut resolved_active: Option<ProfileId> = None;
     for entry in &view.profiles {
+        // Draft rows use non-UUID ids ("draft-local-N"); mint a stable id on save.
         let profile_id = entry
             .profile_id
             .parse::<ProfileId>()
-            .map_err(|error| format!("Invalid profile id: {error}"))?;
+            .unwrap_or_else(|_| ProfileId::new());
+        if entry.profile_id == view.active_profile_id {
+            resolved_active = Some(profile_id);
+        }
         let name = entry.name.trim();
         if name.is_empty() {
             return Err("Profile name cannot be empty.".into());
         }
         let mapped = match entry.kind {
             ProfileKindView::LocalManaged => {
+                // Empty executable = use active managed core / discovery at spawn.
                 let executable = entry.executable.trim();
-                if executable.is_empty() {
-                    return Err(format!(
-                        "Local profile {name} needs an aria2 executable path."
-                    ));
-                }
                 let download_dir = entry.download_dir.trim();
                 let download_dir = if download_dir.is_empty() {
                     settings.download_directory.clone()
                 } else {
                     PathBuf::from(download_dir)
                 };
-                ProfileEntry::local_managed(
+                let mut profile = ProfileEntry::local_managed(
                     profile_id,
                     name,
-                    PathBuf::from(executable),
+                    if executable.is_empty() {
+                        PathBuf::new()
+                    } else {
+                        PathBuf::from(executable)
+                    },
                     data_dir.to_path_buf(),
                     download_dir,
-                )
+                );
+                if executable.is_empty() {
+                    profile.executable = None;
+                }
+                profile
             }
             ProfileKindView::RemoteRpc => {
                 let endpoint = entry.endpoint.trim();
@@ -3215,6 +3215,15 @@ fn map_profile_catalog_request(
         };
         profiles.push(mapped);
     }
+    let active_profile_id = resolved_active
+        .or_else(|| {
+            view.active_profile_id
+                .parse::<ProfileId>()
+                .ok()
+                .filter(|id| profiles.iter().any(|profile| profile.profile_id == *id))
+        })
+        .or_else(|| profiles.first().map(|profile| profile.profile_id))
+        .ok_or_else(|| "At least one profile is required.".to_owned())?;
     let catalog = ProfileCatalog {
         schema_version: ariadeck_engine::PROFILE_CATALOG_SCHEMA_VERSION,
         active_profile_id,

@@ -931,6 +931,13 @@ session files stay under each local profile directory.
 
 
 
+
+**Polish (edit/delete / managed-core opt-in):** Settings Profiles now supports
+inline Edit (name/kind/executable-or-endpoint/download dir) and Delete (refuses
+the last profile; auto-saves). Local profiles may leave Executable empty to use
+the Active managed core from Settings → Engine. Spawn resolution is env → pinned
+path → managed core → discovery. Draft catalog rows mint UUIDs on save.
+
 ### D-029 - Managed aria2 core registry with local import (no network channel yet)
 
 **Decision:** CORE-001 adds a side-by-side managed core registry under
@@ -1031,10 +1038,9 @@ bundled first-run binary remains a release concern (RELEASE-001).
 
 - [ ] `PLAT-001` Add system tray, explicit close/leave-engine-running behavior,
   completion/error/low-disk notifications, and startup recovery UX.
-- [x] `PROFILE-001` Add multiple local/remote profiles and profile-scoped
-  identity: schema-2 catalog (local managed + remote RPC), legacy migration,
-  settings list/activate/add/save, sidebar active-profile banner, restart-bound
-  activation (D-028). Per-profile proxy/limit bags deferred.
+- [x] `PROFILE-001` Multi-profile catalog (local/remote): schema-2, migration,
+  list/activate/add/edit/delete/save, sidebar banner, restart-bound activation.
+  Local empty Executable = managed core (D-028 polish). Per-profile proxy/limit bags deferred.
 - [ ] `UI-001` Add system theme, window geometry, localization, saved filters,
   tags/categories, and browser/file associations.
 - [x] `CORE-001` Managed aria2 core registry: import/link, verify, activate,
@@ -1278,5 +1284,7 @@ acceptance outcomes overlap.
 | 2026-07-21 | `PROFILE-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 | 2026-07-21 | `CORE-001` | `cargo test --workspace --no-fail-fast` | Pass - 299 passed, 13 ignored; managed core registry import/link/verify/activate/rollback, Settings Engine section, and startup resolution env > active core > discovery |
 | 2026-07-21 | `CORE-001` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
+| 2026-07-21 | Profile polish | `cargo test --workspace --no-fail-fast` | Pass - 300 passed, 13 ignored; profile edit/delete UI, empty executable managed-core opt-in, draft UUID on save, clearer Profiles vs Engine copy |
+| 2026-07-21 | Profile polish | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo build -p ariadeck-desktop`; `git diff --check` | Pass - no warnings, formatting clean, native desktop build succeeds, and the patch has no whitespace errors |
 
 Existing MVP evidence remains in `docs/implementation-progress.md`.

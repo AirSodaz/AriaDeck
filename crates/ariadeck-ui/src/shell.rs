@@ -233,6 +233,9 @@ struct SettingsPage {
     draft_notify_on_error: bool,
     draft_notify_on_engine_events: bool,
     clear_proxy_password: bool,
+    /// Profile id currently open in the inline editor (Settings → Profiles).
+    editing_profile_id: Option<String>,
+    draft_profile_kind: ProfileKindView,
     error: Option<OperationErrorView>,
 }
 
@@ -320,6 +323,10 @@ pub struct AppShell {
     output_name_input: Entity<TextField>,
     settings_directory_input: Entity<TextField>,
     settings_core_path_input: Entity<TextField>,
+    settings_profile_name_input: Entity<TextField>,
+    settings_profile_executable_input: Entity<TextField>,
+    settings_profile_endpoint_input: Entity<TextField>,
+    settings_profile_download_input: Entity<TextField>,
     settings_all_proxy_input: Entity<TextField>,
     settings_http_proxy_input: Entity<TextField>,
     settings_https_proxy_input: Entity<TextField>,
@@ -784,6 +791,75 @@ impl AppShell {
                 cx,
             )
         });
+        let settings_profile_name_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "settings-profile-name".into(),
+                    key_context: "SettingsProfileNameInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "Profile display name".into(),
+                    placeholder: "Local aria2".into(),
+                    leading_icon: Some(IconName::Pencil),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: false,
+                },
+                theme,
+                cx,
+            )
+        });
+        let settings_profile_executable_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "settings-profile-executable".into(),
+                    key_context: "SettingsProfileExecutableInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "Optional pinned aria2c path for this local profile"
+                        .into(),
+                    placeholder: "Leave empty to use the active managed core".into(),
+                    leading_icon: Some(IconName::FolderDown),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: false,
+                },
+                theme,
+                cx,
+            )
+        });
+        let settings_profile_endpoint_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "settings-profile-endpoint".into(),
+                    key_context: "SettingsProfileEndpointInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "Remote aria2 WebSocket endpoint".into(),
+                    placeholder: "wss://host:6800/jsonrpc".into(),
+                    leading_icon: Some(IconName::Link),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: false,
+                },
+                theme,
+                cx,
+            )
+        });
+        let settings_profile_download_input = cx.new(|cx| {
+            TextField::new_with_config(
+                TextFieldConfig {
+                    element_id: "settings-profile-download".into(),
+                    key_context: "SettingsProfileDownloadInput".into(),
+                    role: Role::TextInput,
+                    accessibility_label: "Default download directory for this profile".into(),
+                    placeholder: "D:\\Downloads".into(),
+                    leading_icon: Some(IconName::FolderDown),
+                    clearable: true,
+                    allow_newlines: false,
+                    secure: false,
+                },
+                theme,
+                cx,
+            )
+        });
         let settings_all_proxy_input = cx.new(|cx| {
             TextField::new_with_config(
                 settings_input_config(
@@ -1020,6 +1096,10 @@ impl AppShell {
             output_name_input,
             settings_directory_input,
             settings_core_path_input,
+            settings_profile_name_input,
+            settings_profile_executable_input,
+            settings_profile_endpoint_input,
+            settings_profile_download_input,
             settings_all_proxy_input,
             settings_http_proxy_input,
             settings_https_proxy_input,
@@ -2051,40 +2131,194 @@ impl AppShell {
     fn add_draft_local_profile(&mut self, cx: &mut Context<Self>) {
         let id = format!("draft-local-{}", self.allocate_request_id().get());
         let download_dir = self.settings.download_directory.clone();
+        let name = format!("Local {}", self.profiles.profiles.len() + 1);
         self.profiles.profiles.push(ProfileEntryView {
-            profile_id: id,
-            name: format!("Local {}", self.profiles.profiles.len() + 1),
+            profile_id: id.clone(),
+            name,
             kind: ProfileKindView::LocalManaged,
-            executable: "aria2c".into(),
+            // Empty = use Settings → Engine active managed core at spawn.
+            executable: String::new(),
             download_dir,
             endpoint: String::new(),
             has_secret: false,
         });
+        self.open_profile_editor(id, cx);
         self.show_notice(
-            "Local profile draft added. Save profiles, then activate and restart to connect.",
+            "Local profile draft added (uses managed core). Edit fields, Apply, then Save profiles.",
             false,
             cx,
         );
-        cx.notify();
     }
 
     fn add_draft_remote_profile(&mut self, cx: &mut Context<Self>) {
         let id = format!("draft-remote-{}", self.allocate_request_id().get());
         let download_dir = self.settings.download_directory.clone();
+        let name = format!("Remote {}", self.profiles.profiles.len() + 1);
         self.profiles.profiles.push(ProfileEntryView {
-            profile_id: id,
-            name: format!("Remote {}", self.profiles.profiles.len() + 1),
+            profile_id: id.clone(),
+            name,
             kind: ProfileKindView::RemoteRpc,
             executable: String::new(),
             download_dir,
             endpoint: "wss://127.0.0.1:6800/jsonrpc".into(),
             has_secret: false,
         });
+        self.open_profile_editor(id, cx);
         self.show_notice(
-            "Remote profile draft added. Edit the endpoint if needed, save, then activate and restart.",
+            "Remote profile draft added. Set the endpoint, Apply, then Save profiles.",
             false,
             cx,
         );
+    }
+
+    fn open_profile_editor(&mut self, profile_id: String, cx: &mut Context<Self>) {
+        let Some(profile) = self
+            .profiles
+            .profiles
+            .iter()
+            .find(|profile| profile.profile_id == profile_id)
+            .cloned()
+        else {
+            self.show_notice("That profile is no longer in the catalog.", true, cx);
+            return;
+        };
+        self.settings_page.editing_profile_id = Some(profile.profile_id);
+        self.settings_page.draft_profile_kind = profile.kind;
+        self.settings_profile_name_input.update(cx, |input, cx| {
+            input.set_text(profile.name, cx);
+        });
+        self.settings_profile_executable_input
+            .update(cx, |input, cx| {
+                input.set_text(profile.executable, cx);
+            });
+        self.settings_profile_endpoint_input
+            .update(cx, |input, cx| {
+                input.set_text(profile.endpoint, cx);
+            });
+        self.settings_profile_download_input
+            .update(cx, |input, cx| {
+                input.set_text(profile.download_dir, cx);
+            });
+        cx.notify();
+    }
+
+    fn close_profile_editor(&mut self, cx: &mut Context<Self>) {
+        self.settings_page.editing_profile_id = None;
+        cx.notify();
+    }
+
+    fn apply_profile_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(profile_id) = self.settings_page.editing_profile_id.clone() else {
+            self.show_notice("No profile is open for editing.", true, cx);
+            return;
+        };
+        let name = self
+            .settings_profile_name_input
+            .read(cx)
+            .text()
+            .trim()
+            .to_owned();
+        if name.is_empty() {
+            self.show_notice("Profile name cannot be empty.", true, cx);
+            return;
+        }
+        let kind = self.settings_page.draft_profile_kind;
+        let executable = self
+            .settings_profile_executable_input
+            .read(cx)
+            .text()
+            .trim()
+            .to_owned();
+        let endpoint = self
+            .settings_profile_endpoint_input
+            .read(cx)
+            .text()
+            .trim()
+            .to_owned();
+        let download_dir = self
+            .settings_profile_download_input
+            .read(cx)
+            .text()
+            .trim()
+            .to_owned();
+        if kind == ProfileKindView::RemoteRpc && endpoint.is_empty() {
+            self.show_notice("Remote profiles need a ws/wss endpoint.", true, cx);
+            return;
+        }
+        let Some(profile) = self
+            .profiles
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.profile_id == profile_id)
+        else {
+            self.show_notice("That profile is no longer in the catalog.", true, cx);
+            self.settings_page.editing_profile_id = None;
+            cx.notify();
+            return;
+        };
+        profile.name = name;
+        profile.kind = kind;
+        profile.executable = if kind == ProfileKindView::LocalManaged {
+            executable
+        } else {
+            String::new()
+        };
+        profile.endpoint = if kind == ProfileKindView::RemoteRpc {
+            endpoint
+        } else {
+            String::new()
+        };
+        profile.download_dir = if download_dir.is_empty() {
+            self.settings.download_directory.clone()
+        } else {
+            download_dir
+        };
+        self.settings_page.editing_profile_id = None;
+        self.show_notice(
+            "Profile updated in the draft catalog. Click Save profiles to persist.",
+            false,
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn remove_profile(&mut self, profile_id: String, cx: &mut Context<Self>) {
+        if self.profiles.profiles.len() <= 1 {
+            self.show_notice("At least one profile must remain.", true, cx);
+            return;
+        }
+        let Some(index) = self
+            .profiles
+            .profiles
+            .iter()
+            .position(|profile| profile.profile_id == profile_id)
+        else {
+            self.show_notice("That profile is no longer in the catalog.", true, cx);
+            return;
+        };
+        let removed = self.profiles.profiles.remove(index);
+        if self.settings_page.editing_profile_id.as_deref() == Some(profile_id.as_str()) {
+            self.settings_page.editing_profile_id = None;
+        }
+        if self.profiles.active_profile_id == profile_id {
+            self.profiles.active_profile_id = self
+                .profiles
+                .profiles
+                .first()
+                .map(|profile| profile.profile_id.clone())
+                .unwrap_or_default();
+        }
+        let catalog = self.profiles.clone();
+        self.show_notice(
+            format!("Removed “{}”. Saving catalog…", removed.name),
+            false,
+            cx,
+        );
+        self.request_save_profile_catalog(catalog, cx);
+    }
+
+    fn select_profile_editor_kind(&mut self, kind: ProfileKindView, cx: &mut Context<Self>) {
+        self.settings_page.draft_profile_kind = kind;
         cx.notify();
     }
 
@@ -2635,6 +2869,8 @@ impl AppShell {
             draft_notify_on_error: self.settings.notifications.notify_on_error,
             draft_notify_on_engine_events: self.settings.notifications.notify_on_engine_events,
             clear_proxy_password: false,
+            editing_profile_id: None,
+            draft_profile_kind: ProfileKindView::LocalManaged,
             error: None,
         };
         cx.notify();
@@ -8621,9 +8857,10 @@ impl AppShell {
                         .child({
                             let profiles = self.profiles.clone();
                             let active_id = profiles.active_profile_id.clone();
+                            let profiles_count = profiles.profiles.len();
                             settings_section(
                                 "Profiles",
-                                "Local managed profiles spawn aria2 under AriaDeck. Remote RPC profiles connect only. Switching the active profile is saved immediately; restart AriaDeck to reconnect.",
+                                "A profile is a connection context: local profiles own a session directory and spawn aria2; remote profiles only connect over RPC. The Engine section below chooses which aria2 binary local profiles use by default (leave Executable empty). Activate switches the active profile immediately; restart AriaDeck to reconnect.",
                                 colors,
                             )
                             .child(
@@ -8636,6 +8873,28 @@ impl AppShell {
                                         let is_active = profile.profile_id == active_id;
                                         let profile_id = profile.profile_id.clone();
                                         let switch_id = profile_id.clone();
+                                        let edit_id = profile_id.clone();
+                                        let remove_id = profile_id.clone();
+                                        let can_remove = profiles_count > 1;
+                                        let summary = match profile.kind {
+                                            ProfileKindView::LocalManaged => {
+                                                if profile.executable.is_empty() {
+                                                    "Local · uses managed core".to_owned()
+                                                } else {
+                                                    format!("Local · pinned {}", profile.executable)
+                                                }
+                                            }
+                                            ProfileKindView::RemoteRpc => {
+                                                format!(
+                                                    "Remote · {}",
+                                                    if profile.endpoint.is_empty() {
+                                                        "no endpoint".into()
+                                                    } else {
+                                                        profile.endpoint.clone()
+                                                    }
+                                                )
+                                            }
+                                        };
                                         div()
                                             .id(SharedString::from(format!(
                                                 "profile-row-{}",
@@ -8643,7 +8902,7 @@ impl AppShell {
                                             )))
                                             .flex()
                                             .items_center()
-                                            .gap_3()
+                                            .gap_2()
                                             .px_3()
                                             .py_2()
                                             .rounded_md()
@@ -8676,28 +8935,7 @@ impl AppShell {
                                                         div()
                                                             .text_xs()
                                                             .text_color(colors.text_muted)
-                                                            .child(match profile.kind {
-                                                                ProfileKindView::LocalManaged => {
-                                                                    format!(
-                                                                        "Local · {}",
-                                                                        if profile.executable.is_empty() {
-                                                                            "aria2c".into()
-                                                                        } else {
-                                                                            profile.executable.clone()
-                                                                        }
-                                                                    )
-                                                                }
-                                                                ProfileKindView::RemoteRpc => {
-                                                                    format!(
-                                                                        "Remote · {}",
-                                                                        if profile.endpoint.is_empty() {
-                                                                            "no endpoint".into()
-                                                                        } else {
-                                                                            profile.endpoint.clone()
-                                                                        }
-                                                                    )
-                                                                }
-                                                            }),
+                                                            .child(summary),
                                                     ),
                                             )
                                             .child(
@@ -8727,7 +8965,197 @@ impl AppShell {
                                                 }))
                                                 .render(colors),
                                             )
+                                            .child(
+                                                Button::new(
+                                                    SharedString::from(format!(
+                                                        "edit-profile-{}",
+                                                        edit_id
+                                                    )),
+                                                    "Edit",
+                                                )
+                                                .aria_label(format!("Edit {}", profile.name))
+                                                .style(ButtonStyle::Secondary)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.open_profile_editor(edit_id.clone(), cx);
+                                                }))
+                                                .render(colors),
+                                            )
+                                            .child(
+                                                Button::new(
+                                                    SharedString::from(format!(
+                                                        "remove-profile-{}",
+                                                        remove_id
+                                                    )),
+                                                    "Delete",
+                                                )
+                                                .aria_label(format!("Delete {}", profile.name))
+                                                .style(ButtonStyle::Secondary)
+                                                .disabled(!can_remove)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.remove_profile(remove_id.clone(), cx);
+                                                }))
+                                                .render(colors),
+                                            )
                                     })),
+                            )
+                            .when_some(
+                                self.settings_page.editing_profile_id.clone(),
+                                |section, editing_id| {
+                                    let kind = self.settings_page.draft_profile_kind;
+                                    let is_local = kind == ProfileKindView::LocalManaged;
+                                    let kind_shell = cx.entity().downgrade();
+                                    let kind_control = SegmentedControl::new(
+                                        "settings-profile-kind",
+                                        [Segment::new("Local"), Segment::new("Remote")],
+                                        usize::from(!is_local),
+                                        self.theme,
+                                    )
+                                    .on_select(move |index, _window, cx| {
+                                        let kind = if index == 0 {
+                                            ProfileKindView::LocalManaged
+                                        } else {
+                                            ProfileKindView::RemoteRpc
+                                        };
+                                        kind_shell
+                                            .update(cx, |shell, cx| {
+                                                shell.select_profile_editor_kind(kind, cx);
+                                            })
+                                            .ok();
+                                    });
+                                    section.child(
+                                        div()
+                                            .mt_3()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_3()
+                                            .px_3()
+                                            .py_3()
+                                            .rounded_md()
+                                            .border_1()
+                                            .border_color(colors.border)
+                                            .bg(colors.surface)
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(colors.text_primary)
+                                                    .child(format!("Edit profile ({editing_id})")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(colors.text_muted)
+                                                    .child(
+                                                        "Apply writes the draft catalog only. Save profiles persists to disk.",
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(colors.text_muted)
+                                                            .child("Name"),
+                                                    )
+                                                    .child(self.settings_profile_name_input.clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(colors.text_muted)
+                                                            .child("Kind"),
+                                                    )
+                                                    .child(kind_control),
+                                            )
+                                            .child(if is_local {
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(colors.text_muted)
+                                                            .child(
+                                                                "Executable (optional — empty uses managed core)",
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        self.settings_profile_executable_input
+                                                            .clone(),
+                                                    )
+                                                    .into_any_element()
+                                            } else {
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(colors.text_muted)
+                                                            .child("Endpoint (ws/wss)"),
+                                                    )
+                                                    .child(
+                                                        self.settings_profile_endpoint_input.clone(),
+                                                    )
+                                                    .into_any_element()
+                                            })
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(colors.text_muted)
+                                                            .child("Download directory"),
+                                                    )
+                                                    .child(
+                                                        self.settings_profile_download_input.clone(),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_wrap()
+                                                    .gap_2()
+                                                    .child(
+                                                        Button::new(
+                                                            "apply-profile-editor",
+                                                            "Apply changes",
+                                                        )
+                                                        .aria_label("Apply profile editor changes")
+                                                        .style(ButtonStyle::Primary)
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.apply_profile_editor(cx);
+                                                        }))
+                                                        .render(colors),
+                                                    )
+                                                    .child(
+                                                        Button::new(
+                                                            "cancel-profile-editor",
+                                                            "Cancel",
+                                                        )
+                                                        .aria_label("Cancel profile editor")
+                                                        .style(ButtonStyle::Secondary)
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.close_profile_editor(cx);
+                                                        }))
+                                                        .render(colors),
+                                                    ),
+                                            ),
+                                    )
+                                },
                             )
                             .child(
                                 div()
@@ -8773,7 +9201,7 @@ impl AppShell {
                                 .is_some_and(|id| cores.active_id.as_ref() != Some(id));
                             settings_section(
                                 "Engine",
-                                "Managed aria2 installations live under the app data cores directory. Import copies a local binary; Link registers a path without copying. Activate updates the registry immediately; restart AriaDeck to start that core. Network update channels are deferred.",
+                                "Global aria2 binary registry (not a connection profile). Local profiles with an empty Executable field use the Active core here. Import copies a binary into app data; Link registers an external path. Activate/Rollback update the registry immediately; restart AriaDeck so local profiles pick up the new binary.",
                                 colors,
                             )
                             .child(
@@ -14321,8 +14749,34 @@ mod tests {
                     .as_ref()
                     .is_some_and(|notice| notice.message.contains("already active"))
             );
-            shell.add_draft_remote_profile(cx);
+            shell.add_draft_local_profile(cx);
             assert_eq!(shell.profiles.profiles.len(), 3);
+            let draft = shell
+                .profiles
+                .profiles
+                .iter()
+                .find(|profile| profile.profile_id.starts_with("draft-local-"))
+                .expect("local draft");
+            assert!(draft.executable.is_empty(), "local draft uses managed core");
+            assert_eq!(
+                shell.settings_page.editing_profile_id.as_deref(),
+                Some(draft.profile_id.as_str())
+            );
+            shell.settings_profile_name_input.update(cx, |input, cx| {
+                input.set_text("Home NAS-ready", cx);
+            });
+            shell.apply_profile_editor(cx);
+            assert!(shell.settings_page.editing_profile_id.is_none());
+            assert!(
+                shell
+                    .profiles
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.name == "Home NAS-ready")
+            );
+
+            shell.add_draft_remote_profile(cx);
+            assert_eq!(shell.profiles.profiles.len(), 4);
             assert!(
                 shell
                     .profiles
@@ -14331,6 +14785,12 @@ mod tests {
                     .any(|profile| profile.kind == ProfileKindView::RemoteRpc
                         && profile.profile_id.starts_with("draft-remote-"))
             );
+
+            // Cannot delete when only one would remain is covered by engine; with 4, remove works.
+            let remove_id = shell.profiles.profiles[3].profile_id.clone();
+            shell.remove_profile(remove_id, cx);
+            assert_eq!(shell.profiles.profiles.len(), 3);
+
             shell.set_switch_profile_result(
                 SwitchProfileResultView {
                     request_id: RequestId::from_u64(9),
