@@ -27,8 +27,8 @@ use ariadeck_domain::{
 };
 use ariadeck_engine::{
     ExternalEngineProfile, JsonProfileStore, LocalDownloadDestinationGateway,
-    LocalDownloadRootRegistry, LocalEngineConfig, LocalEngineHealth, LocalEngineHealthHandle,
-    LocalEngineSupervisor, LocalTaskFileGateway,
+    LocalDownloadRootRegistry, LocalEngineHealth, LocalEngineHealthHandle, LocalEngineSupervisor,
+    LocalTaskFileGateway, ProfileCatalog, ProfileEntry, ProfileKind,
 };
 use ariadeck_rpc::{
     Aria2Client, AuthenticatedTransport, RpcSecret, RpcSyncConnector, WebSocketConfig,
@@ -50,17 +50,19 @@ use ariadeck_ui::{
     ConnectionView, DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView,
     EngineHealthView, EngineSessionView, FileAllocationView, FileConflictPolicyView,
     GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView,
-    NotificationSettingsView, NotificationVolumeView, OperationErrorView, ProxyModeView,
-    ProxyPasswordUpdateView, SettingsSaveOutcomeView, SettingsSaveRequestView,
-    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView,
-    StoppedHistoryView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
-    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
-    TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
-    TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
-    TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
-    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TransferPolicySettingsView,
-    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
-    format_speed_limit_field,
+    NotificationSettingsView, NotificationVolumeView, OperationErrorView, ProfileCatalogView,
+    ProfileEntryView, ProfileKindView, ProxyModeView, ProxyPasswordUpdateView,
+    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
+    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
+    SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView, SwitchProfileOutcomeView,
+    SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
+    TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
+    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
+    TaskIdentity, TaskNameStateView, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
+    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
+    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
+    TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
+    WorkspaceSortDirection, WorkspaceSortKey, format_speed_limit_field,
 };
 use data_encoding::BASE32_NOPAD;
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
@@ -85,6 +87,9 @@ pub struct DesktopRoot {
     settings_sender: Option<mpsc::UnboundedSender<SettingsPersistenceRequest>>,
     settings_task: Option<JoinHandle<()>>,
     settings: AppSettings,
+    data_dir: PathBuf,
+    profile_store: JsonProfileStore,
+    profile_catalog: ProfileCatalog,
     _workspace_subscription: Subscription,
 }
 
@@ -153,8 +158,69 @@ impl DesktopRoot {
             settings.download_directory = PathBuf::from(download_directory);
         }
 
+        let profile_store = JsonProfileStore::new(data_dir.join("profiles.json"));
+        let executable = env::var_os("ARIADECK_ARIA2C_PATH")
+            .map(PathBuf::from)
+            .or_else(discover_aria2_executable)
+            .unwrap_or_else(|| PathBuf::from("aria2c"));
+        let default_profile = ExternalEngineProfile::new(
+            ProfileId::new(),
+            env::var("ARIADECK_PROFILE_NAME").unwrap_or_else(|_| "Local aria2".into()),
+            executable,
+            data_dir.clone(),
+            settings.download_directory.clone(),
+        );
+        let (profile_catalog, mut profile_notice) = match profile_store
+            .load_catalog_or_recover(&default_profile)
+        {
+            Ok(loaded) => {
+                let mut notice = loaded.recovery.map(|recovery| {
+                    format!(
+                        "Invalid profile catalog was reset; the original was preserved at {}.",
+                        recovery.backup_path.display()
+                    )
+                });
+                if loaded.migrated && notice.is_none() {
+                    notice = Some("Profile catalog was upgraded to multi-profile format.".into());
+                }
+                // Keep active local profile download dir aligned with settings.
+                if let Some(active) = loaded.catalog.active().cloned() {
+                    if active.kind == ProfileKind::LocalManaged {
+                        let mut catalog = loaded.catalog;
+                        if let Some(entry) = catalog.active_mut() {
+                            entry.download_dir = settings.download_directory.clone();
+                            if entry.data_dir.is_none() {
+                                entry.data_dir = Some(data_dir.clone());
+                            }
+                            if entry.executable.is_none() {
+                                entry.executable = Some(
+                                    env::var_os("ARIADECK_ARIA2C_PATH")
+                                        .map(PathBuf::from)
+                                        .or_else(discover_aria2_executable)
+                                        .unwrap_or_else(|| PathBuf::from("aria2c")),
+                                );
+                            }
+                        }
+                        let _ = profile_store.save_catalog(&catalog);
+                        (catalog, notice)
+                    } else {
+                        (loaded.catalog, notice)
+                    }
+                } else {
+                    (loaded.catalog, notice)
+                }
+            }
+            Err(error) => {
+                tracing::error!(%error, "failed to load profile catalog");
+                (
+                    ProfileCatalog::from_single(default_profile),
+                    Some(format!("Profile catalog could not be loaded: {error}")),
+                )
+            }
+        };
+
         let (sync, local_engine, mut initial_snapshot, engine_startup_notice) =
-            match create_sync_handle(&runtime, &data_dir, &settings) {
+            match create_sync_handle(&runtime, &data_dir, &settings, &profile_catalog) {
                 Ok((handle, local_engine, engine_notice)) => {
                     let snapshot = WorkspaceSnapshot {
                         connection: ConnectionView::Connecting,
@@ -214,7 +280,10 @@ impl DesktopRoot {
             let mut shell = AppShell::new_with_settings(settings_view, window, cx);
             shell.set_snapshot(initial_snapshot, cx);
             shell.set_engine_health(initial_engine_health, cx);
+            shell.set_profiles(map_profile_catalog(&profile_catalog), cx);
             if let Some(message) = startup_notice {
+                shell.set_startup_notice(message, true, cx);
+            } else if let Some(message) = profile_notice.take() {
                 shell.set_startup_notice(message, true, cx);
             } else if let Some(message) = engine_startup_notice {
                 shell.set_startup_notice(message, true, cx);
@@ -263,6 +332,12 @@ impl DesktopRoot {
                 AppShellEvent::SettingsSaveRequested(request) => {
                     this.enqueue_settings_save(request.clone(), window, cx);
                 }
+                AppShellEvent::SwitchProfileRequested(request) => {
+                    this.handle_switch_profile(request.clone(), window, cx);
+                }
+                AppShellEvent::SaveProfileCatalogRequested(request) => {
+                    this.handle_save_profile_catalog(request.clone(), window, cx);
+                }
             },
         );
 
@@ -296,6 +371,9 @@ impl DesktopRoot {
             settings_sender,
             settings_task,
             settings,
+            data_dir: data_dir.clone(),
+            profile_store,
+            profile_catalog,
             _workspace_subscription: workspace_subscription,
         }
     }
@@ -562,6 +640,147 @@ impl DesktopRoot {
             .ok();
         })
         .detach();
+    }
+
+    fn handle_switch_profile(
+        &mut self,
+        request: SwitchProfileRequestView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let profile_id = match request.profile_id.parse::<ProfileId>() {
+            Ok(id) => id,
+            Err(error) => {
+                self.deliver_switch_profile_error(
+                    &request,
+                    format!("Invalid profile id: {error}"),
+                    window,
+                    cx,
+                );
+                return;
+            }
+        };
+        if let Err(error) = self.profile_catalog.set_active(profile_id) {
+            self.deliver_switch_profile_error(&request, error.to_string(), window, cx);
+            return;
+        }
+        if let Err(error) = self.profile_store.save_catalog(&self.profile_catalog) {
+            self.deliver_switch_profile_error(
+                &request,
+                format!("Failed to save active profile: {error}"),
+                window,
+                cx,
+            );
+            return;
+        }
+        let catalog = map_profile_catalog(&self.profile_catalog);
+        let name = catalog
+            .active()
+            .map(|profile| profile.name.clone())
+            .unwrap_or_else(|| "selected profile".into());
+        self.workspace.update(cx, |shell, cx| {
+            shell.set_switch_profile_result(
+                SwitchProfileResultView {
+                    request_id: request.request_id,
+                    profile_id: request.profile_id.clone(),
+                    catalog,
+                    outcome: SwitchProfileOutcomeView::Success,
+                },
+                cx,
+            );
+            shell.set_startup_notice(
+                format!(
+                    "Active profile set to {name}. Restart AriaDeck to connect with the new profile."
+                ),
+                false,
+                cx,
+            );
+        });
+        let _ = window;
+    }
+
+    fn deliver_switch_profile_error(
+        &self,
+        request: &SwitchProfileRequestView,
+        summary: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let catalog = map_profile_catalog(&self.profile_catalog);
+        self.workspace.update(cx, |shell, cx| {
+            shell.set_switch_profile_result(
+                SwitchProfileResultView {
+                    request_id: request.request_id,
+                    profile_id: request.profile_id.clone(),
+                    catalog,
+                    outcome: SwitchProfileOutcomeView::Failure(OperationErrorView {
+                        code: "profile.switch_failed".into(),
+                        summary,
+                        retryable: true,
+                    }),
+                },
+                cx,
+            );
+        });
+        let _ = window;
+    }
+
+    fn handle_save_profile_catalog(
+        &mut self,
+        request: SaveProfileCatalogRequestView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match map_profile_catalog_request(&request.catalog, &self.data_dir, &self.settings) {
+            Ok(catalog) => {
+                if let Err(error) = self.profile_store.save_catalog(&catalog) {
+                    self.deliver_save_profile_error(
+                        &request,
+                        format!("Failed to save profiles: {error}"),
+                        window,
+                        cx,
+                    );
+                    return;
+                }
+                self.profile_catalog = catalog;
+                let view = map_profile_catalog(&self.profile_catalog);
+                self.workspace.update(cx, |shell, cx| {
+                    shell.set_save_profile_catalog_result(
+                        SaveProfileCatalogResultView {
+                            request_id: request.request_id,
+                            catalog: view,
+                            outcome: SaveProfileCatalogOutcomeView::Success,
+                        },
+                        cx,
+                    );
+                });
+            }
+            Err(error) => self.deliver_save_profile_error(&request, error, window, cx),
+        }
+    }
+
+    fn deliver_save_profile_error(
+        &self,
+        request: &SaveProfileCatalogRequestView,
+        summary: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace.update(cx, |shell, cx| {
+            shell.set_save_profile_catalog_result(
+                SaveProfileCatalogResultView {
+                    request_id: request.request_id,
+                    catalog: request.catalog.clone(),
+                    outcome: SaveProfileCatalogOutcomeView::Failure(OperationErrorView {
+                        code: "profile.save_failed".into(),
+                        summary,
+                        retryable: true,
+                    }),
+                },
+                cx,
+            );
+        });
+        let _ = window;
     }
 }
 
@@ -2458,12 +2677,18 @@ fn create_sync_handle(
     runtime: &Runtime,
     data_dir: &Path,
     settings: &AppSettings,
+    catalog: &ProfileCatalog,
 ) -> Result<(SyncHandle, Option<LocalEngineSupervisor>, Option<String>), String> {
+    // One-shot env override for smoke tests still wins over the catalog.
     let external_endpoint = env::var("ARIADECK_RPC_URL")
         .ok()
         .filter(|endpoint| !endpoint.trim().is_empty());
-    let rpc_runtime =
-        RpcRuntimeConfig::from_values(external_endpoint.is_some(), |name| env::var(name).ok())?;
+    let active = catalog
+        .active()
+        .ok_or_else(|| "Profile catalog has no active profile.".to_owned())?;
+    let remote_from_catalog = active.kind == ProfileKind::RemoteRpc;
+    let is_remote = external_endpoint.is_some() || remote_from_catalog;
+    let rpc_runtime = RpcRuntimeConfig::from_values(is_remote, |name| env::var(name).ok())?;
     let mut engine_startup_notice = None;
     let (endpoint, secret, local_engine, profile_id) = if let Some(endpoint) = external_endpoint {
         if endpoint.trim() != endpoint {
@@ -2471,30 +2696,38 @@ fn create_sync_handle(
         }
         let endpoint =
             Url::parse(&endpoint).map_err(|error| format!("Invalid ARIADECK_RPC_URL: {error}"))?;
-        // External/remote endpoint handoff: connect only; never spawn a managed
-        // process against a foreign session file or port.
         let profile_id = env::var("ARIADECK_PROFILE_ID")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or_default();
+            .unwrap_or(active.profile_id);
         let secret = env::var("ARIADECK_RPC_SECRET")
             .ok()
             .filter(|secret| !secret.is_empty())
             .map(RpcSecret::new);
         (endpoint, secret, None, profile_id)
+    } else if remote_from_catalog {
+        let endpoint_str = active
+            .endpoint
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "Active remote profile is missing an endpoint.".to_owned())?;
+        let endpoint = Url::parse(endpoint_str)
+            .map_err(|error| format!("Invalid remote profile endpoint: {error}"))?;
+        let secret = load_profile_rpc_secret(active)?;
+        (endpoint, secret, None, active.profile_id)
     } else {
-        let (config, profile_recovery_notice) =
-            resolve_local_engine_config(data_dir, &settings.download_directory)?;
-        let profile_id = config.profile_id;
-        let process = LocalEngineSupervisor::spawn(&config).map_err(|error| {
-            // Ownership and session-path failures are fail-closed startup errors.
-            format!("Failed to start local aria2: {error}")
+        let config = active.as_local_config().ok_or_else(|| {
+            "Active local profile is missing executable or data directory.".to_owned()
         })?;
-        let mut notices = Vec::new();
-        if let Some(notice) = profile_recovery_notice {
-            tracing::warn!(%notice, "local aria2 profile metadata was recovered");
-            notices.push(notice);
+        // Prefer settings download directory for the live session.
+        let mut config = config;
+        config.download_dir = settings.download_directory.clone();
+        if config.data_dir.as_os_str().is_empty() {
+            config.data_dir = data_dir.to_path_buf();
         }
+        let process = LocalEngineSupervisor::spawn(&config)
+            .map_err(|error| format!("Failed to start local aria2: {error}"))?;
+        let mut notices = Vec::new();
         if process.session_was_recovered() {
             let notice = match process.session_recovery_backup() {
                 Some(backup) => format!(
@@ -2509,7 +2742,7 @@ fn create_sync_handle(
         engine_startup_notice = (!notices.is_empty()).then(|| notices.join(" "));
         let endpoint = process.endpoint().clone();
         let secret = Some(RpcSecret::new(process.secret().to_owned()));
-        (endpoint, secret, Some(process), profile_id)
+        (endpoint, secret, Some(process), config.profile_id)
     };
 
     let mut websocket = WebSocketConfig::new(endpoint.clone());
@@ -2660,45 +2893,20 @@ fn parse_boolean_setting(
     }
 }
 
-fn resolve_local_engine_config(
-    data_dir: &Path,
-    download_dir: &Path,
-) -> Result<(LocalEngineConfig, Option<String>), String> {
-    let executable = env::var_os("ARIADECK_ARIA2C_PATH")
-        .map(PathBuf::from)
-        .or_else(discover_aria2_executable)
-        .ok_or_else(|| {
-            "No aria2 executable found. Set ARIADECK_ARIA2C_PATH or ARIADECK_RPC_URL.".to_owned()
-        })?;
-    let profile_store = JsonProfileStore::new(data_dir.join("profiles.json"));
-    let defaults = ExternalEngineProfile::new(
-        ProfileId::new(),
-        env::var("ARIADECK_PROFILE_NAME").unwrap_or_else(|_| "Local aria2".into()),
-        executable.clone(),
-        data_dir.to_path_buf(),
-        download_dir.to_path_buf(),
-    );
-    // Preserve profile identity across restarts; recover corrupt metadata without
-    // inventing a second active profile (PROFILE-001 multi-profile remains deferred).
-    let loaded = profile_store
-        .load_or_recover(&defaults)
-        .map_err(|error| format!("Failed to load local aria2 profile: {error}"))?;
-    let mut profile = loaded.profile;
-    // Always refresh mutable runtime paths from the current process settings.
-    profile.name = env::var("ARIADECK_PROFILE_NAME").unwrap_or_else(|_| profile.name.clone());
-    profile.executable = executable;
-    profile.data_dir = data_dir.to_path_buf();
-    profile.download_dir = download_dir.to_path_buf();
-    profile_store
-        .save(&profile)
-        .map_err(|error| format!("Failed to save local aria2 profile: {error}"))?;
-    let recovery_notice = loaded.recovery.map(|recovery| {
-        format!(
-            "Invalid profile metadata was reset; the original was preserved at {}.",
-            recovery.backup_path.display()
-        )
-    });
-    Ok((profile.local_config(), recovery_notice))
+fn load_profile_rpc_secret(entry: &ProfileEntry) -> Result<Option<RpcSecret>, String> {
+    let Some(secret_ref) = entry.secret_ref else {
+        return Ok(None);
+    };
+    let store = SystemProxyCredentialStore::new("AriaDeck rpc secret");
+    let credential = ProxyCredentialRef::from_uuid(secret_ref.as_uuid());
+    match store.load(credential) {
+        Ok(Some(password)) => {
+            use secrecy::ExposeSecret as _;
+            Ok(Some(RpcSecret::new(password.expose_secret().to_owned())))
+        }
+        Ok(None) => Ok(None),
+        Err(error) => Err(format!("Failed to load remote RPC secret: {error}")),
+    }
 }
 
 async fn request_local_engine_shutdown(process: &LocalEngineSupervisor) -> Result<(), String> {
@@ -2750,6 +2958,102 @@ fn default_data_dir() -> PathBuf {
         return PathBuf::from(path).join(".local/share/ariadeck");
     }
     PathBuf::from(".ariadeck")
+}
+
+fn map_profile_catalog(catalog: &ProfileCatalog) -> ProfileCatalogView {
+    ProfileCatalogView {
+        active_profile_id: catalog.active_profile_id.to_string(),
+        profiles: catalog.profiles.iter().map(map_profile_entry).collect(),
+    }
+}
+
+fn map_profile_entry(entry: &ProfileEntry) -> ProfileEntryView {
+    ProfileEntryView {
+        profile_id: entry.profile_id.to_string(),
+        name: entry.name.clone(),
+        kind: match entry.kind {
+            ProfileKind::LocalManaged => ProfileKindView::LocalManaged,
+            ProfileKind::RemoteRpc => ProfileKindView::RemoteRpc,
+        },
+        executable: entry
+            .executable
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        download_dir: entry.download_dir.to_string_lossy().into_owned(),
+        endpoint: entry.endpoint.clone().unwrap_or_default(),
+        has_secret: entry.has_secret,
+    }
+}
+
+fn map_profile_catalog_request(
+    view: &ProfileCatalogView,
+    data_dir: &Path,
+    settings: &AppSettings,
+) -> Result<ProfileCatalog, String> {
+    if view.profiles.is_empty() {
+        return Err("At least one profile is required.".into());
+    }
+    let active_profile_id = view
+        .active_profile_id
+        .parse::<ProfileId>()
+        .map_err(|error| format!("Invalid active profile id: {error}"))?;
+    let mut profiles = Vec::with_capacity(view.profiles.len());
+    for entry in &view.profiles {
+        let profile_id = entry
+            .profile_id
+            .parse::<ProfileId>()
+            .map_err(|error| format!("Invalid profile id: {error}"))?;
+        let name = entry.name.trim();
+        if name.is_empty() {
+            return Err("Profile name cannot be empty.".into());
+        }
+        let mapped = match entry.kind {
+            ProfileKindView::LocalManaged => {
+                let executable = entry.executable.trim();
+                if executable.is_empty() {
+                    return Err(format!(
+                        "Local profile {name} needs an aria2 executable path."
+                    ));
+                }
+                let download_dir = entry.download_dir.trim();
+                let download_dir = if download_dir.is_empty() {
+                    settings.download_directory.clone()
+                } else {
+                    PathBuf::from(download_dir)
+                };
+                ProfileEntry::local_managed(
+                    profile_id,
+                    name,
+                    PathBuf::from(executable),
+                    data_dir.to_path_buf(),
+                    download_dir,
+                )
+            }
+            ProfileKindView::RemoteRpc => {
+                let endpoint = entry.endpoint.trim();
+                if endpoint.is_empty() {
+                    return Err(format!("Remote profile {name} needs a ws/wss endpoint."));
+                }
+                let download_dir = entry.download_dir.trim();
+                let download_dir = if download_dir.is_empty() {
+                    settings.download_directory.clone()
+                } else {
+                    PathBuf::from(download_dir)
+                };
+                ProfileEntry::remote_rpc(profile_id, name, endpoint, download_dir, None)
+                    .map_err(|error| error.to_string())?
+            }
+        };
+        profiles.push(mapped);
+    }
+    let catalog = ProfileCatalog {
+        schema_version: ariadeck_engine::PROFILE_CATALOG_SCHEMA_VERSION,
+        active_profile_id,
+        profiles,
+    };
+    catalog.validate().map_err(|error| error.to_string())?;
+    Ok(catalog)
 }
 
 fn map_settings(settings: &AppSettings) -> SettingsView {

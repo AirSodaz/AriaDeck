@@ -91,6 +91,16 @@ pub enum EngineError {
         owner_pid: u32,
         lock_path: PathBuf,
     },
+    #[error("profile catalog has no profiles")]
+    EmptyProfileCatalog,
+    #[error("active profile {profile_id} is missing from the catalog")]
+    ActiveProfileMissing { profile_id: ProfileId },
+    #[error("profile {profile_id} was not found")]
+    ProfileNotFound { profile_id: ProfileId },
+    #[error("invalid remote profile endpoint: {reason}")]
+    InvalidRemoteEndpoint { reason: String },
+    #[error("remote profile requires a non-empty endpoint")]
+    MissingRemoteEndpoint,
 }
 
 fn io_error(operation: &'static str, path: &Path, source: io::Error) -> EngineError {
@@ -1841,6 +1851,335 @@ pub struct LoadedProfile {
     pub recovery: Option<ProfileStoreRecovery>,
 }
 
+/// How a profile reaches aria2 (PROFILE-001).
+///
+/// Local managed profiles spawn aria2 under AriaDeck ownership. Remote RPC
+/// profiles connect only and never share a managed session file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileKind {
+    LocalManaged,
+    RemoteRpc,
+}
+
+impl ProfileKind {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::LocalManaged => "Local managed",
+            Self::RemoteRpc => "Remote RPC",
+        }
+    }
+
+    #[must_use]
+    pub const fn is_local(self) -> bool {
+        matches!(self, Self::LocalManaged)
+    }
+}
+
+/// Opaque keyring reference for a remote RPC secret (never persisted as plaintext).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RpcSecretRef(Uuid);
+
+impl RpcSecretRef {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    #[must_use]
+    pub fn as_uuid(self) -> Uuid {
+        self.0
+    }
+}
+
+impl Default for RpcSecretRef {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// One catalog entry: local managed engine or remote RPC endpoint.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileEntry {
+    pub profile_id: ProfileId,
+    pub name: String,
+    pub kind: ProfileKind,
+    /// Local managed: path to aria2c. Remote: unused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable: Option<PathBuf>,
+    /// Shared application data root (local managed profile_dir = data_dir/id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_dir: Option<PathBuf>,
+    /// Default download directory for this profile.
+    pub download_dir: PathBuf,
+    /// Remote RPC WebSocket endpoint (`ws`/`wss`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// Whether a secret is stored in the system credential store.
+    #[serde(default)]
+    pub has_secret: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_ref: Option<RpcSecretRef>,
+}
+
+impl ProfileEntry {
+    #[must_use]
+    pub fn local_managed(
+        profile_id: ProfileId,
+        name: impl Into<String>,
+        executable: impl Into<PathBuf>,
+        data_dir: impl Into<PathBuf>,
+        download_dir: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            profile_id,
+            name: name.into(),
+            kind: ProfileKind::LocalManaged,
+            executable: Some(executable.into()),
+            data_dir: Some(data_dir.into()),
+            download_dir: download_dir.into(),
+            endpoint: None,
+            has_secret: false,
+            secret_ref: None,
+        }
+    }
+
+    pub fn remote_rpc(
+        profile_id: ProfileId,
+        name: impl Into<String>,
+        endpoint: impl Into<String>,
+        download_dir: impl Into<PathBuf>,
+        secret_ref: Option<RpcSecretRef>,
+    ) -> Result<Self, EngineError> {
+        let endpoint = endpoint.into();
+        validate_remote_endpoint(&endpoint)?;
+        Ok(Self {
+            profile_id,
+            name: name.into(),
+            kind: ProfileKind::RemoteRpc,
+            executable: None,
+            data_dir: None,
+            download_dir: download_dir.into(),
+            endpoint: Some(endpoint),
+            has_secret: secret_ref.is_some(),
+            secret_ref,
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), EngineError> {
+        if self.name.trim().is_empty() {
+            return Err(EngineError::EmptyProfileName);
+        }
+        if self.download_dir.as_os_str().is_empty() {
+            return Err(EngineError::EmptyDownloadDirectory);
+        }
+        match self.kind {
+            ProfileKind::LocalManaged => {
+                if self
+                    .executable
+                    .as_ref()
+                    .is_none_or(|path| path.as_os_str().is_empty())
+                {
+                    return Err(EngineError::ExecutableNotFound {
+                        path: PathBuf::new(),
+                    });
+                }
+                if self
+                    .data_dir
+                    .as_ref()
+                    .is_none_or(|path| path.as_os_str().is_empty())
+                {
+                    return Err(EngineError::EmptyDataDirectory);
+                }
+            }
+            ProfileKind::RemoteRpc => {
+                let endpoint = self
+                    .endpoint
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or(EngineError::MissingRemoteEndpoint)?;
+                validate_remote_endpoint(endpoint)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn profile_dir(&self) -> Option<PathBuf> {
+        match self.kind {
+            ProfileKind::LocalManaged => self
+                .data_dir
+                .as_ref()
+                .map(|data_dir| data_dir.join(self.profile_id.to_string())),
+            ProfileKind::RemoteRpc => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_local_config(&self) -> Option<LocalEngineConfig> {
+        if self.kind != ProfileKind::LocalManaged {
+            return None;
+        }
+        Some(LocalEngineConfig {
+            profile_id: self.profile_id,
+            name: self.name.clone(),
+            executable: self.executable.clone()?,
+            data_dir: self.data_dir.clone()?,
+            download_dir: self.download_dir.clone(),
+        })
+    }
+
+    #[must_use]
+    pub fn as_external_engine_profile(&self) -> Option<ExternalEngineProfile> {
+        let config = self.as_local_config()?;
+        Some(ExternalEngineProfile {
+            profile_id: config.profile_id,
+            name: config.name,
+            executable: config.executable,
+            data_dir: config.data_dir,
+            download_dir: config.download_dir,
+        })
+    }
+}
+
+fn validate_remote_endpoint(endpoint: &str) -> Result<(), EngineError> {
+    if endpoint.trim() != endpoint || endpoint.is_empty() {
+        return Err(EngineError::InvalidRemoteEndpoint {
+            reason: "value must be non-empty and must not have surrounding whitespace".into(),
+        });
+    }
+    let parsed = Url::parse(endpoint).map_err(|error| EngineError::InvalidRemoteEndpoint {
+        reason: error.to_string(),
+    })?;
+    if !matches!(parsed.scheme(), "ws" | "wss") {
+        return Err(EngineError::InvalidRemoteEndpoint {
+            reason: "endpoint must use ws or wss".into(),
+        });
+    }
+    if parsed.host_str().is_none() {
+        return Err(EngineError::InvalidRemoteEndpoint {
+            reason: "endpoint must include a host".into(),
+        });
+    }
+    Ok(())
+}
+
+/// Versioned multi-profile catalog (PROFILE-001). Schema 1 was a single
+/// ExternalEngineProfile object; schema 2 is this catalog.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileCatalog {
+    pub schema_version: u32,
+    pub active_profile_id: ProfileId,
+    pub profiles: Vec<ProfileEntry>,
+}
+
+pub const PROFILE_CATALOG_SCHEMA_VERSION: u32 = 2;
+
+impl ProfileCatalog {
+    #[must_use]
+    pub fn from_single(profile: ExternalEngineProfile) -> Self {
+        let entry = ProfileEntry::local_managed(
+            profile.profile_id,
+            profile.name,
+            profile.executable,
+            profile.data_dir,
+            profile.download_dir,
+        );
+        Self {
+            schema_version: PROFILE_CATALOG_SCHEMA_VERSION,
+            active_profile_id: entry.profile_id,
+            profiles: vec![entry],
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), EngineError> {
+        if self.profiles.is_empty() {
+            return Err(EngineError::EmptyProfileCatalog);
+        }
+        for profile in &self.profiles {
+            profile.validate()?;
+        }
+        if !self
+            .profiles
+            .iter()
+            .any(|profile| profile.profile_id == self.active_profile_id)
+        {
+            return Err(EngineError::ActiveProfileMissing {
+                profile_id: self.active_profile_id,
+            });
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn active(&self) -> Option<&ProfileEntry> {
+        self.profiles
+            .iter()
+            .find(|profile| profile.profile_id == self.active_profile_id)
+    }
+
+    pub fn active_mut(&mut self) -> Option<&mut ProfileEntry> {
+        let id = self.active_profile_id;
+        self.profiles
+            .iter_mut()
+            .find(|profile| profile.profile_id == id)
+    }
+
+    pub fn set_active(&mut self, profile_id: ProfileId) -> Result<(), EngineError> {
+        if !self
+            .profiles
+            .iter()
+            .any(|profile| profile.profile_id == profile_id)
+        {
+            return Err(EngineError::ProfileNotFound { profile_id });
+        }
+        self.active_profile_id = profile_id;
+        Ok(())
+    }
+
+    pub fn upsert(&mut self, entry: ProfileEntry) -> Result<(), EngineError> {
+        entry.validate()?;
+        if let Some(existing) = self
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.profile_id == entry.profile_id)
+        {
+            *existing = entry;
+        } else {
+            self.profiles.push(entry);
+        }
+        self.validate()
+    }
+
+    pub fn remove(&mut self, profile_id: ProfileId) -> Result<ProfileEntry, EngineError> {
+        let index = self
+            .profiles
+            .iter()
+            .position(|profile| profile.profile_id == profile_id)
+            .ok_or(EngineError::ProfileNotFound { profile_id })?;
+        if self.profiles.len() == 1 {
+            return Err(EngineError::EmptyProfileCatalog);
+        }
+        let removed = self.profiles.remove(index);
+        if self.active_profile_id == profile_id {
+            self.active_profile_id = self.profiles[0].profile_id;
+        }
+        Ok(removed)
+    }
+}
+
+/// Result of loading a multi-profile catalog (with optional migration/recovery).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoadedCatalog {
+    pub catalog: ProfileCatalog,
+    pub migrated: bool,
+    pub recovery: Option<ProfileStoreRecovery>,
+}
+
 fn create_runtime_file(path: &Path) -> Result<(), EngineError> {
     OpenOptions::new()
         .create(true)
@@ -1990,6 +2329,122 @@ impl JsonProfileStore {
                 })
             }
         }
+    }
+
+    /// Load the multi-profile catalog, migrating a legacy single-profile document.
+    pub fn load_catalog_or_recover(
+        &self,
+        defaults: &ExternalEngineProfile,
+    ) -> Result<LoadedCatalog, EngineError> {
+        if !self.path.exists() {
+            let catalog = ProfileCatalog::from_single(defaults.clone());
+            self.save_catalog(&catalog)?;
+            return Ok(LoadedCatalog {
+                catalog,
+                migrated: false,
+                recovery: None,
+            });
+        }
+
+        let bytes = fs::read(&self.path)
+            .map_err(|error| io_error("read the profile catalog", &self.path, error))?;
+
+        if let Ok(catalog) = serde_json::from_slice::<ProfileCatalog>(&bytes) {
+            catalog.validate()?;
+            return Ok(LoadedCatalog {
+                catalog,
+                migrated: false,
+                recovery: None,
+            });
+        }
+
+        if let Ok(profile) = serde_json::from_slice::<ExternalEngineProfile>(&bytes) {
+            let catalog = ProfileCatalog::from_single(profile);
+            self.save_catalog(&catalog)?;
+            return Ok(LoadedCatalog {
+                catalog,
+                migrated: true,
+                recovery: None,
+            });
+        }
+
+        let reason = "profile catalog JSON is malformed".to_owned();
+        let recovered_id = serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("active_profile_id")
+                    .or_else(|| value.get("profile_id"))
+                    .and_then(|id| id.as_str())
+                    .and_then(|id| id.parse::<ProfileId>().ok())
+            });
+        let backup_path = self.preserve_corrupt_document_bytes(&bytes)?;
+        let mut defaults = defaults.clone();
+        if let Some(profile_id) = recovered_id {
+            defaults.profile_id = profile_id;
+        }
+        let catalog = ProfileCatalog::from_single(defaults);
+        self.save_catalog(&catalog)?;
+        Ok(LoadedCatalog {
+            catalog,
+            migrated: true,
+            recovery: Some(ProfileStoreRecovery {
+                backup_path,
+                reason,
+            }),
+        })
+    }
+
+    pub fn save_catalog(&self, catalog: &ProfileCatalog) -> Result<(), EngineError> {
+        catalog.validate()?;
+        let parent = self
+            .path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        if self.path.file_name().is_none() {
+            return Err(EngineError::InvalidStorePath {
+                path: self.path.clone(),
+            });
+        }
+        fs::create_dir_all(parent)
+            .map_err(|error| io_error("create the profile store directory", parent, error))?;
+
+        let payload = serde_json::to_vec_pretty(catalog)
+            .map_err(|source| EngineError::Serialize { source })?;
+        let temp_path = parent.join(format!(
+            ".{}.{}.tmp",
+            self.path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("profiles"),
+            Uuid::new_v4()
+        ));
+
+        let write_result = (|| {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temp_path)
+                .map_err(|error| {
+                    io_error("create the temporary profile catalog", &temp_path, error)
+                })?;
+            file.write_all(&payload)
+                .map_err(|error| io_error("write the profile catalog", &temp_path, error))?;
+            file.write_all(b"\n")
+                .map_err(|error| io_error("finish the profile catalog", &temp_path, error))?;
+            file.flush()
+                .map_err(|error| io_error("flush the profile catalog", &temp_path, error))?;
+            file.sync_all()
+                .map_err(|error| io_error("sync the profile catalog", &temp_path, error))?;
+            replace_file(&temp_path, &self.path).map_err(|error| {
+                io_error("atomically replace the profile catalog", &self.path, error)
+            })
+        })();
+        if write_result.is_err() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        write_result
     }
 
     fn preserve_corrupt_document_bytes(&self, bytes: &[u8]) -> Result<PathBuf, EngineError> {
@@ -2664,6 +3119,85 @@ mod tests {
                 .profile_id,
             profile_id
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn profile_catalog_migrates_legacy_single_profile_and_round_trips() {
+        let root = temporary_directory();
+        let legacy = sample_profile(&root);
+        let store = JsonProfileStore::new(root.join("profiles.json"));
+        store.save(&legacy).expect("save legacy");
+
+        let loaded = store
+            .load_catalog_or_recover(&legacy)
+            .expect("migrate catalog");
+        assert!(loaded.migrated);
+        assert_eq!(loaded.catalog.profiles.len(), 1);
+        assert_eq!(loaded.catalog.active_profile_id, legacy.profile_id);
+        assert_eq!(
+            loaded.catalog.active().map(|p| p.name.as_str()),
+            Some(legacy.name.as_str())
+        );
+
+        let remote = ProfileEntry::remote_rpc(
+            ProfileId::new(),
+            "NAS",
+            "wss://aria2.example.invalid/jsonrpc",
+            root.join("nas-downloads"),
+            None,
+        )
+        .expect("remote entry");
+        let mut catalog = loaded.catalog;
+        catalog.upsert(remote.clone()).expect("upsert remote");
+        catalog
+            .set_active(remote.profile_id)
+            .expect("activate remote");
+        store.save_catalog(&catalog).expect("save catalog");
+
+        let reloaded = store
+            .load_catalog_or_recover(&legacy)
+            .expect("reload catalog");
+        assert!(!reloaded.migrated);
+        assert_eq!(reloaded.catalog.profiles.len(), 2);
+        assert_eq!(reloaded.catalog.active_profile_id, remote.profile_id);
+        assert_eq!(
+            reloaded.catalog.active().map(|p| p.kind),
+            Some(ProfileKind::RemoteRpc)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_profile_endpoint_validation_rejects_http_and_empty() {
+        let root = temporary_directory();
+        assert!(matches!(
+            ProfileEntry::remote_rpc(
+                ProfileId::new(),
+                "Bad",
+                "http://example.invalid/jsonrpc",
+                root.join("d"),
+                None,
+            ),
+            Err(EngineError::InvalidRemoteEndpoint { .. })
+        ));
+        assert!(matches!(
+            ProfileEntry::remote_rpc(ProfileId::new(), "Bad", "", root.join("d"), None),
+            Err(EngineError::InvalidRemoteEndpoint { .. })
+                | Err(EngineError::MissingRemoteEndpoint)
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn catalog_refuses_to_remove_the_last_profile() {
+        let root = temporary_directory();
+        let profile = sample_profile(&root);
+        let mut catalog = ProfileCatalog::from_single(profile.clone());
+        assert!(matches!(
+            catalog.remove(profile.profile_id),
+            Err(EngineError::EmptyProfileCatalog)
+        ));
         let _ = fs::remove_dir_all(root);
     }
 }

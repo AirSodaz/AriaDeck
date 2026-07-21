@@ -29,19 +29,22 @@ use crate::{
     Icon, IconButton, IconName, IconSize, MoveTaskDownInQueue, MoveTaskToQueueBottom,
     MoveTaskToQueueTop, MoveTaskUpInQueue, NotificationSettingsView, NotificationVolumeView,
     OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit,
-    OperationErrorView, PauseSelectedTask, ProxyModeView, ProxyPasswordUpdateView,
-    RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask, SaveSettings,
-    SearchInputEvent, SecretStringView, Segment, SegmentedControl, SelectAllTasks, SelectNextTask,
-    SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
-    SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator, SubmitAddDownload,
-    SubmitTaskOutputName, SubmitTaskSpeedLimit, TaskCommandRequestView, TaskCommandResultView,
-    TaskCommandView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
-    TaskDetailsView, TaskFileView, TaskIdentity, TaskOpenOutcomeView, TaskOpenRequestView,
-    TaskOpenResultView, TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView,
-    TaskServerView, TaskStatusView, TaskTrackerView, TaskUriView, TextField, TextFieldConfig,
-    Theme, ThemeMode, Toast, ToastKind, Tooltip, TransferPolicySettingsView, WorkspaceFilter,
-    WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, format_bytes,
-    format_eta, format_percent, format_rate, format_share_ratio,
+    OperationErrorView, PauseSelectedTask, ProfileCatalogView, ProfileEntryView, ProfileKindView,
+    ProxyModeView, ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask,
+    RetrySelectedTask, SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView,
+    SaveProfileCatalogResultView, SaveSettings, SearchInputEvent, SecretStringView, Segment,
+    SegmentedControl, SelectAllTasks, SelectNextTask, SelectPreviousTask, SettingsSaveOutcomeView,
+    SettingsSaveRequestView, SettingsSaveResultView, SettingsView, SpeedLimitSettingsView,
+    SpeedSampleView, StatusIndicator, SubmitAddDownload, SubmitTaskOutputName,
+    SubmitTaskSpeedLimit, SwitchProfileOutcomeView, SwitchProfileRequestView,
+    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
+    TaskFileView, TaskIdentity, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
+    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
+    TaskStatusView, TaskTrackerView, TaskUriView, TextField, TextFieldConfig, Theme, ThemeMode,
+    Toast, ToastKind, Tooltip, TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery,
+    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, format_bytes, format_eta,
+    format_percent, format_rate, format_share_ratio,
 };
 
 const SPEED_CHART_SAMPLES: usize = 120;
@@ -103,6 +106,8 @@ pub enum AppShellEvent {
     TaskDetailsRequested(TaskDetailsRequestView),
     TaskOpenRequested(TaskOpenRequestView),
     SettingsSaveRequested(SettingsSaveRequestView),
+    SwitchProfileRequested(SwitchProfileRequestView),
+    SaveProfileCatalogRequested(SaveProfileCatalogRequestView),
 }
 
 struct PendingAddDownload {
@@ -292,6 +297,7 @@ struct BatchFailureDetails {
 pub struct AppShell {
     theme: Theme,
     settings: SettingsView,
+    profiles: ProfileCatalogView,
     page: AppPage,
     engine_health: EngineHealthView,
     snapshot: WorkspaceSnapshot,
@@ -967,6 +973,7 @@ impl AppShell {
         Self {
             theme,
             settings,
+            profiles: ProfileCatalogView::default(),
             page: AppPage::Downloads,
             engine_health: EngineHealthView::External,
             snapshot: WorkspaceSnapshot::default(),
@@ -1905,6 +1912,152 @@ impl AppShell {
 
     pub fn set_startup_notice(&mut self, message: String, is_error: bool, cx: &mut Context<Self>) {
         self.show_notice(message, is_error, cx);
+    }
+
+    #[must_use]
+    pub fn profiles(&self) -> &ProfileCatalogView {
+        &self.profiles
+    }
+
+    pub fn set_profiles(&mut self, profiles: ProfileCatalogView, cx: &mut Context<Self>) {
+        self.profiles = profiles;
+        cx.notify();
+    }
+
+    pub fn request_switch_profile(&mut self, profile_id: String, cx: &mut Context<Self>) {
+        let profile_id = profile_id.trim().to_owned();
+        if profile_id.is_empty() {
+            self.show_notice("Select a profile to activate.", true, cx);
+            return;
+        }
+        if profile_id == self.profiles.active_profile_id {
+            self.show_notice("That profile is already active.", false, cx);
+            return;
+        }
+        if !self
+            .profiles
+            .profiles
+            .iter()
+            .any(|profile| profile.profile_id == profile_id)
+        {
+            self.show_notice(
+                "The selected profile is no longer in the catalog.",
+                true,
+                cx,
+            );
+            return;
+        }
+        let request_id = self.allocate_request_id();
+        self.show_notice("Switching profile...", false, cx);
+        cx.emit(AppShellEvent::SwitchProfileRequested(
+            SwitchProfileRequestView {
+                request_id,
+                profile_id,
+            },
+        ));
+        cx.notify();
+    }
+
+    pub fn set_switch_profile_result(
+        &mut self,
+        result: SwitchProfileResultView,
+        cx: &mut Context<Self>,
+    ) {
+        match result.outcome {
+            SwitchProfileOutcomeView::Success => {
+                self.profiles = result.catalog;
+                self.show_notice("Profile switched.", false, cx);
+            }
+            SwitchProfileOutcomeView::Failure(error) => {
+                self.show_notice(error.summary, true, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn request_save_profile_catalog(
+        &mut self,
+        catalog: ProfileCatalogView,
+        cx: &mut Context<Self>,
+    ) {
+        if catalog.profiles.is_empty() {
+            self.show_notice("At least one profile is required.", true, cx);
+            return;
+        }
+        if !catalog
+            .profiles
+            .iter()
+            .any(|profile| profile.profile_id == catalog.active_profile_id)
+        {
+            self.show_notice("The active profile must exist in the catalog.", true, cx);
+            return;
+        }
+        let request_id = self.allocate_request_id();
+        self.show_notice("Saving profiles...", false, cx);
+        cx.emit(AppShellEvent::SaveProfileCatalogRequested(
+            SaveProfileCatalogRequestView {
+                request_id,
+                catalog,
+            },
+        ));
+        cx.notify();
+    }
+
+    pub fn set_save_profile_catalog_result(
+        &mut self,
+        result: SaveProfileCatalogResultView,
+        cx: &mut Context<Self>,
+    ) {
+        match result.outcome {
+            SaveProfileCatalogOutcomeView::Success => {
+                self.profiles = result.catalog;
+                self.show_notice("Profiles saved.", false, cx);
+            }
+            SaveProfileCatalogOutcomeView::Failure(error) => {
+                self.show_notice(error.summary, true, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn add_draft_local_profile(&mut self, cx: &mut Context<Self>) {
+        let id = format!("draft-local-{}", self.allocate_request_id().get());
+        let download_dir = self.settings.download_directory.clone();
+        self.profiles.profiles.push(ProfileEntryView {
+            profile_id: id,
+            name: format!("Local {}", self.profiles.profiles.len() + 1),
+            kind: ProfileKindView::LocalManaged,
+            executable: "aria2c".into(),
+            download_dir,
+            endpoint: String::new(),
+            has_secret: false,
+        });
+        self.show_notice(
+            "Local profile draft added. Save profiles, then activate and restart to connect.",
+            false,
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn add_draft_remote_profile(&mut self, cx: &mut Context<Self>) {
+        let id = format!("draft-remote-{}", self.allocate_request_id().get());
+        let download_dir = self.settings.download_directory.clone();
+        self.profiles.profiles.push(ProfileEntryView {
+            profile_id: id,
+            name: format!("Remote {}", self.profiles.profiles.len() + 1),
+            kind: ProfileKindView::RemoteRpc,
+            executable: String::new(),
+            download_dir,
+            endpoint: "wss://127.0.0.1:6800/jsonrpc".into(),
+            has_secret: false,
+        });
+        self.show_notice(
+            "Remote profile draft added. Edit the endpoint if needed, save, then activate and restart.",
+            false,
+            cx,
+        );
+        cx.notify();
     }
 
     #[must_use]
@@ -4978,6 +5131,18 @@ impl AppShell {
             );
         }
 
+        let active_profile_name = self
+            .profiles
+            .active()
+            .map(|profile| profile.name.clone())
+            .unwrap_or_else(|| "No profile".into());
+        let active_profile_kind = self
+            .profiles
+            .active()
+            .map(|profile| profile.kind.label())
+            .unwrap_or("—");
+        let profile_count = self.profiles.profiles.len();
+
         div()
             .w(px(SIDEBAR_WIDTH))
             .flex_none()
@@ -4988,7 +5153,36 @@ impl AppShell {
             .border_color(colors.border)
             .bg(colors.surface)
             .p_3()
-            .child(div().flex().flex_col().gap_1().children(filters))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("active-profile-banner")
+                            .role(Role::Status)
+                            .aria_label(format!(
+                                "Active profile {active_profile_name}, {active_profile_kind}"
+                            ))
+                            .px_3()
+                            .py_2()
+                            .rounded_md()
+                            .bg(colors.surface_active)
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(colors.text_primary)
+                                    .child(active_profile_name),
+                            )
+                            .child(div().text_xs().text_color(colors.text_muted).child(format!(
+                                "{active_profile_kind} · {profile_count} profile{}",
+                                if profile_count == 1 { "" } else { "s" }
+                            ))),
+                    )
+                    .child(div().flex().flex_col().gap_1().children(filters)),
+            )
             .child(
                 div()
                     .id("open-settings")
@@ -8310,6 +8504,153 @@ impl AppShell {
                         .flex()
                         .flex_col()
                         .gap_8()
+                        .child({
+                            let profiles = self.profiles.clone();
+                            let active_id = profiles.active_profile_id.clone();
+                            settings_section(
+                                "Profiles",
+                                "Local managed profiles spawn aria2 under AriaDeck. Remote RPC profiles connect only. Switching the active profile is saved immediately; restart AriaDeck to reconnect.",
+                                colors,
+                            )
+                            .child(
+                                div()
+                                    .mt_3()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .children(profiles.profiles.into_iter().map(|profile| {
+                                        let is_active = profile.profile_id == active_id;
+                                        let profile_id = profile.profile_id.clone();
+                                        let switch_id = profile_id.clone();
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "profile-row-{}",
+                                                profile.profile_id
+                                            )))
+                                            .flex()
+                                            .items_center()
+                                            .gap_3()
+                                            .px_3()
+                                            .py_2()
+                                            .rounded_md()
+                                            .border_1()
+                                            .border_color(if is_active {
+                                                colors.accent
+                                            } else {
+                                                colors.border
+                                            })
+                                            .bg(if is_active {
+                                                with_alpha(colors.accent, 0.08)
+                                            } else {
+                                                colors.surface
+                                            })
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap_0p5()
+                                                    .child(
+                                                        div()
+                                                            .text_sm()
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(colors.text_primary)
+                                                            .child(profile.name.clone()),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(colors.text_muted)
+                                                            .child(match profile.kind {
+                                                                ProfileKindView::LocalManaged => {
+                                                                    format!(
+                                                                        "Local · {}",
+                                                                        if profile.executable.is_empty() {
+                                                                            "aria2c".into()
+                                                                        } else {
+                                                                            profile.executable.clone()
+                                                                        }
+                                                                    )
+                                                                }
+                                                                ProfileKindView::RemoteRpc => {
+                                                                    format!(
+                                                                        "Remote · {}",
+                                                                        if profile.endpoint.is_empty() {
+                                                                            "no endpoint".into()
+                                                                        } else {
+                                                                            profile.endpoint.clone()
+                                                                        }
+                                                                    )
+                                                                }
+                                                            }),
+                                                    ),
+                                            )
+                                            .child(
+                                                Button::new(
+                                                    SharedString::from(format!(
+                                                        "activate-profile-{}",
+                                                        profile_id
+                                                    )),
+                                                    if is_active { "Active" } else { "Activate" },
+                                                )
+                                                .aria_label(if is_active {
+                                                    format!("{} is active", profile.name)
+                                                } else {
+                                                    format!("Activate {}", profile.name)
+                                                })
+                                                .style(if is_active {
+                                                    ButtonStyle::Secondary
+                                                } else {
+                                                    ButtonStyle::Primary
+                                                })
+                                                .disabled(is_active)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.request_switch_profile(
+                                                        switch_id.clone(),
+                                                        cx,
+                                                    );
+                                                }))
+                                                .render(colors),
+                                            )
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .mt_3()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap_2()
+                                    .child(
+                                        Button::new("add-local-profile", "Add local profile")
+                                            .aria_label("Add a local managed aria2 profile")
+                                            .style(ButtonStyle::Secondary)
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.add_draft_local_profile(cx);
+                                            }))
+                                            .render(colors),
+                                    )
+                                    .child(
+                                        Button::new("add-remote-profile", "Add remote profile")
+                                            .aria_label("Add a remote RPC aria2 profile")
+                                            .style(ButtonStyle::Secondary)
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.add_draft_remote_profile(cx);
+                                            }))
+                                            .render(colors),
+                                    )
+                                    .child(
+                                        Button::new("save-profile-catalog", "Save profiles")
+                                            .aria_label("Save the profile catalog")
+                                            .style(ButtonStyle::Primary)
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                let catalog = this.profiles.clone();
+                                                this.request_save_profile_catalog(catalog, cx);
+                                            }))
+                                            .render(colors),
+                                    ),
+                            )
+                        })
                         .child(
                             settings_section(
                                 "Appearance",
@@ -13564,6 +13905,77 @@ mod tests {
                 notice.message.contains("force-pause") || notice.message.contains("forcePause"),
                 "{}",
                 notice.message
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn profile_catalog_can_switch_and_add_drafts(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.set_profiles(
+                ProfileCatalogView {
+                    active_profile_id: "p1".into(),
+                    profiles: vec![
+                        ProfileEntryView {
+                            profile_id: "p1".into(),
+                            name: "Local".into(),
+                            kind: ProfileKindView::LocalManaged,
+                            executable: "aria2c".into(),
+                            download_dir: "D:/Downloads".into(),
+                            endpoint: String::new(),
+                            has_secret: false,
+                        },
+                        ProfileEntryView {
+                            profile_id: "p2".into(),
+                            name: "NAS".into(),
+                            kind: ProfileKindView::RemoteRpc,
+                            executable: String::new(),
+                            download_dir: "D:/Downloads".into(),
+                            endpoint: "wss://nas.example/jsonrpc".into(),
+                            has_secret: false,
+                        },
+                    ],
+                },
+                cx,
+            );
+            shell
+        });
+
+        view.update(cx, |shell, cx| {
+            shell.request_switch_profile("p1".into(), cx);
+            assert!(
+                shell
+                    .status_notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.message.contains("already active"))
+            );
+            shell.add_draft_remote_profile(cx);
+            assert_eq!(shell.profiles.profiles.len(), 3);
+            assert!(
+                shell
+                    .profiles
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.kind == ProfileKindView::RemoteRpc
+                        && profile.profile_id.starts_with("draft-remote-"))
+            );
+            shell.set_switch_profile_result(
+                SwitchProfileResultView {
+                    request_id: RequestId::from_u64(9),
+                    profile_id: "p2".into(),
+                    catalog: ProfileCatalogView {
+                        active_profile_id: "p2".into(),
+                        profiles: shell.profiles.profiles.clone(),
+                    },
+                    outcome: SwitchProfileOutcomeView::Success,
+                },
+                cx,
+            );
+            assert_eq!(shell.profiles.active_profile_id, "p2");
+            assert_eq!(
+                shell.profiles.active().map(|profile| profile.name.as_str()),
+                Some("NAS")
             );
         });
     }

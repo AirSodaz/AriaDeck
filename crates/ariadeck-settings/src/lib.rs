@@ -41,6 +41,11 @@ impl ProxyCredentialRef {
     }
 
     #[must_use]
+    pub fn from_uuid(value: Uuid) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
     pub fn as_uuid(self) -> Uuid {
         self.0
     }
