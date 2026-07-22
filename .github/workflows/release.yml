@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-portable:
+    name: Windows portable release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Generate third-party notices
+        run: python scripts/gen_third_party_notices.py
+
+      - name: Package portable
+        shell: pwsh
+        run: |
+          $sign = $false
+          if ($env:ARIADECK_SIGN_CERT_THUMBPRINT -or $env:ARIADECK_SIGN_PFX) {
+            $sign = $true
+          }
+          if ($sign) {
+            ./scripts/package-windows-portable.ps1 -Sign
+          } else {
+            ./scripts/package-windows-portable.ps1
+          }
+        env:
+          ARIADECK_SIGN_TOOL: ${{ secrets.ARIADECK_SIGN_TOOL }}
+          ARIADECK_SIGN_CERT_THUMBPRINT: ${{ secrets.ARIADECK_SIGN_CERT_THUMBPRINT }}
+          ARIADECK_SIGN_PFX: ${{ secrets.ARIADECK_SIGN_PFX }}
+          ARIADECK_SIGN_PFX_PASSWORD: ${{ secrets.ARIADECK_SIGN_PFX_PASSWORD }}
+          ARIADECK_SIGN_DESCRIPTION: AriaDeck
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ariadeck-windows-x64-portable
+          path: dist/*
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

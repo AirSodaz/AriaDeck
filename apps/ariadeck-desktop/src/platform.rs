@@ -134,18 +134,17 @@ impl SystemTray {
 /// Left single-click (button up) or left double-click restores the window.
 /// Right/middle clicks are ignored so the tray context menu is not interrupted.
 fn is_tray_show_click(event: &TrayIconEvent) -> bool {
-    match event {
+    matches!(
+        event,
         TrayIconEvent::Click {
             button: MouseButton::Left,
             button_state: MouseButtonState::Up,
             ..
-        }
-        | TrayIconEvent::DoubleClick {
+        } | TrayIconEvent::DoubleClick {
             button: MouseButton::Left,
             ..
-        } => true,
-        _ => false,
-    }
+        }
+    )
 }
 
 fn push_unique(actions: &mut Vec<TrayAction>, action: TrayAction) {

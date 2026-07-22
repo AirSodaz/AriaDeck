@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+license.workspace = true
 description = "Fluent-based localization catalogs for AriaDeck (en, zh-CN)"
 
 [dependencies]

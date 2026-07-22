@@ -338,14 +338,50 @@ pub(crate) fn hide_show_win32(hwnd: isize, show: bool) -> bool {
     true
 }
 
+/// Marker file placed next to the executable to enable portable mode (RELEASE-001).
+pub(crate) const PORTABLE_MARKER_FILE: &str = "ariadeck.portable";
+
+/// Application data directory used for settings, profiles, cores, and window geometry.
+///
+/// Resolution order:
+/// 1. `ARIADECK_DATA_DIR` when set
+/// 2. `<exe_dir>/data` when `<exe_dir>/ariadeck.portable` exists
+/// 3. `%LOCALAPPDATA%/AriaDeck` (Windows)
+/// 4. `$XDG_DATA_HOME/ariadeck` or `~/.local/share/ariadeck`
+/// 5. `./.ariadeck` fallback
+#[must_use]
 pub(crate) fn default_data_dir() -> PathBuf {
-    if let Some(path) = env::var_os("LOCALAPPDATA") {
+    resolve_data_dir(|key| env::var_os(key), current_exe_dir().as_deref())
+}
+
+fn current_exe_dir() -> Option<PathBuf> {
+    env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+}
+
+/// Testable data-dir resolver (RELEASE-001).
+#[must_use]
+pub(crate) fn resolve_data_dir(
+    mut env_var: impl FnMut(&str) -> Option<std::ffi::OsString>,
+    exe_dir: Option<&Path>,
+) -> PathBuf {
+    if let Some(path) = env_var("ARIADECK_DATA_DIR") {
+        return PathBuf::from(path);
+    }
+    if let Some(exe_dir) = exe_dir {
+        let marker = exe_dir.join(PORTABLE_MARKER_FILE);
+        if marker.is_file() {
+            return exe_dir.join("data");
+        }
+    }
+    if let Some(path) = env_var("LOCALAPPDATA") {
         return PathBuf::from(path).join("AriaDeck");
     }
-    if let Some(path) = env::var_os("XDG_DATA_HOME") {
+    if let Some(path) = env_var("XDG_DATA_HOME") {
         return PathBuf::from(path).join("ariadeck");
     }
-    if let Some(path) = env::var_os("HOME") {
+    if let Some(path) = env_var("HOME") {
         return PathBuf::from(path).join(".local/share/ariadeck");
     }
     PathBuf::from(".ariadeck")

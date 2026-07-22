@@ -1671,6 +1671,71 @@ mod tests {
     }
 
     #[test]
+    fn release_migration_matrix_covers_every_historical_schema_version() {
+        // RELEASE-001: each prior schema must land on CURRENT with critical defaults.
+        let fixtures: &[(u32, &str)] = &[
+            (
+                1,
+                r#"{"schema_version":1,"color_scheme":"light","download_directory":"downloads"}"#,
+            ),
+            (
+                2,
+                r#"{"schema_version":2,"color_scheme":"dark","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null}}"#,
+            ),
+            (
+                3,
+                r#"{"schema_version":3,"color_scheme":"dark","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0}}"#,
+            ),
+            (
+                4,
+                r#"{"schema_version":4,"color_scheme":"dark","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false}}"#,
+            ),
+            (
+                5,
+                r#"{"schema_version":5,"color_scheme":"dark","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"quiet","notify_on_completion":false,"notify_on_error":true,"notify_on_engine_events":true}}"#,
+            ),
+            (
+                6,
+                r#"{"schema_version":6,"color_scheme":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":true,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false}}"#,
+            ),
+            (
+                7,
+                r#"{"schema_version":7,"color_scheme":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":true,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false},"ui":{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"}}"#,
+            ),
+        ];
+
+        for &(version, body) in fixtures {
+            let root = tempfile::tempdir().expect("temporary directory");
+            let store = JsonSettingsStore::new(root.path().join("settings.json"));
+            fs::write(store.path(), body).expect("seed historical settings");
+            let loaded = store
+                .load_or_initialize(&settings(root.path()))
+                .unwrap_or_else(|error| panic!("migrate schema {version}: {error}"));
+            assert!(
+                loaded.recovery.is_none(),
+                "schema {version} should migrate cleanly"
+            );
+            let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
+            assert!(
+                migrated.contains(&format!(
+                    "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
+                )),
+                "schema {version} must rewrite to current"
+            );
+            assert_eq!(
+                loaded.settings.language,
+                LanguagePreference::System,
+                "schema {version} language default"
+            );
+            // Platform/ui exist from v6+/v7+ migrations; defaults apply for older.
+            let _ = loaded.settings.platform;
+            let _ = loaded.settings.ui;
+            let reloaded = store.load().expect("reload current document");
+            assert_eq!(reloaded.download_directory, PathBuf::from("downloads"));
+        }
+    }
+
+    #[test]
     fn future_schema_is_rejected_without_replacing_the_document() {
         let root = tempfile::tempdir().expect("temporary directory");
         let store = JsonSettingsStore::new(root.path().join("settings.json"));

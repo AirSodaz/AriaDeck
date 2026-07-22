@@ -57,6 +57,24 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+## Releases (Windows portable)
+
+AriaDeck ships a Windows x64 **portable** package and an optional Inno Setup
+installer. Managed aria2 is not bundled—import a core in Settings or use
+`ARIADECK_RPC_URL`.
+
+```powershell
+python scripts/gen_third_party_notices.py
+powershell -ExecutionPolicy Bypass -File scripts/package-windows-portable.ps1
+```
+
+Portable mode: place `ariadeck.portable` next to the executable (the package
+script does this) so settings live under `./data`. Installed builds use
+`%LOCALAPPDATA%\AriaDeck` and keep that data when uninstalling.
+
+Full packaging, signing hooks, and data-retention policy:
+[`docs/release.md`](docs/release.md).
+
 ## Architecture
 
 AriaDeck keeps domain and application behavior independent from GPUI, aria2
@@ -72,5 +90,9 @@ Current package boundaries:
 - `ariadeck-ui`: semantic design tokens and GPUI-owned components.
 - `ariadeck-telemetry`: structured diagnostics setup.
 - `ariadeck-desktop`: process bootstrap and composition root.
+- `ariadeck-i18n`: Fluent catalogs (en, zh-CN).
+- `ariadeck-settings`: versioned settings and migrations.
 
 Architecture and product context: [`docs/project-context.md`](docs/project-context.md).
+Release packaging: [`docs/release.md`](docs/release.md).
+License: [`LICENSE`](LICENSE) (MIT); third-party: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

@@ -14,8 +14,10 @@ use std::{
 };
 
 fn main() {
-    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let manifest_dir = PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo"),
+    );
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR set by cargo"));
     let svg_path = manifest_dir.join("assets").join("icon.svg");
 
     println!("cargo:rerun-if-changed=assets/icon.svg");
@@ -38,11 +40,25 @@ fn main() {
     fs::write(out_dir.join("window_icon.rgba"), &window_icon_rgba)
         .unwrap_or_else(|e| panic!("failed to write window_icon.rgba: {e}"));
 
-    // ── Windows: embed ICO as the EXE application icon ───────────────────────
+    // ── Windows: embed ICO + version/product metadata (RELEASE-001) ───────────
     #[cfg(target_os = "windows")]
     {
         let mut res = winres::WindowsResource::new();
         res.set_icon(ico_path.to_str().expect("OUT_DIR path must be valid UTF-8"));
+        let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
+        // winres expects dotted numeric FileVersion; append .0 when needed.
+        let file_version = if version.split('.').count() >= 4 {
+            version.clone()
+        } else {
+            format!("{version}.0")
+        };
+        res.set("ProductName", "AriaDeck");
+        res.set("FileDescription", "AriaDeck — native aria2 desktop client");
+        res.set("CompanyName", "AriaDeck contributors");
+        res.set("LegalCopyright", "Copyright (c) AriaDeck contributors");
+        res.set("OriginalFilename", "ariadeck-desktop.exe");
+        res.set("ProductVersion", &version);
+        res.set("FileVersion", &file_version);
         res.compile().expect("winres: failed to compile resources");
     }
 }

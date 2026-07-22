@@ -2252,3 +2252,58 @@ fn profile_catalog_save_preserves_remote_secret_ref_when_unchanged() {
         .expect("local retained");
     assert!(mapped_local.uses_managed_core());
 }
+
+#[test]
+fn resolve_data_dir_prefers_explicit_env_over_portable_and_os() {
+    let root = tempfile::tempdir().expect("temp");
+    let explicit = root.path().join("custom-data");
+    let exe_dir = root.path().join("app");
+    fs::create_dir_all(&exe_dir).expect("exe dir");
+    fs::write(exe_dir.join(PORTABLE_MARKER_FILE), b"").expect("marker");
+    let local_app = root.path().join("LocalAppData");
+
+    let resolved = resolve_data_dir(
+        |key| match key {
+            "ARIADECK_DATA_DIR" => Some(explicit.as_os_str().to_owned()),
+            "LOCALAPPDATA" => Some(local_app.as_os_str().to_owned()),
+            _ => None,
+        },
+        Some(exe_dir.as_path()),
+    );
+    assert_eq!(resolved, explicit);
+}
+
+#[test]
+fn resolve_data_dir_uses_portable_data_when_marker_present() {
+    let root = tempfile::tempdir().expect("temp");
+    let exe_dir = root.path().join("portable-app");
+    fs::create_dir_all(&exe_dir).expect("exe dir");
+    fs::write(exe_dir.join(PORTABLE_MARKER_FILE), b"").expect("marker");
+    let local_app = root.path().join("LocalAppData");
+
+    let resolved = resolve_data_dir(
+        |key| match key {
+            "LOCALAPPDATA" => Some(local_app.as_os_str().to_owned()),
+            _ => None,
+        },
+        Some(exe_dir.as_path()),
+    );
+    assert_eq!(resolved, exe_dir.join("data"));
+}
+
+#[test]
+fn resolve_data_dir_falls_back_to_localappdata_without_marker() {
+    let root = tempfile::tempdir().expect("temp");
+    let exe_dir = root.path().join("installed-app");
+    fs::create_dir_all(&exe_dir).expect("exe dir");
+    let local_app = root.path().join("LocalAppData");
+
+    let resolved = resolve_data_dir(
+        |key| match key {
+            "LOCALAPPDATA" => Some(local_app.as_os_str().to_owned()),
+            _ => None,
+        },
+        Some(exe_dir.as_path()),
+    );
+    assert_eq!(resolved, local_app.join("AriaDeck"));
+}

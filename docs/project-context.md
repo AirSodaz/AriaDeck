@@ -1,6 +1,6 @@
 # AriaDeck — Project Design & Context
 
-**Status:** Product-ready core; ACCESS-001, en/zh-CN i18n, SEC-001 privacy, and PERF-001 stress hardening landed; remaining work is release packaging and broader string migration  
+**Status:** Product-ready core; ACCESS-001, en/zh-CN i18n, SEC-001 privacy, PERF-001 stress hardening, and RELEASE-001 Windows packaging landed; remaining work is broader string migration and multi-platform distribution  
 **Last updated:** 2026-07-22  
 **Primary stack:** Rust 1.96 · GPUI (Zed `v1.11.3` pin) · aria2 JSON-RPC over WebSocket · Tokio
 
@@ -148,6 +148,7 @@ Compressed product contracts agents must not casually reverse:
 | D-031 | System/Light/Dark theme; debounced `window.json` geometry; last filter/sort only (not search text). |
 | D-032 | **Privacy (SEC-001):** secrets and high-entropy tokens must never appear in UI projections, clipboard “copy source”, notices/activity, `Debug`/`Display` of config types, or diagnostic snapshots. Domain/engine may retain raw engine data for RPC and retry. Redaction lives in `ariadeck_domain::privacy`. |
 | D-033 | **Performance (PERF-001):** tray-hidden sessions use Background poll intervals; list/details stay virtualized (viewport only); details ready→ready re-fetch coalesces (≥500ms); snapshot light updates skip O(n) selection work when `source_revision`/session stable; store/view stress covers 10k stopped + rapid patches. |
+| D-034 | **Release (RELEASE-001):** Windows-first portable (+ optional Inno installer); data dir order `ARIADECK_DATA_DIR` → portable marker `ariadeck.portable` → OS defaults; uninstall keeps `%LOCALAPPDATA%\AriaDeck` by default; MIT + `THIRD_PARTY_NOTICES.md`; no in-app auto-update; no network aria2 channel. See `docs/release.md`. |
 
 #### SEC-001 sensitive-flow inventory (redaction boundary)
 
@@ -222,7 +223,7 @@ Bootstrap, domain/application store, typed WS RPC, sync/reconnect, virtualized w
 | `ACCESS-001` | **Done** — SR labels on settings/controls, status icon+text (not color-only), reduced-motion caret/loading, larger toggle/segment hit targets, locale-shaped size/rate formatters (`FormatOptions`), integrity check uses unified `Toggle`+`settings_row`. Manual residual: high-DPI visual check at 125%/150% on Windows. |
 | `SEC-001` | **Done** — Shared `ariadeck-domain` privacy helpers (`redact_source_uri` / `redact_tracker_uri` / `task_option_key_is_sensitive` / `DiagnosticSnapshot`); list + details projections redact URI userinfo/query/fragment, magnet extras, tracker path tokens, and server URIs; option secrets cleared in RPC adapter; proxy/RPC secrets stay in keychain with Debug redaction; duplicate-add errors redact credentials; filename `out` rejects path separators; symlink components rejected on destination preflight (unix test). Residual: raw engine data retained in domain for retry; no user-facing support-bundle UI; manual Windows reparse-point check. |
 | `PERF-001` | **Done** — Tray hide/show switches `ActivityMode` Background/Foreground poll intervals; `counts()` single-pass O(n); details ready→ready re-fetch min 500ms coalesce; identical `WorkspaceSnapshot` short-circuit; application stress tests for 10k stopped pages + rapid patches + view filter/sort; UI 10k rapid snapshot virtualization; set_activity reconnect-safe. Residual: manual Windows memory sampling under real aria2 load; no production APM. |
-| `RELEASE-001` | Signing, installer/portable packaging, uninstall data retention, license notices, schema migration tests, app update/rollback |
+| `RELEASE-001` | **Done** — Windows portable package script + optional Inno installer (per-user, data retained on uninstall); `ariadeck.portable` / `ARIADECK_DATA_DIR` data-dir resolution; MIT `LICENSE` + generated `THIRD_PARTY_NOTICES.md`; winres product metadata; settings migration matrix + future-schema fail-closed; CI + tag release workflows; signing env hooks (no certs in-repo). Residual: no production signing cert, no in-app auto-update, no macOS/Linux primary packages, no network aria2 installer channel. |
 
 ### Explicitly deferred
 
@@ -303,7 +304,7 @@ Live aria2 tests (ignored by default) need a real `aria2c` (e.g. Scoop) and `ARI
 2. Research aria2 manual / comparable clients before changing user-visible contracts.
 3. Keep provider-neutral contracts in application; aria2 option strings at RPC boundary.
 4. A feature is not done without tests or a recorded live check for engine-touching paths.
-5. Do not expand scope into RELEASE/network installers unless asked.
+5. Release packaging stays within `docs/release.md` (Windows portable/installer). Do not expand into network aria2 download channels or in-app auto-update productization unless asked.
 
 ---
 
