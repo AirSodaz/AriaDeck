@@ -895,6 +895,9 @@ impl AppShell {
                                                         SettingsCategory::System => self
                                                             .render_settings_system(cx)
                                                             .into_any_element(),
+                                                        SettingsCategory::About => self
+                                                            .render_settings_about(cx)
+                                                            .into_any_element(),
                                                     }),
                                             ),
                                     )
@@ -967,7 +970,7 @@ impl AppShell {
 
         if matches!(
             active_category,
-            SettingsCategory::Profiles | SettingsCategory::Engine
+            SettingsCategory::Profiles | SettingsCategory::Engine | SettingsCategory::About
         ) {
             return div().into_any_element();
         }
@@ -1090,7 +1093,9 @@ impl AppShell {
                     .is_some_and(|p| p.source == SettingsSaveSource::Platform);
                 (dirty, saving)
             }
-            SettingsCategory::Profiles | SettingsCategory::Engine => unreachable!(),
+            SettingsCategory::Profiles | SettingsCategory::Engine | SettingsCategory::About => {
+                unreachable!()
+            }
         };
 
         if !dirty && error.is_none() {
@@ -2517,6 +2522,59 @@ impl AppShell {
                     .child(
                         "Tray menu: Show AriaDeck, Pause all, Resume all, Quit. Managed aria2 is owned by this process and stops on quit; remote profiles keep their engines running.",
                     ),
+            )
+    }
+
+    pub(crate) fn render_settings_about(&mut self, _cx: &mut Context<Self>) -> Div {
+        let colors = self.theme.colors;
+        let app_title = self.t("settings-about-app");
+        let name_label = self.t("settings-about-name");
+        let version_label = self.t("settings-about-version");
+        let authors_label = self.t("settings-about-authors");
+        let description_label = self.t("settings-about-description");
+        let description_value = self.t("settings-about-description-value");
+        let runtime_title = self.t("settings-about-runtime");
+        let platform_label = self.t("settings-about-platform");
+        let aria2_label = self.t("settings-about-aria2-version");
+        let aria2_version = {
+            let version = self.snapshot.capabilities.version.trim();
+            if version.is_empty() {
+                self.t("settings-about-aria2-unknown")
+            } else {
+                version.to_owned()
+            }
+        };
+        let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+        let authors = env!("CARGO_PKG_AUTHORS");
+        let authors = if authors.is_empty() {
+            "AriaDeck contributors"
+        } else {
+            authors
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(
+                settings_card_owned(app_title, colors)
+                    .child(settings_info_row_owned(name_label, "AriaDeck", colors))
+                    .child(settings_info_row_owned(
+                        version_label,
+                        env!("CARGO_PKG_VERSION"),
+                        colors,
+                    ))
+                    .child(settings_info_row_owned(
+                        description_label,
+                        description_value,
+                        colors,
+                    ))
+                    .child(settings_info_row_owned(authors_label, authors, colors)),
+            )
+            .child(
+                settings_card_owned(runtime_title, colors)
+                    .child(settings_info_row_owned(platform_label, platform, colors))
+                    .child(settings_info_row_owned(aria2_label, aria2_version, colors)),
             )
     }
 }

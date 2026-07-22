@@ -2616,6 +2616,29 @@ fn transfer_policy_integrity_toggle_updates_draft(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn about_settings_category_is_read_only(cx: &mut TestAppContext) {
+    let initial = SettingsView {
+        language: LanguagePreferenceView::English,
+        ..SettingsView::default()
+    };
+    let (view, cx) =
+        cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_settings(&OpenSettings, window, cx);
+        shell.snapshot.capabilities.version = "1.37.0".into();
+        shell.select_settings_category(SettingsCategory::About, cx);
+        assert_eq!(shell.settings_page.active_category, SettingsCategory::About);
+        assert_eq!(shell.t("settings-nav-about"), "About");
+        assert_eq!(shell.t("settings-about-version"), "Version");
+        // About is read-only: render path must not require a save footer.
+        let _ = shell.render_settings_about(cx);
+        let footer = shell.render_settings_footer(cx);
+        drop(footer);
+        assert!(shell.pending_settings_save.is_none());
+    });
+}
+
+#[gpui::test]
 fn notification_preferences_save_emits_settings_request(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
     view.update_in(cx, |shell, window, cx| {

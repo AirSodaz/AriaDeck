@@ -8,6 +8,7 @@ settings-nav-network = Network
 settings-nav-transfers = Transfers
 settings-nav-notifications = Notifications
 settings-nav-system = System
+settings-nav-about = About
 
 settings-appearance = Appearance
 settings-theme = Theme
@@ -81,3 +82,14 @@ settings-proxy-manual = Manual
 settings-profiles = Profiles
 settings-engine-cores = Managed aria2 cores
 settings-language-saved = Language preference saved.
+
+settings-about-app = Application
+settings-about-name = Name
+settings-about-version = Version
+settings-about-authors = Authors
+settings-about-description = Description
+settings-about-description-value = A native desktop client for aria2.
+settings-about-runtime = Runtime
+settings-about-platform = Platform
+settings-about-aria2-version = Connected aria2
+settings-about-aria2-unknown = Not available

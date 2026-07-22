@@ -1347,3 +1347,33 @@ pub(crate) fn settings_row_owned(
         )
         .child(div().flex_none().child(control))
 }
+
+/// Read-only label + value row for About and other non-editable info panels.
+pub(crate) fn settings_info_row_owned(
+    label: impl Into<SharedString>,
+    value: impl Into<SharedString>,
+    colors: crate::ThemeColors,
+) -> Div {
+    let label = label.into();
+    let value = value.into();
+    div()
+        .flex()
+        .items_start()
+        .gap_4()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_sm()
+                .text_color(colors.text_primary)
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_none()
+                .max_w(px(320.0))
+                .text_sm()
+                .text_color(colors.text_secondary)
+                .child(value),
+        )
+}

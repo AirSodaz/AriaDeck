@@ -8,6 +8,7 @@ settings-nav-network = 网络
 settings-nav-transfers = 传输
 settings-nav-notifications = 通知
 settings-nav-system = 系统
+settings-nav-about = 关于
 
 settings-appearance = 外观
 settings-theme = 主题
@@ -81,3 +82,14 @@ settings-proxy-manual = 手动
 settings-profiles = 配置
 settings-engine-cores = 托管的 aria2 核心
 settings-language-saved = 语言偏好已保存。
+
+settings-about-app = 应用
+settings-about-name = 名称
+settings-about-version = 版本
+settings-about-authors = 作者
+settings-about-description = 简介
+settings-about-description-value = aria2 的原生桌面客户端。
+settings-about-runtime = 运行环境
+settings-about-platform = 平台
+settings-about-aria2-version = 已连接的 aria2
+settings-about-aria2-unknown = 不可用

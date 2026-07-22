@@ -323,10 +323,12 @@ pub(crate) enum SettingsCategory {
     Notifications,
     /// Window close behavior and system tray.
     System,
+    /// Application and connected engine information (read-only).
+    About,
 }
 
 impl SettingsCategory {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::General,
         Self::Profiles,
         Self::Engine,
@@ -334,6 +336,7 @@ impl SettingsCategory {
         Self::Transfers,
         Self::Notifications,
         Self::System,
+        Self::About,
     ];
 
     const fn label(self) -> &'static str {
@@ -345,6 +348,7 @@ impl SettingsCategory {
             Self::Transfers => "Transfers",
             Self::Notifications => "Notifications",
             Self::System => "System",
+            Self::About => "About",
         }
     }
 
@@ -357,6 +361,7 @@ impl SettingsCategory {
             Self::Transfers => "settings-nav-transfers",
             Self::Notifications => "settings-nav-notifications",
             Self::System => "settings-nav-system",
+            Self::About => "settings-nav-about",
         }
     }
 
@@ -369,6 +374,7 @@ impl SettingsCategory {
             Self::Transfers => crate::IconName::ArrowDown,
             Self::Notifications => crate::IconName::Info,
             Self::System => crate::IconName::Settings,
+            Self::About => crate::IconName::CircleHelp,
         }
     }
 }
