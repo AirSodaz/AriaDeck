@@ -49,7 +49,8 @@ jobs:
           ARIADECK_SIGN_DESCRIPTION: AriaDeck
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        # v5 still targets Node 20; v6+ is node24-native.
+        uses: actions/upload-artifact@v6
         with:
           name: ariadeck-windows-x64-portable
           path: dist/*

@@ -15,7 +15,7 @@ jobs:
     name: fmt / test / clippy
     runs-on: windows-latest
     steps:
-      # actions/checkout@v5 runs on Node 24 (avoids Node 20 deprecation warnings).
+      # Node 24-native actions (avoids Node 20 deprecation force-upgrade warnings).
       - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
@@ -63,7 +63,8 @@ jobs:
         run: ./scripts/package-windows-portable.ps1
 
       - name: Upload portable artifact
-        uses: actions/upload-artifact@v5
+        # v5 still targets Node 20; v6+ is node24-native.
+        uses: actions/upload-artifact@v6
         with:
           name: ariadeck-windows-x64-portable
           path: dist/*
