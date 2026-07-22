@@ -15,7 +15,8 @@ jobs:
     name: fmt / test / clippy
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout@v5 runs on Node 24 (avoids Node 20 deprecation warnings).
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -44,7 +45,7 @@ jobs:
     needs: verify
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master

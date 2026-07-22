@@ -15,7 +15,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout@v5 runs on Node 24 (avoids Node 20 deprecation warnings).
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master

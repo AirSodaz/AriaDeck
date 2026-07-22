@@ -2663,6 +2663,8 @@ mod tests {
     /// folder is non-writable; only a real write probe is authoritative.
     #[cfg(windows)]
     #[test]
+    // Clearing the fixture attribute is intentional Windows test cleanup (not Unix mode bits).
+    #[allow(clippy::permissions_set_readonly_false)]
     fn local_download_destination_ignores_directory_readonly_attribute() {
         let root = temporary_directory();
         let downloads = root.join("downloads");
