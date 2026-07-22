@@ -625,17 +625,25 @@ impl IconButton {
     }
 }
 
-/// Compact status dot with an optional label.
+/// Compact status marker with color + optional icon/label for non-color status.
+///
+/// Prefer always supplying `.label(...)` (or a parent `aria_label`) so status is
+/// never conveyed by color alone for assistive tech.
 #[derive(IntoElement)]
 pub struct StatusIndicator {
     color: Hsla,
     label: Option<SharedString>,
+    icon: Option<IconName>,
 }
 
 impl StatusIndicator {
     #[must_use]
     pub fn new(color: Hsla) -> Self {
-        Self { color, label: None }
+        Self {
+            color,
+            label: None,
+            icon: None,
+        }
     }
 
     #[must_use]
@@ -643,11 +651,20 @@ impl StatusIndicator {
         self.label = Some(label.into());
         self
     }
+
+    /// Optional icon so status is not color-only when the parent omits text.
+    #[must_use]
+    pub fn icon(mut self, icon: IconName) -> Self {
+        self.icon = Some(icon);
+        self
+    }
 }
 
 impl RenderOnce for StatusIndicator {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let label = self.label;
+        let icon = self.icon;
+        let color = self.color;
         div()
             .id("status-indicator")
             .role(Role::Status)
@@ -658,13 +675,24 @@ impl RenderOnce for StatusIndicator {
             .items_center()
             .gap_2()
             .text_xs()
+            .min_h(px(16.0))
             .child(
                 div()
-                    .size(px(7.0))
+                    .size(px(8.0))
                     .rounded_full()
-                    .bg(self.color)
+                    .bg(color)
+                    .border_1()
+                    .border_color(with_alpha(color, 0.55))
                     .flex_none(),
             )
+            .when_some(icon, |indicator, icon| {
+                indicator.child(
+                    Icon::new(icon)
+                        .size(IconSize::XSmall)
+                        .color(color)
+                        .into_any_element(),
+                )
+            })
             .when_some(label, |indicator, label| indicator.child(label))
     }
 }
@@ -699,6 +727,7 @@ pub struct SegmentedControl {
     selected: usize,
     disabled: bool,
     theme: Theme,
+    aria_label: Option<SharedString>,
     on_select: Option<SelectionHandler>,
 }
 
@@ -716,8 +745,15 @@ impl SegmentedControl {
             selected,
             disabled: false,
             theme,
+            aria_label: None,
             on_select: None,
         }
+    }
+
+    #[must_use]
+    pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.aria_label = Some(label.into());
+        self
     }
 
     #[must_use]
@@ -740,9 +776,12 @@ impl RenderOnce for SegmentedControl {
         let selected = self.selected;
         let handler = self.on_select;
         let id = self.id.clone();
+        let group_label = self.aria_label;
+        let segment_count = self.segments.len();
         div()
             .id(id.clone())
-            .role(Role::Group)
+            .role(Role::RadioGroup)
+            .when_some(group_label, |group, label| group.aria_label(label))
             .flex_none()
             .flex()
             .items_center()
@@ -752,6 +791,7 @@ impl RenderOnce for SegmentedControl {
             .border_1()
             .border_color(colors.border)
             .bg(colors.surface)
+            .min_h(px(32.0))
             .children(
                 self.segments
                     .into_iter()
@@ -765,14 +805,20 @@ impl RenderOnce for SegmentedControl {
                         } else {
                             colors.text_secondary
                         };
+                        let segment_aria = if segment_count > 1 {
+                            format!("{}, {} of {}", label.as_ref(), index + 1, segment_count)
+                        } else {
+                            label.to_string()
+                        };
                         let mut button = div()
                             .id((id.clone(), index))
                             .role(Role::RadioButton)
-                            .aria_label(label.clone())
+                            .aria_label(segment_aria)
                             .aria_selected(is_selected)
                             .focusable()
                             .tab_stop(!disabled)
                             .h(px(28.0))
+                            .min_w(px(28.0))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -1040,6 +1086,8 @@ pub struct LoadingIndicator {
     color: Hsla,
     size: IconSize,
     label: SharedString,
+    /// When true, use a static clock icon instead of the spinner glyph (ACCESS reduced motion).
+    reduced_motion: bool,
 }
 
 impl LoadingIndicator {
@@ -1049,6 +1097,7 @@ impl LoadingIndicator {
             color,
             size: IconSize::Medium,
             label: "Loading".into(),
+            reduced_motion: crate::accessibility::prefers_reduced_motion(),
         }
     }
 
@@ -1063,11 +1112,22 @@ impl LoadingIndicator {
         self.label = label.into();
         self
     }
+
+    #[must_use]
+    pub fn reduced_motion(mut self, reduced: bool) -> Self {
+        self.reduced_motion = reduced;
+        self
+    }
 }
 
 impl RenderOnce for LoadingIndicator {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        Icon::new(IconName::LoaderCircle)
+        let icon = if self.reduced_motion {
+            IconName::Clock3
+        } else {
+            IconName::LoaderCircle
+        };
+        Icon::new(icon)
             .size(self.size)
             .color(self.color)
             .label(self.label)
@@ -1142,6 +1202,7 @@ impl Toggle {
             .aria_label
             .unwrap_or_else(|| if on { "On".into() } else { "Off".into() });
 
+        // Visual track is 36×20; outer hit target is at least 32px tall for high-DPI/touch.
         let mut track = div()
             .id(self.id)
             .role(Role::Switch)
@@ -1151,35 +1212,38 @@ impl Toggle {
             .aria_selected(on)
             .focusable()
             .tab_stop(enabled)
-            .w(px(36.0))
-            .h(px(20.0))
+            .min_h(px(32.0))
+            .min_w(px(44.0))
             .flex_none()
             .flex()
             .items_center()
-            .px(px(2.0))
-            .rounded_full()
-            .border_1()
-            .border_color(track_border)
-            .bg(track_bg)
-            .when(on, |t| t.justify_end())
-            .when(!on, |t| t.justify_start())
+            .justify_center()
+            .px_1()
+            .py_1()
+            .rounded_md()
             .when(enabled, |t| {
                 t.cursor(CursorStyle::PointingHand)
-                    .hover(move |style| style.bg(hover_bg))
+                    .hover(move |style| style.bg(with_alpha(hover_bg, 0.35)))
             })
             .when(!enabled, |t| t.opacity(0.45))
             .child(
                 div()
-                    .size(px(16.0))
+                    .w(px(36.0))
+                    .h(px(20.0))
+                    .flex()
+                    .items_center()
+                    .px(px(2.0))
                     .rounded_full()
-                    .bg(knob_bg)
-                    .flex_none(),
+                    .border_1()
+                    .border_color(track_border)
+                    .bg(track_bg)
+                    .when(on, |t| t.justify_end())
+                    .when(!on, |t| t.justify_start())
+                    .child(div().size(px(16.0)).rounded_full().bg(knob_bg).flex_none()),
             );
 
-        if enabled {
-            if let Some(handler) = self.on_click {
-                track = track.on_click(move |event, window, cx| handler(event, window, cx));
-            }
+        if enabled && let Some(handler) = self.on_click {
+            track = track.on_click(move |event, window, cx| handler(event, window, cx));
         }
 
         track
@@ -1270,5 +1334,22 @@ mod tests {
         let off = Toggle::new("t2", false).disabled(true);
         assert!(!off.on);
         assert!(off.disabled);
+    }
+
+    #[test]
+    fn status_indicator_accepts_label_and_icon() {
+        let indicator = StatusIndicator::new(gpui::rgb(0x00_ff_00).into())
+            .label("Connected")
+            .icon(IconName::Wifi);
+        assert_eq!(indicator.label.as_deref(), Some("Connected"));
+        assert_eq!(indicator.icon, Some(IconName::Wifi));
+    }
+
+    #[test]
+    fn loading_indicator_respects_reduced_motion_flag() {
+        let reduced = LoadingIndicator::new(gpui::rgb(0xff_ff_ff).into()).reduced_motion(true);
+        assert!(reduced.reduced_motion);
+        let normal = LoadingIndicator::new(gpui::rgb(0xff_ff_ff).into()).reduced_motion(false);
+        assert!(!normal.reduced_motion);
     }
 }

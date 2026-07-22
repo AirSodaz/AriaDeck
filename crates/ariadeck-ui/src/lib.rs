@@ -1,5 +1,6 @@
 //! AriaDeck-owned GPUI design system and application components.
 
+mod accessibility;
 mod actions;
 mod assets;
 mod components;
@@ -7,6 +8,8 @@ mod model;
 mod search_input;
 mod shell;
 mod theme;
+
+pub use accessibility::{prefers_reduced_motion, set_prefers_reduced_motion_override};
 
 pub use actions::init;
 pub use actions::{
@@ -37,11 +40,11 @@ pub use model::{
     CoreCommandOutcomeView, CoreCommandRequestView, CoreCommandResultView, CoreCommandView,
     CoreInstallStatusView, CoreInstallationView, CoreRegistryView, CoreSourceView,
     DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView, EngineHealthView,
-    EngineSessionView, FileAllocationView, FileConflictPolicyView, GlobalTaskCommandRequestView,
-    GlobalTaskCommandResultView, GlobalTaskCommandView, NotificationSettingsView,
-    NotificationVolumeView, OperationErrorView, PlatformSettingsView, ProfileCatalogView,
-    ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView,
-    ProxyPasswordUpdateView, RequestId, SaveProfileCatalogOutcomeView,
+    EngineSessionView, FileAllocationView, FileConflictPolicyView, FormatOptions,
+    GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView,
+    NotificationSettingsView, NotificationVolumeView, OperationErrorView, PlatformSettingsView,
+    ProfileCatalogView, ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView,
+    ProxyModeView, ProxyPasswordUpdateView, RequestId, SaveProfileCatalogOutcomeView,
     SaveProfileCatalogRequestView, SaveProfileCatalogResultView, SecretStringView,
     SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
     SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView, SwitchProfileOutcomeView,
@@ -52,8 +55,11 @@ pub use model::{
     TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
     TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
     TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
-    WorkspaceSortDirection, WorkspaceSortKey, format_bytes, format_eta, format_percent,
-    format_rate, format_share_ratio, format_speed_limit_field, parse_speed_limit_field,
+    WorkspaceSortDirection, WorkspaceSortKey, active_format_options, format_bytes,
+    format_bytes_with, format_eta, format_eta_with, format_percent, format_percent_with,
+    format_rate, format_rate_with, format_relative_time, format_relative_time_with,
+    format_share_ratio, format_share_ratio_with, format_speed_limit_field, parse_speed_limit_field,
+    set_active_format_options,
 };
 pub use search_input::{SearchInput, SearchInputEvent, TextField, TextFieldConfig, TextFieldEvent};
 pub use shell::{AppShell, AppShellEvent};

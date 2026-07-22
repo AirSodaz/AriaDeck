@@ -1251,13 +1251,17 @@ pub(crate) fn task_table_value(width: f32, value: String, colors: crate::ThemeCo
 
 pub(crate) fn task_status_badge(status: TaskStatusView, colors: crate::ThemeColors) -> Div {
     let color = task_status_color(status, colors);
+    // Icon + text so status is never color-only (ACCESS-001).
+    // Visible label is enough for SR; parent task row already has a full aria_label.
     div()
         .h(px(22.0))
+        .min_w(px(64.0))
         .max_w_full()
         .px_2()
         .flex()
         .items_center()
         .justify_center()
+        .gap_1()
         .rounded_sm()
         .border_1()
         .border_color(with_alpha(color, 0.28))
@@ -1265,6 +1269,11 @@ pub(crate) fn task_status_badge(status: TaskStatusView, colors: crate::ThemeColo
         .text_size(px(11.0))
         .font_weight(FontWeight::MEDIUM)
         .text_color(color)
+        .child(
+            Icon::new(task_status_icon(status))
+                .size(IconSize::XSmall)
+                .color(color),
+        )
         .child(status.label())
 }
 

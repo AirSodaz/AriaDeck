@@ -1136,6 +1136,7 @@ impl AppShell {
             selected_scheme,
             self.theme,
         )
+        .aria_label("Color scheme")
         .disabled(pending)
         .on_select(move |index, window, cx| {
             let scheme = ColorSchemeView::ALL
@@ -1332,6 +1333,7 @@ impl AppShell {
                                 usize::from(!is_local),
                                 self.theme,
                             )
+                            .aria_label("Profile kind")
                             .on_select(move |index, _window, cx| {
                                 let kind = if index == 0 {
                                     ProfileKindView::LocalManaged
@@ -1971,6 +1973,7 @@ impl AppShell {
             usize::from(manual_proxy),
             self.theme,
         )
+        .aria_label("Download proxy mode")
         .disabled(pending)
         .on_select(move |index, _window, cx| {
             let mode = if index == 0 {
@@ -2127,6 +2130,7 @@ impl AppShell {
             allocation_selected,
             self.theme,
         )
+        .aria_label("File allocation method")
         .disabled(pending)
         .on_select(move |index, _window, cx| {
             let method = FileAllocationView::all()
@@ -2137,6 +2141,8 @@ impl AppShell {
                 .update(cx, |shell, cx| shell.select_file_allocation(method, cx))
                 .ok();
         });
+        let draft_check_integrity = self.settings_page.draft_check_integrity;
+        let integrity_shell = cx.entity().downgrade();
         div()
             .flex()
             .flex_col()
@@ -2224,40 +2230,34 @@ impl AppShell {
                                         .min_w_0(),
                                     ),
                             )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(colors.text_muted)
-                                            .child("File allocation"),
-                                    )
-                                    .child(allocation_control),
-                            )
-                            .child(
-                                Button::new(
-                                    "toggle-check-integrity",
-                                    if self.settings_page.draft_check_integrity {
-                                        "Integrity check: On"
+                            .child(settings_row(
+                                "File allocation",
+                                Some("How aria2 reserves disk space for new downloads."),
+                                allocation_control,
+                                colors,
+                            ))
+                            .child(settings_row(
+                                "Integrity check",
+                                Some(
+                                    "Verify checksums for new downloads by default when the engine supports it.",
+                                ),
+                                Toggle::new("toggle-check-integrity", draft_check_integrity)
+                                    .aria_label(if draft_check_integrity {
+                                        "Disable integrity check for new downloads"
                                     } else {
-                                        "Integrity check: Off"
-                                    },
-                                )
-                                .aria_label(if self.settings_page.draft_check_integrity {
-                                    "Disable integrity check for new downloads"
-                                } else {
-                                    "Enable integrity check for new downloads"
-                                })
-                                .style(ButtonStyle::Secondary)
-                                .disabled(pending)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.toggle_check_integrity(cx);
-                                }))
-                                .render(colors),
-                            )
+                                        "Enable integrity check for new downloads"
+                                    })
+                                    .disabled(pending)
+                                    .on_click(move |_, _, cx| {
+                                        integrity_shell
+                                            .update(cx, |shell, cx| {
+                                                shell.toggle_check_integrity(cx);
+                                            })
+                                            .ok();
+                                    })
+                                    .render(colors),
+                                colors,
+                            ))
                             .child(
                                 div()
                                     .text_xs()
@@ -2284,6 +2284,7 @@ impl AppShell {
             volume_selected,
             self.theme,
         )
+        .aria_label("Notification volume")
         .disabled(pending)
         .on_select(move |index, _window, cx| {
             let volume = NotificationVolumeView::all()
@@ -2389,6 +2390,7 @@ impl AppShell {
             close_behavior_selected,
             self.theme,
         )
+        .aria_label("Window close behavior")
         .disabled(pending || !draft_show_tray)
         .on_select(move |index, _window, cx| {
             let behavior = CloseBehaviorView::all()

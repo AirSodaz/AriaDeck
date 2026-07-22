@@ -42,11 +42,7 @@ fn main() {
     #[cfg(target_os = "windows")]
     {
         let mut res = winres::WindowsResource::new();
-        res.set_icon(
-            ico_path
-                .to_str()
-                .expect("OUT_DIR path must be valid UTF-8"),
-        );
+        res.set_icon(ico_path.to_str().expect("OUT_DIR path must be valid UTF-8"));
         res.compile().expect("winres: failed to compile resources");
     }
 }
@@ -78,9 +74,8 @@ fn build_ico(svg_data: &[u8], out_path: &std::path::Path) {
         let rgba = render_rgba(svg_data, size, size);
         let image = ico::IconImage::from_rgba_data(size, size, rgba);
         icon_dir.add_entry(
-            ico::IconDirEntry::encode(&image).unwrap_or_else(|e| {
-                panic!("failed to encode {size}×{size} ICO entry: {e}")
-            }),
+            ico::IconDirEntry::encode(&image)
+                .unwrap_or_else(|e| panic!("failed to encode {size}×{size} ICO entry: {e}")),
         );
     }
 

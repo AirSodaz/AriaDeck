@@ -2600,6 +2600,19 @@ fn silent_volume_suppresses_all_toasts(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn transfer_policy_integrity_toggle_updates_draft(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_settings(&OpenSettings, window, cx);
+        let before = shell.settings_page.draft_check_integrity;
+        shell.toggle_check_integrity(cx);
+        assert_ne!(shell.settings_page.draft_check_integrity, before);
+        shell.toggle_check_integrity(cx);
+        assert_eq!(shell.settings_page.draft_check_integrity, before);
+    });
+}
+
+#[gpui::test]
 fn notification_preferences_save_emits_settings_request(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
     view.update_in(cx, |shell, window, cx| {

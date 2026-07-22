@@ -1,6 +1,6 @@
 # AriaDeck — Project Design & Context
 
-**Status:** Product-ready core; remaining work is accessibility, privacy/security review, performance hardening, and release packaging  
+**Status:** Product-ready core; ACCESS-001 landed; remaining work is privacy/security review, performance hardening, and release packaging  
 **Last updated:** 2026-07-22  
 **Primary stack:** Rust 1.96 · GPUI (Zed `v1.11.3` pin) · aria2 JSON-RPC over WebSocket · Tokio
 
@@ -188,7 +188,7 @@ Bootstrap, domain/application store, typed WS RPC, sync/reconnect, virtualized w
 
 | ID | Scope |
 | --- | --- |
-| `ACCESS-001` | Screen-reader names, non-color status, reduced motion, high-DPI, keyboard-only, localization of sizes/rates/dates |
+| `ACCESS-001` | **Done** — SR labels on settings/controls, status icon+text (not color-only), reduced-motion caret/loading, larger toggle/segment hit targets, locale-shaped size/rate formatters (`FormatOptions`), integrity check uses unified `Toggle`+`settings_row`. Manual residual: high-DPI visual check at 125%/150% on Windows. Full i18n catalogs still deferred. |
 | `SEC-001` | Privacy review: URL credentials, tracker tokens, proxy secrets, filenames, symlinks, diagnostic export redaction tests |
 | `PERF-001` | Stress: 10k stopped, rapid updates, details polling, reconnect storms, minimized mode, memory growth |
 | `RELEASE-001` | Signing, installer/portable packaging, uninstall data retention, license notices, schema migration tests, app update/rollback |

@@ -40,6 +40,8 @@ fn main() {
         .with_assets(ariadeck_ui::Assets)
         .run(move |cx: &mut App| {
             ariadeck_ui::init(cx);
+            // ACCESS-001: locale-shaped size/rate formatting for the process lifetime.
+            ariadeck_ui::set_active_format_options(ariadeck_ui::FormatOptions::from_env());
             // Only quit when every window is gone *and* the app is not
             // intentionally hidden to the tray (PLAT-001).
             cx.on_window_closed(|cx, _| {

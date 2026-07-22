@@ -414,7 +414,13 @@ impl AppShell {
             .gap_1()
             .text_xs()
             .text_color(colors.text_muted)
-            .child(StatusIndicator::new(connection_color))
+            .child(StatusIndicator::new(connection_color).icon(
+                if self.snapshot.connection.is_connected() {
+                    IconName::Wifi
+                } else {
+                    IconName::WifiOff
+                },
+            ))
             .child(connection_label)
             .when(self.snapshot.connection.can_retry(), |element| {
                 element
@@ -446,10 +452,19 @@ impl AppShell {
                     .gap_1()
                     .text_xs()
                     .text_color(colors.text_muted)
-                    .child(StatusIndicator::new(engine_health_color(
-                        &self.engine_health,
-                        colors,
-                    )))
+                    .child(
+                        StatusIndicator::new(engine_health_color(&self.engine_health, colors))
+                            .icon(match &self.engine_health {
+                                EngineHealthView::Failed { .. } => IconName::CircleAlert,
+                                EngineHealthView::Restarting { .. } => IconName::RefreshCw,
+                                EngineHealthView::Running { restarts } if *restarts > 0 => {
+                                    IconName::TriangleAlert
+                                }
+                                EngineHealthView::External | EngineHealthView::Running { .. } => {
+                                    IconName::Activity
+                                }
+                            }),
+                    )
                     .child(self.engine_health.label()),
             )
             .when(self.snapshot.stale, |element| {
@@ -859,7 +874,23 @@ impl AppShell {
                                             .flex()
                                             .items_center()
                                             .gap_2()
-                                            .child(StatusIndicator::new(kind_color))
+                                            .child(
+                                                StatusIndicator::new(kind_color).icon(
+                                                    match entry.kind {
+                                                        ActivityKindView::Completion => {
+                                                            IconName::CircleCheck
+                                                        }
+                                                        ActivityKindView::Error => IconName::CircleX,
+                                                        ActivityKindView::Engine => {
+                                                            IconName::TriangleAlert
+                                                        }
+                                                        ActivityKindView::Command => {
+                                                            IconName::Activity
+                                                        }
+                                                        ActivityKindView::Info => IconName::Info,
+                                                    },
+                                                ),
+                                            )
                                             .child(
                                                 div()
                                                     .text_xs()

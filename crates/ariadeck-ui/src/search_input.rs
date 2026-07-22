@@ -213,7 +213,7 @@ impl TextField {
     }
 
     fn schedule_cursor_blink(&mut self, cx: &mut Context<Self>) {
-        if !self.blink_enabled {
+        if !self.blink_enabled || crate::accessibility::prefers_reduced_motion() {
             return;
         }
         self.blink_epoch = self.blink_epoch.wrapping_add(1);
@@ -241,6 +241,11 @@ impl TextField {
     }
 
     fn enable_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        // ACCESS-001: keep a solid caret when the user prefers reduced motion.
+        if crate::accessibility::prefers_reduced_motion() {
+            self.stop_cursor_blink(cx);
+            return;
+        }
         if self.blink_enabled {
             return;
         }
