@@ -81,7 +81,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use secrecy::SecretString;
 
 use crate::{
-    instance::{LaunchRequest, MAX_LAUNCH_PATHS},
+    instance::{LaunchRequest, MAX_LAUNCH_ITEMS},
     platform::{self, SystemTray, TrayAction},
 };
 use tokio::{
@@ -135,6 +135,7 @@ pub struct DesktopRoot {
     last_saved_geometry: Option<WindowGeometry>,
     pending_geometry: Option<WindowGeometry>,
     pending_metadata_paths: Vec<PathBuf>,
+    pending_magnet_uris: Vec<String>,
     instance_requests: Option<Receiver<LaunchRequest>>,
     geometry_save_generation: u64,
     _workspace_subscription: Subscription,
@@ -180,7 +181,7 @@ impl DesktopRoot {
     #[must_use]
     pub fn new(
         runtime: Arc<Runtime>,
-        initial_metadata_paths: Vec<PathBuf>,
+        initial_request: LaunchRequest,
         instance_requests: Option<Receiver<LaunchRequest>>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -517,7 +518,8 @@ impl DesktopRoot {
             window_geometry_store,
             last_saved_geometry,
             pending_geometry: None,
-            pending_metadata_paths: initial_metadata_paths,
+            pending_metadata_paths: initial_request.metadata_paths,
+            pending_magnet_uris: initial_request.magnet_uris,
             instance_requests,
             geometry_save_generation: 0,
             _workspace_subscription: workspace_subscription,
@@ -543,6 +545,7 @@ impl DesktopRoot {
         .detach();
 
         if root.pending_metadata_paths.is_empty()
+            && root.pending_magnet_uris.is_empty()
             && root.settings.platform.start_minimized_to_tray
             && root.tray.is_some()
         {
@@ -602,26 +605,41 @@ impl DesktopRoot {
         if let Some(receiver) = self.instance_requests.as_ref() {
             while let Ok(request) = receiver.try_recv() {
                 activate = true;
-                let remaining = MAX_LAUNCH_PATHS.saturating_sub(self.pending_metadata_paths.len());
+                let remaining = MAX_LAUNCH_ITEMS.saturating_sub(
+                    self.pending_metadata_paths.len() + self.pending_magnet_uris.len(),
+                );
                 self.pending_metadata_paths
-                    .extend(request.paths.into_iter().take(remaining));
+                    .extend(request.metadata_paths.into_iter().take(remaining));
+                let remaining = MAX_LAUNCH_ITEMS.saturating_sub(
+                    self.pending_metadata_paths.len() + self.pending_magnet_uris.len(),
+                );
+                self.pending_magnet_uris
+                    .extend(request.magnet_uris.into_iter().take(remaining));
             }
         }
         if activate {
             self.show_from_tray(window, cx);
         }
-        if self.pending_metadata_paths.is_empty()
-            || !self.workspace.read(cx).can_open_metadata_paths()
+        if !self.pending_metadata_paths.is_empty()
+            && self.workspace.read(cx).can_open_metadata_paths()
         {
-            return;
+            let paths = std::mem::take(&mut self.pending_metadata_paths);
+            let opened = self.workspace.update(cx, |workspace, cx| {
+                workspace.open_metadata_paths(paths.clone(), window, cx)
+            });
+            if !opened {
+                self.pending_metadata_paths = paths;
+            }
         }
 
-        let paths = std::mem::take(&mut self.pending_metadata_paths);
-        let opened = self.workspace.update(cx, |workspace, cx| {
-            workspace.open_metadata_paths(paths.clone(), window, cx)
-        });
-        if !opened {
-            self.pending_metadata_paths = paths;
+        if !self.pending_magnet_uris.is_empty() && self.workspace.read(cx).can_open_magnet_uris() {
+            let uris = std::mem::take(&mut self.pending_magnet_uris);
+            let opened = self.workspace.update(cx, |workspace, cx| {
+                workspace.open_magnet_uris(uris.clone(), window, cx)
+            });
+            if !opened {
+                self.pending_magnet_uris = uris;
+            }
         }
     }
 

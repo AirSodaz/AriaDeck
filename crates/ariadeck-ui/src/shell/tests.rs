@@ -1034,6 +1034,30 @@ fn metadata_paths_wait_until_commands_are_available(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn magnet_launch_opens_links_without_submitting_and_does_not_clobber_open_dialog(
+    cx: &mut TestAppContext,
+) {
+    let magnet =
+        "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Example".to_owned();
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(1);
+        shell
+    });
+
+    view.update_in(cx, |shell, window, cx| {
+        assert!(shell.can_open_magnet_uris());
+        assert!(shell.open_magnet_uris(vec![magnet.clone(), magnet.clone()], window, cx));
+        assert!(shell.add_dialog.open);
+        assert!(shell.add_dialog.pending.is_none());
+        assert_eq!(shell.add_input.read(cx).text(), magnet);
+        assert!(!shell.can_open_magnet_uris());
+        assert!(!shell.open_magnet_uris(vec!["magnet:?xt=urn:btih:bad".into()], window, cx));
+        assert_eq!(shell.add_input.read(cx).text(), magnet);
+    });
+}
+
+#[gpui::test]
 fn metadata_preview_keeps_successes_reports_failures_and_ignores_stale_results(
     cx: &mut TestAppContext,
 ) {

@@ -46,6 +46,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "fileassociations"; Description: "Associate .torrent, .metalink, and .meta4 files with AriaDeck"; GroupDescription: "Windows integration:"; Flags: unchecked
+Name: "protocolhandlers"; Description: "Handle magnet links with AriaDeck"; GroupDescription: "Windows integration:"; Flags: unchecked
 
 [Files]
 ; Installed builds must NOT ship ariadeck.portable — data goes to LocalAppData.
@@ -76,6 +77,12 @@ Root: HKCU; Subkey: "Software\Classes\AriaDeck.Metalink\shell\open\command"; Val
 Root: HKCU; Subkey: "Software\Classes\AriaDeck.Meta4"; ValueType: string; ValueName: ""; ValueData: "Metalink v4 file"; Flags: uninsdeletekey; Tasks: fileassociations
 Root: HKCU; Subkey: "Software\Classes\AriaDeck.Meta4\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"; Tasks: fileassociations
 Root: HKCU; Subkey: "Software\Classes\AriaDeck.Meta4\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --open-metadata ""%1"""; Tasks: fileassociations
+
+; The magnet scheme key is shared. Remove only AriaDeck's values on uninstall.
+Root: HKCU; Subkey: "Software\Classes\magnet"; ValueType: string; ValueName: ""; ValueData: "URL:Magnet Link"; Flags: uninsdeletevalue; Tasks: protocolhandlers
+Root: HKCU; Subkey: "Software\Classes\magnet"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Flags: uninsdeletevalue; Tasks: protocolhandlers
+Root: HKCU; Subkey: "Software\Classes\magnet\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"; Flags: uninsdeletevalue; Tasks: protocolhandlers
+Root: HKCU; Subkey: "Software\Classes\magnet\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --open-magnet ""%1"""; Flags: uninsdeletevalue; Tasks: protocolhandlers
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent

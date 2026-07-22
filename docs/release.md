@@ -94,6 +94,7 @@ Unsigned builds may hit SmartScreen. No certs in-repo.
 | Licenses staged | portable script |
 | File associations | Explicit default-unchecked Inno task; owned ProgIDs only |
 | External metadata open | `--open-metadata` → preview/confirmation; running instance activated |
+| Magnet protocol | Explicit default-unchecked Inno task; `--open-magnet` fills links without submission |
 
 ## Manual checklist
 
@@ -105,5 +106,6 @@ Unsigned builds may hit SmartScreen. No certs in-repo.
 6. Installer uninstall without data checkbox → data remains
 7. Installer association task defaults unchecked; opting in registers `.torrent`, `.metalink`, `.meta4`
 8. Double-click while closed and while tray-hidden opens one preview without auto-submitting
-9. Uninstall removes AriaDeck ProgIDs without deleting shared extension keys
-10. Optional: `signtool verify /pa`
+9. Protocol task defaults unchecked; opting in registers `magnet:` and fills Add Download without submitting
+10. Uninstall removes AriaDeck values without deleting shared extension or protocol keys
+11. Optional: `signtool verify /pa`

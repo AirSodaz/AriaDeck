@@ -20,7 +20,9 @@ use tokio::runtime::Builder;
 use ariadeck_settings::{JsonWindowGeometryStore, WINDOW_DEFAULT_HEIGHT, WINDOW_DEFAULT_WIDTH};
 
 use crate::{
-    instance::{InstanceRole, MAX_LAUNCH_PATHS, coordinate_instance},
+    instance::{
+        InstanceRole, LaunchRequest, MAX_LAUNCH_ITEMS, coordinate_instance, is_supported_magnet_uri,
+    },
     workspace::DesktopRoot,
 };
 
@@ -41,11 +43,11 @@ fn main() {
     };
 
     let current_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let initial_metadata_paths = metadata_paths_from_args(env::args_os().skip(1), &current_dir);
+    let initial_request = launch_request_from_args(env::args_os().skip(1), &current_dir);
     let instance_requests = match coordinate_instance(
         runtime.as_ref(),
         &DesktopRoot::default_data_dir(),
-        &initial_metadata_paths,
+        &initial_request,
     ) {
         Ok(InstanceRole::Primary(receiver)) => Some(receiver),
         Ok(InstanceRole::Forwarded) => return,
@@ -87,13 +89,13 @@ fn main() {
                 },
                 {
                     let runtime = runtime.clone();
-                    let initial_metadata_paths = initial_metadata_paths.clone();
+                    let initial_request = initial_request.clone();
                     let instance_requests = instance_requests;
                     move |window, cx| {
                         cx.new(|cx| {
                             DesktopRoot::new(
                                 runtime.clone(),
-                                initial_metadata_paths.clone(),
+                                initial_request.clone(),
                                 instance_requests,
                                 window,
                                 cx,
@@ -113,39 +115,50 @@ fn main() {
         });
 }
 
-fn metadata_paths_from_args(
+fn launch_request_from_args(
     args: impl IntoIterator<Item = OsString>,
     current_dir: &std::path::Path,
-) -> Vec<PathBuf> {
+) -> LaunchRequest {
     let mut args = args.into_iter();
-    let mut paths = Vec::new();
+    let mut request = LaunchRequest::default();
     while let Some(argument) = args.next() {
-        if argument != "--open-metadata" {
-            continue;
-        }
-        let Some(path) = args.next().map(PathBuf::from) else {
-            break;
-        };
-        let supported = path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| {
-                extension.eq_ignore_ascii_case("torrent")
-                    || extension.eq_ignore_ascii_case("metalink")
-                    || extension.eq_ignore_ascii_case("meta4")
-            });
-        if supported {
-            paths.push(if path.is_absolute() {
-                path
-            } else {
-                current_dir.join(path)
-            });
-            if paths.len() == MAX_LAUNCH_PATHS {
-                break;
+        match argument.to_str() {
+            Some("--open-metadata") => {
+                let Some(path) = args.next().map(PathBuf::from) else {
+                    break;
+                };
+                let supported = path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| {
+                        extension.eq_ignore_ascii_case("torrent")
+                            || extension.eq_ignore_ascii_case("metalink")
+                            || extension.eq_ignore_ascii_case("meta4")
+                    });
+                if supported {
+                    request.metadata_paths.push(if path.is_absolute() {
+                        path
+                    } else {
+                        current_dir.join(path)
+                    });
+                }
             }
+            Some("--open-magnet") => {
+                let Some(uri) = args.next().and_then(|value| value.into_string().ok()) else {
+                    break;
+                };
+                let uri = uri.trim();
+                if is_supported_magnet_uri(uri) {
+                    request.magnet_uris.push(uri.to_owned());
+                }
+            }
+            _ => {}
+        }
+        if request.len() == MAX_LAUNCH_ITEMS {
+            break;
         }
     }
-    paths
+    request
 }
 
 fn restored_window_bounds(cx: &App) -> WindowBounds {
@@ -224,13 +237,13 @@ fn platform_window_decorations() -> Option<WindowDecorations> {
 
 #[cfg(test)]
 mod tests {
-    use super::metadata_paths_from_args;
+    use super::launch_request_from_args;
     use std::{ffi::OsString, path::PathBuf};
 
     #[test]
-    fn metadata_paths_from_args_accepts_supported_extensions_only() {
+    fn launch_request_from_args_accepts_supported_metadata_extensions_only() {
         let current_dir = PathBuf::from("launch-directory");
-        let paths = metadata_paths_from_args(
+        let request = launch_request_from_args(
             [
                 OsString::from("ignored.torrent"),
                 OsString::from("--open-metadata"),
@@ -245,35 +258,47 @@ mod tests {
             &current_dir,
         );
         assert_eq!(
-            paths,
+            request.metadata_paths,
             vec![
                 current_dir.join("sample.TORRENT"),
                 current_dir.join("sample.metalink"),
                 current_dir.join("sample.meta4"),
             ]
         );
+        assert!(request.magnet_uris.is_empty());
     }
 
     #[test]
-    fn metadata_paths_from_args_preserves_unicode_spaces_and_leading_dashes() {
+    fn launch_request_from_args_preserves_paths_and_accepts_only_flagged_magnets() {
         let current_dir = PathBuf::from("launch-directory");
-        let paths = metadata_paths_from_args(
+        let request = launch_request_from_args(
             [
                 OsString::from("bare.torrent"),
+                OsString::from("magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
                 OsString::from("--open-metadata"),
                 OsString::from("示例 file.TORRENT"),
                 OsString::from("--open-metadata"),
                 OsString::from("--leading-dash.meta4"),
+                OsString::from("--open-magnet"),
+                OsString::from(
+                    "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Example file",
+                ),
+                OsString::from("--open-magnet"),
+                OsString::from("https://example.test/not-a-magnet"),
             ],
             &current_dir,
         );
 
         assert_eq!(
-            paths,
+            request.metadata_paths,
             vec![
                 current_dir.join("示例 file.TORRENT"),
                 current_dir.join("--leading-dash.meta4"),
             ]
+        );
+        assert_eq!(
+            request.magnet_uris,
+            vec!["magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Example file"]
         );
     }
 }

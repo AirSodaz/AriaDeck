@@ -1,6 +1,6 @@
 # AriaDeck — Product Roadmap
 
-**Last updated:** 2026-07-22  
+**Last updated:** 2026-07-23
 **Purpose:** Competitive gaps → prioritized development direction. Complements [`project-context.md`](project-context.md) (architecture & contracts).
 
 Core download-manager surface is **done**. Remaining work is distribution polish, OS integration users expect from Motrix-class apps, and selective depth features—without becoming a web UI, cloud product, or engine reimplementation.
@@ -56,7 +56,7 @@ Legend: **Have** · **Partial** · **Missing** · **Won’t** (non-goal)
 | Windows portable/installer | Have | Have | N/A | macOS/Linux CI-verified; packages = next distro (Phase E) |
 | Bundled aria2 | Partial (import) | Have | N/A | Optional offline pack later; no forced network channel |
 | Browser extension / intercept | Missing | Have (Next strong) | 3rd party | High user expectation |
-| Protocol handlers / file associations | Partial (`.torrent`/Metalink files) | Have | N/A | `magnet:` remains B2 |
+| Protocol handlers / file associations | Have (`.torrent`/Metalink + `magnet:`) | Have | N/A | Browser capture remains B3 |
 | Tags / categories / folders | Missing | Next: categories | Filters | Organization |
 | Download scheduling | Missing | Next: time windows | Weak | Persepolis-class |
 | Queue named groups | Partial (aria2 wait order) | Have | Partial | Productize queues |
@@ -99,7 +99,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | ID | Work | Why |
 | --- | --- | --- |
 | B1 | **Done** — opt-in associations for `.torrent`, `.metalink`, and `.meta4`; double-click forwards to the running instance and opens the existing preview/confirmation flow | OS file integration without auto-submission |
-| B2 | Protocol handlers: `magnet:`, optional custom `ariadeck:` | System integration |
+| B2 | **Done** — opt-in `magnet:` handler forwards to the running instance and fills the Add Download confirmation input; optional custom `ariadeck:` remains deferred | System integration without auto-submission |
 | B3a | Browser extension: define API contract (auth model, confirm policy, referer/cookie handling) | Design before build; minimize attack surface |
 | B3b | Native messaging host + local RPC endpoint for browser add-on | Motrix Next differentiator |
 | B3c | Reference browser extension (Chrome/Edge); community can fork for Firefox | Validate contract end-to-end |

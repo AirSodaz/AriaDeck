@@ -19,10 +19,11 @@ use tokio::{
     time,
 };
 
-const PROTOCOL_VERSION: u8 = 1;
+const PROTOCOL_VERSION: u8 = 2;
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
-pub(crate) const MAX_LAUNCH_PATHS: usize = 32;
+pub(crate) const MAX_LAUNCH_ITEMS: usize = 32;
 const MAX_PATH_UNITS: usize = 32_768;
+const MAX_MAGNET_URI_BYTES: usize = 16 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[cfg(target_os = "windows")]
@@ -30,9 +31,16 @@ type EncodedPath = Vec<u16>;
 #[cfg(not(target_os = "windows"))]
 type EncodedPath = Vec<u8>;
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct LaunchRequest {
-    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) metadata_paths: Vec<PathBuf>,
+    pub(crate) magnet_uris: Vec<String>,
+}
+
+impl LaunchRequest {
+    pub(crate) fn len(&self) -> usize {
+        self.metadata_paths.len() + self.magnet_uris.len()
+    }
 }
 
 pub(crate) enum InstanceRole {
@@ -43,13 +51,14 @@ pub(crate) enum InstanceRole {
 #[derive(Debug, Deserialize, Serialize)]
 struct WireRequest {
     version: u8,
-    paths: Vec<EncodedPath>,
+    metadata_paths: Vec<EncodedPath>,
+    magnet_uris: Vec<String>,
 }
 
 pub(crate) fn coordinate_instance(
     runtime: &Runtime,
     data_dir: &Path,
-    initial_paths: &[PathBuf],
+    initial_request: &LaunchRequest,
 ) -> io::Result<InstanceRole> {
     let socket_label = socket_label(data_dir);
     let name = socket_label.as_str().to_ns_name::<GenericNamespaced>()?;
@@ -64,7 +73,7 @@ pub(crate) fn coordinate_instance(
             Ok(InstanceRole::Primary(receiver))
         }
         Err(error) if listener_name_is_occupied(&error) => {
-            forward_request(runtime, &socket_label, initial_paths)?;
+            forward_request(runtime, &socket_label, initial_request)?;
             Ok(InstanceRole::Forwarded)
         }
         Err(error) => Err(error),
@@ -113,16 +122,20 @@ async fn handle_connection(connection: Stream, sender: &Sender<LaunchRequest>) -
     buffer.pop();
     let request: WireRequest = serde_json::from_slice(&buffer)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let paths = decode_request(request)?;
+    let request = decode_request(request)?;
     sender
-        .send(LaunchRequest { paths })
+        .send(request)
         .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "application is shutting down"))?;
     reader.get_mut().write_all(b"ok\n").await?;
     reader.get_mut().flush().await
 }
 
-fn forward_request(runtime: &Runtime, socket_label: &str, paths: &[PathBuf]) -> io::Result<()> {
-    let request = encode_request(paths)?;
+fn forward_request(
+    runtime: &Runtime,
+    socket_label: &str,
+    request: &LaunchRequest,
+) -> io::Result<()> {
+    let request = encode_request(request)?;
     let mut payload = serde_json::to_vec(&request).map_err(io::Error::other)?;
     payload.push(b'\n');
     if payload.len() > MAX_REQUEST_BYTES {
@@ -184,14 +197,15 @@ fn listener_name_is_occupied(error: &io::Error) -> bool {
         || (cfg!(target_os = "windows") && error.kind() == io::ErrorKind::PermissionDenied)
 }
 
-fn encode_request(paths: &[PathBuf]) -> io::Result<WireRequest> {
-    if paths.len() > MAX_LAUNCH_PATHS {
+fn encode_request(request: &LaunchRequest) -> io::Result<WireRequest> {
+    if request.len() > MAX_LAUNCH_ITEMS {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "too many metadata paths",
+            "too many launch items",
         ));
     }
-    let paths = paths
+    let metadata_paths = request
+        .metadata_paths
         .iter()
         .map(|path| {
             let encoded = encode_path(path);
@@ -204,21 +218,26 @@ fn encode_request(paths: &[PathBuf]) -> io::Result<WireRequest> {
             Ok(encoded)
         })
         .collect::<io::Result<Vec<_>>>()?;
+    validate_magnet_uris(&request.magnet_uris, io::ErrorKind::InvalidInput)?;
     Ok(WireRequest {
         version: PROTOCOL_VERSION,
-        paths,
+        metadata_paths,
+        magnet_uris: request.magnet_uris.clone(),
     })
 }
 
-fn decode_request(request: WireRequest) -> io::Result<Vec<PathBuf>> {
-    if request.version != PROTOCOL_VERSION || request.paths.len() > MAX_LAUNCH_PATHS {
+fn decode_request(request: WireRequest) -> io::Result<LaunchRequest> {
+    if request.version != PROTOCOL_VERSION
+        || request.metadata_paths.len() + request.magnet_uris.len() > MAX_LAUNCH_ITEMS
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unsupported local launch request",
         ));
     }
-    request
-        .paths
+    validate_magnet_uris(&request.magnet_uris, io::ErrorKind::InvalidData)?;
+    let metadata_paths = request
+        .metadata_paths
         .into_iter()
         .map(|path| {
             if path.len() > MAX_PATH_UNITS {
@@ -229,7 +248,25 @@ fn decode_request(request: WireRequest) -> io::Result<Vec<PathBuf>> {
             }
             Ok(decode_path(path))
         })
-        .collect()
+        .collect::<io::Result<Vec<_>>>()?;
+    Ok(LaunchRequest {
+        metadata_paths,
+        magnet_uris: request.magnet_uris,
+    })
+}
+
+fn validate_magnet_uris(uris: &[String], error_kind: io::ErrorKind) -> io::Result<()> {
+    if uris.iter().any(|uri| !is_supported_magnet_uri(uri)) {
+        return Err(io::Error::new(
+            error_kind,
+            "invalid or oversized magnet URI",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn is_supported_magnet_uri(uri: &str) -> bool {
+    uri.len() <= MAX_MAGNET_URI_BYTES && ariadeck_domain::magnet_info_hash(uri).is_some()
 }
 
 fn socket_label(data_dir: &Path) -> String {
@@ -269,18 +306,26 @@ mod tests {
     static SOCKET_NONCE: AtomicU64 = AtomicU64::new(0);
 
     #[test]
-    fn wire_request_round_trips_paths_without_text_conversion() {
-        let paths = vec![PathBuf::from("D:/Downloads/示例 file.torrent")];
-        let decoded = decode_request(encode_request(&paths).expect("request encodes"))
+    fn wire_request_round_trips_paths_and_magnets_without_text_conversion() {
+        let request = LaunchRequest {
+            metadata_paths: vec![PathBuf::from("D:/Downloads/示例 file.torrent")],
+            magnet_uris: vec![
+                "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Example".into(),
+            ],
+        };
+        let decoded = decode_request(encode_request(&request).expect("request encodes"))
             .expect("request decodes");
-        assert_eq!(decoded, paths);
+        assert_eq!(decoded, request);
     }
 
     #[test]
     fn request_bounds_reject_path_floods_and_future_versions() {
-        let paths = vec![PathBuf::from("sample.torrent"); MAX_LAUNCH_PATHS + 1];
+        let request = LaunchRequest {
+            metadata_paths: vec![PathBuf::from("sample.torrent"); MAX_LAUNCH_ITEMS + 1],
+            magnet_uris: Vec::new(),
+        };
         assert_eq!(
-            encode_request(&paths)
+            encode_request(&request)
                 .expect_err("path flood must fail")
                 .kind(),
             io::ErrorKind::InvalidInput
@@ -288,11 +333,37 @@ mod tests {
         assert_eq!(
             decode_request(WireRequest {
                 version: PROTOCOL_VERSION + 1,
-                paths: Vec::new(),
+                metadata_paths: Vec::new(),
+                magnet_uris: Vec::new(),
             })
             .expect_err("future protocol must fail")
             .kind(),
             io::ErrorKind::InvalidData
+        );
+
+        let invalid_magnet = LaunchRequest {
+            metadata_paths: Vec::new(),
+            magnet_uris: vec!["https://example.test/not-a-magnet".into()],
+        };
+        assert_eq!(
+            encode_request(&invalid_magnet)
+                .expect_err("non-magnet URI must fail")
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        let oversized_magnet = LaunchRequest {
+            metadata_paths: Vec::new(),
+            magnet_uris: vec![format!(
+                "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn={}",
+                "x".repeat(MAX_MAGNET_URI_BYTES)
+            )],
+        };
+        assert_eq!(
+            encode_request(&oversized_magnet)
+                .expect_err("oversized magnet URI must fail")
+                .kind(),
+            io::ErrorKind::InvalidInput
         );
     }
 
@@ -307,23 +378,29 @@ mod tests {
             "ariadeck-instance-test-{}-{nonce}",
             std::process::id()
         ));
-        let receiver = match coordinate_instance(&runtime, &data_dir, &[]).expect("primary starts")
+        let receiver = match coordinate_instance(&runtime, &data_dir, &LaunchRequest::default())
+            .expect("primary starts")
         {
             InstanceRole::Primary(receiver) => receiver,
             InstanceRole::Forwarded => panic!("unique socket must become primary"),
         };
-        let paths = vec![
-            data_dir.join("sample file.torrent"),
-            data_dir.join("示例.meta4"),
-        ];
+        let request = LaunchRequest {
+            metadata_paths: vec![
+                data_dir.join("sample file.torrent"),
+                data_dir.join("示例.meta4"),
+            ],
+            magnet_uris: vec![
+                "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Example".into(),
+            ],
+        };
 
         assert!(matches!(
-            coordinate_instance(&runtime, &data_dir, &paths).expect("secondary forwards"),
+            coordinate_instance(&runtime, &data_dir, &request).expect("secondary forwards"),
             InstanceRole::Forwarded
         ));
-        let request = receiver
+        let received = receiver
             .recv_timeout(Duration::from_secs(2))
             .expect("primary receives request");
-        assert_eq!(request.paths, paths);
+        assert_eq!(received, request);
     }
 }

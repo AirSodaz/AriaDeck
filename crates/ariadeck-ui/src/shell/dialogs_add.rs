@@ -308,6 +308,50 @@ impl AppShell {
                     && self.batch_failure_details.is_none()))
     }
 
+    #[must_use]
+    pub fn can_open_magnet_uris(&self) -> bool {
+        self.snapshot.commands_available()
+            && !self.add_dialog.open
+            && self.add_dialog.pending.is_none()
+            && self.add_dialog.preview_pending.is_none()
+            && self.pending_task_command.is_none()
+            && self.pending_batch_command.is_none()
+            && self.output_name_dialog.is_none()
+            && self.task_speed_limit_dialog.is_none()
+            && self.task_options_dialog.is_none()
+            && self.remove_confirmation.is_none()
+            && self.batch_failure_details.is_none()
+    }
+
+    /// Open the add-download dialog with external magnet links awaiting confirmation.
+    #[must_use]
+    pub fn open_magnet_uris(
+        &mut self,
+        mut uris: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.can_open_magnet_uris()
+            || uris.is_empty()
+            || uris
+                .iter()
+                .any(|uri| ariadeck_domain::magnet_info_hash(uri).is_none())
+        {
+            return false;
+        }
+        let mut known = HashSet::new();
+        uris.retain(|uri| known.insert(uri.clone()));
+        self.open_add_download(&OpenAddDownload, window, cx);
+        if !self.add_dialog.open {
+            return false;
+        }
+        self.add_input.update(cx, |input, cx| {
+            input.set_text(uris.join("\n"), cx);
+        });
+        cx.notify();
+        true
+    }
+
     /// Open the add-download dialog and enqueue metadata files for preview.
     #[must_use]
     pub fn open_metadata_paths(
