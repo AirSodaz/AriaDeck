@@ -10,7 +10,7 @@ Native Rust desktop client for [aria2](https://aria2.github.io/). GPUI UI; indep
 ## Development
 
 - Rust 1.96.0 (`rust-toolchain.toml`)
-- Windows / macOS / Linux with GPUI support
+- Windows (primary, packaged) / macOS / Linux — all three CI-verified (fmt/test/clippy/build)
 - CI (`.github/workflows/ci.yml`): verify on Windows, macOS, and Ubuntu; portable package still Windows-only on `main`
 
 ```sh

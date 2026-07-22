@@ -135,7 +135,7 @@ Settings: versioned JSON (`ariadeck-settings`); separate `window.json`, `profile
 
 ### Done
 
-Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, add/pause/resume/retry/remove, details, local supervision, settings, themes, multi-select/batch, multiline/mirrors, Trash, proxy+keychain, torrent/metalink+file select, queue ops, rate limits, seeding, duplicates, stopped pagination, advanced add, context menu, notifications/activity, multi-profile, capabilities, core registry, tray, window prefs, i18n en/zh-CN, a11y baseline, privacy redaction, perf hardening, Windows portable/installer packaging.
+Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, add/pause/resume/retry/remove, details, local supervision, settings, themes, multi-select/batch, multiline/mirrors, Trash, proxy+keychain, torrent/metalink+file select, queue ops, rate limits, seeding, duplicates, stopped pagination, advanced add, context menu, notifications/activity, multi-profile, capabilities, core registry, tray, window prefs, i18n en/zh-CN, a11y baseline, privacy redaction, perf hardening, Windows portable/installer packaging, CI matrix (fmt/test/clippy/release-build on Windows, macOS, Linux).
 
 ### Residual (polish, not blockers for Windows ship)
 

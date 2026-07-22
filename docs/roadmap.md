@@ -53,7 +53,7 @@ Legend: **Have** · **Partial** · **Missing** · **Won’t** (non-goal)
 | Privacy redaction | Have | Weak | Weak | Strength |
 | System tray + close-to-tray | Have | Have | N/A | Done |
 | Themes + en/zh-CN | Have | Have (more langs) | Have | Extra locales later |
-| Windows portable/installer | Have | Have | N/A | macOS/Linux package = next distro |
+| Windows portable/installer | Have | Have | N/A | macOS/Linux CI-verified; packages = next distro (Phase E) |
 | Bundled aria2 | Partial (import) | Have | N/A | Optional offline pack later; no forced network channel |
 | Browser extension / intercept | Missing | Have (Next strong) | 3rd party | High user expectation |
 | Protocol handlers (magnet/torrent file) | Missing | Have | N/A | High for “default DM” |
@@ -88,6 +88,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | A3 | High-DPI + Windows reparse manual QA | ACCESS/SEC residuals |
 | A4 | Optional diagnostic export (redacted zip) | Support without leaking secrets |
 | A5 | Settings export/import (JSON, no secrets) | AriaNg parity; backup/migrate |
+| A6 | Screen reader baseline (NVDA / Narrator): interactive controls labeled, focus order correct | a11y beyond high-DPI; Windows-first |
 
 **Exit:** Signed Windows portable + installer; no known P0 privacy/a11y holes.
 
@@ -99,24 +100,26 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | --- | --- | --- |
 | B1 | File associations: `.torrent`, `.metalink` | Double-click → add dialog |
 | B2 | Protocol handlers: `magnet:`, optional custom `ariadeck:` | System integration |
-| B3 | Browser extension **contract** (local RPC/native messaging) | Motrix Next differentiator; scope API carefully (auth, confirm, referer/cookie policy) |
+| B3a | Browser extension: define API contract (auth model, confirm policy, referer/cookie handling) | Design before build; minimize attack surface |
+| B3b | Native messaging host + local RPC endpoint for browser add-on | Motrix Next differentiator |
+| B3c | Reference browser extension (Chrome/Edge); community can fork for Firefox | Validate contract end-to-end |
 | B4 | First-run: discover/import aria2 or guided core import | Onboarding; still no mandatory network install |
 | B5 | Tray speed meter (at least Windows + optional) | Motrix-class glanceability |
+| B6 | SQLite (or equivalent) **local history** of completed/failed (paths, hashes, times) | Heavy users exhaust aria2 memory fast; ADR-007 deferred storage |
 
-**Exit:** User can set AriaDeck as magnet/torrent handler and push links from a browser add-on.
+**Exit:** User can set AriaDeck as magnet/torrent handler, push links from a browser add-on, and history survives aria2 restarts.
 
 ### Phase C — Organization & retention (medium)
 
-**Goal:** Survive beyond aria2’s in-memory stopped list.
+**Goal:** Organize and categorize downloads; manage history retention. *(SQLite history baseline moved to B6.)*
 
 | ID | Work | Why |
 | --- | --- | --- |
-| C1 | SQLite (or equivalent) **local history** of completed/failed (paths, hashes, times) | ADR-007 deferred storage |
-| C2 | Tags/categories or favorite output folders | Motrix Next / FDM organization |
-| C3 | Named queues + simple schedule (start/pause windows) | Persepolis / Next scheduling |
-| C4 | Stale history cleanup policies | Storage hygiene |
+| C1 | Tags/categories or favorite output folders | Motrix Next / FDM organization |
+| C2 | Named queues + simple schedule (start/pause windows) | Persepolis / Next scheduling |
+| C3 | Stale history cleanup policies | Storage hygiene |
 
-**Exit:** History survives aria2 restart/session wipe; basic organization without remote FS features.
+**Exit:** Downloads are categorized; stale history cleaned up without remote FS features.
 
 ### Phase D — BT & network depth (selective)
 
@@ -171,9 +174,9 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 ## 6. Suggested sequence (next 2–3 milestones)
 
 ```text
-M1  Ship trust     → A1–A5 (+ roadmap doc hygiene)
-M2  OS hooks       → B1–B2, B4, B5  then B3 (extension)
-M3  History/org    → C1–C2  (C3 if demand)
+M1  Ship trust     → A1–A6 (+ roadmap doc hygiene)
+M2  OS hooks       → B1–B2, B4–B6  then B3a–B3c (extension)
+M3  Org/cleanup    → C1–C2  (C3 if demand)
 M4  BT depth / dist → D1–D2, E1 or E2 as capacity allows
 ```
 
