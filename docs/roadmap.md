@@ -84,7 +84,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | ID | Work | Why |
 | --- | --- | --- |
 | A1 | Prod code-signing + release checklist hardening | SmartScreen; `docs/release.md` residual |
-| A2 | Finish residual i18n (dialogs / validation codes) | Parity with en/zh-CN claim |
+| A2 | **Done** — dialogs, details, and stable validation/error codes localized | en/zh-CN parity; English summaries remain unknown-code fallback |
 | A3 | High-DPI + Windows reparse manual QA | ACCESS/SEC residuals |
 | A4 | Optional diagnostic export (redacted zip) | Support without leaking secrets |
 | A5 | Settings export/import (JSON, no secrets) | AriaNg parity; backup/migrate |

@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use ariadeck_i18n::{FluentArgs, FluentValue};
 use gpui::{
     AnyElement, App, ClickEvent, ClipboardItem, Context, Div, ElementId, Entity, ExternalPaths,
     FocusHandle, Focusable, FontFeatures, FontWeight, Hsla, IntoElement, MouseButton,
@@ -43,12 +44,15 @@ use crate::{
     TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView, TaskDetailsRequestView,
     TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity, TaskOpenOutcomeView,
     TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView, TaskOptionView,
-    TaskPathValidationView, TaskPeerView, TaskServerView, TaskStatusView, TaskTrackerView,
-    TaskUriView, TextField, TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Toggle, Tooltip,
-    TransferPolicySettingsView, Translator, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
-    WorkspaceSortDirection, WorkspaceSortKey, actions::TEXT_FIELD_KEY_CONTEXT, format_bytes,
-    format_eta, format_percent, format_rate, format_share_ratio,
+    TaskPathValidationView, TaskStatusView, TextField, TextFieldConfig, Theme, ThemeMode, Toast,
+    ToastKind, Toggle, Tooltip, TransferPolicySettingsView, Translator, WorkspaceFilter,
+    WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    actions::TEXT_FIELD_KEY_CONTEXT, format_bytes, format_eta, format_percent, format_rate,
+    format_share_ratio,
 };
+
+#[cfg(test)]
+use crate::{TaskPeerView, TaskServerView, TaskTrackerView, TaskUriView};
 
 mod activity;
 mod chrome;
@@ -2104,18 +2108,19 @@ impl AppShell {
                 self.apply_batch_selection_result(&result.identities, result.command, &[], &failed);
                 let detail = failed
                     .first()
-                    .map(|failure| failure.error.summary.as_str())
-                    .unwrap_or("The batch command returned no item results.");
+                    .map(|failure| self.te(&failure.error))
+                    .unwrap_or_else(|| self.t("error-command-no-result"));
+                let count = failed.len().max(result.identities.len());
                 self.show_notice(
-                    format!(
-                        "{} failed for {} task{}. {detail}",
-                        result.command.label(),
-                        failed.len().max(result.identities.len()),
-                        if failed.len().max(result.identities.len()) == 1 {
-                            ""
-                        } else {
-                            "s"
-                        }
+                    self.t_args(
+                        "notice-batch-command-failed",
+                        &[
+                            (
+                                "count",
+                                FluentValue::from(i64::try_from(count).unwrap_or(i64::MAX)),
+                            ),
+                            ("detail", FluentValue::from(detail)),
+                        ],
                     ),
                     true,
                     cx,
@@ -2237,7 +2242,7 @@ impl AppShell {
                     drawer.state = TaskDetailsLoadState::Ready { details };
                 }
                 TaskDetailsOutcomeView::Failed(error) if background_refresh => {
-                    refresh_failure = Some(error.summary);
+                    refresh_failure = Some(error);
                 }
                 TaskDetailsOutcomeView::Failed(error) => {
                     drawer.state = TaskDetailsLoadState::Failed { error };
@@ -2250,9 +2255,13 @@ impl AppShell {
             // Catch-up after a completed request is not rate-limited so the drawer
             // can converge to the latest overview revision (D-017).
             self.request_current_details(false, cx);
-        } else if let Some(summary) = refresh_failure {
+        } else if let Some(error) = refresh_failure {
+            let summary = self.te(&error);
             self.show_notice(
-                format!("{}: {summary}", self.t("dialog-details-load-failed")),
+                self.t_args(
+                    "notice-refresh-details",
+                    &[("summary", FluentValue::from(summary))],
+                ),
                 true,
                 cx,
             );
@@ -2293,8 +2302,12 @@ impl AppShell {
                 cx,
             ),
             TaskOpenOutcomeView::Failure(error) => {
+                let summary = self.te(&error);
                 self.show_notice(
-                    format!("Could not open the task path: {}", error.summary),
+                    self.t_args(
+                        "notice-open-path-failed",
+                        &[("summary", FluentValue::from(summary))],
+                    ),
                     true,
                     cx,
                 );
@@ -2310,6 +2323,22 @@ impl AppShell {
     #[must_use]
     pub(crate) fn t(&self, id: &str) -> String {
         self.translator.t(id)
+    }
+
+    /// Translate a Fluent message id with named arguments.
+    #[must_use]
+    pub(crate) fn t_args(&self, id: &str, args: &[(&str, FluentValue<'_>)]) -> String {
+        let mut fluent_args = FluentArgs::new();
+        for (name, value) in args {
+            fluent_args.set(*name, value.clone());
+        }
+        self.translator.t_args(id, Some(&fluent_args))
+    }
+
+    /// Translate a Fluent message id with the conventional numeric `n` argument.
+    #[must_use]
+    pub(crate) fn t_count(&self, id: &str, n: u64) -> String {
+        self.translator.t_count(id, n)
     }
 
     #[must_use]

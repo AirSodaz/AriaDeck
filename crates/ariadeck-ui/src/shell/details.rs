@@ -3,6 +3,44 @@
 use super::*;
 
 impl AppShell {
+    fn format_seed_stop_rules(&self, options: &[TaskOptionView]) -> String {
+        let value = |key: &str| {
+            options
+                .iter()
+                .find(|option| option.key.eq_ignore_ascii_case(key))
+                .map(|option| option.value.as_str())
+        };
+        let ratio_value = value("seed-ratio");
+        let ratio = if ratio_value
+            .and_then(|value| value.parse::<f64>().ok())
+            .is_some_and(|value| value == 0.0)
+        {
+            self.t("dialog-details-seed-ratio-disabled")
+        } else {
+            self.t_args(
+                "dialog-details-seed-ratio-value",
+                &[(
+                    "ratio",
+                    FluentValue::from(
+                        ratio_value
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| self.t("dialog-details-not-reported")),
+                    ),
+                )],
+            )
+        };
+        let time = value("seed-time")
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.t("dialog-details-not-reported"));
+        self.t_args(
+            "dialog-details-seed-stop-rules",
+            &[
+                ("ratio", FluentValue::from(ratio)),
+                ("time", FluentValue::from(time)),
+            ],
+        )
+    }
+
     pub(crate) fn open_task_details_action(
         &mut self,
         _: &OpenTaskDetails,
@@ -117,11 +155,7 @@ impl AppShell {
 
     pub(crate) fn request_task_open(&mut self, target: TaskOpenTargetView, cx: &mut Context<Self>) {
         if !self.snapshot.commands_available() || !self.snapshot.local_path_actions_available {
-            self.show_notice(
-                "Opening task paths is available only for the managed local engine.",
-                true,
-                cx,
-            );
+            self.show_notice(self.t("notice-open-path-managed-local-only"), true, cx);
             return;
         }
         let Some(session) = self.snapshot.engine_session() else {
@@ -166,7 +200,11 @@ impl AppShell {
         let identity = drawer.identity.clone();
         let overview = drawer.overview.clone();
         let selected_tab = drawer.tab;
-        let display_name = task_display_name(&overview);
+        let display_name = if overview.name_state.is_resolving() {
+            self.t("task-name-resolving")
+        } else {
+            overview.display_name.clone()
+        };
         let overview_progress = overview.progress_basis_points();
         let path_actions_available =
             self.snapshot.commands_available() && self.snapshot.local_path_actions_available;
@@ -210,7 +248,7 @@ impl AppShell {
                     toolbar_icon_button(
                         "retry-task-details",
                         IconName::RotateCcw,
-                        "Retry",
+                        self.t("action-retry"),
                         ToolbarButtonState::Enabled,
                         false,
                         None,
@@ -249,7 +287,7 @@ impl AppShell {
                         toolbar_icon_button(
                             "refresh-task-details",
                             IconName::RefreshCw,
-                            "Refresh",
+                            self.t("dialog-details-refresh"),
                             ToolbarButtonState::Enabled,
                             false,
                             None,
@@ -283,16 +321,20 @@ impl AppShell {
                     overview.source_kind,
                     crate::TaskSourceKindView::Magnet | crate::TaskSourceKindView::BitTorrent
                 ) || overview.status == TaskStatusView::Seeding;
-                let seed_stop_rules = format_seed_stop_rules(&options);
+                let seed_stop_rules = self.format_seed_stop_rules(&options);
                 let path_validation_label = match path_validation {
                     TaskPathValidationView::Unavailable => {
-                        "Unavailable for an external or remote engine profile.".into()
+                        self.t("dialog-details-path-unavailable")
                     }
                     TaskPathValidationView::Valid {
                         existing_files,
                         missing_paths,
-                    } => format!(
-                        "Validated locally: {existing_files} existing, {missing_paths} missing."
+                    } => self.t_args(
+                        "dialog-details-path-valid",
+                        &[
+                            ("existing", FluentValue::from(existing_files)),
+                            ("missing", FluentValue::from(missing_paths)),
+                        ],
                     ),
                     TaskPathValidationView::Warning(error) => self.te(&error),
                 };
@@ -300,8 +342,8 @@ impl AppShell {
                 let tabs = SegmentedControl::new(
                     "task-details-tabs",
                     [
-                        Segment::new("Info"),
-                        Segment::new("Files"),
+                        Segment::new(self.t("dialog-details-info")),
+                        Segment::new(self.t("ui-files")),
                         Segment::new(self.t("dialog-details-network")),
                         Segment::new(self.t("dialog-details-options")),
                     ],
@@ -364,14 +406,20 @@ impl AppShell {
                         ))
                         .child(detail_line(
                             self.t("dialog-details-source-type"),
-                            overview.source_kind.label(),
+                            self.t(overview.source_kind.message_key()),
                             colors,
                         ))
                         .when_some(
                             primary_source
                                 .as_deref()
                                 .or(overview.primary_source.as_deref()),
-                            |element, source| element.child(detail_line("Source", source, colors)),
+                            |element, source| {
+                                element.child(detail_line(
+                                    self.t("dialog-details-source"),
+                                    source,
+                                    colors,
+                                ))
+                            },
                         )
                         .child(detail_line(
                             self.t("dialog-details-directory"),
@@ -381,7 +429,11 @@ impl AppShell {
                             colors,
                         ))
                         .when_some(output_path.as_deref(), |element, path| {
-                            element.child(detail_line("Output", path, colors))
+                            element.child(detail_line(
+                                self.t("dialog-details-output"),
+                                path,
+                                colors,
+                            ))
                         })
                         .child(detail_line(
                             self.t("dialog-details-path-check"),
@@ -396,7 +448,11 @@ impl AppShell {
                                     colors,
                                 ))
                                 .when_some(error.details.as_deref(), |element, details| {
-                                    element.child(detail_line("aria2 details", details, colors))
+                                    element.child(detail_line(
+                                        self.t("dialog-details-aria2-details"),
+                                        details,
+                                        colors,
+                                    ))
                                 })
                         })
                         .child(
@@ -458,12 +514,15 @@ impl AppShell {
                         })
                         .when(piece_length.is_some() || piece_count.is_some(), |element| {
                             element.child(detail_line(
-                                "Pieces",
+                                self.t("dialog-details-pieces"),
                                 format!(
                                     "{} x {}",
                                     piece_count
                                         .map_or_else(|| "?".into(), |value| value.to_string()),
-                                    piece_length.map_or_else(|| "unknown".into(), format_bytes)
+                                    piece_length.map_or_else(
+                                        || self.t("dialog-details-not-reported"),
+                                        format_bytes,
+                                    )
                                 ),
                                 colors,
                             ))
@@ -480,7 +539,7 @@ impl AppShell {
                         if file_count == 0 {
                             drawer_message(
                                 self.t("dialog-details-no-files"),
-                                "aria2 did not return any file entries for this task.",
+                                self.t("dialog-details-no-files-detail"),
                                 colors,
                             )
                         } else {
@@ -489,7 +548,9 @@ impl AppShell {
                             div()
                                 .id(list_id.clone())
                                 .role(Role::List)
-                                .aria_label(format!("Task files, {file_count} items"))
+                                .aria_label(
+                                    self.t_count("dialog-details-files-aria", file_count as u64),
+                                )
                                 .flex_1()
                                 .min_h_0()
                                 .child(
@@ -499,25 +560,73 @@ impl AppShell {
                                         cx.processor(
                                             move |this, range: Range<usize>, _window, _cx| {
                                                 let colors = this.theme.colors;
-                                                let Some(drawer) = &mut this.details_drawer else {
-                                                    return Vec::new();
+                                                let rows = {
+                                                    let Some(drawer) = &mut this.details_drawer
+                                                    else {
+                                                        return Vec::new();
+                                                    };
+                                                    drawer.rendered_file_range = range.clone();
+                                                    let TaskDetailsLoadState::Ready { details } =
+                                                        &drawer.state
+                                                    else {
+                                                        return Vec::new();
+                                                    };
+                                                    let gid = drawer.identity.gid.clone();
+                                                    range
+                                                        .filter_map(|index| {
+                                                            details.files.get(index).cloned().map(
+                                                                |file| (gid.clone(), index, file),
+                                                            )
+                                                        })
+                                                        .collect::<Vec<_>>()
                                                 };
-                                                drawer.rendered_file_range = range.clone();
-                                                let TaskDetailsLoadState::Ready { details } =
-                                                    &drawer.state
-                                                else {
-                                                    return Vec::new();
-                                                };
-                                                let gid = drawer.identity.gid.clone();
-                                                range
-                                                    .filter_map(|index| {
-                                                        details.files.get(index).cloned().map(
-                                                            |file| {
-                                                                render_file_row(
-                                                                    &gid, index, file, file_count,
-                                                                    colors,
-                                                                )
-                                                            },
+                                                rows.into_iter()
+                                                    .map(|(gid, index, file)| {
+                                                        let state = this.t(if file.selected {
+                                                            "dialog-details-file-enabled"
+                                                        } else {
+                                                            "dialog-details-file-skipped"
+                                                        });
+                                                        let progress = if file.length == 0 {
+                                                            None
+                                                        } else {
+                                                            let completed = u128::from(
+                                                                file.completed_length
+                                                                    .min(file.length),
+                                                            );
+                                                            Some(
+                                                                ((completed * 10_000)
+                                                                    / u128::from(file.length))
+                                                                    as u16,
+                                                            )
+                                                        };
+                                                        let aria_label = this.t_args(
+                                                            "dialog-details-file-aria",
+                                                            &[
+                                                                (
+                                                                    "path",
+                                                                    FluentValue::from(
+                                                                        file.path.clone(),
+                                                                    ),
+                                                                ),
+                                                                ("state", FluentValue::from(state)),
+                                                                (
+                                                                    "size",
+                                                                    FluentValue::from(
+                                                                        format_bytes(file.length),
+                                                                    ),
+                                                                ),
+                                                                (
+                                                                    "progress",
+                                                                    FluentValue::from(
+                                                                        format_percent(progress),
+                                                                    ),
+                                                                ),
+                                                            ],
+                                                        );
+                                                        render_file_row(
+                                                            &gid, index, file, file_count,
+                                                            aria_label, colors,
                                                         )
                                                     })
                                                     .collect::<Vec<_>>()
@@ -547,46 +656,116 @@ impl AppShell {
                         .gap_4()
                         .child(detail_collection_section(
                             self.t("dialog-details-sources"),
-                            "No source URIs reported.",
+                            self.t("dialog-details-no-sources"),
                             uris.into_iter()
-                                .map(|source| render_task_uri(source, colors))
+                                .map(|source| {
+                                    let status = self.t(source.status.message_key());
+                                    detail_collection_row(source.uri, status, None, colors)
+                                })
                                 .collect(),
                             colors,
                         ))
                         .child(detail_collection_section(
                             self.t("dialog-details-trackers"),
-                            "No BitTorrent trackers reported.",
+                            self.t("dialog-details-no-trackers"),
                             trackers
                                 .into_iter()
-                                .map(|tracker| render_task_tracker(tracker, colors))
+                                .map(|tracker| {
+                                    let tier = self.t_args(
+                                        "dialog-details-tracker-tier",
+                                        &[("tier", FluentValue::from(tracker.tier))],
+                                    );
+                                    detail_collection_row(tracker.uri, tier, None, colors)
+                                })
                                 .collect(),
                             colors,
                         ))
                         .child(detail_collection_section(
                             self.t("dialog-details-servers"),
-                            "No active HTTP, HTTPS, or FTP servers.",
+                            self.t("dialog-details-no-servers"),
                             servers
                                 .into_iter()
-                                .map(|server| render_task_server(server, colors))
+                                .map(|server| {
+                                    let current_uri = if server.current_uri.is_empty() {
+                                        server.uri.clone()
+                                    } else {
+                                        server.current_uri.clone()
+                                    };
+                                    let rate = format_rate(server.download_rate);
+                                    let secondary =
+                                        if server.uri.is_empty() || server.uri == current_uri {
+                                            self.t_args(
+                                                "dialog-details-server-file-rate",
+                                                &[
+                                                    ("file", FluentValue::from(server.file_index)),
+                                                    ("rate", FluentValue::from(rate)),
+                                                ],
+                                            )
+                                        } else {
+                                            self.t_args(
+                                                "dialog-details-server-source-file-rate",
+                                                &[
+                                                    ("source", FluentValue::from(server.uri)),
+                                                    ("file", FluentValue::from(server.file_index)),
+                                                    ("rate", FluentValue::from(rate)),
+                                                ],
+                                            )
+                                        };
+                                    detail_collection_row(current_uri, secondary, None, colors)
+                                })
                                 .collect(),
                             colors,
                         ))
                         .child(detail_collection_section(
-                            "Peers",
-                            "No active BitTorrent peers.",
+                            self.t("dialog-details-peers"),
+                            self.t("dialog-details-no-peers"),
                             peers
                                 .into_iter()
-                                .map(|peer| render_task_peer(peer, colors))
+                                .map(|peer| {
+                                    let address = if peer.address.contains(':') {
+                                        format!("[{}]:{}", peer.address, peer.port)
+                                    } else {
+                                        format!("{}:{}", peer.address, peer.port)
+                                    };
+                                    let rates = self.t_args(
+                                        "dialog-details-peer-rates",
+                                        &[
+                                            (
+                                                "download",
+                                                FluentValue::from(format_rate(peer.download_rate)),
+                                            ),
+                                            (
+                                                "upload",
+                                                FluentValue::from(format_rate(peer.upload_rate)),
+                                            ),
+                                        ],
+                                    );
+                                    let badge =
+                                        peer.seeder.then(|| self.t("dialog-details-peer-seed"));
+                                    detail_collection_row(address, rates, badge, colors)
+                                })
                                 .collect(),
                             colors,
                         ))
                         .into_any_element(),
                     TaskDetailsTab::Options => detail_collection_section(
-                        "Read-only task options",
-                        "No task-specific options reported.",
+                        self.t("dialog-details-read-only-options"),
+                        self.t("dialog-details-no-options"),
                         options
                             .into_iter()
-                            .map(|option| render_task_option(option, colors))
+                            .map(|option| {
+                                let value = if option.redacted {
+                                    self.t("dialog-details-option-hidden")
+                                } else if option.value.is_empty() {
+                                    self.t("dialog-details-option-empty")
+                                } else {
+                                    option.value
+                                };
+                                let badge = option
+                                    .redacted
+                                    .then(|| self.t("dialog-details-option-sensitive"));
+                                detail_collection_row(option.key, value, badge, colors)
+                            })
                             .collect(),
                         colors,
                     )
@@ -620,7 +799,10 @@ impl AppShell {
         div()
             .id("task-details-drawer")
             .role(Role::Complementary)
-            .aria_label(format!("Task details for {display_name}"))
+            .aria_label(self.t_args(
+                "dialog-details-drawer-aria",
+                &[("name", FluentValue::from(display_name.clone()))],
+            ))
             .w(px(DETAILS_DRAWER_WIDTH))
             .flex_none()
             .min_h_0()

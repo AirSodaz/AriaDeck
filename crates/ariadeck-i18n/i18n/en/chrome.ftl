@@ -32,6 +32,13 @@ action-details = Details
 action-set-speed-limit = Set speed limits
 action-edit-options = Edit task options
 action-change-output-name = Change output name
+action-set-speed-limits = Set speed limits
+action-set-connection-policy = Set connection policy
+action-edit-task-options = Edit task options
+action-move-queue-top = Move to top
+action-move-queue-up = Move up
+action-move-queue-down = Move down
+action-move-queue-bottom = Move to bottom
 
 # Residual high-visibility UI
 ui-app-name = AriaDeck

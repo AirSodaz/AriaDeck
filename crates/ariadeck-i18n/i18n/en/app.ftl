@@ -27,6 +27,7 @@ task-source-direct-uri = Direct URL
 task-source-magnet = Magnet
 task-source-bittorrent = BitTorrent
 task-source-metalink = Metalink
+task-name-resolving = Resolving filename
 
 # Connection / engine
 connection-disconnected = Disconnected

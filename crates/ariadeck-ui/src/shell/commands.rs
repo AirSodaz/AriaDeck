@@ -69,11 +69,7 @@ impl AppShell {
             return;
         };
         if !task.can_set_output_name() || !self.snapshot.commands_available() {
-            self.show_notice(
-                "Output names can be changed only for non-terminal direct URI tasks.",
-                true,
-                cx,
-            );
+            self.show_notice(self.t("notice-output-name-unavailable"), true, cx);
             return;
         }
 
@@ -170,11 +166,11 @@ impl AppShell {
         if self.selected.as_ref() != Some(&identity)
             || current_task.is_none_or(|task| !task.can_set_output_name())
         {
+            let summary = self.t("error-command-task-changed");
             if let Some(dialog) = &mut self.output_name_dialog {
                 dialog.error = Some(OperationErrorView {
                     code: "command.task_changed".into(),
-                    summary: "The task changed. Close this dialog and review its current state."
-                        .into(),
+                    summary,
                     retryable: false,
                 });
             }
@@ -212,11 +208,7 @@ impl AppShell {
             return;
         };
         if !task.status.can_set_speed_limit() || !self.snapshot.commands_available() {
-            self.show_notice(
-                "Speed limits can be set only for a task that is still downloading.",
-                true,
-                cx,
-            );
+            self.show_notice(self.t("notice-speed-limit-unavailable"), true, cx);
             return;
         }
         // The list projection does not carry per-task limits (that is DETAIL-001's
@@ -304,11 +296,11 @@ impl AppShell {
         let (Some(download_limit), Some(upload_limit)) =
             (draft.parse_download_limit(), draft.parse_upload_limit())
         else {
+            let summary = self.t("error-validation-invalid-speed-limit");
             if let Some(dialog) = &mut self.task_speed_limit_dialog {
                 dialog.error = Some(OperationErrorView {
                     code: "validation.invalid_speed_limit".into(),
-                    summary: "Enter a speed as bytes/second or a K/M/G value, or leave it blank for unlimited."
-                        .into(),
+                    summary,
                     retryable: false,
                 });
             }
@@ -323,11 +315,11 @@ impl AppShell {
         if self.selected.as_ref() != Some(&identity)
             || current_task.is_none_or(|task| !task.status.can_set_speed_limit())
         {
+            let summary = self.t("error-command-task-changed");
             if let Some(dialog) = &mut self.task_speed_limit_dialog {
                 dialog.error = Some(OperationErrorView {
                     code: "command.task_changed".into(),
-                    summary: "The task changed. Close this dialog and review its current state."
-                        .into(),
+                    summary,
                     retryable: false,
                 });
             }
@@ -363,11 +355,7 @@ impl AppShell {
             return;
         };
         if !task.status.can_set_speed_limit() || !self.snapshot.commands_available() {
-            self.show_notice(
-                "Task options can be changed only while the download is still live.",
-                true,
-                cx,
-            );
+            self.show_notice(self.t("notice-task-options-unavailable"), true, cx);
             return;
         }
         let supports_seed_rules = matches!(
@@ -470,10 +458,11 @@ impl AppShell {
         let mut seed_ratio = None;
         let mut seed_time_minutes = None;
         if !supports_seed_rules {
+            let summary = self.t("error-command-seed-rules-unsupported");
             if let Some(dialog) = &mut self.task_options_dialog {
                 dialog.error = Some(OperationErrorView {
-                    code: "command.unsupported".into(),
-                    summary: "Seed rules apply only to BitTorrent tasks.".into(),
+                    code: "command.seed_rules_unsupported".into(),
+                    summary,
                     retryable: false,
                 });
             }
@@ -486,11 +475,11 @@ impl AppShell {
                     seed_ratio = Some(seed_ratio_raw.clone());
                 }
                 _ => {
+                    let summary = self.t("error-validation-invalid-seed-ratio");
                     if let Some(dialog) = &mut self.task_options_dialog {
                         dialog.error = Some(OperationErrorView {
                             code: "validation.invalid_seed_ratio".into(),
-                            summary: "Seed ratio must be a number greater than or equal to 0."
-                                .into(),
+                            summary,
                             retryable: false,
                         });
                     }
@@ -503,10 +492,11 @@ impl AppShell {
             match seed_time_raw.parse::<u64>() {
                 Ok(_) => seed_time_minutes = Some(seed_time_raw.clone()),
                 Err(_) => {
+                    let summary = self.t("error-validation-invalid-seed-time");
                     if let Some(dialog) = &mut self.task_options_dialog {
                         dialog.error = Some(OperationErrorView {
                             code: "validation.invalid_seed_time".into(),
-                            summary: "Seed time must be a whole number of minutes.".into(),
+                            summary,
                             retryable: false,
                         });
                     }
@@ -516,10 +506,11 @@ impl AppShell {
             }
         }
         if seed_ratio.is_none() && seed_time_minutes.is_none() {
+            let summary = self.t("error-validation-empty-task-options");
             if let Some(dialog) = &mut self.task_options_dialog {
                 dialog.error = Some(OperationErrorView {
                     code: "validation.empty_task_options".into(),
-                    summary: "Enter a seed ratio and/or seed time to apply.".into(),
+                    summary,
                     retryable: false,
                 });
             }
@@ -534,11 +525,11 @@ impl AppShell {
         if self.selected.as_ref() != Some(&identity)
             || current_task.is_none_or(|task| !task.status.can_set_speed_limit())
         {
+            let summary = self.t("error-command-task-changed");
             if let Some(dialog) = &mut self.task_options_dialog {
                 dialog.error = Some(OperationErrorView {
                     code: "command.task_changed".into(),
-                    summary: "The task changed. Close this dialog and review its current state."
-                        .into(),
+                    summary,
                     retryable: false,
                 });
             }
@@ -691,11 +682,7 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         if !self.snapshot.commands_available() || !self.snapshot.local_path_actions_available {
-            self.show_notice(
-                "Opening task paths is available only for the managed local engine.",
-                true,
-                cx,
-            );
+            self.show_notice(self.t("notice-open-path-unavailable"), true, cx);
             return;
         }
         let Some(session) = self.snapshot.engine_session() else {
@@ -746,36 +733,30 @@ impl AppShell {
         };
         let capability_block = match command {
             TaskCommandView::ForcePause if !self.snapshot.capabilities.force_pause => {
-                Some(self.snapshot.capabilities.unsupported_force_pause_message())
+                Some("notice-force-pause-unsupported")
             }
-            TaskCommandView::ForceRemoveTask if !self.snapshot.capabilities.force_remove => Some(
-                self.snapshot
-                    .capabilities
-                    .unsupported_force_remove_message(),
-            ),
+            TaskCommandView::ForceRemoveTask if !self.snapshot.capabilities.force_remove => {
+                Some("notice-force-remove-unsupported")
+            }
             TaskCommandView::MoveToQueueTop
             | TaskCommandView::MoveUpInQueue
             | TaskCommandView::MoveDownInQueue
             | TaskCommandView::MoveToQueueBottom
                 if !self.snapshot.capabilities.queue_positioning =>
             {
-                Some(self.snapshot.capabilities.unsupported_queue_message())
+                Some("notice-queue-positioning-unsupported")
             }
             TaskCommandView::SetSpeedLimit { .. }
             | TaskCommandView::SetConnectionPolicy { .. }
             | TaskCommandView::SetOptions { .. }
                 if !self.snapshot.capabilities.change_option =>
             {
-                Some(
-                    self.snapshot
-                        .capabilities
-                        .unsupported_change_option_message(),
-                )
+                Some("notice-change-option-unsupported")
             }
             _ => None,
         };
-        if let Some(message) = capability_block {
-            self.show_notice(message, true, cx);
+        if let Some(key) = capability_block {
+            self.show_notice(self.t(key), true, cx);
             return;
         }
         let allowed = match command {
@@ -797,11 +778,15 @@ impl AppShell {
             | TaskCommandView::RemoveTaskAndFiles => task.status.can_remove(),
         };
         if !allowed {
+            let action = self.t(task_command_label_key(&command));
+            let status = self.t(task.status.message_key());
             self.show_notice(
-                format!(
-                    "{} is not available while the task is {}.",
-                    task_command_label(&command),
-                    task.status.label().to_lowercase()
+                self.t_args(
+                    "notice-command-status-unavailable",
+                    &[
+                        ("action", FluentValue::from(action)),
+                        ("status", FluentValue::from(status)),
+                    ],
                 ),
                 true,
                 cx,
@@ -908,11 +893,7 @@ impl AppShell {
             .map(|task| task.identity.clone())
             .collect::<Vec<_>>();
         if identities.len() < 2 {
-            self.show_notice(
-                "Select at least two visible tasks for a batch action.",
-                true,
-                cx,
-            );
+            self.show_notice(self.t("notice-batch-select-two"), true, cx);
             return;
         }
         let Some(session) = self
@@ -926,19 +907,15 @@ impl AppShell {
         };
         let capability_block = match command {
             BatchTaskCommandView::ForcePause if !self.snapshot.capabilities.force_pause => {
-                Some(self.snapshot.capabilities.unsupported_force_pause_message())
+                Some("notice-force-pause-unsupported")
             }
             BatchTaskCommandView::ForceRemoveTask if !self.snapshot.capabilities.force_remove => {
-                Some(
-                    self.snapshot
-                        .capabilities
-                        .unsupported_force_remove_message(),
-                )
+                Some("notice-force-remove-unsupported")
             }
             _ => None,
         };
-        if let Some(message) = capability_block {
-            self.show_notice(message, true, cx);
+        if let Some(key) = capability_block {
+            self.show_notice(self.t(key), true, cx);
             return;
         }
         let request_id = self.allocate_request_id();
@@ -983,7 +960,10 @@ impl AppShell {
                 .collect::<Vec<_>>();
             if identities.len() > 1 && self.snapshot.commands_available() {
                 self.remove_confirmation = Some(RemoveConfirmation {
-                    display_name: format!("{} selected tasks", identities.len()),
+                    display_name: self.t_count(
+                        "dialog-selected-task-count",
+                        u64::try_from(identities.len()).unwrap_or(u64::MAX),
+                    ),
                     identities,
                     has_live_tasks: selected_tasks.iter().any(|task| !task.status.is_terminal()),
                     has_terminal_tasks: selected_tasks.iter().any(|task| task.status.is_terminal()),
@@ -1001,20 +981,12 @@ impl AppShell {
         }
         let Some(task) = self.command_target_task_view() else {
             if !self.selected_tasks.is_empty() {
-                self.show_notice(
-                    "Selected tasks are outside the current result. Clear the hidden selection or change the query.",
-                    true,
-                    cx,
-                );
+                self.show_notice(self.t("notice-hidden-selection"), true, cx);
             }
             return;
         };
         if !task.status.can_remove() || !self.snapshot.commands_available() {
-            self.show_notice(
-                "The selected task cannot be removed in the current engine state.",
-                true,
-                cx,
-            );
+            self.show_notice(self.t("notice-remove-unavailable"), true, cx);
             return;
         }
 
@@ -1070,11 +1042,7 @@ impl AppShell {
                 .is_some_and(|identity| self.selected.as_ref() == Some(identity))
         };
         if !selection_matches {
-            self.show_notice(
-                "The task selection changed. Review it before removing tasks.",
-                true,
-                cx,
-            );
+            self.show_notice(self.t("notice-removal-selection-changed"), true, cx);
             return;
         }
         if confirmation.identities.len() > 1 {
@@ -1179,18 +1147,16 @@ impl AppShell {
             })
             .unwrap_or_default();
         let local_files_available = !matches!(self.engine_health, EngineHealthView::External);
-        let removal_description = match (has_live_tasks, has_terminal_tasks) {
-            (true, true) => format!(
-                "{display_name}: live tasks will be stopped and terminal records will be removed from aria2."
-            ),
-            (true, false) => {
-                format!("{display_name} will be stopped and retained as a removed aria2 result.")
-            }
-            (false, true) => {
-                format!("{display_name} will be removed from aria2's stopped results.")
-            }
-            (false, false) => format!("{display_name} will be removed from aria2."),
+        let removal_description_key = match (has_live_tasks, has_terminal_tasks) {
+            (true, true) => "dialog-remove-description-mixed",
+            (true, false) => "dialog-remove-description-live",
+            (false, true) => "dialog-remove-description-terminal",
+            (false, false) => "dialog-remove-description-generic",
         };
+        let removal_description = self.t_args(
+            removal_description_key,
+            &[("name", FluentValue::from(display_name))],
+        );
         let file_choice = if local_files_available {
             div()
                 .id("remove-task-files")
@@ -1269,9 +1235,9 @@ impl AppShell {
                         .color(colors.danger),
                 )
                 .child(if delete_files {
-                    "Selected task files will be moved to the Recycle Bin."
+                    self.t("dialog-remove-files-warning")
                 } else {
-                    "Downloaded files will be kept."
+                    self.t("dialog-remove-files-kept")
                 }),
         )
         .child(file_choice)
@@ -1314,7 +1280,7 @@ impl AppShell {
         let Some(details) = self.batch_failure_details.as_ref() else {
             return div().into_any_element();
         };
-        let command = details.command.label();
+        let command = self.t(batch_task_command_label_key(details.command));
         let failures = details
             .failures
             .iter()
@@ -1328,7 +1294,12 @@ impl AppShell {
                             .iter()
                             .find(|task| task.identity == *identity)
                             .map(task_display_name)
-                            .unwrap_or_else(|| format!("Task {}", identity.gid))
+                            .unwrap_or_else(|| {
+                                self.t_args(
+                                    "dialog-batch-task-name",
+                                    &[("gid", FluentValue::from(identity.gid.clone()))],
+                                )
+                            })
                     },
                 );
                 div()
@@ -1369,10 +1340,9 @@ impl AppShell {
             self.t("dialog-batch-title"),
             self.theme,
         )
-        .description(format!(
-            "{} task{} failed. Failed tasks remain selected for follow-up.",
-            details.failures.len(),
-            if details.failures.len() == 1 { "" } else { "s" }
+        .description(self.t_count(
+            "dialog-batch-failure-summary",
+            u64::try_from(details.failures.len()).unwrap_or(u64::MAX),
         ))
         .key_context("BatchFailureDialog")
         .track_focus(self.batch_failure_dialog_focus.clone())
@@ -1381,7 +1351,10 @@ impl AppShell {
             div()
                 .id("batch-failure-list")
                 .role(Role::List)
-                .aria_label(format!("Failed {command} tasks"))
+                .aria_label(self.t_args(
+                    "dialog-batch-failure-list-aria",
+                    &[("action", FluentValue::from(command))],
+                ))
                 .max_h(px(360.0))
                 .flex()
                 .flex_col()
@@ -1389,7 +1362,7 @@ impl AppShell {
                 .children(failures),
         )
         .action(
-            Button::new("close-batch-failures", "Close")
+            Button::new("close-batch-failures", self.t("button-close"))
                 .aria_label(self.t("dialog-batch-close-aria"))
                 .style(ButtonStyle::Secondary)
                 .track_focus(self.batch_failure_close_focus.clone())
@@ -1461,15 +1434,16 @@ impl AppShell {
             self.t("dialog-output-name-title"),
             self.theme,
         )
-        .description(format!(
-            "Set the filename used by aria2 for {display_name}."
+        .description(self.t_args(
+            "dialog-output-name-description",
+            &[("name", FluentValue::from(display_name))],
         ))
         .key_context("TaskOutputNameDialog")
         .track_focus(self.output_name_dialog_focus.clone())
         .width(520.0)
         .child(content)
         .action(
-            Button::new("cancel-task-output-name", "Cancel")
+            Button::new("cancel-task-output-name", self.t("button-cancel"))
                 .aria_label(self.t("dialog-output-name-cancel-aria"))
                 .style(ButtonStyle::Secondary)
                 .disabled(pending)
@@ -1482,7 +1456,11 @@ impl AppShell {
         .action(
             Button::new(
                 "submit-task-output-name",
-                if pending { "Saving..." } else { "Save" },
+                if pending {
+                    self.t("dialog-output-name-saving")
+                } else {
+                    self.t("button-save")
+                },
             )
             .aria_label(if pending {
                 self.t("dialog-output-name-saving")
@@ -1522,7 +1500,7 @@ impl AppShell {
                     .gap_3()
                     .child(
                         settings_labeled_input(
-                            "Download limit",
+                            self.t("dialog-speed-limit-download"),
                             self.task_inputs.download_limit.clone(),
                             colors,
                         )
@@ -1531,7 +1509,7 @@ impl AppShell {
                     )
                     .child(
                         settings_labeled_input(
-                            "Upload limit",
+                            self.t("dialog-speed-limit-upload"),
                             self.task_inputs.upload_limit.clone(),
                             colors,
                         )
@@ -1543,9 +1521,7 @@ impl AppShell {
                 div()
                     .text_xs()
                     .text_color(colors.text_muted)
-                    .child(
-                        "Applies to this download only. Leave a field blank for no limit; values accept a K/M/G suffix (for example 2M).",
-                    ),
+                    .child(self.t("dialog-speed-limit-help")),
             )
             .when_some(error, |element, error| {
                 element.child(
@@ -1564,15 +1540,16 @@ impl AppShell {
             self.t("dialog-speed-limit-title"),
             self.theme,
         )
-        .description(format!(
-            "Throttle aria2's transfer rate for {display_name}."
+        .description(self.t_args(
+            "dialog-speed-limit-description",
+            &[("name", FluentValue::from(display_name))],
         ))
         .key_context("TaskSpeedLimitDialog")
         .track_focus(self.task_speed_limit_dialog_focus.clone())
         .width(520.0)
         .child(content)
         .action(
-            Button::new("cancel-task-speed-limit", "Cancel")
+            Button::new("cancel-task-speed-limit", self.t("button-cancel"))
                 .aria_label(self.t("dialog-speed-limit-cancel-aria"))
                 .style(ButtonStyle::Secondary)
                 .disabled(pending)
@@ -1585,7 +1562,11 @@ impl AppShell {
         .action(
             Button::new(
                 "submit-task-speed-limit",
-                if pending { "Saving..." } else { "Save" },
+                if pending {
+                    self.t("dialog-speed-limit-saving")
+                } else {
+                    self.t("button-save")
+                },
             )
             .aria_label(if pending {
                 self.t("dialog-speed-limit-saving")
@@ -1616,69 +1597,70 @@ impl AppShell {
             pending.identity == identity
                 && matches!(&pending.command, TaskCommandView::SetOptions { .. })
         });
-        let content = div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(colors.text_muted)
-                    .child(if supports_seed_rules {
-                        "Stops seeding when the first of seed-ratio or seed-time is reached. Use 0 for seed-ratio to disable the ratio condition."
+        let content =
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(div().text_xs().text_color(colors.text_muted).child(
+                    if supports_seed_rules {
+                        self.t("dialog-task-options-seed-help")
                     } else {
-                        "Seed-ratio and seed-time apply only to BitTorrent tasks."
-                    }),
-            )
-            .when(supports_seed_rules, |element| {
-                element.child(
-                    div()
-                        .flex()
-                        .gap_3()
-                        .child(
-                            settings_labeled_input(
-                                "Seed ratio",
-                                self.task_inputs.seed_ratio.clone(),
-                                colors,
+                        self.t("dialog-task-options-seed-unavailable")
+                    },
+                ))
+                .when(supports_seed_rules, |element| {
+                    element.child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .child(
+                                settings_labeled_input(
+                                    self.t("dialog-task-options-seed-ratio"),
+                                    self.task_inputs.seed_ratio.clone(),
+                                    colors,
+                                )
+                                .flex_1()
+                                .min_w_0(),
                             )
-                            .flex_1()
-                            .min_w_0(),
-                        )
-                        .child(
-                            settings_labeled_input(
-                                "Seed time (minutes)",
-                                self.task_inputs.seed_time.clone(),
-                                colors,
-                            )
-                            .flex_1()
-                            .min_w_0(),
-                        ),
-                )
-            })
-            .when_some(error, |element, error| {
-                element.child(
-                    div()
-                        .id("task-options-error")
-                        .role(Role::Alert)
-                        .aria_label(self.te(&error))
-                        .text_xs()
-                        .text_color(colors.danger)
-                        .child(self.te(&error)),
-                )
-            });
+                            .child(
+                                settings_labeled_input(
+                                    self.t("dialog-task-options-seed-time"),
+                                    self.task_inputs.seed_time.clone(),
+                                    colors,
+                                )
+                                .flex_1()
+                                .min_w_0(),
+                            ),
+                    )
+                })
+                .when_some(error, |element, error| {
+                    element.child(
+                        div()
+                            .id("task-options-error")
+                            .role(Role::Alert)
+                            .aria_label(self.te(&error))
+                            .text_xs()
+                            .text_color(colors.danger)
+                            .child(self.te(&error)),
+                    )
+                });
 
         Dialog::new(
             "task-options-dialog",
             self.t("dialog-task-options-title"),
             self.theme,
         )
-        .description(format!("Change typed aria2 options for {display_name}."))
+        .description(self.t_args(
+            "dialog-task-options-description",
+            &[("name", FluentValue::from(display_name))],
+        ))
         .key_context("TaskOptionsDialog")
         .track_focus(self.task_options_dialog_focus.clone())
         .width(520.0)
         .child(content)
         .action(
-            Button::new("cancel-task-options", "Cancel")
+            Button::new("cancel-task-options", self.t("button-cancel"))
                 .aria_label(self.t("dialog-task-options-cancel-aria"))
                 .style(ButtonStyle::Secondary)
                 .disabled(pending)
@@ -1691,7 +1673,11 @@ impl AppShell {
         .action(
             Button::new(
                 "submit-task-options",
-                if pending { "Saving..." } else { "Save" },
+                if pending {
+                    self.t("dialog-task-options-saving")
+                } else {
+                    self.t("button-save")
+                },
             )
             .aria_label(if pending {
                 self.t("dialog-task-options-saving")
@@ -1708,5 +1694,37 @@ impl AppShell {
             .render(colors),
         )
         .into_any_element()
+    }
+}
+
+const fn task_command_label_key(command: &TaskCommandView) -> &'static str {
+    match command {
+        TaskCommandView::Pause => "action-pause",
+        TaskCommandView::ForcePause => "action-force-pause",
+        TaskCommandView::Resume => "action-resume",
+        TaskCommandView::MoveToQueueTop => "action-move-queue-top",
+        TaskCommandView::MoveUpInQueue => "action-move-queue-up",
+        TaskCommandView::MoveDownInQueue => "action-move-queue-down",
+        TaskCommandView::MoveToQueueBottom => "action-move-queue-bottom",
+        TaskCommandView::Retry => "action-retry",
+        TaskCommandView::SetOutputName { .. } => "action-change-output-name",
+        TaskCommandView::SetSpeedLimit { .. } => "action-set-speed-limits",
+        TaskCommandView::SetConnectionPolicy { .. } => "action-set-connection-policy",
+        TaskCommandView::SetOptions { .. } => "action-edit-task-options",
+        TaskCommandView::RemoveTask => "action-remove",
+        TaskCommandView::ForceRemoveTask => "action-force-remove",
+        TaskCommandView::RemoveTaskAndFiles => "action-remove-with-files",
+    }
+}
+
+const fn batch_task_command_label_key(command: BatchTaskCommandView) -> &'static str {
+    match command {
+        BatchTaskCommandView::Pause => "action-pause",
+        BatchTaskCommandView::ForcePause => "action-force-pause",
+        BatchTaskCommandView::Resume => "action-resume",
+        BatchTaskCommandView::Retry => "action-retry",
+        BatchTaskCommandView::RemoveTask => "action-remove",
+        BatchTaskCommandView::ForceRemoveTask => "action-force-remove",
+        BatchTaskCommandView::RemoveTaskAndFiles => "action-remove-with-files",
     }
 }

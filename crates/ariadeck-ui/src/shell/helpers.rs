@@ -435,10 +435,11 @@ pub(crate) fn settings_input_config(
 }
 
 pub(crate) fn settings_labeled_input(
-    label: &'static str,
+    label: impl Into<SharedString>,
     input: Entity<TextField>,
     colors: crate::ThemeColors,
 ) -> Div {
+    let label = label.into();
     div()
         .flex()
         .flex_col()
@@ -596,37 +597,6 @@ pub(crate) fn metadata_path_key(path: &Path) -> String {
         key.to_ascii_lowercase()
     } else {
         key
-    }
-}
-
-pub(crate) fn metadata_selection_summary(preview: &AddDownloadMetadataPreviewView) -> String {
-    let mut known_bytes = 0_u64;
-    let mut unknown_sizes = 0_usize;
-    for file in &preview.files {
-        if preview
-            .selected_file_indices
-            .binary_search(&file.index)
-            .is_ok()
-        {
-            if let Some(length) = file.length {
-                known_bytes = known_bytes.saturating_add(length);
-            } else {
-                unknown_sizes = unknown_sizes.saturating_add(1);
-            }
-        }
-    }
-    let count = preview.selected_file_indices.len();
-    let total = preview.files.len();
-    if unknown_sizes == 0 {
-        format!(
-            "{count} of {total} selected · {}",
-            format_bytes(known_bytes)
-        )
-    } else {
-        format!(
-            "{count} of {total} selected · {} + {unknown_sizes} unknown",
-            format_bytes(known_bytes)
-        )
     }
 }
 
@@ -928,7 +898,7 @@ pub(crate) fn detail_collection_section(
 pub(crate) fn detail_collection_row(
     primary: impl Into<SharedString>,
     secondary: impl Into<SharedString>,
-    badge: Option<&'static str>,
+    badge: Option<String>,
     colors: crate::ThemeColors,
 ) -> AnyElement {
     div()
@@ -977,104 +947,12 @@ pub(crate) fn detail_collection_row(
         .into_any_element()
 }
 
-pub(crate) fn render_task_uri(source: TaskUriView, colors: crate::ThemeColors) -> AnyElement {
-    detail_collection_row(source.uri, source.status.label(), None, colors)
-}
-
-pub(crate) fn render_task_tracker(
-    tracker: TaskTrackerView,
-    colors: crate::ThemeColors,
-) -> AnyElement {
-    detail_collection_row(
-        tracker.uri,
-        format!("Announce tier {}", tracker.tier),
-        None,
-        colors,
-    )
-}
-
-pub(crate) fn render_task_server(server: TaskServerView, colors: crate::ThemeColors) -> AnyElement {
-    let current_uri = if server.current_uri.is_empty() {
-        server.uri.clone()
-    } else {
-        server.current_uri.clone()
-    };
-    let secondary = if server.uri.is_empty() || server.uri == current_uri {
-        format!(
-            "File {} · Download {}",
-            server.file_index,
-            format_rate(server.download_rate)
-        )
-    } else {
-        format!(
-            "From {} · File {} · Download {}",
-            server.uri,
-            server.file_index,
-            format_rate(server.download_rate)
-        )
-    };
-    detail_collection_row(current_uri, secondary, None, colors)
-}
-
-pub(crate) fn render_task_peer(peer: TaskPeerView, colors: crate::ThemeColors) -> AnyElement {
-    let address = if peer.address.contains(':') {
-        format!("[{}]:{}", peer.address, peer.port)
-    } else {
-        format!("{}:{}", peer.address, peer.port)
-    };
-    detail_collection_row(
-        address,
-        format!(
-            "Down {} · Up {}",
-            format_rate(peer.download_rate),
-            format_rate(peer.upload_rate)
-        ),
-        peer.seeder.then_some("Seed"),
-        colors,
-    )
-}
-
-pub(crate) fn render_task_option(option: TaskOptionView, colors: crate::ThemeColors) -> AnyElement {
-    let value = if option.redacted {
-        "Hidden".to_owned()
-    } else if option.value.is_empty() {
-        "Empty".to_owned()
-    } else {
-        option.value
-    };
-    detail_collection_row(
-        option.key,
-        value,
-        option.redacted.then_some("Sensitive"),
-        colors,
-    )
-}
-
-pub(crate) fn format_seed_stop_rules(options: &[TaskOptionView]) -> String {
-    let value = |key: &str| {
-        options
-            .iter()
-            .find(|option| option.key.eq_ignore_ascii_case(key))
-            .map(|option| option.value.as_str())
-            .unwrap_or("not reported")
-    };
-    let ratio = value("seed-ratio");
-    let ratio = if ratio.parse::<f64>().is_ok_and(|value| value == 0.0) {
-        "ratio disabled (0.0)".to_owned()
-    } else {
-        format!("ratio {ratio}")
-    };
-    format!(
-        "Stops at the first reached limit: {ratio} · time {} min",
-        value("seed-time")
-    )
-}
-
 pub(crate) fn render_file_row(
     gid: &str,
     index: usize,
     file: TaskFileView,
     file_count: usize,
+    aria_label: String,
     colors: crate::ThemeColors,
 ) -> Stateful<Div> {
     let basis_points = if file.length == 0 {
@@ -1089,13 +967,7 @@ pub(crate) fn render_file_row(
         .role(Role::ListItem)
         .aria_position_in_set(index + 1)
         .aria_size_of_set(file_count)
-        .aria_label(format!(
-            "{}, {}, {}, {}",
-            file.path,
-            if file.selected { "enabled" } else { "skipped" },
-            format_bytes(file.length),
-            format_percent(basis_points)
-        ))
+        .aria_label(aria_label)
         .h(px(52.0))
         .w_full()
         .flex_none()
@@ -1143,25 +1015,6 @@ pub(crate) fn render_file_row(
                 .text_color(colors.text_muted)
                 .child(format_percent(basis_points)),
         )
-}
-
-pub(crate) fn task_command_label(command: &TaskCommandView) -> &'static str {
-    match command {
-        TaskCommandView::Pause => "Pause",
-        TaskCommandView::ForcePause => "Force pause",
-        TaskCommandView::Resume => "Resume",
-        TaskCommandView::MoveToQueueTop => "Move to top",
-        TaskCommandView::MoveUpInQueue => "Move up",
-        TaskCommandView::MoveDownInQueue => "Move down",
-        TaskCommandView::MoveToQueueBottom => "Move to bottom",
-        TaskCommandView::Retry => "Retry",
-        TaskCommandView::SetOutputName { .. } => "Change output name",
-        TaskCommandView::SetSpeedLimit { .. } => "Set speed limits",
-        TaskCommandView::SetConnectionPolicy { .. } => "Set connection policy",
-        TaskCommandView::SetOptions { .. } => "Edit task options",
-        TaskCommandView::RemoveTask | TaskCommandView::RemoveTaskAndFiles => "Remove",
-        TaskCommandView::ForceRemoveTask => "Force remove",
-    }
 }
 
 pub(crate) fn output_name_validation_error(output_name: &str) -> Option<&'static str> {

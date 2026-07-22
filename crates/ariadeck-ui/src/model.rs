@@ -66,6 +66,17 @@ impl TaskSourceKindView {
             Self::Metalink => "Metalink",
         }
     }
+
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::Unknown => "task-source-unknown",
+            Self::DirectUri => "task-source-direct-uri",
+            Self::Magnet => "task-source-magnet",
+            Self::BitTorrent => "task-source-bittorrent",
+            Self::Metalink => "task-source-metalink",
+        }
+    }
 }
 
 impl TaskStatusView {
@@ -751,6 +762,14 @@ impl AddDownloadInputModeView {
             Self::MetadataFiles => "Torrent / Metalink",
         }
     }
+
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::Links => "dialog-add-input-links",
+            Self::MetadataFiles => "dialog-add-input-metadata",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -765,6 +784,14 @@ impl AddDownloadMetadataKindView {
         match self {
             Self::Torrent => "Torrent",
             Self::Metalink => "Metalink",
+        }
+    }
+
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::Torrent => "dialog-add-kind-torrent",
+            Self::Metalink => "dialog-add-kind-metalink",
         }
     }
 }
@@ -784,6 +811,14 @@ impl AddDownloadModeView {
             Self::Mirrors => "Mirrors (one task)",
         }
     }
+
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::SeparateTasks => "dialog-add-mode-separate",
+            Self::Mirrors => "dialog-add-mode-mirrors",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -801,6 +836,15 @@ impl FileConflictPolicyView {
             Self::AutoRename => "Keep both",
             Self::Reject => "Reject",
             Self::Overwrite => "Overwrite",
+        }
+    }
+
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::AutoRename => "dialog-add-conflict-keep-both",
+            Self::Reject => "dialog-add-conflict-reject",
+            Self::Overwrite => "dialog-add-conflict-overwrite",
         }
     }
 }
@@ -1106,6 +1150,15 @@ impl TaskUriStatusView {
             Self::Used => "In use",
             Self::Waiting => "Mirror",
             Self::Unknown => "Unknown",
+        }
+    }
+
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::Used => "dialog-details-uri-used",
+            Self::Waiting => "dialog-details-uri-waiting",
+            Self::Unknown => "dialog-details-uri-unknown",
         }
     }
 }
@@ -2330,6 +2383,46 @@ mod tests {
         assert_eq!(FileConflictPolicyView::AutoRename.label(), "Keep both");
         assert_eq!(FileConflictPolicyView::Reject.label(), "Reject");
         assert_eq!(FileConflictPolicyView::Overwrite.label(), "Overwrite");
+    }
+
+    #[test]
+    fn add_dialog_choices_have_stable_message_keys() {
+        assert_eq!(
+            AddDownloadInputModeView::Links.message_key(),
+            "dialog-add-input-links"
+        );
+        assert_eq!(
+            AddDownloadInputModeView::MetadataFiles.message_key(),
+            "dialog-add-input-metadata"
+        );
+        assert_eq!(
+            AddDownloadMetadataKindView::Torrent.message_key(),
+            "dialog-add-kind-torrent"
+        );
+        assert_eq!(
+            AddDownloadMetadataKindView::Metalink.message_key(),
+            "dialog-add-kind-metalink"
+        );
+        assert_eq!(
+            AddDownloadModeView::SeparateTasks.message_key(),
+            "dialog-add-mode-separate"
+        );
+        assert_eq!(
+            AddDownloadModeView::Mirrors.message_key(),
+            "dialog-add-mode-mirrors"
+        );
+        assert_eq!(
+            FileConflictPolicyView::AutoRename.message_key(),
+            "dialog-add-conflict-keep-both"
+        );
+        assert_eq!(
+            FileConflictPolicyView::Reject.message_key(),
+            "dialog-add-conflict-reject"
+        );
+        assert_eq!(
+            FileConflictPolicyView::Overwrite.message_key(),
+            "dialog-add-conflict-overwrite"
+        );
     }
 
     #[test]

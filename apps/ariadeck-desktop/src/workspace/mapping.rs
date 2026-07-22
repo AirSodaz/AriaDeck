@@ -567,7 +567,7 @@ pub(crate) fn map_application_error(error: ApplicationError) -> OperationErrorVi
 
 pub(crate) fn unavailable_operation_error() -> OperationErrorView {
     OperationErrorView {
-        code: ApplicationErrorCode::Disconnected.as_str().into(),
+        code: "sync.unavailable".into(),
         summary: "The synchronization coordinator is unavailable.".into(),
         retryable: false,
     }
@@ -575,7 +575,7 @@ pub(crate) fn unavailable_operation_error() -> OperationErrorView {
 
 pub(crate) fn internal_operation_error() -> OperationErrorView {
     OperationErrorView {
-        code: ApplicationErrorCode::Internal.as_str().into(),
+        code: "command.no_result".into(),
         summary: "The command returned no result.".into(),
         retryable: false,
     }

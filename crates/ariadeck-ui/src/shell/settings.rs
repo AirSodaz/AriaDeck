@@ -1145,11 +1145,12 @@ impl AppShell {
                     .render(colors),
             )
             .when_some(error, |footer, error| {
+                let message = self.te(&error);
                 footer.child(
                     div()
                         .id("settings-error")
                         .role(Role::Alert)
-                        .aria_label(error.summary.clone())
+                        .aria_label(message.clone())
                         .flex()
                         .items_center()
                         .gap_1()
@@ -1160,7 +1161,7 @@ impl AppShell {
                                 .size(IconSize::XSmall)
                                 .color(colors.danger),
                         )
-                        .child(error.summary),
+                        .child(message),
                 )
             })
             .into_any_element()

@@ -2904,11 +2904,7 @@ fn force_pause_is_blocked_when_capabilities_omit_the_method(cx: &mut TestAppCont
         assert!(shell.pending_task_command.is_none());
         let notice = shell.status_notice.as_ref().expect("capability notice");
         assert!(notice.is_error);
-        assert!(
-            notice.message.contains("force-pause") || notice.message.contains("forcePause"),
-            "{}",
-            notice.message
-        );
+        assert_eq!(notice.message, shell.t("notice-force-pause-unsupported"));
     });
 }
 

@@ -31,6 +31,13 @@ action-details = 详情
 action-set-speed-limit = 设置速度限制
 action-edit-options = 编辑任务选项
 action-change-output-name = 更改输出文件名
+action-set-speed-limits = 设置速度限制
+action-set-connection-policy = 设置连接策略
+action-edit-task-options = 编辑任务选项
+action-move-queue-top = 移到顶部
+action-move-queue-up = 上移
+action-move-queue-down = 下移
+action-move-queue-bottom = 移到底部
 
 # 残留高频界面
 ui-app-name = AriaDeck

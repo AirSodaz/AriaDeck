@@ -352,6 +352,73 @@ mod tests {
     }
 
     #[test]
+    fn production_operation_error_codes_are_translated() {
+        let keys = [
+            "error-validation-invalid-request",
+            "error-validation-duplicate-task",
+            "error-validation-unsupported-metadata-file",
+            "error-validation-invalid-metadata",
+            "error-validation-invalid-output-name",
+            "error-validation-invalid-speed-limit",
+            "error-validation-invalid-seed-ratio",
+            "error-validation-invalid-seed-time",
+            "error-validation-empty-task-options",
+            "error-command-wrong-profile",
+            "error-command-stale-session",
+            "error-command-task-changed",
+            "error-command-seed-rules-unsupported",
+            "error-rpc-disconnected",
+            "error-rpc-command-outcome-unknown",
+            "error-rpc-add-not-observed",
+            "error-rpc-retry-not-observed",
+            "error-rpc-remove-not-observed",
+            "error-rpc-authentication-failed",
+            "error-rpc-timeout",
+            "error-rpc-command-rejected",
+            "error-command-unsupported",
+            "error-filesystem-unsafe-path",
+            "error-filesystem-operation-failed",
+            "error-application-internal",
+            "error-sync-unavailable",
+            "error-command-no-result",
+            "error-settings-invalid-download-directory",
+            "error-settings-invalid-speed-limit",
+            "error-settings-invalid-transfer-policy",
+            "error-settings-path-picker-failed",
+            "error-settings-path-picker-closed",
+            "error-settings-save-failed",
+            "error-profile-switch-failed",
+            "error-profile-save-failed",
+            "error-core-command-failed",
+        ];
+        for locale in LocaleId::all() {
+            let translator = Translator::new(locale);
+            for key in keys {
+                assert_ne!(translator.t(key), key, "{locale:?} is missing {key}");
+            }
+        }
+    }
+
+    #[test]
+    fn dialog_arguments_and_counts_render_in_chinese() {
+        let translator = Translator::new(LocaleId::ZhCn);
+        assert_eq!(
+            translator.t_count("dialog-add-sources-detected", 3),
+            "检测到 3 个来源"
+        );
+
+        let mut args = FluentArgs::new();
+        args.set("kind", "Torrent");
+        args.set("name", "linux.iso.torrent");
+        args.set("selected", 2);
+        args.set("total", 4);
+        assert_eq!(
+            translator.t_args("dialog-add-metadata-row-aria", Some(&args)),
+            "Torrent linux.iso.torrent，已选择 2/4 个文件"
+        );
+    }
+
+    #[test]
     fn language_preference_resolves_explicit_locales() {
         assert_eq!(LanguagePreference::English.resolve(), LocaleId::En);
         assert_eq!(

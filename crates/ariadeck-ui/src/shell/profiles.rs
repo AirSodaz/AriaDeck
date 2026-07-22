@@ -61,7 +61,7 @@ impl AppShell {
                 );
             }
             SwitchProfileOutcomeView::Failure(error) => {
-                self.show_notice(error.summary, true, cx);
+                self.show_notice(self.te(&error), true, cx);
             }
         }
         cx.notify();
@@ -113,7 +113,7 @@ impl AppShell {
                 self.show_notice(self.t("notice-profile-saved"), false, cx);
             }
             SaveProfileCatalogOutcomeView::Failure(error) => {
-                self.show_notice(error.summary, true, cx);
+                self.show_notice(self.te(&error), true, cx);
             }
         }
         cx.notify();
@@ -477,7 +477,7 @@ impl AppShell {
                 self.show_notice(message, false, cx);
             }
             CoreCommandOutcomeView::Failure(error) => {
-                self.show_notice(error.summary, true, cx);
+                self.show_notice(self.te(&error), true, cx);
             }
         }
         cx.notify();

@@ -24,6 +24,7 @@ task-source-direct-uri = 直链
 task-source-magnet = 磁力链接
 task-source-bittorrent = BitTorrent
 task-source-metalink = Metalink
+task-name-resolving = 正在解析文件名
 
 connection-disconnected = 未连接
 connection-connecting = 连接中

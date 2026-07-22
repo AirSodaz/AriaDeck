@@ -1,6 +1,12 @@
 //! Add-download dialog logic for AppShell.
 
+use ariadeck_i18n::FluentValue;
+
 use super::*;
+
+fn fluent_number(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
 
 impl AppShell {
     pub(crate) fn open_add_download(
@@ -435,7 +441,7 @@ impl AppShell {
     pub(crate) fn set_add_dialog_error(&mut self, summary: String, cx: &mut Context<Self>) {
         if self.add_dialog.open {
             self.add_dialog.error = Some(OperationErrorView {
-                code: "application.filesystem".into(),
+                code: "filesystem.operation_failed".into(),
                 summary,
                 retryable: true,
             });
@@ -495,8 +501,8 @@ impl AppShell {
         let input_mode_control = SegmentedControl::new(
             "add-download-input-mode",
             [
-                Segment::new(AddDownloadInputModeView::Links.label()),
-                Segment::new(AddDownloadInputModeView::MetadataFiles.label()),
+                Segment::new(self.t(AddDownloadInputModeView::Links.message_key())),
+                Segment::new(self.t(AddDownloadInputModeView::MetadataFiles.message_key())),
             ],
             usize::from(input_mode == AddDownloadInputModeView::MetadataFiles),
             self.theme,
@@ -515,8 +521,8 @@ impl AppShell {
         let mode_control = SegmentedControl::new(
             "add-download-mode",
             [
-                Segment::new(AddDownloadModeView::SeparateTasks.label()),
-                Segment::new(AddDownloadModeView::Mirrors.label()),
+                Segment::new(self.t(AddDownloadModeView::SeparateTasks.message_key())),
+                Segment::new(self.t(AddDownloadModeView::Mirrors.message_key())),
             ],
             usize::from(mode == AddDownloadModeView::Mirrors),
             self.theme,
@@ -535,9 +541,9 @@ impl AppShell {
         let conflict_control = SegmentedControl::new(
             "add-download-file-conflict",
             [
-                Segment::new(FileConflictPolicyView::AutoRename.label()),
-                Segment::new(FileConflictPolicyView::Reject.label()),
-                Segment::new(FileConflictPolicyView::Overwrite.label()),
+                Segment::new(self.t(FileConflictPolicyView::AutoRename.message_key())),
+                Segment::new(self.t(FileConflictPolicyView::Reject.message_key())),
+                Segment::new(self.t(FileConflictPolicyView::Overwrite.message_key())),
             ],
             match file_conflict {
                 FileConflictPolicyView::AutoRename => 0,
@@ -587,10 +593,9 @@ impl AppShell {
                                 if sources.is_empty() {
                                     self.t("dialog-add-no-sources")
                                 } else {
-                                    format!(
-                                        "{} source{} detected",
-                                        sources.len(),
-                                        if sources.len() == 1 { "" } else { "s" }
+                                    self.t_count(
+                                        "dialog-add-sources-detected",
+                                        u64::try_from(sources.len()).unwrap_or(u64::MAX),
                                     )
                                 },
                             ))
@@ -662,7 +667,7 @@ impl AppShell {
         })
         .child(content)
         .action(
-            Button::new("cancel-add-download", "Cancel")
+            Button::new("cancel-add-download", self.t("button-cancel"))
                 .aria_label(self.t("dialog-add-cancel-aria"))
                 .style(ButtonStyle::Secondary)
                 .disabled(pending)
@@ -673,7 +678,7 @@ impl AppShell {
                 .render(colors),
         )
         .action(
-            Button::new("submit-add-download", "Add")
+            Button::new("submit-add-download", self.t("dialog-add-submit"))
                 .aria_label(if add_pending {
                     self.t("dialog-add-submitting")
                 } else {
@@ -707,9 +712,9 @@ impl AppShell {
                     .id("add-download-advanced-toggle")
                     .role(Role::Button)
                     .aria_label(if open {
-                        "Hide advanced download options"
+                        self.t("dialog-add-hide-advanced-aria")
                     } else {
-                        "Show advanced download options"
+                        self.t("dialog-add-show-advanced-aria")
                     })
                     .aria_expanded(open)
                     .focusable()
@@ -738,7 +743,11 @@ impl AppShell {
                         div()
                             .text_xs()
                             .text_color(colors.text_muted)
-                            .child(if open { "Hide" } else { "Show" }),
+                            .child(if open {
+                                self.t("dialog-add-hide-advanced")
+                            } else {
+                                self.t("dialog-add-show-advanced")
+                            }),
                     ),
             )
             .when(open, |element| {
@@ -747,9 +756,7 @@ impl AppShell {
                         div()
                             .text_xs()
                             .text_color(colors.text_muted)
-                            .child(
-                                "Applies only to direct URL downloads. Cookies and HTTP passwords stay out of task rows and logs.",
-                            ),
+                            .child(self.t("dialog-add-advanced-hint")),
                     )
                     .child(
                         div()
@@ -757,7 +764,7 @@ impl AppShell {
                             .gap_3()
                             .child(
                                 settings_labeled_input(
-                                    "Referer",
+                                    self.t("dialog-add-referer"),
                                     self.add_inputs.referer.clone(),
                                     colors,
                                 )
@@ -766,7 +773,7 @@ impl AppShell {
                             )
                             .child(
                                 settings_labeled_input(
-                                    "User-Agent",
+                                    self.t("dialog-add-user-agent"),
                                     self.add_inputs.user_agent.clone(),
                                     colors,
                                 )
@@ -775,12 +782,12 @@ impl AppShell {
                             ),
                     )
                     .child(settings_labeled_input(
-                        "Custom headers",
+                        self.t("dialog-add-custom-headers"),
                         self.add_inputs.headers.clone(),
                         colors,
                     ))
                     .child(settings_labeled_input(
-                        "Cookie",
+                        self.t("dialog-add-cookie"),
                         self.add_inputs.cookie.clone(),
                         colors,
                     ))
@@ -790,7 +797,7 @@ impl AppShell {
                             .gap_3()
                             .child(
                                 settings_labeled_input(
-                                    "HTTP username",
+                                    self.t("dialog-add-http-username"),
                                     self.add_inputs.http_user.clone(),
                                     colors,
                                 )
@@ -799,7 +806,7 @@ impl AppShell {
                             )
                             .child(
                                 settings_labeled_input(
-                                    "HTTP password",
+                                    self.t("dialog-add-http-password"),
                                     self.add_inputs.http_passwd.clone(),
                                     colors,
                                 )
@@ -808,7 +815,7 @@ impl AppShell {
                             ),
                     )
                     .child(settings_labeled_input(
-                        "Checksum",
+                        self.t("dialog-add-checksum"),
                         self.add_inputs.checksum.clone(),
                         colors,
                     ))
@@ -840,16 +847,35 @@ impl AppShell {
                     );
                     let full_path = preview.path.display().to_string();
                     let kind = preview.kind;
+                    let kind_label = self.t(kind.message_key());
                     let selected = preview.selected_file_indices.len();
                     let total = preview.files.len();
+                    let row_aria = self.t_args(
+                        "dialog-add-metadata-row-aria",
+                        &[
+                            ("kind", FluentValue::from(kind_label.clone())),
+                            ("name", FluentValue::from(name.clone())),
+                            ("selected", FluentValue::from(fluent_number(selected))),
+                            ("total", FluentValue::from(fluent_number(total))),
+                        ],
+                    );
+                    let row_summary = self.t_args(
+                        "dialog-add-metadata-row-summary",
+                        &[
+                            ("kind", FluentValue::from(kind_label.clone())),
+                            ("selected", FluentValue::from(fluent_number(selected))),
+                            ("total", FluentValue::from(fluent_number(total))),
+                            ("path", FluentValue::from(full_path)),
+                        ],
+                    );
+                    let remove_aria = self.t_args(
+                        "dialog-add-remove-kind-aria",
+                        &[("kind", FluentValue::from(kind_label))],
+                    );
                     div()
                         .id(SharedString::from(format!("metadata-file-{index}")))
                         .role(Role::ListItem)
-                        .aria_label(format!(
-                            "{} {}, {selected} of {total} files selected",
-                            kind.label(),
-                            name
-                        ))
+                        .aria_label(row_aria)
                         .h(px(48.0))
                         .flex_none()
                         .flex()
@@ -886,10 +912,7 @@ impl AppShell {
                                         .truncate()
                                         .text_xs()
                                         .text_color(colors.text_muted)
-                                        .child(format!(
-                                            "{} · {selected}/{total} files · {full_path}",
-                                            kind.label()
-                                        )),
+                                        .child(row_summary),
                                 ),
                         )
                         .child(
@@ -897,7 +920,7 @@ impl AppShell {
                                 SharedString::from(format!("remove-metadata-file-{index}")),
                                 IconName::X,
                             )
-                            .aria_label(format!("Remove {} file", kind.label()))
+                            .aria_label(remove_aria)
                             .disabled(pending)
                             .tooltip(Tooltip::new(self.t("dialog-add-remove-file")))
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -912,7 +935,7 @@ impl AppShell {
         let active_index = self.add_dialog.active_metadata_file;
         let active_summary = active_index
             .and_then(|index| self.add_dialog.metadata_files.get(index))
-            .map(metadata_selection_summary);
+            .map(|preview| self.localized_metadata_selection_summary(preview));
         let active_file_count = active_index
             .and_then(|index| self.add_dialog.metadata_files.get(index))
             .map_or(0, |preview| preview.files.len());
@@ -968,14 +991,28 @@ impl AppShell {
                                             } else {
                                                 Toggled::False
                                             })
-                                            .aria_label(format!(
-                                                "File {file_index}, {}, {}",
-                                                file.path,
-                                                file.length.map_or_else(
-                                                    || "unknown size".into(),
-                                                    format_bytes
+                                            .aria_label({
+                                                let size = file.length.map_or_else(
+                                                    || this.t("dialog-add-size-unknown"),
+                                                    format_bytes,
+                                                );
+                                                this.t_args(
+                                                    "dialog-add-file-row-aria",
+                                                    &[
+                                                        (
+                                                            "index",
+                                                            FluentValue::from(i64::from(
+                                                                file_index,
+                                                            )),
+                                                        ),
+                                                        (
+                                                            "path",
+                                                            FluentValue::from(file.path.clone()),
+                                                        ),
+                                                        ("size", FluentValue::from(size)),
+                                                    ],
                                                 )
-                                            ))
+                                            })
                                             .h(px(40.0))
                                             .w_full()
                                             .flex_none()
@@ -1033,7 +1070,7 @@ impl AppShell {
                                                     .text_xs()
                                                     .text_color(colors.text_muted)
                                                     .child(file.length.map_or_else(
-                                                        || "Unknown".into(),
+                                                        || this.t("dialog-add-size-unknown"),
                                                         format_bytes,
                                                     )),
                                             )
@@ -1086,27 +1123,30 @@ impl AppShell {
                                     .child(self.t("ui-torrent-metalink-files"))
                                     .child(div().text_xs().text_color(colors.text_muted).child(
                                         if preview_pending {
-                                            "Reading metadata...".to_owned()
+                                            self.t("dialog-add-reading-metadata")
                                         } else {
-                                            format!(
-                                                "{count} source{} ready",
-                                                if count == 1 { "" } else { "s" }
+                                            self.t_count(
+                                                "dialog-add-sources-ready",
+                                                u64::try_from(count).unwrap_or(u64::MAX),
                                             )
                                         },
                                     )),
                             ),
                     )
                     .child(
-                        Button::new("choose-metadata-files", "Choose files")
-                            .icon(IconName::FolderDown)
-                            .aria_label(self.t("dialog-add-choose-files-aria"))
-                            .style(ButtonStyle::Secondary)
-                            .disabled(pending)
-                            .loading(preview_pending)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.choose_metadata_files(window, cx);
-                            }))
-                            .render(colors),
+                        Button::new(
+                            "choose-metadata-files",
+                            self.t("dialog-add-choose-metadata"),
+                        )
+                        .icon(IconName::FolderDown)
+                        .aria_label(self.t("dialog-add-choose-files-aria"))
+                        .style(ButtonStyle::Secondary)
+                        .disabled(pending)
+                        .loading(preview_pending)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.choose_metadata_files(window, cx);
+                        }))
+                        .render(colors),
                     ),
             )
             .when(!rows.is_empty(), |element| {
@@ -1138,8 +1178,8 @@ impl AppShell {
                                     .role(Role::CheckBox)
                                     .aria_toggled(active_selection_state)
                                     .aria_label(match active_selection_state {
-                                        Toggled::True => "Clear file selection",
-                                        Toggled::False | Toggled::Mixed => "Select all files",
+                                        Toggled::True => self.t("dialog-add-clear-file-selection"),
+                                        Toggled::False | Toggled::Mixed => self.t("select-all"),
                                     })
                                     .flex()
                                     .items_center()
@@ -1176,6 +1216,79 @@ impl AppShell {
             .into_any_element()
     }
 
+    fn localized_metadata_selection_summary(
+        &self,
+        preview: &AddDownloadMetadataPreviewView,
+    ) -> String {
+        let mut known_bytes = 0_u64;
+        let mut unknown_sizes = 0_usize;
+        for file in &preview.files {
+            if preview
+                .selected_file_indices
+                .binary_search(&file.index)
+                .is_ok()
+            {
+                if let Some(length) = file.length {
+                    known_bytes = known_bytes.saturating_add(length);
+                } else {
+                    unknown_sizes = unknown_sizes.saturating_add(1);
+                }
+            }
+        }
+
+        let selected = fluent_number(preview.selected_file_indices.len());
+        let total = fluent_number(preview.files.len());
+        let size = format_bytes(known_bytes);
+        if unknown_sizes == 0 {
+            self.t_args(
+                "dialog-add-selection-summary",
+                &[
+                    ("selected", FluentValue::from(selected)),
+                    ("total", FluentValue::from(total)),
+                    ("size", FluentValue::from(size)),
+                ],
+            )
+        } else {
+            self.t_args(
+                "dialog-add-selection-summary-with-unknown",
+                &[
+                    ("selected", FluentValue::from(selected)),
+                    ("total", FluentValue::from(total)),
+                    ("size", FluentValue::from(size)),
+                    ("unknown", FluentValue::from(fluent_number(unknown_sizes))),
+                ],
+            )
+        }
+    }
+
+    fn localized_add_source_label(&self, source: &AddDownloadSourceView) -> String {
+        match source {
+            AddDownloadSourceView::Uri { line, uri } => self.t_args(
+                "dialog-add-source-uri",
+                &[
+                    ("line", FluentValue::from(fluent_number(*line))),
+                    (
+                        "source",
+                        FluentValue::from(ariadeck_domain::redact_source_uri(uri)),
+                    ),
+                ],
+            ),
+            AddDownloadSourceView::MetadataFile { path, kind, .. } => {
+                let name = path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |name| name.to_string_lossy().into(),
+                );
+                self.t_args(
+                    "dialog-add-source-metadata",
+                    &[
+                        ("kind", FluentValue::from(self.t(kind.message_key()))),
+                        ("name", FluentValue::from(name)),
+                    ],
+                )
+            }
+        }
+    }
+
     pub(crate) fn render_add_result_list(&self, colors: crate::ThemeColors) -> Stateful<Div> {
         let rows = self
             .add_dialog
@@ -1186,16 +1299,22 @@ impl AppShell {
                 let source_label = item
                     .sources
                     .iter()
-                    .map(AddDownloadSourceView::label)
+                    .map(|source| self.localized_add_source_label(source))
                     .collect::<Vec<_>>()
                     .join("  |  ");
                 let (icon, label, color) = match &item.outcome {
                     CommandOutcomeView::Success { tasks } => (
                         IconName::CircleCheck,
                         match tasks.as_slice() {
-                            [] => "Accepted".to_owned(),
-                            [task] => format!("Accepted · GID {}", task.gid),
-                            tasks => format!("Accepted · {} tasks", tasks.len()),
+                            [] => self.t("dialog-add-result-accepted"),
+                            [task] => self.t_args(
+                                "dialog-add-result-accepted-gid",
+                                &[("gid", FluentValue::from(task.gid.clone()))],
+                            ),
+                            tasks => self.t_count(
+                                "dialog-add-result-accepted-tasks",
+                                u64::try_from(tasks.len()).unwrap_or(u64::MAX),
+                            ),
                         },
                         colors.success,
                     ),
