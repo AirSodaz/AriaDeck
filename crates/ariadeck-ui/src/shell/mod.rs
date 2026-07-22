@@ -1481,12 +1481,16 @@ impl AppShell {
     }
 
     pub fn set_snapshot(&mut self, snapshot: WorkspaceSnapshot, cx: &mut Context<Self>) {
-        // PERF-001: when store revision/session are unchanged, tasks are stable.
-        // Only connection/rates/history/counts may move — avoid O(n) selection work.
+        // PERF-001: when session identity is stable *and* the task list content is
+        // unchanged, only connection/rates/history/counts may move — skip selection
+        // migration, status transition notices, and details rewrite. Task equality is
+        // required so status/gid successor updates never take this path even if a
+        // producer forgets to bump `source_revision`.
         if self.snapshot.source_revision == snapshot.source_revision
             && self.snapshot.generation == snapshot.generation
             && self.snapshot.profile_id == snapshot.profile_id
             && self.snapshot.session_id == snapshot.session_id
+            && self.snapshot.tasks == snapshot.tasks
         {
             let light_changed = self.snapshot.connection != snapshot.connection
                 || self.snapshot.stale != snapshot.stale

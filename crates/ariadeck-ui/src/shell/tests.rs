@@ -2521,7 +2521,6 @@ fn speed_popover_toggles_and_restores_previous_focus(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-#[gpui::test]
 fn task_status_transitions_group_completions_into_one_notice(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut shell = AppShell::new(Theme::dark(), window, cx);
