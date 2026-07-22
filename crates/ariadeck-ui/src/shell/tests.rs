@@ -2642,6 +2642,47 @@ fn about_settings_category_is_read_only(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn diagnostic_snapshot_redacts_the_active_remote_endpoint(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.set_profiles(
+            ProfileCatalogView {
+                active_profile_id: "remote".into(),
+                profiles: vec![ProfileEntryView {
+                    profile_id: "remote".into(),
+                    name: "Private profile name".into(),
+                    kind: ProfileKindView::RemoteRpc,
+                    executable: String::new(),
+                    download_dir: "C:/private/downloads".into(),
+                    endpoint:
+                        "wss://user:never-export@rpc.example:6800/jsonrpc?token=private#fragment"
+                            .into(),
+                    has_secret: true,
+                }],
+            },
+            cx,
+        );
+        shell.set_snapshot(snapshot(3), cx);
+        shell
+    });
+
+    view.read_with(cx, |shell, _cx| {
+        let diagnostics = shell.diagnostic_snapshot(9);
+        assert_eq!(
+            diagnostics.redacted_rpc_endpoint.as_deref(),
+            Some("wss://rpc.example:6800/jsonrpc")
+        );
+        assert_eq!(diagnostics.profile_kind.as_deref(), Some("Remote RPC"));
+        assert_eq!(diagnostics.task_count, Some(3));
+        let summary = diagnostics.summary_line();
+        assert!(!summary.contains("never-export"));
+        assert!(!summary.contains("Private profile name"));
+        assert!(!summary.contains("C:/private"));
+        assert!(!summary.contains("token=private"));
+    });
+}
+
+#[gpui::test]
 fn notification_preferences_save_emits_settings_request(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
     view.update_in(cx, |shell, window, cx| {

@@ -40,6 +40,7 @@ pub use model::{
     BatchTaskFailureView, CloseBehaviorView, ColorSchemeView, CommandOutcomeView, ConnectionView,
     CoreCommandOutcomeView, CoreCommandRequestView, CoreCommandResultView, CoreCommandView,
     CoreInstallStatusView, CoreInstallationView, CoreRegistryView, CoreSourceView,
+    DiagnosticExportOutcomeView, DiagnosticExportRequestView, DiagnosticExportResultView,
     DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView, EngineHealthView,
     EngineSessionView, FileAllocationView, FileConflictPolicyView, FormatOptions,
     GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView,

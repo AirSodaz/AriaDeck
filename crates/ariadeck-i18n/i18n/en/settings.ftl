@@ -98,3 +98,7 @@ settings-about-runtime = Runtime
 settings-about-platform = Platform
 settings-about-aria2-version = Connected aria2
 settings-about-aria2-unknown = Not available
+settings-diagnostics-title = Support diagnostics
+settings-diagnostics-export = Export redacted diagnostics
+settings-diagnostics-description = Saves a ZIP with runtime versions, connection state, profile type, and aggregate counts. Download URLs, paths, settings, credentials, and logs are excluded.
+settings-diagnostics-export-aria = Export a redacted diagnostic ZIP

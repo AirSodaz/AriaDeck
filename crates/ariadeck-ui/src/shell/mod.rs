@@ -25,7 +25,8 @@ use crate::{
     BatchTaskFailureView, Button, ButtonStyle, ClearSearch, CloseAddDownload, CloseBatchFailures,
     CloseBehaviorView, CloseSettings, CloseTaskOutputName, CloseTaskSpeedLimit, ColorSchemeView,
     CommandOutcomeView, ConnectionView, CoreCommandOutcomeView, CoreCommandRequestView,
-    CoreCommandResultView, CoreCommandView, CoreRegistryView, Dialog, DownloadProxySettingsView,
+    CoreCommandResultView, CoreCommandView, CoreRegistryView, DiagnosticExportOutcomeView,
+    DiagnosticExportRequestView, DiagnosticExportResultView, Dialog, DownloadProxySettingsView,
     DownloadRowView, EngineHealthView, EngineSessionView, FileAllocationView,
     FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch, GlobalTaskCommandRequestView,
     GlobalTaskCommandResultView, GlobalTaskCommandView, Icon, IconButton, IconName, IconSize,
@@ -127,6 +128,7 @@ pub enum AppShellEvent {
     TaskDetailsRequested(TaskDetailsRequestView),
     TaskOpenRequested(TaskOpenRequestView),
     SettingsSaveRequested(SettingsSaveRequestView),
+    DiagnosticExportRequested(DiagnosticExportRequestView),
     SwitchProfileRequested(SwitchProfileRequestView),
     SaveProfileCatalogRequested(SaveProfileCatalogRequestView),
     CoreCommandRequested(CoreCommandRequestView),
@@ -2358,6 +2360,67 @@ impl AppShell {
 
     pub fn settings(&self) -> &SettingsView {
         &self.settings
+    }
+
+    /// Build the privacy-safe projection used by the desktop diagnostic export.
+    #[must_use]
+    pub fn diagnostic_snapshot(
+        &self,
+        settings_schema_version: u32,
+    ) -> ariadeck_domain::DiagnosticSnapshot {
+        let active_profile = self.profiles.active();
+        let capability_count = [
+            self.snapshot.capabilities.force_pause,
+            self.snapshot.capabilities.force_pause_all,
+            self.snapshot.capabilities.force_remove,
+            self.snapshot.capabilities.queue_positioning,
+            self.snapshot.capabilities.change_option,
+            self.snapshot.capabilities.change_global_option,
+            self.snapshot.capabilities.get_peers,
+            self.snapshot.capabilities.get_servers,
+            self.snapshot.capabilities.multicall,
+        ]
+        .into_iter()
+        .filter(|supported| *supported)
+        .count() as u32;
+        ariadeck_domain::DiagnosticSnapshot {
+            app_version: env!("CARGO_PKG_VERSION").to_owned(),
+            platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+            engine_version: (!self.snapshot.capabilities.version.trim().is_empty())
+                .then(|| self.snapshot.capabilities.version.clone()),
+            settings_schema_version: Some(settings_schema_version),
+            connection_state: self.snapshot.connection.label().to_owned(),
+            redacted_rpc_endpoint: active_profile
+                .and_then(|profile| {
+                    (!profile.endpoint.trim().is_empty()).then(|| profile.endpoint.clone())
+                })
+                .map(|endpoint| ariadeck_domain::redact_endpoint_url(&endpoint)),
+            profile_kind: active_profile.map(|profile| profile.kind.label().to_owned()),
+            task_count: Some(u32::try_from(self.snapshot.counts.all).unwrap_or(u32::MAX)),
+            capability_count: Some(capability_count),
+        }
+    }
+
+    pub fn set_diagnostic_export_result(
+        &mut self,
+        result: DiagnosticExportResultView,
+        cx: &mut Context<Self>,
+    ) {
+        match result.outcome {
+            DiagnosticExportOutcomeView::Success => {
+                self.show_notice(
+                    self.t_args(
+                        "notice-diagnostics-exported",
+                        &[("path", FluentValue::from(result.path))],
+                    ),
+                    false,
+                    cx,
+                );
+            }
+            DiagnosticExportOutcomeView::Failure(error) => {
+                self.show_notice(self.te(&error), true, cx);
+            }
+        }
     }
 
     #[must_use]

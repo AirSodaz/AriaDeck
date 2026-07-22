@@ -37,3 +37,4 @@ error-settings-save-failed = 无法保存设置。
 error-profile-switch-failed = 无法切换当前配置。
 error-profile-save-failed = 无法保存配置。
 error-core-command-failed = aria2 核心操作失败。
+error-diagnostics-export-failed = 无法导出脱敏诊断 ZIP。

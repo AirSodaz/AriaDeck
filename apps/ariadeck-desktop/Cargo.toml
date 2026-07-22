@@ -22,12 +22,15 @@ lava_torrent.workspace = true
 notify-rust.workspace = true
 quick-xml.workspace = true
 secrecy.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 sysinfo.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tray-icon.workspace = true
 url.workspace = true
+zip.workspace = true
 image.workspace = true
 raw-window-handle = "0.6"
 

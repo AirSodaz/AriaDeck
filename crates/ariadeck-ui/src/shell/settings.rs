@@ -741,6 +741,43 @@ impl AppShell {
         cx.notify();
     }
 
+    pub(crate) fn export_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let initial_directory = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let selected = cx.prompt_for_new_path(&initial_directory, Some("ariadeck-diagnostics.zip"));
+        cx.spawn_in(window, async move |this, cx| {
+            let selected = selected.await;
+            let _ = this.update_in(cx, |this, _window, cx| match selected {
+                Ok(Ok(Some(path))) => {
+                    cx.emit(AppShellEvent::DiagnosticExportRequested(
+                        DiagnosticExportRequestView {
+                            path: path.to_string_lossy().into_owned(),
+                        },
+                    ));
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(error)) => {
+                    let error = OperationErrorView {
+                        code: "settings.path_picker_failed".into(),
+                        summary: format!("Path picker failed: {error}"),
+                        retryable: true,
+                    };
+                    let message = this.te(&error);
+                    this.show_notice(message, true, cx);
+                }
+                Err(error) => {
+                    let error = OperationErrorView {
+                        code: "settings.path_picker_closed".into(),
+                        summary: format!("Path picker closed unexpectedly: {error}"),
+                        retryable: true,
+                    };
+                    let message = this.te(&error);
+                    this.show_notice(message, true, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
     // --- pick_path_for_field..apply_picked_path ---
     pub(crate) fn pick_path_for_field(
         &mut self,
@@ -2574,7 +2611,7 @@ impl AppShell {
             )
     }
 
-    pub(crate) fn render_settings_about(&mut self, _cx: &mut Context<Self>) -> Div {
+    pub(crate) fn render_settings_about(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
         let app_title = self.t("settings-about-app");
         let name_label = self.t("settings-about-name");
@@ -2585,6 +2622,10 @@ impl AppShell {
         let runtime_title = self.t("settings-about-runtime");
         let platform_label = self.t("settings-about-platform");
         let aria2_label = self.t("settings-about-aria2-version");
+        let diagnostics_title = self.t("settings-diagnostics-title");
+        let diagnostics_label = self.t("settings-diagnostics-export");
+        let diagnostics_description = self.t("settings-diagnostics-description");
+        let diagnostics_aria = self.t("settings-diagnostics-export-aria");
         let aria2_version = {
             let version = self.snapshot.capabilities.version.trim();
             if version.is_empty() {
@@ -2600,6 +2641,15 @@ impl AppShell {
         } else {
             authors
         };
+        let diagnostic_shell = cx.entity().downgrade();
+        let diagnostic_button = Button::new("export-diagnostics", diagnostics_label.clone())
+            .icon(IconName::Download)
+            .aria_label(diagnostics_aria)
+            .on_click(move |_, window, cx| {
+                diagnostic_shell
+                    .update(cx, |shell, cx| shell.export_diagnostics(window, cx))
+                    .ok();
+            });
 
         div()
             .flex()
@@ -2624,6 +2674,14 @@ impl AppShell {
                 settings_card_owned(runtime_title, colors)
                     .child(settings_info_row_owned(platform_label, platform, colors))
                     .child(settings_info_row_owned(aria2_label, aria2_version, colors)),
+            )
+            .child(
+                settings_card_owned(diagnostics_title, colors).child(settings_row_owned(
+                    diagnostics_label,
+                    Some(diagnostics_description),
+                    diagnostic_button.render(colors),
+                    colors,
+                )),
             )
     }
 }

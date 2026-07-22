@@ -98,3 +98,7 @@ settings-about-runtime = 运行环境
 settings-about-platform = 平台
 settings-about-aria2-version = 已连接的 aria2
 settings-about-aria2-unknown = 不可用
+settings-diagnostics-title = 支持诊断
+settings-diagnostics-export = 导出脱敏诊断
+settings-diagnostics-description = 保存包含运行版本、连接状态、配置类型和汇总数量的 ZIP；不包含下载地址、路径、设置、凭据或日志。
+settings-diagnostics-export-aria = 导出脱敏诊断 ZIP

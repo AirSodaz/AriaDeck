@@ -390,6 +390,7 @@ mod tests {
             "error-profile-switch-failed",
             "error-profile-save-failed",
             "error-core-command-failed",
+            "error-diagnostics-export-failed",
         ];
         for locale in LocaleId::all() {
             let translator = Translator::new(locale);

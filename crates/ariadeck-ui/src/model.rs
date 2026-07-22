@@ -1965,6 +1965,23 @@ pub struct SettingsSaveResultView {
     pub outcome: SettingsSaveOutcomeView,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticExportRequestView {
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DiagnosticExportOutcomeView {
+    Success,
+    Failure(OperationErrorView),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticExportResultView {
+    pub path: String,
+    pub outcome: DiagnosticExportOutcomeView,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum WorkspaceFilter {
     #[default]

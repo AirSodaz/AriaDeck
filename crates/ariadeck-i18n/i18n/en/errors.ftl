@@ -37,3 +37,4 @@ error-settings-save-failed = Settings could not be saved.
 error-profile-switch-failed = The active profile could not be changed.
 error-profile-save-failed = Profiles could not be saved.
 error-core-command-failed = The aria2 core operation failed.
+error-diagnostics-export-failed = The redacted diagnostic ZIP could not be exported.

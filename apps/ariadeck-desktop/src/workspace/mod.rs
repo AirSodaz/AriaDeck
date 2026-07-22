@@ -54,24 +54,24 @@ use ariadeck_ui::{
     BatchTaskCommandView, BatchTaskFailureView, CloseBehaviorView, ColorSchemeView,
     CommandOutcomeView, ConnectionView, CoreCommandOutcomeView, CoreCommandRequestView,
     CoreCommandResultView, CoreCommandView, CoreInstallStatusView, CoreInstallationView,
-    CoreRegistryView, CoreSourceView, DownloadProxySettingsView, DownloadRowView,
-    EngineCapabilitiesView, EngineHealthView, EngineSessionView, FileAllocationView,
-    FileConflictPolicyView, GlobalTaskCommandRequestView, GlobalTaskCommandResultView,
-    GlobalTaskCommandView, LanguagePreferenceView, NotificationSettingsView,
-    NotificationVolumeView, OperationErrorView, PlatformSettingsView, ProfileCatalogView,
-    ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView,
-    ProxyPasswordUpdateView, SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView,
-    SaveProfileCatalogResultView, SettingsSaveOutcomeView, SettingsSaveRequestView,
-    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView,
-    StoppedHistoryView, SwitchProfileOutcomeView, SwitchProfileRequestView,
-    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
-    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
-    TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
-    TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
-    TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
-    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TransferPolicySettingsView,
-    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
-    format_speed_limit_field,
+    CoreRegistryView, CoreSourceView, DiagnosticExportOutcomeView, DiagnosticExportRequestView,
+    DiagnosticExportResultView, DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView,
+    EngineHealthView, EngineSessionView, FileAllocationView, FileConflictPolicyView,
+    GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView,
+    LanguagePreferenceView, NotificationSettingsView, NotificationVolumeView, OperationErrorView,
+    PlatformSettingsView, ProfileCatalogView, ProfileEntryView, ProfileKindView,
+    ProfileRpcSecretUpdateView, ProxyModeView, ProxyPasswordUpdateView,
+    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
+    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
+    SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView, SwitchProfileOutcomeView,
+    SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
+    TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
+    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
+    TaskIdentity, TaskNameStateView, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
+    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
+    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
+    TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
+    WorkspaceSortDirection, WorkspaceSortKey, format_speed_limit_field,
 };
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
 #[cfg(target_os = "windows")]
@@ -88,6 +88,7 @@ use url::Url;
 
 use crate::metadata::parse_metadata;
 
+mod diagnostics;
 mod engine_setup;
 mod mapping;
 mod ops;
@@ -381,6 +382,9 @@ impl DesktopRoot {
                 }
                 AppShellEvent::SettingsSaveRequested(request) => {
                     this.enqueue_settings_save(request.clone(), window, cx);
+                }
+                AppShellEvent::DiagnosticExportRequested(request) => {
+                    this.spawn_diagnostic_export(request.clone(), window, cx);
                 }
                 AppShellEvent::SwitchProfileRequested(request) => {
                     this.handle_switch_profile(request.clone(), window, cx);
@@ -724,6 +728,51 @@ impl DesktopRoot {
             (false, false) => {}
         }
         let _ = cx;
+    }
+
+    fn spawn_diagnostic_export(
+        &self,
+        request: DiagnosticExportRequestView,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self
+            .workspace
+            .read(cx)
+            .diagnostic_snapshot(ariadeck_settings::CURRENT_SETTINGS_SCHEMA_VERSION);
+        let runtime = self.runtime.handle().clone();
+        let destination = PathBuf::from(&request.path);
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = match runtime
+                .spawn_blocking(move || diagnostics::export_diagnostic_zip(&destination, snapshot))
+                .await
+            {
+                Ok(Ok(())) => DiagnosticExportOutcomeView::Success,
+                Ok(Err(error)) => DiagnosticExportOutcomeView::Failure(OperationErrorView {
+                    code: "diagnostics.export_failed".into(),
+                    summary: error.to_string(),
+                    retryable: true,
+                }),
+                Err(error) => DiagnosticExportOutcomeView::Failure(OperationErrorView {
+                    code: "diagnostics.export_failed".into(),
+                    summary: format!("Diagnostic export worker failed: {error}"),
+                    retryable: true,
+                }),
+            };
+            this.update_in(cx, |this, _window, cx| {
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.set_diagnostic_export_result(
+                        DiagnosticExportResultView {
+                            path: request.path,
+                            outcome,
+                        },
+                        cx,
+                    );
+                });
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn enqueue_settings_save(

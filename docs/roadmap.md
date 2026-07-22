@@ -86,7 +86,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | A1 | Prod code-signing + release checklist hardening | SmartScreen; `docs/release.md` residual |
 | A2 | **Done** — dialogs, details, and stable validation/error codes localized | en/zh-CN parity; English summaries remain unknown-code fallback |
 | A3 | High-DPI + Windows reparse manual QA | ACCESS/SEC residuals |
-| A4 | Optional diagnostic export (redacted zip) | Support without leaking secrets |
+| A4 | **Done** — optional diagnostic export (redacted ZIP) | Support without leaking secrets; excludes URLs, paths, settings, credentials, and logs |
 | A5 | Settings export/import (JSON, no secrets) | AriaNg parity; backup/migrate |
 | A6 | Screen reader baseline (NVDA / Narrator): interactive controls labeled, focus order correct | a11y beyond high-DPI; Windows-first |
 

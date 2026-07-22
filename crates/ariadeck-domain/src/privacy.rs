@@ -6,6 +6,7 @@
 //! surfaces.
 
 use data_encoding::BASE32_NOPAD;
+use serde::Serialize;
 use url::Url;
 
 /// Placeholder when a source URI cannot be safely parsed or redacted.
@@ -132,9 +133,11 @@ pub fn task_option_key_is_sensitive(key: &str) -> bool {
 }
 
 /// Minimal diagnostic fields safe to log or export (no secrets, raw URIs, or paths).
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct DiagnosticSnapshot {
     pub app_version: String,
+    pub platform: String,
+    pub engine_version: Option<String>,
     pub settings_schema_version: Option<u32>,
     pub connection_state: String,
     pub redacted_rpc_endpoint: Option<String>,
@@ -148,8 +151,10 @@ impl DiagnosticSnapshot {
     #[must_use]
     pub fn summary_line(&self) -> String {
         format!(
-            "AriaDeck diagnostics: version={} settings_schema={:?} connection={} endpoint={:?} profile={:?} tasks={:?} capabilities={:?}",
+            "AriaDeck diagnostics: version={} platform={} engine_version={:?} settings_schema={:?} connection={} endpoint={:?} profile={:?} tasks={:?} capabilities={:?}",
             self.app_version,
+            self.platform,
+            self.engine_version,
             self.settings_schema_version,
             self.connection_state,
             self.redacted_rpc_endpoint,
@@ -253,6 +258,8 @@ mod tests {
     fn diagnostic_summary_never_embeds_planted_secrets() {
         let snapshot = DiagnosticSnapshot {
             app_version: "0.1.0".into(),
+            platform: "windows-x86_64".into(),
+            engine_version: Some("1.37.0".into()),
             settings_schema_version: Some(8),
             connection_state: "Connected".into(),
             redacted_rpc_endpoint: Some(redact_endpoint_url(
