@@ -65,11 +65,10 @@ impl AppShell {
         // OS-native toasts only for automatic, preference-gated events (PLAT-001).
         if automatic && self.settings.notifications.os_notifications {
             let title = if is_error {
-                "AriaDeck — Error"
+                self.t("os-notification-title-error")
             } else {
-                "AriaDeck"
-            }
-            .to_owned();
+                self.t("os-notification-title")
+            };
             cx.emit(AppShellEvent::OsNotificationRequested {
                 title,
                 body: message,

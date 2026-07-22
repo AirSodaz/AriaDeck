@@ -992,6 +992,11 @@ pub(crate) fn map_settings(settings: &AppSettings) -> SettingsView {
             ColorScheme::Light => ColorSchemeView::Light,
             ColorScheme::Dark => ColorSchemeView::Dark,
         },
+        language: match settings.language {
+            LanguagePreference::System => LanguagePreferenceView::System,
+            LanguagePreference::En => LanguagePreferenceView::English,
+            LanguagePreference::ZhCn => LanguagePreferenceView::ChineseSimplified,
+        },
         download_directory: settings.download_directory.to_string_lossy().into_owned(),
         download_proxy: DownloadProxySettingsView {
             mode: match settings.download_proxy.mode {
@@ -1095,6 +1100,11 @@ pub(crate) fn map_settings_request(
             ColorSchemeView::System => ColorScheme::System,
             ColorSchemeView::Light => ColorScheme::Light,
             ColorSchemeView::Dark => ColorScheme::Dark,
+        },
+        language: match settings.language {
+            LanguagePreferenceView::System => LanguagePreference::System,
+            LanguagePreferenceView::English => LanguagePreference::En,
+            LanguagePreferenceView::ChineseSimplified => LanguagePreference::ZhCn,
         },
         download_directory: PathBuf::from(settings.download_directory.trim()),
         download_proxy: DownloadProxySettings {

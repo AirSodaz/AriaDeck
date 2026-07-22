@@ -26,7 +26,7 @@ impl AppShell {
                 div()
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child("AriaDeck"),
+                    .child(self.t("ui-app-name")),
             );
         // On Windows the caption strip must reach the physical right edge, so
         // horizontal padding is applied only on the left (and non-Windows keeps
@@ -123,14 +123,14 @@ impl AppShell {
     pub(crate) fn render_add_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let colors = self.theme.colors;
         let enabled = self.snapshot.commands_available() && !self.add_dialog.open;
-        Button::new("open-add-download", "Add")
+        Button::new("open-add-download", self.t("action-add-download"))
             .icon(IconName::Plus)
             .aria_label(if enabled {
-                "Add a URL or magnet download"
+                self.t("action-add-download-aria")
             } else {
-                "Add download unavailable"
+                self.t("add-download-unavailable")
             })
-            .tooltip(Tooltip::new("Add download").meta("Ctrl/Cmd+N"))
+            .tooltip(Tooltip::new(self.t("action-add-download")).meta("Ctrl/Cmd+N"))
             .style(ButtonStyle::Primary)
             .disabled(!enabled)
             .on_click(cx.listener(|this, _, window, cx| {
@@ -155,7 +155,7 @@ impl AppShell {
                     .focusable()
                     .tab_stop(true)
                     .role(Role::Button)
-                    .aria_label(format!("{}, {count} tasks", filter.label()))
+                    .aria_label(format!("{}, {count}", self.t(filter.message_key())))
                     .h(px(38.0))
                     .w_full()
                     .px_3()
@@ -217,7 +217,7 @@ impl AppShell {
             .profiles
             .active()
             .map(|profile| profile.name.clone())
-            .unwrap_or_else(|| "No profile".into());
+            .unwrap_or_else(|| self.t("no-profile"));
         let active_profile_kind = self
             .profiles
             .active()
@@ -271,7 +271,7 @@ impl AppShell {
                     .focusable()
                     .tab_stop(true)
                     .role(Role::Button)
-                    .aria_label("Open application settings")
+                    .aria_label(self.t("action-open-settings"))
                     .h(px(38.0))
                     .w_full()
                     .px_3()
@@ -302,7 +302,7 @@ impl AppShell {
                             colors.text_muted
                         },
                     ))
-                    .child("Settings"),
+                    .child(self.t("settings-label")),
             )
     }
 
@@ -357,7 +357,7 @@ impl AppShell {
                             .text_xs()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(colors.text_secondary)
-                            .child("Last minute"),
+                            .child(self.t("speed-last-minute")),
                     )
                     .child(
                         div()
@@ -392,8 +392,10 @@ impl AppShell {
         let colors = self.theme.colors;
         let connection_color = connection_color(&self.snapshot.connection, colors);
         let connection_label = match &self.snapshot.connection {
-            ConnectionView::Reconnecting { attempt } => format!("Reconnecting · {attempt}"),
-            connection => connection.label().to_owned(),
+            ConnectionView::Reconnecting { attempt } => {
+                format!("{} · {attempt}", self.t("connection-reconnecting"))
+            }
+            connection => self.t(connection.message_key()),
         };
         let status_button = div()
             .id("connection-status")
@@ -403,9 +405,9 @@ impl AppShell {
                 Role::Status
             })
             .aria_label(if self.snapshot.connection.can_retry() {
-                "Retry aria2 connection".to_owned()
+                self.t("connection-retry")
             } else {
-                format!("Connection status: {connection_label}")
+                connection_label.clone()
             })
             .h_full()
             .px_2()
@@ -444,7 +446,7 @@ impl AppShell {
                 div()
                     .id("engine-status")
                     .role(Role::Status)
-                    .aria_label(self.engine_health.label())
+                    .aria_label(self.t(self.engine_health.message_key()))
                     .h_full()
                     .px_2()
                     .flex()
@@ -465,7 +467,7 @@ impl AppShell {
                                 }
                             }),
                     )
-                    .child(self.engine_health.label()),
+                    .child(self.t(self.engine_health.message_key())),
             )
             .when(self.snapshot.stale, |element| {
                 element.child(
@@ -484,7 +486,7 @@ impl AppShell {
                                 .size(IconSize::XSmall)
                                 .color(colors.warning),
                         )
-                        .child("Last known data"),
+                        .child(self.t("stale-data")),
                 )
             })
             .when_some(
@@ -521,9 +523,9 @@ impl AppShell {
                                         this.request_load_more_stopped(cx);
                                     }))
                                     .child(div().text_color(colors.information).child(if pending {
-                                        "Loading..."
+                                        "…".to_owned()
                                     } else {
-                                        "Load more"
+                                        self.t("load-more")
                                     }))
                             }),
                     )
@@ -532,9 +534,9 @@ impl AppShell {
             .child({
                 let activity_count = self.activity_log.len();
                 let activity_label = if activity_count == 0 {
-                    "Activity history".to_owned()
+                    self.t("activity-history")
                 } else {
-                    format!("Activity history, {activity_count} recent events")
+                    format!("{}, {activity_count}", self.t("activity-history"))
                 };
                 div()
                     .id("activity-status")
@@ -709,7 +711,7 @@ impl AppShell {
                 div()
                     .id("text-field-context-menu")
                     .role(Role::Menu)
-                    .aria_label("Text field menu")
+                    .aria_label(self.t("text-field-menu"))
                     .absolute()
                     .left(px(left))
                     .top(px(top))
@@ -791,7 +793,7 @@ impl AppShell {
                                             .text_sm()
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(colors.text_primary)
-                                            .child("Activity"),
+                                            .child(self.t("activity-title")),
                                     ),
                             )
                             .child(
@@ -801,7 +803,7 @@ impl AppShell {
                                     .gap_1()
                                     .child(
                                         Button::new("clear-activity-log", "Clear")
-                                            .aria_label("Clear activity history")
+                                            .aria_label(self.t("action-clear-activity"))
                                             .style(ButtonStyle::Secondary)
                                             .disabled(entries.is_empty())
                                             .on_click(cx.listener(|this, _, _, cx| {
@@ -811,7 +813,7 @@ impl AppShell {
                                     )
                                     .child(
                                         IconButton::new("close-activity-panel", IconName::X)
-                                            .aria_label("Close activity history")
+                                            .aria_label(self.t("action-close-activity"))
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.close_activity_panel(window, cx);
                                             }))
@@ -836,7 +838,7 @@ impl AppShell {
                             .justify_center()
                             .text_xs()
                             .text_color(colors.text_muted)
-                            .child("No activity yet.")
+                            .child(self.t("ui-no-activity"))
                             .into_any_element()
                     } else {
                         div()
@@ -959,28 +961,29 @@ impl AppShell {
             {
                 (
                     IconName::LoaderCircle,
-                    "Connecting to aria2".to_owned(),
+                    self.t("connection-connecting"),
                     false,
                 )
             }
             ConnectionView::Failed { .. } => {
-                (IconName::CloudOff, "Connection failed".to_owned(), false)
+                (IconName::CloudOff, self.t("connection-failed-title"), false)
             }
             ConnectionView::Disconnected if self.snapshot.tasks.is_empty() => {
-                (IconName::CloudOff, "aria2 is unavailable".to_owned(), false)
+                (IconName::CloudOff, self.t("aria2-unavailable"), false)
             }
             _ if !self.query.search.trim().is_empty() => {
-                (IconName::SearchX, "No matching downloads".to_owned(), true)
+                (IconName::SearchX, self.t("no-matching-downloads"), true)
             }
             _ if self.query.filter != WorkspaceFilter::All => (
                 IconName::Inbox,
                 format!(
-                    "No {} tasks",
-                    self.query.filter.short_label().to_lowercase()
+                    "{} — {}",
+                    self.t("no-downloads"),
+                    self.t(self.query.filter.message_key())
                 ),
                 true,
             ),
-            _ => (IconName::Inbox, "No downloads".to_owned(), false),
+            _ => (IconName::Inbox, self.t("no-downloads"), false),
         };
         let show_add = self.query.filter == WorkspaceFilter::All
             && self.query.search.trim().is_empty()
@@ -1024,8 +1027,8 @@ impl AppShell {
                     )
                     .when(show_clear, |element| {
                         element.child(
-                            Button::new("clear-empty-filter", "Clear filter")
-                                .aria_label("Clear search and task filter")
+                            Button::new("clear-empty-filter", self.t("clear-filter"))
+                                .aria_label(self.t("action-clear-search"))
                                 .style(ButtonStyle::Secondary)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.query.filter = WorkspaceFilter::All;
@@ -1039,9 +1042,9 @@ impl AppShell {
                     })
                     .when(show_add, |element| {
                         element.child(
-                            Button::new("add-download-empty-state", "Add download")
+                            Button::new("add-download-empty-state", self.t("action-add-download"))
                                 .icon(IconName::Plus)
-                                .aria_label("Add a URL or magnet download")
+                                .aria_label(self.t("action-add-download-aria"))
                                 .style(ButtonStyle::Primary)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.open_add_download(&OpenAddDownload, window, cx);
@@ -1051,8 +1054,8 @@ impl AppShell {
                     })
                     .when(self.snapshot.connection.can_retry(), |element| {
                         element.child(
-                            Button::new("retry-connection", "Retry")
-                                .aria_label("Retry aria2 connection now")
+                            Button::new("retry-connection", self.t("retry-label"))
+                                .aria_label(self.t("connection-retry-now"))
                                 .style(ButtonStyle::Primary)
                                 .on_click(cx.listener(|this, _, _, cx| this.request_retry(cx)))
                                 .render(colors),

@@ -65,7 +65,7 @@ impl AppShell {
             return;
         }
         let Some(task) = self.selected_task_view() else {
-            self.show_notice("Select a visible task first.", true, cx);
+            self.show_notice(self.t("notice-select-task-first"), true, cx);
             return;
         };
         if !task.can_set_output_name() || !self.snapshot.commands_available() {
@@ -150,11 +150,12 @@ impl AppShell {
             return;
         };
         let output_name = self.output_name_input.read(cx).text().trim().to_owned();
-        if let Some(summary) = output_name_validation_error(&output_name) {
+        if let Some(key) = output_name_validation_error(&output_name) {
+            let summary = self.t(key);
             if let Some(dialog) = &mut self.output_name_dialog {
                 dialog.error = Some(OperationErrorView {
                     code: "validation.invalid_output_name".into(),
-                    summary: summary.into(),
+                    summary,
                     retryable: false,
                 });
             }
@@ -207,7 +208,7 @@ impl AppShell {
             return;
         }
         let Some(task) = self.selected_task_view() else {
-            self.show_notice("Select a visible task first.", true, cx);
+            self.show_notice(self.t("notice-select-task-first"), true, cx);
             return;
         };
         if !task.status.can_set_speed_limit() || !self.snapshot.commands_available() {
@@ -358,7 +359,7 @@ impl AppShell {
             return;
         }
         let Some(task) = self.selected_task_view() else {
-            self.show_notice("Select a visible task first.", true, cx);
+            self.show_notice(self.t("notice-select-task-first"), true, cx);
             return;
         };
         if !task.status.can_set_speed_limit() || !self.snapshot.commands_available() {
@@ -670,16 +671,16 @@ impl AppShell {
             .filter(|value| !value.is_empty())
             .unwrap_or("");
         if source.is_empty() {
-            self.show_notice("This task has no copyable source.", true, cx);
+            self.show_notice(self.t("notice-no-copyable-source"), true, cx);
             return;
         }
         cx.write_to_clipboard(ClipboardItem::new_string(source.to_owned()));
-        self.show_notice("Source copied to the clipboard.", false, cx);
+        self.show_notice(self.t("notice-source-copied"), false, cx);
     }
 
     pub(crate) fn copy_task_gid(&mut self, task: &DownloadRowView, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(task.identity.gid.clone()));
-        self.show_notice("Task GID copied to the clipboard.", false, cx);
+        self.show_notice(self.t("notice-gid-copied"), false, cx);
     }
 
     /// Open a local path for the command-target task without requiring the
@@ -701,7 +702,7 @@ impl AppShell {
             return;
         };
         let Some(task) = self.context_menu_task_view() else {
-            self.show_notice("Select a visible task first.", true, cx);
+            self.show_notice(self.t("notice-select-task-first"), true, cx);
             return;
         };
         if task.identity.profile_id != session.profile_id {
@@ -714,7 +715,7 @@ impl AppShell {
             identity: task.identity,
             target,
         }));
-        self.show_notice("Opening local path...", false, cx);
+        self.show_notice(self.t("notice-opening-path"), false, cx);
         cx.notify();
     }
 
@@ -740,7 +741,7 @@ impl AppShell {
             return;
         }
         let Some(task) = self.command_target_task_view() else {
-            self.show_notice("Select a visible task first.", true, cx);
+            self.show_notice(self.t("notice-select-task-first"), true, cx);
             return;
         };
         let capability_block = match command {
@@ -813,7 +814,7 @@ impl AppShell {
             .then(|| self.snapshot.engine_session())
             .flatten()
         else {
-            self.show_notice("The engine is not ready for commands.", true, cx);
+            self.show_notice(self.t("notice-engine-not-ready"), true, cx);
             return;
         };
 
@@ -825,7 +826,7 @@ impl AppShell {
             identity: identity.clone(),
             command: command.clone(),
         });
-        self.show_notice(command.progress_label(), false, cx);
+        self.show_notice(self.t(command.progress_message_key()), false, cx);
         cx.emit(AppShellEvent::TaskCommandRequested(
             TaskCommandRequestView {
                 request_id,
@@ -855,7 +856,7 @@ impl AppShell {
             .then(|| self.snapshot.engine_session())
             .flatten()
         else {
-            self.show_notice("The engine is not ready for commands.", true, cx);
+            self.show_notice(self.t("notice-engine-not-ready"), true, cx);
             return;
         };
         if matches!(command, GlobalTaskCommandView::ForcePauseAll)
@@ -876,7 +877,7 @@ impl AppShell {
             session: session.clone(),
             command,
         });
-        self.show_notice(command.progress_label(), false, cx);
+        self.show_notice(self.t(command.progress_message_key()), false, cx);
         cx.emit(AppShellEvent::GlobalTaskCommandRequested(
             GlobalTaskCommandRequestView {
                 request_id,
@@ -920,7 +921,7 @@ impl AppShell {
             .then(|| self.snapshot.engine_session())
             .flatten()
         else {
-            self.show_notice("The engine is not ready for commands.", true, cx);
+            self.show_notice(self.t("notice-engine-not-ready"), true, cx);
             return;
         };
         let capability_block = match command {
@@ -947,7 +948,7 @@ impl AppShell {
             identities: identities.clone(),
             command,
         });
-        self.show_notice(command.progress_label(), false, cx);
+        self.show_notice(self.t(command.progress_message_key()), false, cx);
         cx.emit(AppShellEvent::BatchTaskCommandRequested(
             BatchTaskCommandRequestView {
                 request_id,
@@ -1194,7 +1195,7 @@ impl AppShell {
             div()
                 .id("remove-task-files")
                 .role(Role::CheckBox)
-                .aria_label("Move exact task files to the Recycle Bin")
+                .aria_label(self.t("dialog-remove-files-aria"))
                 .aria_toggled(if delete_files {
                     Toggled::True
                 } else {
@@ -1227,12 +1228,12 @@ impl AppShell {
                         .gap_1()
                         .text_sm()
                         .text_color(colors.text_primary)
-                        .child("Move exact task files to the Recycle Bin")
+                        .child(self.t("dialog-remove-files-checkbox"))
                         .child(
                             div()
                                 .text_xs()
                                 .text_color(colors.text_muted)
-                                .child("Incomplete-task .aria2 control files are included; unrelated files are kept."),
+                                .child(self.t("ui-remove-aria2-control")),
                         ),
                 )
                 .into_any_element()
@@ -1244,64 +1245,68 @@ impl AppShell {
                 .text_xs()
                 .text_color(colors.text_secondary)
                 .child(Icon::new(IconName::Info).size(IconSize::Small))
-                .child("This is an external engine; files on the engine host will be kept.")
+                .child(self.t("ui-external-engine-files-kept"))
                 .into_any_element()
         };
-        Dialog::new("remove-task-dialog", "Remove task?", self.theme)
-            .description(removal_description)
-            .key_context("RemoveTaskDialog")
-            .track_focus(self.remove_dialog_focus.clone())
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_xs()
-                    .text_color(colors.text_secondary)
-                    .child(
-                        Icon::new(IconName::TriangleAlert)
-                            .size(IconSize::Small)
-                            .color(colors.danger),
-                    )
-                    .child(if delete_files {
-                        "Selected task files will be moved to the Recycle Bin."
-                    } else {
-                        "Downloaded files will be kept."
-                    }),
-            )
-            .child(file_choice)
-            .action(
-                Button::new("cancel-remove-task", "Cancel")
-                    .aria_label("Cancel task removal")
-                    .style(ButtonStyle::Secondary)
-                    .track_focus(self.remove_cancel_focus.clone())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.close_remove_confirmation(window, cx);
-                    }))
-                    .render(colors),
-            )
-            .action(
-                Button::new(
-                    "confirm-remove-task",
-                    if delete_files {
-                        "Remove and move files"
-                    } else {
-                        "Remove"
-                    },
+        Dialog::new(
+            "remove-task-dialog",
+            self.t("dialog-remove-title"),
+            self.theme,
+        )
+        .description(removal_description)
+        .key_context("RemoveTaskDialog")
+        .track_focus(self.remove_dialog_focus.clone())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_xs()
+                .text_color(colors.text_secondary)
+                .child(
+                    Icon::new(IconName::TriangleAlert)
+                        .size(IconSize::Small)
+                        .color(colors.danger),
                 )
-                .aria_label(if delete_files {
-                    "Remove task and move exact local files to the Recycle Bin"
+                .child(if delete_files {
+                    "Selected task files will be moved to the Recycle Bin."
                 } else {
-                    "Remove task from aria2 and keep files"
-                })
-                .style(ButtonStyle::Danger)
-                .track_focus(self.remove_submit_focus.clone())
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.submit_remove_confirmation(cx);
+                    "Downloaded files will be kept."
+                }),
+        )
+        .child(file_choice)
+        .action(
+            Button::new("cancel-remove-task", self.t("button-cancel"))
+                .aria_label(self.t("dialog-remove-cancel-aria"))
+                .style(ButtonStyle::Secondary)
+                .track_focus(self.remove_cancel_focus.clone())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.close_remove_confirmation(window, cx);
                 }))
                 .render(colors),
+        )
+        .action(
+            Button::new(
+                "confirm-remove-task",
+                if delete_files {
+                    self.t("dialog-remove-and-files")
+                } else {
+                    self.t("dialog-remove-confirm")
+                },
             )
-            .into_any_element()
+            .aria_label(if delete_files {
+                self.t("dialog-remove-submit-aria")
+            } else {
+                self.t("dialog-remove-confirm")
+            })
+            .style(ButtonStyle::Danger)
+            .track_focus(self.remove_submit_focus.clone())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.submit_remove_confirmation(cx);
+            }))
+            .render(colors),
+        )
+        .into_any_element()
     }
 
     pub(crate) fn render_batch_failure_details(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -1316,7 +1321,7 @@ impl AppShell {
             .enumerate()
             .map(|(index, failure)| {
                 let task_name = failure.identity.as_ref().map_or_else(
-                    || "Batch request".to_owned(),
+                    || self.t("dialog-batch-request"),
                     |identity| {
                         self.snapshot
                             .tasks
@@ -1354,42 +1359,46 @@ impl AppShell {
                                 div()
                                     .text_xs()
                                     .text_color(colors.text_muted)
-                                    .child(failure.error.summary.clone()),
+                                    .child(self.te(&failure.error)),
                             ),
                     )
             })
             .collect::<Vec<_>>();
-        Dialog::new("batch-failure-dialog", "Batch action details", self.theme)
-            .description(format!(
-                "{} task{} failed. Failed tasks remain selected for follow-up.",
-                details.failures.len(),
-                if details.failures.len() == 1 { "" } else { "s" }
-            ))
-            .key_context("BatchFailureDialog")
-            .track_focus(self.batch_failure_dialog_focus.clone())
-            .width(560.0)
-            .child(
-                div()
-                    .id("batch-failure-list")
-                    .role(Role::List)
-                    .aria_label(format!("Failed {command} tasks"))
-                    .max_h(px(360.0))
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .children(failures),
-            )
-            .action(
-                Button::new("close-batch-failures", "Close")
-                    .aria_label("Close batch action details")
-                    .style(ButtonStyle::Secondary)
-                    .track_focus(self.batch_failure_close_focus.clone())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.close_batch_failure_details(window, cx);
-                    }))
-                    .render(colors),
-            )
-            .into_any_element()
+        Dialog::new(
+            "batch-failure-dialog",
+            self.t("dialog-batch-title"),
+            self.theme,
+        )
+        .description(format!(
+            "{} task{} failed. Failed tasks remain selected for follow-up.",
+            details.failures.len(),
+            if details.failures.len() == 1 { "" } else { "s" }
+        ))
+        .key_context("BatchFailureDialog")
+        .track_focus(self.batch_failure_dialog_focus.clone())
+        .width(560.0)
+        .child(
+            div()
+                .id("batch-failure-list")
+                .role(Role::List)
+                .aria_label(format!("Failed {command} tasks"))
+                .max_h(px(360.0))
+                .flex()
+                .flex_col()
+                .gap_3()
+                .children(failures),
+        )
+        .action(
+            Button::new("close-batch-failures", "Close")
+                .aria_label(self.t("dialog-batch-close-aria"))
+                .style(ButtonStyle::Secondary)
+                .track_focus(self.batch_failure_close_focus.clone())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.close_batch_failure_details(window, cx);
+                }))
+                .render(colors),
+        )
+        .into_any_element()
     }
 
     pub(crate) fn render_task_output_name_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -1414,7 +1423,7 @@ impl AppShell {
                     .text_xs()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(colors.text_secondary)
-                    .child("Filename"),
+                    .child(self.t("dialog-output-name-filename")),
             )
             .child(self.output_name_input.clone())
             .when(active, |element| {
@@ -1432,7 +1441,7 @@ impl AppShell {
                                 .size(IconSize::Small)
                                 .color(colors.warning),
                         )
-                        .child("Changing an active task's output name may restart its transfer."),
+                        .child(self.t("ui-output-name-restart")),
                 )
             })
             .when_some(error, |element, error| {
@@ -1440,51 +1449,55 @@ impl AppShell {
                     div()
                         .id("task-output-name-error")
                         .role(Role::Alert)
-                        .aria_label(error.summary.clone())
+                        .aria_label(self.te(&error))
                         .text_xs()
                         .text_color(colors.danger)
-                        .child(error.summary),
+                        .child(self.te(&error)),
                 )
             });
 
-        Dialog::new("task-output-name-dialog", "Change output name", self.theme)
-            .description(format!(
-                "Set the filename used by aria2 for {display_name}."
-            ))
-            .key_context("TaskOutputNameDialog")
-            .track_focus(self.output_name_dialog_focus.clone())
-            .width(520.0)
-            .child(content)
-            .action(
-                Button::new("cancel-task-output-name", "Cancel")
-                    .aria_label("Cancel output name change")
-                    .style(ButtonStyle::Secondary)
-                    .disabled(pending)
-                    .track_focus(self.output_name_cancel_focus.clone())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.close_task_output_name(window, cx);
-                    }))
-                    .render(colors),
-            )
-            .action(
-                Button::new(
-                    "submit-task-output-name",
-                    if pending { "Saving..." } else { "Save" },
-                )
-                .aria_label(if pending {
-                    "Saving task output name"
-                } else {
-                    "Save task output name"
-                })
-                .style(ButtonStyle::Primary)
-                .loading(pending)
-                .track_focus(self.output_name_submit_focus.clone())
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.submit_task_output_name(cx);
+        Dialog::new(
+            "task-output-name-dialog",
+            self.t("dialog-output-name-title"),
+            self.theme,
+        )
+        .description(format!(
+            "Set the filename used by aria2 for {display_name}."
+        ))
+        .key_context("TaskOutputNameDialog")
+        .track_focus(self.output_name_dialog_focus.clone())
+        .width(520.0)
+        .child(content)
+        .action(
+            Button::new("cancel-task-output-name", "Cancel")
+                .aria_label(self.t("dialog-output-name-cancel-aria"))
+                .style(ButtonStyle::Secondary)
+                .disabled(pending)
+                .track_focus(self.output_name_cancel_focus.clone())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.close_task_output_name(window, cx);
                 }))
                 .render(colors),
+        )
+        .action(
+            Button::new(
+                "submit-task-output-name",
+                if pending { "Saving..." } else { "Save" },
             )
-            .into_any_element()
+            .aria_label(if pending {
+                self.t("dialog-output-name-saving")
+            } else {
+                self.t("dialog-output-name-save")
+            })
+            .style(ButtonStyle::Primary)
+            .loading(pending)
+            .track_focus(self.output_name_submit_focus.clone())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.submit_task_output_name(cx);
+            }))
+            .render(colors),
+        )
+        .into_any_element()
     }
 
     pub(crate) fn render_task_speed_limit_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -1539,51 +1552,55 @@ impl AppShell {
                     div()
                         .id("task-speed-limit-error")
                         .role(Role::Alert)
-                        .aria_label(error.summary.clone())
+                        .aria_label(self.te(&error))
                         .text_xs()
                         .text_color(colors.danger)
-                        .child(error.summary),
+                        .child(self.te(&error)),
                 )
             });
 
-        Dialog::new("task-speed-limit-dialog", "Set speed limits", self.theme)
-            .description(format!(
-                "Throttle aria2's transfer rate for {display_name}."
-            ))
-            .key_context("TaskSpeedLimitDialog")
-            .track_focus(self.task_speed_limit_dialog_focus.clone())
-            .width(520.0)
-            .child(content)
-            .action(
-                Button::new("cancel-task-speed-limit", "Cancel")
-                    .aria_label("Cancel speed limit change")
-                    .style(ButtonStyle::Secondary)
-                    .disabled(pending)
-                    .track_focus(self.task_speed_limit_cancel_focus.clone())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.close_task_speed_limit(window, cx);
-                    }))
-                    .render(colors),
-            )
-            .action(
-                Button::new(
-                    "submit-task-speed-limit",
-                    if pending { "Saving..." } else { "Save" },
-                )
-                .aria_label(if pending {
-                    "Saving task speed limits"
-                } else {
-                    "Save task speed limits"
-                })
-                .style(ButtonStyle::Primary)
-                .loading(pending)
-                .track_focus(self.task_speed_limit_submit_focus.clone())
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.submit_task_speed_limit(cx);
+        Dialog::new(
+            "task-speed-limit-dialog",
+            self.t("dialog-speed-limit-title"),
+            self.theme,
+        )
+        .description(format!(
+            "Throttle aria2's transfer rate for {display_name}."
+        ))
+        .key_context("TaskSpeedLimitDialog")
+        .track_focus(self.task_speed_limit_dialog_focus.clone())
+        .width(520.0)
+        .child(content)
+        .action(
+            Button::new("cancel-task-speed-limit", "Cancel")
+                .aria_label(self.t("dialog-speed-limit-cancel-aria"))
+                .style(ButtonStyle::Secondary)
+                .disabled(pending)
+                .track_focus(self.task_speed_limit_cancel_focus.clone())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.close_task_speed_limit(window, cx);
                 }))
                 .render(colors),
+        )
+        .action(
+            Button::new(
+                "submit-task-speed-limit",
+                if pending { "Saving..." } else { "Save" },
             )
-            .into_any_element()
+            .aria_label(if pending {
+                self.t("dialog-speed-limit-saving")
+            } else {
+                self.t("dialog-speed-limit-save")
+            })
+            .style(ButtonStyle::Primary)
+            .loading(pending)
+            .track_focus(self.task_speed_limit_submit_focus.clone())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.submit_task_speed_limit(cx);
+            }))
+            .render(colors),
+        )
+        .into_any_element()
     }
 
     pub(crate) fn render_task_options_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -1643,49 +1660,53 @@ impl AppShell {
                     div()
                         .id("task-options-error")
                         .role(Role::Alert)
-                        .aria_label(error.summary.clone())
+                        .aria_label(self.te(&error))
                         .text_xs()
                         .text_color(colors.danger)
-                        .child(error.summary),
+                        .child(self.te(&error)),
                 )
             });
 
-        Dialog::new("task-options-dialog", "Edit task options", self.theme)
-            .description(format!("Change typed aria2 options for {display_name}."))
-            .key_context("TaskOptionsDialog")
-            .track_focus(self.task_options_dialog_focus.clone())
-            .width(520.0)
-            .child(content)
-            .action(
-                Button::new("cancel-task-options", "Cancel")
-                    .aria_label("Cancel task option change")
-                    .style(ButtonStyle::Secondary)
-                    .disabled(pending)
-                    .track_focus(self.task_options_cancel_focus.clone())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.close_task_options(window, cx);
-                    }))
-                    .render(colors),
-            )
-            .action(
-                Button::new(
-                    "submit-task-options",
-                    if pending { "Saving..." } else { "Save" },
-                )
-                .aria_label(if pending {
-                    "Saving task options"
-                } else {
-                    "Save task options"
-                })
-                .style(ButtonStyle::Primary)
-                .loading(pending)
-                .disabled(!supports_seed_rules)
-                .track_focus(self.task_options_submit_focus.clone())
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.submit_task_options(cx);
+        Dialog::new(
+            "task-options-dialog",
+            self.t("dialog-task-options-title"),
+            self.theme,
+        )
+        .description(format!("Change typed aria2 options for {display_name}."))
+        .key_context("TaskOptionsDialog")
+        .track_focus(self.task_options_dialog_focus.clone())
+        .width(520.0)
+        .child(content)
+        .action(
+            Button::new("cancel-task-options", "Cancel")
+                .aria_label(self.t("dialog-task-options-cancel-aria"))
+                .style(ButtonStyle::Secondary)
+                .disabled(pending)
+                .track_focus(self.task_options_cancel_focus.clone())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.close_task_options(window, cx);
                 }))
                 .render(colors),
+        )
+        .action(
+            Button::new(
+                "submit-task-options",
+                if pending { "Saving..." } else { "Save" },
             )
-            .into_any_element()
+            .aria_label(if pending {
+                self.t("dialog-task-options-saving")
+            } else {
+                self.t("dialog-task-options-save")
+            })
+            .style(ButtonStyle::Primary)
+            .loading(pending)
+            .disabled(!supports_seed_rules)
+            .track_focus(self.task_options_submit_focus.clone())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.submit_task_options(cx);
+            }))
+            .render(colors),
+        )
+        .into_any_element()
     }
 }

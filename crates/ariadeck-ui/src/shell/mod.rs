@@ -7,11 +7,11 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, App, ClickEvent, ClipboardItem, Context, Div, Entity, ExternalPaths, FocusHandle,
-    Focusable, FontFeatures, FontWeight, Hsla, IntoElement, MouseButton, MouseDownEvent,
-    PathPromptOptions, Pixels, Point, Render, Role, ScrollHandle, ScrollStrategy, SharedString,
-    Stateful, Subscription, Toggled, UniformListScrollHandle, WeakFocusHandle, Window,
-    WindowControlArea, div, point, prelude::*, px, relative, uniform_list,
+    AnyElement, App, ClickEvent, ClipboardItem, Context, Div, ElementId, Entity, ExternalPaths,
+    FocusHandle, Focusable, FontFeatures, FontWeight, Hsla, IntoElement, MouseButton,
+    MouseDownEvent, PathPromptOptions, Pixels, Point, Render, Role, ScrollHandle, ScrollStrategy,
+    SharedString, Stateful, Subscription, Toggled, UniformListScrollHandle, WeakFocusHandle,
+    Window, WindowControlArea, div, point, prelude::*, px, relative, uniform_list,
 };
 
 use crate::{
@@ -28,25 +28,26 @@ use crate::{
     DownloadRowView, EngineHealthView, EngineSessionView, FileAllocationView,
     FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch, GlobalTaskCommandRequestView,
     GlobalTaskCommandResultView, GlobalTaskCommandView, Icon, IconButton, IconName, IconSize,
-    MoveTaskDownInQueue, MoveTaskToQueueBottom, MoveTaskToQueueTop, MoveTaskUpInQueue,
-    NotificationSettingsView, NotificationVolumeView, OpenAddDownload, OpenSettings,
-    OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit, OperationErrorView, PauseSelectedTask,
-    PlatformSettingsView, ProfileCatalogView, ProfileEntryView, ProfileKindView,
-    ProfileRpcSecretUpdateView, ProxyModeView, ProxyPasswordUpdateView, RemoveSelectedTask,
-    RequestId, ResumeSelectedTask, RetrySelectedTask, SaveProfileCatalogOutcomeView,
-    SaveProfileCatalogRequestView, SaveProfileCatalogResultView, SaveSettings, SearchInputEvent,
-    SecretStringView, Segment, SegmentedControl, SelectAllTasks, SelectNextTask,
-    SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
-    SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator, SubmitAddDownload,
-    SubmitTaskOutputName, SubmitTaskSpeedLimit, SwitchProfileOutcomeView, SwitchProfileRequestView,
-    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
-    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
-    TaskFileView, TaskIdentity, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
-    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
-    TaskStatusView, TaskTrackerView, TaskUriView, TextField, TextFieldConfig, Theme, ThemeMode,
-    Toast, ToastKind, Toggle, Tooltip, TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery,
-    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, actions::TEXT_FIELD_KEY_CONTEXT,
-    format_bytes, format_eta, format_percent, format_rate, format_share_ratio,
+    LanguagePreferenceView, LocaleId, MoveTaskDownInQueue, MoveTaskToQueueBottom,
+    MoveTaskToQueueTop, MoveTaskUpInQueue, NotificationSettingsView, NotificationVolumeView,
+    OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit,
+    OperationErrorView, PauseSelectedTask, PlatformSettingsView, ProfileCatalogView,
+    ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView,
+    ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask,
+    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
+    SaveSettings, SearchInputEvent, SecretStringView, Segment, SegmentedControl, SelectAllTasks,
+    SelectNextTask, SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView,
+    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator,
+    SubmitAddDownload, SubmitTaskOutputName, SubmitTaskSpeedLimit, SwitchProfileOutcomeView,
+    SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
+    TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView, TaskDetailsRequestView,
+    TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity, TaskOpenOutcomeView,
+    TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView, TaskOptionView,
+    TaskPathValidationView, TaskPeerView, TaskServerView, TaskStatusView, TaskTrackerView,
+    TaskUriView, TextField, TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Toggle, Tooltip,
+    TransferPolicySettingsView, Translator, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
+    WorkspaceSortDirection, WorkspaceSortKey, actions::TEXT_FIELD_KEY_CONTEXT, format_bytes,
+    format_eta, format_percent, format_rate, format_share_ratio,
 };
 
 mod activity;
@@ -266,6 +267,7 @@ pub(crate) struct SettingsPage {
     /// Currently visible navigation category in the two-pane layout.
     active_category: SettingsCategory,
     draft_color_scheme: ColorSchemeView,
+    draft_language: LanguagePreferenceView,
     draft_proxy_mode: ProxyModeView,
     draft_file_allocation: FileAllocationView,
     draft_check_integrity: bool,
@@ -346,6 +348,18 @@ impl SettingsCategory {
         }
     }
 
+    const fn message_key(self) -> &'static str {
+        match self {
+            Self::General => "settings-nav-general",
+            Self::Profiles => "settings-nav-profiles",
+            Self::Engine => "settings-nav-engine",
+            Self::Network => "settings-nav-network",
+            Self::Transfers => "settings-nav-transfers",
+            Self::Notifications => "settings-nav-notifications",
+            Self::System => "settings-nav-system",
+        }
+    }
+
     const fn icon(self) -> crate::IconName {
         match self {
             Self::General => crate::IconName::Sun,
@@ -362,6 +376,7 @@ impl SettingsCategory {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SettingsSaveSource {
     Theme,
+    Language,
     Directory,
     Proxy,
     SpeedLimit,
@@ -524,6 +539,8 @@ impl TaskInputs {
 
 pub struct AppShell {
     theme: Theme,
+    /// Active Fluent translator for the resolved display language.
+    translator: Translator,
     settings: SettingsView,
     profiles: ProfileCatalogView,
     cores: CoreRegistryView,
@@ -1340,6 +1357,7 @@ impl AppShell {
         window.focus(&focus_handle, cx);
         Self {
             theme,
+            translator: translator_for_language(settings.language),
             settings,
             profiles: ProfileCatalogView::default(),
             cores: CoreRegistryView::default(),
@@ -1855,7 +1873,7 @@ impl AppShell {
         self.pending_task_command = None;
         match result.outcome {
             CommandOutcomeView::Success { tasks } => {
-                self.show_notice(result.command.success_label(), false, cx);
+                self.show_notice(self.t(result.command.success_message_key()), false, cx);
                 match result.command {
                     TaskCommandView::RemoveTask
                     | TaskCommandView::ForceRemoveTask
@@ -1908,22 +1926,22 @@ impl AppShell {
                     if let Some(dialog) = &mut self.output_name_dialog {
                         dialog.error = Some(error);
                     } else {
-                        self.show_notice(error.summary, true, cx);
+                        self.show_notice(self.te(&error), true, cx);
                     }
                 } else if matches!(result.command, TaskCommandView::SetSpeedLimit { .. }) {
                     if let Some(dialog) = &mut self.task_speed_limit_dialog {
                         dialog.error = Some(error);
                     } else {
-                        self.show_notice(error.summary, true, cx);
+                        self.show_notice(self.te(&error), true, cx);
                     }
                 } else if matches!(result.command, TaskCommandView::SetOptions { .. }) {
                     if let Some(dialog) = &mut self.task_options_dialog {
                         dialog.error = Some(error);
                     } else {
-                        self.show_notice(error.summary, true, cx);
+                        self.show_notice(self.te(&error), true, cx);
                     }
                 } else {
-                    self.show_notice(error.summary, true, cx);
+                    self.show_notice(self.te(&error), true, cx);
                 }
             }
         }
@@ -1950,7 +1968,7 @@ impl AppShell {
         self.pending_global_task_command = None;
         match result.outcome {
             CommandOutcomeView::Success { .. } => {
-                self.show_notice(result.command.success_label(), false, cx);
+                self.show_notice(self.t(result.command.success_message_key()), false, cx);
             }
             CommandOutcomeView::Failure(mut error) => {
                 if error.outcome_unknown() {
@@ -1959,7 +1977,7 @@ impl AppShell {
                         error.summary
                     );
                 }
-                self.show_notice(error.summary, true, cx);
+                self.show_notice(self.te(&error), true, cx);
             }
         }
         cx.notify();
@@ -2183,7 +2201,7 @@ impl AppShell {
             self.request_current_details(cx);
         } else if let Some(summary) = refresh_failure {
             self.show_notice(
-                format!("Could not refresh task details: {summary}"),
+                format!("{}: {summary}", self.t("dialog-details-load-failed")),
                 true,
                 cx,
             );
@@ -2230,7 +2248,27 @@ impl AppShell {
         self.show_notice(message, is_error, cx);
     }
 
+    /// Translate a Fluent message id with the active catalog.
     #[must_use]
+    pub(crate) fn t(&self, id: &str) -> String {
+        self.translator.t(id)
+    }
+
+    #[must_use]
+    pub(crate) fn te(&self, error: &OperationErrorView) -> String {
+        error.localized_summary(&self.translator)
+    }
+
+    #[must_use]
+    #[allow(dead_code)]
+    pub(crate) fn translator(&self) -> &Translator {
+        &self.translator
+    }
+
+    pub(crate) fn set_language_runtime(&mut self, language: LanguagePreferenceView) {
+        self.translator = translator_for_language(language);
+    }
+
     pub fn settings(&self) -> &SettingsView {
         &self.settings
     }
@@ -2919,3 +2957,12 @@ impl Render for AppShell {
 
 #[cfg(test)]
 mod tests;
+
+fn translator_for_language(language: LanguagePreferenceView) -> Translator {
+    let locale = match language {
+        LanguagePreferenceView::System => LocaleId::from_system_env(),
+        LanguagePreferenceView::English => LocaleId::En,
+        LanguagePreferenceView::ChineseSimplified => LocaleId::ZhCn,
+    };
+    Translator::new(locale)
+}

@@ -10,7 +10,7 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         let Some(task) = self.selected_task_view() else {
-            self.show_notice("Select a visible task to open its details.", true, cx);
+            self.show_notice(self.t("notice-select-task-details"), true, cx);
             return;
         };
         self.open_details_for(task, cx);
@@ -153,15 +153,15 @@ impl AppShell {
                 TaskDetailsPresentation::Ready(details.clone())
             }
             TaskDetailsLoadState::Failed { error } => {
-                TaskDetailsPresentation::Failed(error.summary.clone())
+                TaskDetailsPresentation::Failed(self.te(error))
             }
             TaskDetailsLoadState::Stale => TaskDetailsPresentation::Stale,
         };
 
         let body = match presentation {
             TaskDetailsPresentation::Loading => drawer_message(
-                "Loading task details",
-                "Requesting file metadata from this aria2 session.",
+                self.t("dialog-details-loading"),
+                self.t("ui-requesting-details"),
                 colors,
             ),
             TaskDetailsPresentation::Failed(summary) => div()
@@ -179,7 +179,7 @@ impl AppShell {
                         .text_sm()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.danger)
-                        .child("Could not load task details"),
+                        .child(self.t("dialog-details-load-failed")),
                 )
                 .child(div().text_xs().text_color(colors.text_muted).child(summary))
                 .child(
@@ -212,13 +212,13 @@ impl AppShell {
                         .text_sm()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.warning)
-                        .child("Details are stale"),
+                        .child(self.t("dialog-details-stale")),
                 )
                 .child(
                     div()
                         .text_xs()
                         .text_color(colors.text_muted)
-                        .child("Reconnect to refresh files for the current engine session."),
+                        .child(self.t("ui-reconnect-refresh-details")),
                 )
                 .when(self.snapshot.commands_available(), |element| {
                     element.child(
@@ -270,7 +270,7 @@ impl AppShell {
                     } => format!(
                         "Validated locally: {existing_files} existing, {missing_paths} missing."
                     ),
-                    TaskPathValidationView::Warning(error) => error.summary,
+                    TaskPathValidationView::Warning(error) => self.te(&error),
                 };
                 let shell = cx.entity().downgrade();
                 let tabs = SegmentedControl::new(
@@ -278,8 +278,8 @@ impl AppShell {
                     [
                         Segment::new("Info"),
                         Segment::new("Files"),
-                        Segment::new("Network"),
-                        Segment::new("Options"),
+                        Segment::new(self.t("dialog-details-network")),
+                        Segment::new(self.t("dialog-details-options")),
                     ],
                     match selected_tab {
                         TaskDetailsTab::Info => 0,
@@ -320,22 +320,26 @@ impl AppShell {
                             "GID",
                             gid.clone(),
                             IconButton::new("copy-task-gid", IconName::Copy)
-                                .aria_label("Copy task GID")
-                                .tooltip(Tooltip::new("Copy GID"))
+                                .aria_label(self.t("dialog-details-copy-gid-aria"))
+                                .tooltip(Tooltip::new(self.t("dialog-details-copy-gid-tooltip")))
                                 .on_click({
                                     let gid = gid.clone();
                                     cx.listener(move |this, _, _, cx| {
                                         cx.write_to_clipboard(ClipboardItem::new_string(
                                             gid.clone(),
                                         ));
-                                        this.show_notice("GID copied.", false, cx);
+                                        this.show_notice(
+                                            this.t("notice-gid-copied-short"),
+                                            false,
+                                            cx,
+                                        );
                                     })
                                 })
                                 .render(colors),
                             colors,
                         ))
                         .child(detail_line(
-                            "Source type",
+                            self.t("dialog-details-source-type"),
                             overview.source_kind.label(),
                             colors,
                         ))
@@ -346,21 +350,27 @@ impl AppShell {
                             |element, source| element.child(detail_line("Source", source, colors)),
                         )
                         .child(detail_line(
-                            "Directory",
-                            directory.as_deref().unwrap_or("Not reported"),
+                            self.t("dialog-details-directory"),
+                            directory
+                                .as_deref()
+                                .unwrap_or(&self.t("dialog-details-not-reported")),
                             colors,
                         ))
                         .when_some(output_path.as_deref(), |element, path| {
                             element.child(detail_line("Output", path, colors))
                         })
                         .child(detail_line(
-                            "Local path check",
+                            self.t("dialog-details-path-check"),
                             path_validation_label,
                             colors,
                         ))
                         .when_some(overview.error.as_ref(), |element, error| {
                             element
-                                .child(detail_line("Failure", error.summary.clone(), colors))
+                                .child(detail_line(
+                                    self.t("dialog-details-failure"),
+                                    error.summary.clone(),
+                                    colors,
+                                ))
                                 .when_some(error.details.as_deref(), |element, details| {
                                     element.child(detail_line("aria2 details", details, colors))
                                 })
@@ -375,7 +385,7 @@ impl AppShell {
                                     toolbar_icon_button(
                                         "open-task-download",
                                         IconName::Download,
-                                        "Open download",
+                                        self.t("action-open-file"),
                                         if path_actions_available && !path_open_pending {
                                             ToolbarButtonState::Enabled
                                         } else {
@@ -398,7 +408,7 @@ impl AppShell {
                                     toolbar_icon_button(
                                         "open-task-folder",
                                         IconName::FolderDown,
-                                        "Open folder",
+                                        self.t("action-open-folder"),
                                         if path_actions_available && !path_open_pending {
                                             ToolbarButtonState::Enabled
                                         } else {
@@ -416,7 +426,11 @@ impl AppShell {
                                 ),
                         )
                         .when_some(info_hash.as_deref(), |element, hash| {
-                            element.child(detail_line("Info hash", hash, colors))
+                            element.child(detail_line(
+                                self.t("dialog-details-info-hash"),
+                                hash,
+                                colors,
+                            ))
                         })
                         .when(piece_length.is_some() || piece_count.is_some(), |element| {
                             element.child(detail_line(
@@ -432,7 +446,7 @@ impl AppShell {
                         })
                         .when(is_bittorrent, |element| {
                             element.child(detail_line(
-                                "Effective seed limits",
+                                self.t("dialog-details-seed-limits"),
                                 seed_stop_rules,
                                 colors,
                             ))
@@ -441,7 +455,7 @@ impl AppShell {
                     TaskDetailsTab::Files => {
                         if file_count == 0 {
                             drawer_message(
-                                "No files reported",
+                                self.t("dialog-details-no-files"),
                                 "aria2 did not return any file entries for this task.",
                                 colors,
                             )
@@ -508,7 +522,7 @@ impl AppShell {
                         .flex_col()
                         .gap_4()
                         .child(detail_collection_section(
-                            "Sources and mirrors",
+                            self.t("dialog-details-sources"),
                             "No source URIs reported.",
                             uris.into_iter()
                                 .map(|source| render_task_uri(source, colors))
@@ -516,7 +530,7 @@ impl AppShell {
                             colors,
                         ))
                         .child(detail_collection_section(
-                            "Trackers",
+                            self.t("dialog-details-trackers"),
                             "No BitTorrent trackers reported.",
                             trackers
                                 .into_iter()
@@ -525,7 +539,7 @@ impl AppShell {
                             colors,
                         ))
                         .child(detail_collection_section(
-                            "Servers",
+                            self.t("dialog-details-servers"),
                             "No active HTTP, HTTPS, or FTP servers.",
                             servers
                                 .into_iter()
@@ -647,7 +661,7 @@ impl AppShell {
                         toolbar_icon_button(
                             "close-task-details",
                             IconName::X,
-                            "Close details",
+                            self.t("dialog-details-close"),
                             ToolbarButtonState::Enabled,
                             false,
                             None,

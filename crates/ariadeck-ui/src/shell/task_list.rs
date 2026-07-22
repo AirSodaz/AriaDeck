@@ -66,16 +66,43 @@ impl AppShell {
 
         match layout {
             TaskLayoutMode::Wide => header
-                .child(div().flex_1().min_w_0().child("Name"))
-                .child(div().w(px(132.0)).flex_none().child("Progress / ratio"))
-                .child(div().w(px(88.0)).flex_none().child("Down / up"))
-                .child(div().w(px(124.0)).flex_none().child("Size"))
+                .child(div().flex_1().min_w_0().child(self.t("ui-col-name")))
+                .child(
+                    div()
+                        .w(px(132.0))
+                        .flex_none()
+                        .child(self.t("ui-col-progress-ratio")),
+                )
+                .child(
+                    div()
+                        .w(px(88.0))
+                        .flex_none()
+                        .child(self.t("ui-col-down-up")),
+                )
+                .child(div().w(px(124.0)).flex_none().child(self.t("ui-col-size")))
                 .child(div().w(px(72.0)).flex_none().child("ETA / seed"))
-                .child(div().w(px(86.0)).flex_none().text_center().child("Status")),
+                .child(
+                    div()
+                        .w(px(86.0))
+                        .flex_none()
+                        .text_center()
+                        .child(self.t("ui-col-status")),
+                ),
             TaskLayoutMode::Compact => header
-                .child(div().flex_1().min_w_0().child("Task"))
-                .child(div().w(px(112.0)).flex_none().child("Progress"))
-                .child(div().w(px(78.0)).flex_none().text_center().child("Status")),
+                .child(div().flex_1().min_w_0().child(self.t("ui-col-task")))
+                .child(
+                    div()
+                        .w(px(112.0))
+                        .flex_none()
+                        .child(self.t("ui-col-progress")),
+                )
+                .child(
+                    div()
+                        .w(px(78.0))
+                        .flex_none()
+                        .text_center()
+                        .child(self.t("ui-col-status")),
+                ),
         }
     }
 
@@ -607,7 +634,7 @@ impl AppShell {
                     .text_xs()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(colors.text_muted)
-                    .child("Sort by"),
+                    .child(self.t("ui-sort-by")),
             );
 
         for key in WorkspaceSortKey::ALL {
@@ -1276,7 +1303,8 @@ impl AppShell {
         } else {
             format_eta(task.eta_seconds)
         };
-        let status_badge = task_status_badge(task.status, colors);
+        let status_badge =
+            task_status_badge(task.status, self.t(task.status.message_key()), colors);
         let row = div()
             .id(stable_id)
             .role(Role::ListItem)

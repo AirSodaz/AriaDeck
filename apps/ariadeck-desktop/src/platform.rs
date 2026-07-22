@@ -36,12 +36,30 @@ pub struct SystemTray {
 
 impl SystemTray {
     /// Build a tray icon. Call only from the UI thread after the event loop is running.
+    #[allow(dead_code)]
     pub fn try_new() -> Result<Self, String> {
+        Self::try_new_with_labels(
+            "Show AriaDeck",
+            "Pause all",
+            "Resume all",
+            "Quit AriaDeck",
+            "AriaDeck",
+        )
+    }
+
+    /// Build a tray icon with localized menu labels.
+    pub fn try_new_with_labels(
+        show_label: &str,
+        pause_all_label: &str,
+        resume_all_label: &str,
+        quit_label: &str,
+        tooltip: &str,
+    ) -> Result<Self, String> {
         let menu = Menu::new();
-        let show = MenuItem::new("Show AriaDeck", true, None);
-        let pause_all = MenuItem::new("Pause all", true, None);
-        let resume_all = MenuItem::new("Resume all", true, None);
-        let quit = MenuItem::new("Quit AriaDeck", true, None);
+        let show = MenuItem::new(show_label, true, None);
+        let pause_all = MenuItem::new(pause_all_label, true, None);
+        let resume_all = MenuItem::new(resume_all_label, true, None);
+        let quit = MenuItem::new(quit_label, true, None);
         menu.append(&show).map_err(|error| error.to_string())?;
         menu.append(&PredefinedMenuItem::separator())
             .map_err(|error| error.to_string())?;
@@ -62,7 +80,7 @@ impl SystemTray {
         let icon = tray_icon_image()?;
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip("AriaDeck")
+            .with_tooltip(tooltip)
             .with_icon(icon)
             .with_menu_on_left_click(false)
             .build()

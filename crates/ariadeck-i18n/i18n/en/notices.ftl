@@ -1,0 +1,94 @@
+## In-app notices and command feedback (English)
+
+notice-select-task-first = Select a visible task first.
+notice-select-task-details = Select a visible task to open its details.
+notice-no-copyable-source = This task has no copyable source.
+notice-source-copied = Source copied to the clipboard.
+notice-gid-copied = Task GID copied to the clipboard.
+notice-gid-copied-short = GID copied.
+notice-opening-path = Opening local path…
+notice-engine-not-ready = The engine is not ready for commands.
+notice-settings-appearance = Appearance updated.
+notice-settings-directory = Download directory saved.
+notice-settings-proxy = Download proxy settings saved.
+notice-settings-speed = Speed limits saved.
+notice-settings-transfer-policy = Transfer policy saved.
+notice-settings-transfers = Transfer settings saved.
+notice-settings-notifications = Notification preferences saved.
+notice-settings-platform = Window and tray preferences saved.
+
+# Tray
+tray-show = Show AriaDeck
+tray-pause-all = Pause all
+tray-resume-all = Resume all
+tray-quit = Quit AriaDeck
+
+# Profiles
+notice-profile-select = Select a profile to activate.
+notice-profile-already-active = That profile is already active.
+notice-profile-switching = Switching profile…
+notice-profile-at-least-one = At least one profile is required.
+notice-profile-active-must-exist = The active profile must exist in the catalog.
+notice-profile-saving = Saving profiles…
+notice-profile-saved = Profiles saved.
+notice-profile-gone = That profile is no longer in the catalog.
+notice-profile-none-editing = No profile is open for editing.
+notice-profile-name-empty = Profile name cannot be empty.
+notice-profile-remote-endpoint = Remote profiles need a ws/wss endpoint.
+notice-profile-at-least-remain = At least one profile must remain.
+notice-profile-enter-aria2c = Enter a path to an aria2c executable first.
+notice-connect-before-add = Connect and finish synchronization before adding a download.
+notice-enter-url = Enter at least one URL or magnet link.
+notice-choose-metadata = Choose at least one Torrent or Metalink file.
+
+notice-filename-empty = Enter a filename.
+notice-filename-dot = A filename cannot be "." or "..".
+notice-filename-separators = Use a filename without path separators.
+notice-stale-session = The aria2 session changed. Review current state before submitting again.
+notice-refresh-details = Could not refresh task details: { $summary }
+notice-outcome-unknown = Outcome unknown · { $summary }
+
+# Command progress / success
+cmd-pause-all-progress = Pausing all tasks…
+cmd-force-pause-all-progress = Force-pausing all tasks…
+cmd-resume-all-progress = Resuming all tasks…
+cmd-pause-all-success = All eligible tasks paused.
+cmd-force-pause-all-success = All eligible tasks force-paused.
+cmd-resume-all-success = All paused tasks resumed.
+cmd-batch-pause-progress = Pausing selected tasks…
+cmd-batch-force-pause-progress = Force-pausing selected tasks…
+cmd-batch-resume-progress = Resuming selected tasks…
+cmd-batch-retry-progress = Creating new tasks from selected failed tasks…
+cmd-batch-remove-progress = Removing selected tasks…
+cmd-batch-force-remove-progress = Force-removing selected tasks…
+cmd-batch-remove-files-progress = Removing selected tasks and moving local files to the Recycle Bin…
+cmd-pause-progress = Pausing task…
+cmd-force-pause-progress = Force-pausing task…
+cmd-resume-progress = Resuming task…
+cmd-queue-top-progress = Moving task to the top of the queue…
+cmd-queue-up-progress = Moving task up in the queue…
+cmd-queue-down-progress = Moving task down in the queue…
+cmd-queue-bottom-progress = Moving task to the bottom of the queue…
+cmd-retry-progress = Creating a new task from the failed source…
+cmd-output-name-progress = Updating output name…
+cmd-speed-limit-progress = Updating speed limits…
+cmd-connection-policy-progress = Updating connection policy…
+cmd-options-progress = Updating task options…
+cmd-remove-progress = Removing task…
+cmd-force-remove-progress = Force-removing task…
+cmd-remove-files-progress = Removing task and moving local files to the Recycle Bin…
+cmd-pause-success = Task paused.
+cmd-force-pause-success = Task force-paused.
+cmd-resume-success = Task resumed.
+cmd-queue-top-success = Task moved to the top of the queue.
+cmd-queue-up-success = Task moved up in the queue.
+cmd-queue-down-success = Task moved down in the queue.
+cmd-queue-bottom-success = Task moved to the bottom of the queue.
+cmd-retry-success = New retry task created; the failed result was kept.
+cmd-output-name-success = Output name updated.
+cmd-speed-limit-success = Speed limits updated for this task.
+cmd-connection-policy-success = Connection policy updated for this task.
+cmd-options-success = Task options updated.
+cmd-remove-success = Task removed from aria2; downloaded files were kept.
+cmd-force-remove-success = Task force-removed.
+cmd-remove-files-success = Task removed and local files moved to the Recycle Bin.

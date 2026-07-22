@@ -85,6 +85,21 @@ impl TaskStatusView {
     }
 
     #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::Active => "task-status-active",
+            Self::Seeding => "task-status-seeding",
+            Self::Waiting => "task-status-waiting",
+            Self::Paused => "task-status-paused",
+            Self::Complete => "task-status-complete",
+            Self::Failed => "task-status-failed",
+            Self::Verifying => "task-status-verifying",
+            Self::Removed => "task-status-removed",
+            Self::Unknown => "task-status-unknown",
+        }
+    }
+
+    #[must_use]
     pub const fn can_pause(self) -> bool {
         matches!(
             self,
@@ -278,6 +293,19 @@ impl ConnectionView {
     }
 
     #[must_use]
+    pub const fn message_key(&self) -> &'static str {
+        match self {
+            Self::Disconnected => "connection-offline",
+            Self::Connecting => "connection-connecting",
+            Self::Authenticating => "connection-authenticating",
+            Self::Synchronizing => "connection-synchronizing",
+            Self::Connected => "connection-connected",
+            Self::Reconnecting { .. } => "connection-reconnecting",
+            Self::Failed { .. } => "connection-failed",
+        }
+    }
+
+    #[must_use]
     pub const fn is_connected(&self) -> bool {
         matches!(self, Self::Connected)
     }
@@ -320,6 +348,17 @@ impl EngineHealthView {
             Self::Running { .. } => "Local engine recovered",
             Self::Restarting { .. } => "Local engine restarting",
             Self::Failed { .. } => "Local engine stopped",
+        }
+    }
+
+    #[must_use]
+    pub const fn message_key(&self) -> &'static str {
+        match self {
+            Self::External => "engine-external",
+            Self::Running { restarts: 0 } => "engine-running",
+            Self::Running { .. } => "engine-recovered",
+            Self::Restarting { .. } => "engine-restarting",
+            Self::Failed { .. } => "engine-stopped",
         }
     }
 }
@@ -535,6 +574,24 @@ impl GlobalTaskCommandView {
             Self::ResumeAll => "All paused tasks resumed.",
         }
     }
+
+    #[must_use]
+    pub const fn progress_message_key(self) -> &'static str {
+        match self {
+            Self::PauseAll => "cmd-pause-all-progress",
+            Self::ForcePauseAll => "cmd-force-pause-all-progress",
+            Self::ResumeAll => "cmd-resume-all-progress",
+        }
+    }
+
+    #[must_use]
+    pub const fn success_message_key(self) -> &'static str {
+        match self {
+            Self::PauseAll => "cmd-pause-all-success",
+            Self::ForcePauseAll => "cmd-force-pause-all-success",
+            Self::ResumeAll => "cmd-resume-all-success",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -561,6 +618,19 @@ impl BatchTaskCommandView {
             Self::RemoveTaskAndFiles => {
                 "Removing selected tasks and moving local files to the Recycle Bin..."
             }
+        }
+    }
+
+    #[must_use]
+    pub const fn progress_message_key(self) -> &'static str {
+        match self {
+            Self::Pause => "cmd-batch-pause-progress",
+            Self::ForcePause => "cmd-batch-force-pause-progress",
+            Self::Resume => "cmd-batch-resume-progress",
+            Self::Retry => "cmd-batch-retry-progress",
+            Self::RemoveTask => "cmd-batch-remove-progress",
+            Self::ForceRemoveTask => "cmd-batch-force-remove-progress",
+            Self::RemoveTaskAndFiles => "cmd-batch-remove-files-progress",
         }
     }
 
@@ -603,6 +673,27 @@ impl TaskCommandView {
     }
 
     #[must_use]
+    pub const fn progress_message_key(&self) -> &'static str {
+        match self {
+            Self::Pause => "cmd-pause-progress",
+            Self::ForcePause => "cmd-force-pause-progress",
+            Self::Resume => "cmd-resume-progress",
+            Self::MoveToQueueTop => "cmd-queue-top-progress",
+            Self::MoveUpInQueue => "cmd-queue-up-progress",
+            Self::MoveDownInQueue => "cmd-queue-down-progress",
+            Self::MoveToQueueBottom => "cmd-queue-bottom-progress",
+            Self::Retry => "cmd-retry-progress",
+            Self::SetOutputName { .. } => "cmd-output-name-progress",
+            Self::SetSpeedLimit { .. } => "cmd-speed-limit-progress",
+            Self::SetConnectionPolicy { .. } => "cmd-connection-policy-progress",
+            Self::SetOptions { .. } => "cmd-options-progress",
+            Self::RemoveTask => "cmd-remove-progress",
+            Self::ForceRemoveTask => "cmd-force-remove-progress",
+            Self::RemoveTaskAndFiles => "cmd-remove-files-progress",
+        }
+    }
+
+    #[must_use]
     pub const fn success_label(&self) -> &'static str {
         match self {
             Self::Pause => "Task paused.",
@@ -620,6 +711,27 @@ impl TaskCommandView {
             Self::RemoveTask => "Task removed from aria2; downloaded files were kept.",
             Self::ForceRemoveTask => "Task force-removed from aria2; downloaded files were kept.",
             Self::RemoveTaskAndFiles => "Task removed; local files were moved to the Recycle Bin.",
+        }
+    }
+
+    #[must_use]
+    pub const fn success_message_key(&self) -> &'static str {
+        match self {
+            Self::Pause => "cmd-pause-success",
+            Self::ForcePause => "cmd-force-pause-success",
+            Self::Resume => "cmd-resume-success",
+            Self::MoveToQueueTop => "cmd-queue-top-success",
+            Self::MoveUpInQueue => "cmd-queue-up-success",
+            Self::MoveDownInQueue => "cmd-queue-down-success",
+            Self::MoveToQueueBottom => "cmd-queue-bottom-success",
+            Self::Retry => "cmd-retry-success",
+            Self::SetOutputName { .. } => "cmd-output-name-success",
+            Self::SetSpeedLimit { .. } => "cmd-speed-limit-success",
+            Self::SetConnectionPolicy { .. } => "cmd-connection-policy-success",
+            Self::SetOptions { .. } => "cmd-options-success",
+            Self::RemoveTask => "cmd-remove-success",
+            Self::ForceRemoveTask => "cmd-force-remove-success",
+            Self::RemoveTaskAndFiles => "cmd-remove-files-success",
         }
     }
 }
@@ -882,6 +994,24 @@ impl OperationErrorView {
     pub fn outcome_unknown(&self) -> bool {
         self.code == "rpc.command_outcome_unknown"
     }
+
+    /// Map stable application error codes to Fluent message ids.
+    #[must_use]
+    pub fn message_key(&self) -> String {
+        format!("error-{}", self.code.replace('.', "-"))
+    }
+
+    /// Localized summary: catalog translation when present, else engine/app English summary.
+    #[must_use]
+    pub fn localized_summary(&self, translator: &crate::Translator) -> String {
+        let key = self.message_key();
+        let translated = translator.t(&key);
+        if translated == key {
+            self.summary.clone()
+        } else {
+            translated
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1074,6 +1204,37 @@ impl ColorSchemeView {
             Self::System => "System",
             Self::Light => "Light",
             Self::Dark => "Dark",
+        }
+    }
+
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::System => "settings-theme-system",
+            Self::Light => "settings-theme-light",
+            Self::Dark => "settings-theme-dark",
+        }
+    }
+}
+
+/// Display language preference projected for settings UI.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LanguagePreferenceView {
+    #[default]
+    System,
+    English,
+    ChineseSimplified,
+}
+
+impl LanguagePreferenceView {
+    pub const ALL: [Self; 3] = [Self::System, Self::English, Self::ChineseSimplified];
+
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::System => "language-system",
+            Self::English => "language-english",
+            Self::ChineseSimplified => "language-chinese-simplified",
         }
     }
 }
@@ -1676,6 +1837,7 @@ pub struct CoreCommandResultView {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SettingsView {
     pub color_scheme: ColorSchemeView,
+    pub language: LanguagePreferenceView,
     pub download_directory: String,
     pub download_proxy: DownloadProxySettingsView,
     pub speed_limits: SpeedLimitSettingsView,
@@ -1817,6 +1979,18 @@ impl WorkspaceFilter {
             Self::Paused => "Paused",
             Self::Completed => "Completed",
             Self::Failed => "Failed",
+        }
+    }
+
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::All => "filter-all",
+            Self::Active => "filter-active",
+            Self::Waiting => "filter-waiting",
+            Self::Paused => "filter-paused",
+            Self::Completed => "filter-completed",
+            Self::Failed => "filter-failed",
         }
     }
 

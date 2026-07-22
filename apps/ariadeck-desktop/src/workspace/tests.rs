@@ -1809,6 +1809,7 @@ async fn run_file_removal(
 fn settings_mapping_preserves_theme_and_download_directory() {
     let settings = SettingsView {
         color_scheme: ColorSchemeView::Light,
+        language: LanguagePreferenceView::default(),
         download_directory: "D:/Transfers".into(),
         ..SettingsView::default()
     };
@@ -1915,6 +1916,7 @@ fn settings_mapping_allocates_a_credential_reference_without_exposing_the_passwo
     let current = AppSettings::new("D:/Downloads");
     let settings = SettingsView {
         color_scheme: ColorSchemeView::Dark,
+        language: LanguagePreferenceView::default(),
         download_directory: "D:/Downloads".into(),
         download_proxy: DownloadProxySettingsView {
             mode: ProxyModeView::Manual,
@@ -2056,6 +2058,7 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
     );
     let first = AppSettings {
         color_scheme: ColorScheme::Dark,
+        language: LanguagePreference::default(),
         download_directory: root.path().join("first"),
         download_proxy: DownloadProxySettings::default(),
         speed_limits: SpeedLimitSettings::default(),
@@ -2066,6 +2069,7 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
     };
     let second = AppSettings {
         color_scheme: ColorScheme::Light,
+        language: LanguagePreference::default(),
         download_directory: root.path().join("second"),
         download_proxy: DownloadProxySettings::default(),
         speed_limits: SpeedLimitSettings::default(),
@@ -2128,6 +2132,7 @@ fn external_engine_settings_do_not_touch_the_desktop_filesystem() {
     let remote_path = root.path().join("remote-engine-only");
     let settings = AppSettings {
         color_scheme: ColorScheme::Dark,
+        language: LanguagePreference::default(),
         download_directory: remote_path.clone(),
         download_proxy: DownloadProxySettings::default(),
         speed_limits: SpeedLimitSettings::default(),

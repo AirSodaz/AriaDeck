@@ -15,11 +15,11 @@ impl AppShell {
     pub fn request_switch_profile(&mut self, profile_id: String, cx: &mut Context<Self>) {
         let profile_id = profile_id.trim().to_owned();
         if profile_id.is_empty() {
-            self.show_notice("Select a profile to activate.", true, cx);
+            self.show_notice(self.t("notice-profile-select"), true, cx);
             return;
         }
         if profile_id == self.profiles.active_profile_id {
-            self.show_notice("That profile is already active.", false, cx);
+            self.show_notice(self.t("notice-profile-already-active"), false, cx);
             return;
         }
         if !self
@@ -36,7 +36,7 @@ impl AppShell {
             return;
         }
         let request_id = self.allocate_request_id();
-        self.show_notice("Switching profile...", false, cx);
+        self.show_notice(self.t("notice-profile-switching"), false, cx);
         cx.emit(AppShellEvent::SwitchProfileRequested(
             SwitchProfileRequestView {
                 request_id,
@@ -73,7 +73,7 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         if catalog.profiles.is_empty() {
-            self.show_notice("At least one profile is required.", true, cx);
+            self.show_notice(self.t("notice-profile-at-least-one"), true, cx);
             return;
         }
         if !catalog
@@ -81,12 +81,12 @@ impl AppShell {
             .iter()
             .any(|profile| profile.profile_id == catalog.active_profile_id)
         {
-            self.show_notice("The active profile must exist in the catalog.", true, cx);
+            self.show_notice(self.t("notice-profile-active-must-exist"), true, cx);
             return;
         }
         let request_id = self.allocate_request_id();
         let secret_updates = self.settings_page.profile_secret_updates.clone();
-        self.show_notice("Saving profiles...", false, cx);
+        self.show_notice(self.t("notice-profile-saving"), false, cx);
         cx.emit(AppShellEvent::SaveProfileCatalogRequested(
             SaveProfileCatalogRequestView {
                 request_id,
@@ -110,7 +110,7 @@ impl AppShell {
                 self.settings_inputs.profile_secret.update(cx, |input, cx| {
                     input.set_text(String::new(), cx);
                 });
-                self.show_notice("Profiles saved.", false, cx);
+                self.show_notice(self.t("notice-profile-saved"), false, cx);
             }
             SaveProfileCatalogOutcomeView::Failure(error) => {
                 self.show_notice(error.summary, true, cx);
@@ -170,7 +170,7 @@ impl AppShell {
             .find(|profile| profile.profile_id == profile_id)
             .cloned()
         else {
-            self.show_notice("That profile is no longer in the catalog.", true, cx);
+            self.show_notice(self.t("notice-profile-gone"), true, cx);
             return;
         };
         self.settings_page.editing_profile_id = Some(profile.profile_id);
@@ -211,7 +211,7 @@ impl AppShell {
 
     pub(crate) fn apply_profile_editor(&mut self, cx: &mut Context<Self>) {
         let Some(profile_id) = self.settings_page.editing_profile_id.clone() else {
-            self.show_notice("No profile is open for editing.", true, cx);
+            self.show_notice(self.t("notice-profile-none-editing"), true, cx);
             return;
         };
         let name = self
@@ -222,7 +222,7 @@ impl AppShell {
             .trim()
             .to_owned();
         if name.is_empty() {
-            self.show_notice("Profile name cannot be empty.", true, cx);
+            self.show_notice(self.t("notice-profile-name-empty"), true, cx);
             return;
         }
         let kind = self.settings_page.draft_profile_kind;
@@ -248,7 +248,7 @@ impl AppShell {
             .trim()
             .to_owned();
         if kind == ProfileKindView::RemoteRpc && endpoint.is_empty() {
-            self.show_notice("Remote profiles need a ws/wss endpoint.", true, cx);
+            self.show_notice(self.t("notice-profile-remote-endpoint"), true, cx);
             return;
         }
         let Some(profile) = self
@@ -257,7 +257,7 @@ impl AppShell {
             .iter_mut()
             .find(|profile| profile.profile_id == profile_id)
         else {
-            self.show_notice("That profile is no longer in the catalog.", true, cx);
+            self.show_notice(self.t("notice-profile-gone"), true, cx);
             self.settings_page.editing_profile_id = None;
             cx.notify();
             return;
@@ -330,7 +330,7 @@ impl AppShell {
 
     pub(crate) fn request_remove_profile(&mut self, profile_id: String, cx: &mut Context<Self>) {
         if self.profiles.profiles.len() <= 1 {
-            self.show_notice("At least one profile must remain.", true, cx);
+            self.show_notice(self.t("notice-profile-at-least-remain"), true, cx);
             return;
         }
         let Some(profile) = self
@@ -339,7 +339,7 @@ impl AppShell {
             .iter()
             .find(|profile| profile.profile_id == profile_id)
         else {
-            self.show_notice("That profile is no longer in the catalog.", true, cx);
+            self.show_notice(self.t("notice-profile-gone"), true, cx);
             return;
         };
         self.settings_page.pending_profile_delete = Some(PendingProfileDelete {
@@ -363,7 +363,7 @@ impl AppShell {
 
     pub(crate) fn remove_profile(&mut self, profile_id: String, cx: &mut Context<Self>) {
         if self.profiles.profiles.len() <= 1 {
-            self.show_notice("At least one profile must remain.", true, cx);
+            self.show_notice(self.t("notice-profile-at-least-remain"), true, cx);
             return;
         }
         let Some(index) = self
@@ -372,7 +372,7 @@ impl AppShell {
             .iter()
             .position(|profile| profile.profile_id == profile_id)
         else {
-            self.show_notice("That profile is no longer in the catalog.", true, cx);
+            self.show_notice(self.t("notice-profile-gone"), true, cx);
             return;
         };
         let removed = self.profiles.profiles.remove(index);
@@ -492,7 +492,7 @@ impl AppShell {
             .trim()
             .to_owned();
         if path.is_empty() {
-            self.show_notice("Enter a path to an aria2c executable first.", true, cx);
+            self.show_notice(self.t("notice-profile-enter-aria2c"), true, cx);
             return;
         }
         self.request_core_command(CoreCommandView::Import { path }, cx);
@@ -507,7 +507,7 @@ impl AppShell {
             .trim()
             .to_owned();
         if path.is_empty() {
-            self.show_notice("Enter a path to an aria2c executable first.", true, cx);
+            self.show_notice(self.t("notice-profile-enter-aria2c"), true, cx);
             return;
         }
         self.request_core_command(CoreCommandView::Link { path }, cx);

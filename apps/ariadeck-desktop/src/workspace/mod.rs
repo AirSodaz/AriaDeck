@@ -31,16 +31,18 @@ use ariadeck_engine::{
     LocalEngineHealthHandle, LocalEngineSupervisor, LocalTaskFileGateway, ProfileCatalog,
     ProfileEntry, ProfileKind,
 };
+use ariadeck_i18n::{LocaleId, Translator};
 use ariadeck_rpc::{
     Aria2Client, AuthenticatedTransport, RpcSecret, RpcSyncConnector, WebSocketConfig,
     WebSocketTransport,
 };
 use ariadeck_settings::{
     AppSettings, CloseBehavior, ColorScheme, DownloadProxyMode, DownloadProxySettings,
-    FileAllocationSetting, JsonSettingsStore, JsonWindowGeometryStore, ListFilterPreference,
-    ListSortDirectionPreference, ListSortKeyPreference, NotificationSettings, NotificationVolume,
-    PlatformSettings, ProxyCredentialRef, ProxyCredentialStore, SpeedLimitSettings,
-    SystemProxyCredentialStore, TransferPolicySettings, UiPreferences, WindowGeometry,
+    FileAllocationSetting, JsonSettingsStore, JsonWindowGeometryStore, LanguagePreference,
+    ListFilterPreference, ListSortDirectionPreference, ListSortKeyPreference, NotificationSettings,
+    NotificationVolume, PlatformSettings, ProxyCredentialRef, ProxyCredentialStore,
+    SpeedLimitSettings, SystemProxyCredentialStore, TransferPolicySettings, UiPreferences,
+    WindowGeometry,
 };
 use ariadeck_ui::{
     AddDownloadAdvancedOptionsView, AddDownloadItemResultView, AddDownloadMetadataFileView,
@@ -55,20 +57,21 @@ use ariadeck_ui::{
     CoreRegistryView, CoreSourceView, DownloadProxySettingsView, DownloadRowView,
     EngineCapabilitiesView, EngineHealthView, EngineSessionView, FileAllocationView,
     FileConflictPolicyView, GlobalTaskCommandRequestView, GlobalTaskCommandResultView,
-    GlobalTaskCommandView, NotificationSettingsView, NotificationVolumeView, OperationErrorView,
-    PlatformSettingsView, ProfileCatalogView, ProfileEntryView, ProfileKindView,
-    ProfileRpcSecretUpdateView, ProxyModeView, ProxyPasswordUpdateView,
-    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
-    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView, SwitchProfileOutcomeView,
-    SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
-    TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
-    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
-    TaskIdentity, TaskNameStateView, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
-    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
-    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
-    TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
-    WorkspaceSortDirection, WorkspaceSortKey, format_speed_limit_field,
+    GlobalTaskCommandView, LanguagePreferenceView, NotificationSettingsView,
+    NotificationVolumeView, OperationErrorView, PlatformSettingsView, ProfileCatalogView,
+    ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView,
+    ProxyPasswordUpdateView, SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView,
+    SaveProfileCatalogResultView, SettingsSaveOutcomeView, SettingsSaveRequestView,
+    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView,
+    StoppedHistoryView, SwitchProfileOutcomeView, SwitchProfileRequestView,
+    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
+    TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
+    TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
+    TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
+    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TransferPolicySettingsView,
+    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    format_speed_limit_field,
 };
 use data_encoding::BASE32_NOPAD;
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
@@ -459,7 +462,7 @@ impl DesktopRoot {
         }
 
         let tray = if settings.platform.show_tray_icon {
-            match SystemTray::try_new() {
+            match tray_from_settings(&settings) {
                 Ok(tray) => Some(tray),
                 Err(error) => {
                     tracing::warn!(%error, "system tray icon could not be created");
@@ -688,7 +691,7 @@ impl DesktopRoot {
     fn sync_tray_with_settings(&mut self, cx: &mut Context<Self>) {
         let want_tray = self.settings.platform.show_tray_icon;
         match (want_tray, self.tray.is_some()) {
-            (true, false) => match SystemTray::try_new() {
+            (true, false) => match tray_from_settings(&self.settings) {
                 Ok(tray) => self.tray = Some(tray),
                 Err(error) => tracing::warn!(%error, "system tray icon could not be created"),
             },
@@ -1461,3 +1464,19 @@ async fn execute_add_download(
 
 #[cfg(test)]
 mod tests;
+
+fn tray_from_settings(settings: &AppSettings) -> Result<SystemTray, String> {
+    let locale = match settings.language {
+        LanguagePreference::System => LocaleId::from_system_env(),
+        LanguagePreference::En => LocaleId::En,
+        LanguagePreference::ZhCn => LocaleId::ZhCn,
+    };
+    let translator = Translator::new(locale);
+    SystemTray::try_new_with_labels(
+        &translator.t("tray-show"),
+        &translator.t("tray-pause-all"),
+        &translator.t("tray-resume-all"),
+        &translator.t("tray-quit"),
+        &translator.t("app-name"),
+    )
+}

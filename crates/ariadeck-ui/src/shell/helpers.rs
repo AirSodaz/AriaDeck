@@ -195,23 +195,24 @@ pub(crate) fn speed_chart_legend(
 }
 
 pub(crate) fn toolbar_icon_button(
-    id: &'static str,
+    id: impl Into<ElementId>,
     icon: IconName,
-    label: &'static str,
+    label: impl Into<SharedString>,
     state: ToolbarButtonState,
     danger: bool,
     shortcut: Option<&'static str>,
     colors: crate::ThemeColors,
 ) -> Stateful<Div> {
+    let label = label.into();
     let enabled = state == ToolbarButtonState::Enabled;
     let loading = state == ToolbarButtonState::Loading;
     let tooltip = shortcut.map_or_else(
-        || Tooltip::new(label),
-        |shortcut| Tooltip::new(label).meta(shortcut),
+        || Tooltip::new(label.clone()),
+        |shortcut| Tooltip::new(label.clone()).meta(shortcut),
     );
     IconButton::new(id, icon)
         .aria_label(if enabled || loading {
-            label.to_owned()
+            label.to_string()
         } else {
             format!("{label} unavailable")
         })
@@ -448,13 +449,15 @@ pub(crate) fn settings_labeled_input(
 
 pub(crate) fn settings_path_field_row(
     input: Entity<TextField>,
-    browse_id: &'static str,
-    browse_label: &'static str,
-    browse_aria: &'static str,
+    browse_id: impl Into<ElementId>,
+    browse_label: impl Into<SharedString>,
+    browse_aria: impl Into<SharedString>,
     target: PathPickTarget,
     colors: crate::ThemeColors,
     cx: &mut Context<AppShell>,
 ) -> Div {
+    let browse_label = browse_label.into();
+    let browse_aria = browse_aria.into();
     div()
         .flex()
         .items_center()
@@ -727,7 +730,7 @@ pub(crate) fn task_overview_summary(task: &DownloadRowView, colors: crate::Theme
                         .text_color(colors.text_secondary)
                         .child(if seeding { "Share ratio" } else { "Progress" }),
                 )
-                .child(task_status_badge(task.status, colors)),
+                .child(task_status_badge(task.status, task.status.label(), colors)),
         )
         .child(
             div()
@@ -785,10 +788,12 @@ pub(crate) fn task_overview_summary(task: &DownloadRowView, colors: crate::Theme
 }
 
 pub(crate) fn drawer_message(
-    title: &'static str,
-    detail: &'static str,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
     colors: crate::ThemeColors,
 ) -> AnyElement {
+    let title = title.into();
+    let detail = detail.into();
     div()
         .flex_1()
         .min_h_0()
@@ -810,10 +815,11 @@ pub(crate) fn drawer_message(
 }
 
 pub(crate) fn detail_line(
-    label: &'static str,
+    label: impl Into<SharedString>,
     value: impl Into<SharedString>,
     colors: crate::ThemeColors,
 ) -> Div {
+    let label = label.into();
     div()
         .flex()
         .items_start()
@@ -837,11 +843,12 @@ pub(crate) fn detail_line(
 }
 
 pub(crate) fn detail_line_with_action(
-    label: &'static str,
+    label: impl Into<SharedString>,
     value: impl Into<SharedString>,
     action: impl IntoElement,
     colors: crate::ThemeColors,
 ) -> Div {
+    let label = label.into();
     div()
         .flex()
         .items_center()
@@ -868,11 +875,13 @@ pub(crate) fn detail_line_with_action(
 }
 
 pub(crate) fn detail_collection_section(
-    title: &'static str,
-    empty_message: &'static str,
+    title: impl Into<SharedString>,
+    empty_message: impl Into<SharedString>,
     rows: Vec<AnyElement>,
     colors: crate::ThemeColors,
 ) -> Div {
+    let title = title.into();
+    let empty_message = empty_message.into();
     let count = rows.len();
     div()
         .flex()
@@ -1157,11 +1166,11 @@ pub(crate) fn task_command_label(command: &TaskCommandView) -> &'static str {
 
 pub(crate) fn output_name_validation_error(output_name: &str) -> Option<&'static str> {
     if output_name.is_empty() {
-        Some("Enter a filename.")
+        Some("notice-filename-empty")
     } else if output_name == "." || output_name == ".." {
-        Some("A filename cannot be '.' or '..'.")
+        Some("notice-filename-dot")
     } else if output_name.contains(['/', '\\', '\0']) {
-        Some("Use a filename without path separators.")
+        Some("notice-filename-separators")
     } else {
         None
     }
@@ -1249,7 +1258,11 @@ pub(crate) fn task_table_value(width: f32, value: String, colors: crate::ThemeCo
         .child(value)
 }
 
-pub(crate) fn task_status_badge(status: TaskStatusView, colors: crate::ThemeColors) -> Div {
+pub(crate) fn task_status_badge(
+    status: TaskStatusView,
+    label: impl Into<SharedString>,
+    colors: crate::ThemeColors,
+) -> Div {
     let color = task_status_color(status, colors);
     // Icon + text so status is never color-only (ACCESS-001).
     // Visible label is enough for SR; parent task row already has a full aria_label.
@@ -1274,10 +1287,63 @@ pub(crate) fn task_status_badge(status: TaskStatusView, colors: crate::ThemeColo
                 .size(IconSize::XSmall)
                 .color(color),
         )
-        .child(status.label())
+        .child(label.into())
 }
 
 pub(crate) fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
     color.a = alpha;
     color
+}
+
+/// Owned-string variant of [`settings_card`] for translated titles.
+pub(crate) fn settings_card_owned(
+    title: impl Into<SharedString>,
+    colors: crate::ThemeColors,
+) -> Div {
+    let title = title.into();
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .px_4()
+        .py_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.elevated_surface)
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors.text_primary)
+                .child(title),
+        )
+}
+
+/// Owned-string variant of [`settings_row`] for translated labels.
+pub(crate) fn settings_row_owned(
+    label: impl Into<SharedString>,
+    description: Option<impl Into<SharedString>>,
+    control: impl IntoElement,
+    colors: crate::ThemeColors,
+) -> Div {
+    let label = label.into();
+    let description = description.map(Into::into);
+    div()
+        .flex()
+        .items_center()
+        .gap_4()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .child(div().text_sm().text_color(colors.text_primary).child(label))
+                .when_some(description, |col, desc| {
+                    col.child(div().text_xs().text_color(colors.text_muted).child(desc))
+                }),
+        )
+        .child(div().flex_none().child(control))
 }

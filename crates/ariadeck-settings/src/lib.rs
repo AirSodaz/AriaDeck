@@ -12,7 +12,7 @@ use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 7;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 8;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -22,6 +22,19 @@ pub enum ColorScheme {
     System,
     Light,
     Dark,
+}
+
+/// Display language preference (i18n).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LanguagePreference {
+    /// Follow the operating-system UI language when possible.
+    #[default]
+    System,
+    /// English (`en`).
+    En,
+    /// Simplified Chinese (`zh-CN`).
+    ZhCn,
 }
 
 /// Last-used download list filter (UI-001). Not a named-filter library.
@@ -419,6 +432,7 @@ impl DownloadProxySettings {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppSettings {
     pub color_scheme: ColorScheme,
+    pub language: LanguagePreference,
     pub download_directory: PathBuf,
     pub download_proxy: DownloadProxySettings,
     pub speed_limits: SpeedLimitSettings,
@@ -433,6 +447,7 @@ impl AppSettings {
     pub fn new(download_directory: impl Into<PathBuf>) -> Self {
         Self {
             color_scheme: ColorScheme::default(),
+            language: LanguagePreference::default(),
             download_directory: download_directory.into(),
             download_proxy: DownloadProxySettings::default(),
             speed_limits: SpeedLimitSettings::default(),
@@ -668,11 +683,27 @@ struct SettingsDocumentV6 {
     platform: PlatformSettings,
 }
 
+/// Schema v7 lacked display language preference.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsDocumentV7 {
+    schema_version: u32,
+    color_scheme: ColorScheme,
+    download_directory: PathBuf,
+    download_proxy: DownloadProxySettings,
+    speed_limits: SpeedLimitSettings,
+    transfer_policy: TransferPolicySettings,
+    notifications: NotificationSettings,
+    platform: PlatformSettings,
+    ui: UiPreferences,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SettingsDocument {
     schema_version: u32,
     color_scheme: ColorScheme,
+    language: LanguagePreference,
     download_directory: PathBuf,
     download_proxy: DownloadProxySettings,
     speed_limits: SpeedLimitSettings,
@@ -687,6 +718,7 @@ impl From<&AppSettings> for SettingsDocument {
         Self {
             schema_version: CURRENT_SETTINGS_SCHEMA_VERSION,
             color_scheme: settings.color_scheme,
+            language: settings.language,
             download_directory: settings.download_directory.clone(),
             download_proxy: settings.download_proxy.clone(),
             speed_limits: settings.speed_limits,
@@ -710,6 +742,7 @@ impl TryFrom<SettingsDocument> for AppSettings {
         }
         let settings = Self {
             color_scheme: document.color_scheme,
+            language: document.language,
             download_directory: document.download_directory,
             download_proxy: document.download_proxy,
             speed_limits: document.speed_limits,
@@ -763,6 +796,7 @@ impl JsonSettingsStore {
                 }
                 let settings = AppSettings {
                     color_scheme: document.color_scheme,
+                    language: LanguagePreference::default(),
                     download_directory: document.download_directory,
                     download_proxy: DownloadProxySettings::default(),
                     speed_limits: SpeedLimitSettings::default(),
@@ -785,6 +819,7 @@ impl JsonSettingsStore {
                 }
                 let settings = AppSettings {
                     color_scheme: document.color_scheme,
+                    language: LanguagePreference::default(),
                     download_directory: document.download_directory,
                     download_proxy: document.download_proxy,
                     speed_limits: SpeedLimitSettings::default(),
@@ -807,6 +842,7 @@ impl JsonSettingsStore {
                 }
                 let settings = AppSettings {
                     color_scheme: document.color_scheme,
+                    language: LanguagePreference::default(),
                     download_directory: document.download_directory,
                     download_proxy: document.download_proxy,
                     speed_limits: document.speed_limits,
@@ -829,6 +865,7 @@ impl JsonSettingsStore {
                 }
                 let settings = AppSettings {
                     color_scheme: document.color_scheme,
+                    language: LanguagePreference::default(),
                     download_directory: document.download_directory,
                     download_proxy: document.download_proxy,
                     speed_limits: document.speed_limits,
@@ -851,6 +888,7 @@ impl JsonSettingsStore {
                 }
                 let settings = AppSettings {
                     color_scheme: document.color_scheme,
+                    language: LanguagePreference::default(),
                     download_directory: document.download_directory,
                     download_proxy: document.download_proxy,
                     speed_limits: document.speed_limits,
@@ -873,6 +911,7 @@ impl JsonSettingsStore {
                 }
                 let settings = AppSettings {
                     color_scheme: document.color_scheme,
+                    language: LanguagePreference::default(),
                     download_directory: document.download_directory,
                     download_proxy: document.download_proxy,
                     speed_limits: document.speed_limits,
@@ -880,6 +919,29 @@ impl JsonSettingsStore {
                     notifications: document.notifications,
                     platform: document.platform,
                     ui: UiPreferences::default(),
+                };
+                settings.validate()?;
+                Ok((settings, true))
+            }
+            7 => {
+                let document: SettingsDocumentV7 =
+                    serde_json::from_slice(&bytes).map_err(malformed)?;
+                if document.schema_version != 7 {
+                    return Err(SettingsError::UnsupportedSchemaVersion {
+                        found: document.schema_version,
+                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
+                    });
+                }
+                let settings = AppSettings {
+                    color_scheme: document.color_scheme,
+                    language: LanguagePreference::default(),
+                    download_directory: document.download_directory,
+                    download_proxy: document.download_proxy,
+                    speed_limits: document.speed_limits,
+                    transfer_policy: document.transfer_policy,
+                    notifications: document.notifications,
+                    platform: document.platform,
+                    ui: document.ui,
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1181,6 +1243,7 @@ mod tests {
     fn settings(root: &Path) -> AppSettings {
         AppSettings {
             color_scheme: ColorScheme::Light,
+            language: LanguagePreference::default(),
             download_directory: root.join("downloads"),
             download_proxy: DownloadProxySettings::default(),
             speed_limits: SpeedLimitSettings::default(),
@@ -1205,7 +1268,7 @@ mod tests {
         assert_eq!(store.load().expect("load settings"), expected);
 
         let document = fs::read_to_string(store.path()).expect("read settings JSON");
-        assert!(document.contains("\"schema_version\": 7"));
+        assert!(document.contains("\"schema_version\": 8"));
         assert!(document.contains("\"transfer_policy\""));
         assert!(document.contains("\"notifications\""));
         assert!(document.contains("\"platform\""));
@@ -1245,7 +1308,7 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 7"));
+        assert!(migrated.contains("\"schema_version\": 8"));
         assert!(migrated.contains("\"download_proxy\""));
         assert!(migrated.contains("\"speed_limits\""));
         assert!(migrated.contains("\"transfer_policy\""));
@@ -1281,7 +1344,7 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 7"));
+        assert!(migrated.contains("\"schema_version\": 8"));
         assert!(migrated.contains("\"speed_limits\""));
         assert!(migrated.contains("\"transfer_policy\""));
         assert!(migrated.contains("\"notifications\""));
@@ -1322,7 +1385,7 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 7"));
+        assert!(migrated.contains("\"schema_version\": 8"));
         assert!(migrated.contains("\"transfer_policy\""));
         assert!(migrated.contains("\"max_concurrent_downloads\""));
         assert!(migrated.contains("\"notifications\""));
@@ -1356,7 +1419,7 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 7"));
+        assert!(migrated.contains("\"schema_version\": 8"));
         assert!(migrated.contains("\"notifications\""));
         assert!(migrated.contains("\"notify_on_completion\""));
         assert!(migrated.contains("\"platform\""));
@@ -1393,11 +1456,32 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 7"));
+        assert!(migrated.contains("\"schema_version\": 8"));
         assert!(migrated.contains("\"platform\""));
         assert!(migrated.contains("\"os_notifications\""));
         assert!(migrated.contains("\"close_behavior\""));
         assert!(migrated.contains("\"ui\""));
+    }
+
+    #[test]
+    fn version_seven_document_is_migrated_with_default_language() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        fs::write(
+            store.path(),
+            r#"{"schema_version":7,"color_scheme":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":true,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false},"ui":{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"}}"#,
+        )
+        .expect("seed version seven settings");
+
+        let loaded = store
+            .load_or_initialize(&settings(root.path()))
+            .expect("migrate version seven settings");
+
+        assert_eq!(loaded.settings.language, LanguagePreference::System);
+        assert!(loaded.recovery.is_none());
+        let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
+        assert!(migrated.contains("\"schema_version\": 8"));
+        assert!(migrated.contains("\"language\""));
     }
 
     #[test]
@@ -1418,7 +1502,7 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 7"));
+        assert!(migrated.contains("\"schema_version\": 8"));
         assert!(migrated.contains("\"ui\""));
         assert!(migrated.contains("\"list_filter\""));
     }

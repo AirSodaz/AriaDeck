@@ -1,0 +1,93 @@
+## 应用内通知与命令反馈（简体中文）
+
+notice-select-task-first = 请先选择可见任务。
+notice-select-task-details = 请选择可见任务以查看详情。
+notice-no-copyable-source = 此任务没有可复制的来源。
+notice-source-copied = 来源已复制到剪贴板。
+notice-gid-copied = 任务 GID 已复制到剪贴板。
+notice-gid-copied-short = 已复制 GID。
+notice-opening-path = 正在打开本地路径…
+notice-engine-not-ready = 引擎尚未就绪，无法执行命令。
+notice-settings-appearance = 外观已更新。
+notice-settings-directory = 下载目录已保存。
+notice-settings-proxy = 下载代理设置已保存。
+notice-settings-speed = 速度限制已保存。
+notice-settings-transfer-policy = 传输策略已保存。
+notice-settings-transfers = 传输设置已保存。
+notice-settings-notifications = 通知偏好已保存。
+notice-settings-platform = 窗口与托盘偏好已保存。
+
+tray-show = 显示 AriaDeck
+tray-pause-all = 全部暂停
+tray-resume-all = 全部继续
+tray-quit = 退出 AriaDeck
+
+# Profiles
+notice-profile-select = 请选择要激活的配置。
+notice-profile-already-active = 该配置已是当前配置。
+notice-profile-switching = 正在切换配置…
+notice-profile-at-least-one = 至少需要保留一个配置。
+notice-profile-active-must-exist = 当前配置必须存在于目录中。
+notice-profile-saving = 正在保存配置…
+notice-profile-saved = 配置已保存。
+notice-profile-gone = 该配置已不在目录中。
+notice-profile-none-editing = 当前没有正在编辑的配置。
+notice-profile-name-empty = 配置名称不能为空。
+notice-profile-remote-endpoint = 远程配置需要 ws/wss 端点。
+notice-profile-at-least-remain = 至少需要保留一个配置。
+notice-profile-enter-aria2c = 请先输入 aria2c 可执行文件路径。
+notice-connect-before-add = 请先连接并完成同步后再添加下载。
+notice-enter-url = 请至少输入一个 URL 或磁力链接。
+notice-choose-metadata = 请至少选择一个 Torrent 或 Metalink 文件。
+
+notice-filename-empty = 请输入文件名。
+notice-filename-dot = 文件名不能是 "." 或 ".."。
+notice-filename-separators = 文件名不能包含路径分隔符。
+notice-stale-session = aria2 会话已变更。请确认当前状态后再提交。
+notice-refresh-details = 无法刷新任务详情：{ $summary }
+notice-outcome-unknown = 结果未知 · { $summary }
+
+# 命令进度 / 成功
+cmd-pause-all-progress = 正在暂停全部任务…
+cmd-force-pause-all-progress = 正在强制暂停全部任务…
+cmd-resume-all-progress = 正在继续全部任务…
+cmd-pause-all-success = 已暂停所有可暂停任务。
+cmd-force-pause-all-success = 已强制暂停所有可暂停任务。
+cmd-resume-all-success = 已继续所有已暂停任务。
+cmd-batch-pause-progress = 正在暂停所选任务…
+cmd-batch-force-pause-progress = 正在强制暂停所选任务…
+cmd-batch-resume-progress = 正在继续所选任务…
+cmd-batch-retry-progress = 正在从所选失败任务创建新任务…
+cmd-batch-remove-progress = 正在移除所选任务…
+cmd-batch-force-remove-progress = 正在强制移除所选任务…
+cmd-batch-remove-files-progress = 正在移除所选任务并将本地文件移到回收站…
+cmd-pause-progress = 正在暂停任务…
+cmd-force-pause-progress = 正在强制暂停任务…
+cmd-resume-progress = 正在继续任务…
+cmd-queue-top-progress = 正在将任务移到队列顶部…
+cmd-queue-up-progress = 正在将任务在队列中上移…
+cmd-queue-down-progress = 正在将任务在队列中下移…
+cmd-queue-bottom-progress = 正在将任务移到队列底部…
+cmd-retry-progress = 正在从失败来源创建新任务…
+cmd-output-name-progress = 正在更新输出文件名…
+cmd-speed-limit-progress = 正在更新速度限制…
+cmd-connection-policy-progress = 正在更新连接策略…
+cmd-options-progress = 正在更新任务选项…
+cmd-remove-progress = 正在移除任务…
+cmd-force-remove-progress = 正在强制移除任务…
+cmd-remove-files-progress = 正在移除任务并将本地文件移到回收站…
+cmd-pause-success = 任务已暂停。
+cmd-force-pause-success = 任务已强制暂停。
+cmd-resume-success = 任务已继续。
+cmd-queue-top-success = 任务已移到队列顶部。
+cmd-queue-up-success = 任务已在队列中上移。
+cmd-queue-down-success = 任务已在队列中下移。
+cmd-queue-bottom-success = 任务已移到队列底部。
+cmd-retry-success = 已创建新的重试任务；失败结果仍保留。
+cmd-output-name-success = 输出文件名已更新。
+cmd-speed-limit-success = 已更新此任务的速度限制。
+cmd-connection-policy-success = 已更新此任务的连接策略。
+cmd-options-success = 任务选项已更新。
+cmd-remove-success = 已从 aria2 移除任务；已下载文件已保留。
+cmd-force-remove-success = 任务已强制移除。
+cmd-remove-files-success = 任务已移除，本地文件已移到回收站。

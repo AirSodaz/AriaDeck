@@ -1,0 +1,60 @@
+## 主界面、空状态、连接（简体中文）
+
+connection-offline = 离线
+connection-status-aria = 连接状态：{ $status }
+no-profile = 无配置
+settings-label = 设置
+speed-last-minute = 最近一分钟
+load-more = 加载更多
+activity-history = 活动记录
+clear-filter = 清除筛选
+no-downloads = 暂无下载
+no-matching-downloads = 无匹配的下载
+aria2-unavailable = aria2 不可用
+connection-failed-title = 连接失败
+retry-label = 重试
+select-all = 全选
+add-download-unavailable = 无法添加下载
+
+action-pause = 暂停
+action-resume = 继续
+action-retry = 重试
+action-remove = 移除
+action-force-pause = 强制暂停
+action-force-remove = 强制移除
+action-remove-with-files = 移除并删除文件
+action-open-file = 打开下载
+action-open-folder = 打开文件夹
+action-copy-source = 复制来源
+action-copy-gid = 复制 GID
+action-details = 详情
+action-set-speed-limit = 设置速度限制
+action-edit-options = 编辑任务选项
+action-change-output-name = 更改输出文件名
+
+# 残留高频界面
+ui-app-name = AriaDeck
+ui-no-activity = 暂无活动。
+ui-sort-by = 排序
+ui-col-name = 名称
+ui-col-progress-ratio = 进度 / 分享率
+ui-col-down-up = 下载 / 上传
+ui-col-size = 大小
+ui-col-status = 状态
+ui-col-task = 任务
+ui-col-progress = 进度
+ui-settings-title = 设置
+ui-profile-name = 名称
+ui-profile-kind = 类型
+ui-profile-endpoint = 端点 (ws/wss)
+ui-profile-download-dir = 下载目录
+ui-import-aria2c = 导入或链接本地 aria2c
+ui-advanced-options = 高级选项
+ui-torrent-metalink-files = Torrent / Metalink 文件
+ui-files = 文件
+ui-overwrite-warning = 目标位置已有文件时可能被覆盖。
+ui-remove-aria2-control = 会包含未完成任务的 .aria2 控制文件；无关文件将保留。
+ui-external-engine-files-kept = 这是外部引擎；引擎主机上的文件将保留。
+ui-output-name-restart = 更改活动任务的输出文件名可能会重启传输。
+ui-reconnect-refresh-details = 重新连接以刷新当前引擎会话的文件信息。
+ui-requesting-details = 正在从此 aria2 会话请求文件元数据。

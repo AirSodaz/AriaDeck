@@ -1692,6 +1692,7 @@ fn output_name_result_closes_on_success_and_stays_open_on_failure(cx: &mut TestA
 fn theme_applies_only_after_the_matching_save_succeeds(cx: &mut TestAppContext) {
     let initial = SettingsView {
         color_scheme: ColorSchemeView::Dark,
+        language: LanguagePreferenceView::default(),
         download_directory: "C:/Downloads".into(),
         ..SettingsView::default()
     };
@@ -1747,6 +1748,7 @@ fn theme_applies_only_after_the_matching_save_succeeds(cx: &mut TestAppContext) 
 fn proxy_settings_build_a_manual_draft_with_a_masked_password(cx: &mut TestAppContext) {
     let initial = SettingsView {
         color_scheme: ColorSchemeView::Dark,
+        language: LanguagePreferenceView::default(),
         download_directory: "C:/Downloads".into(),
         download_proxy: DownloadProxySettingsView {
             mode: ProxyModeView::Disabled,
@@ -2248,6 +2250,7 @@ fn escape_priority_closes_popover_then_settings_then_search(cx: &mut TestAppCont
 fn failed_directory_save_keeps_the_draft(cx: &mut TestAppContext) {
     let initial = SettingsView {
         color_scheme: ColorSchemeView::Dark,
+        language: LanguagePreferenceView::default(),
         download_directory: "C:/Downloads".into(),
         ..SettingsView::default()
     };
@@ -2637,6 +2640,7 @@ fn notification_preferences_save_emits_settings_request(cx: &mut TestAppContext)
 fn system_theme_selection_emits_settings_save(cx: &mut TestAppContext) {
     let initial = SettingsView {
         color_scheme: ColorSchemeView::Dark,
+        language: LanguagePreferenceView::default(),
         download_directory: "C:/Downloads".into(),
         ..SettingsView::default()
     };
@@ -2651,6 +2655,34 @@ fn system_theme_selection_emits_settings_save(cx: &mut TestAppContext) {
             .expect("system theme save pending");
         assert_eq!(pending.source, SettingsSaveSource::Theme);
         assert_eq!(pending.settings.color_scheme, ColorSchemeView::System);
+    });
+}
+
+#[gpui::test]
+fn language_preference_selection_emits_settings_save_and_switches_catalog(cx: &mut TestAppContext) {
+    let initial = SettingsView {
+        color_scheme: ColorSchemeView::Dark,
+        language: LanguagePreferenceView::English,
+        download_directory: "C:/Downloads".into(),
+        ..SettingsView::default()
+    };
+    let (view, cx) =
+        cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
+    view.update(cx, |shell, cx| {
+        assert_eq!(shell.t("filter-active"), "Active");
+        shell.select_language(LanguagePreferenceView::ChineseSimplified, cx);
+        let pending = shell
+            .pending_settings_save
+            .as_ref()
+            .expect("language save pending");
+        assert_eq!(pending.source, SettingsSaveSource::Language);
+        assert_eq!(
+            pending.settings.language,
+            LanguagePreferenceView::ChineseSimplified
+        );
+        // Runtime catalog switches immediately.
+        assert_eq!(shell.t("filter-active"), "下载中");
+        assert_eq!(shell.t("settings-nav-general"), "通用");
     });
 }
 

@@ -24,30 +24,38 @@ impl AppShell {
                 self.apply_settings(result.settings, cx);
                 self.settings_page.error = None;
                 let message = match source {
-                    SettingsSaveSource::Theme => "Appearance updated.",
-                    SettingsSaveSource::Directory => "Download directory saved.",
+                    SettingsSaveSource::Theme => self.t("notice-settings-appearance"),
+                    SettingsSaveSource::Language => {
+                        let msg = self.t("settings-language-saved");
+                        if msg == "settings-language-saved" {
+                            "Language preference saved.".to_owned()
+                        } else {
+                            msg
+                        }
+                    }
+                    SettingsSaveSource::Directory => self.t("notice-settings-directory"),
                     SettingsSaveSource::Proxy => {
                         self.settings_inputs
                             .proxy_password
                             .update(cx, |input, cx| input.set_text("", cx));
                         self.settings_page.clear_proxy_password = false;
-                        "Download proxy settings saved."
+                        self.t("notice-settings-proxy")
                     }
                     SettingsSaveSource::SpeedLimit => {
                         self.sync_speed_limit_fields_from_settings(cx);
-                        "Speed limits saved."
+                        self.t("notice-settings-speed")
                     }
                     SettingsSaveSource::TransferPolicy => {
                         self.sync_transfer_policy_fields_from_settings(cx);
-                        "Transfer policy saved."
+                        self.t("notice-settings-transfer-policy")
                     }
                     SettingsSaveSource::Transfers => {
                         self.sync_speed_limit_fields_from_settings(cx);
                         self.sync_transfer_policy_fields_from_settings(cx);
-                        "Transfer settings saved."
+                        self.t("notice-settings-transfers")
                     }
-                    SettingsSaveSource::Notifications => "Notification preferences saved.",
-                    SettingsSaveSource::Platform => "Window and tray preferences saved.",
+                    SettingsSaveSource::Notifications => self.t("notice-settings-notifications"),
+                    SettingsSaveSource::Platform => self.t("notice-settings-platform"),
                 };
                 self.show_notice(message, false, cx);
             }
@@ -68,6 +76,8 @@ impl AppShell {
         }
         self.settings = settings.clone();
         self.settings_page.draft_color_scheme = settings.color_scheme;
+        self.settings_page.draft_language = settings.language;
+        self.set_language_runtime(settings.language);
         self.settings_page.draft_file_allocation = settings.transfer_policy.file_allocation;
         self.settings_page.draft_check_integrity = settings.transfer_policy.check_integrity;
         self.settings_page.draft_notification_volume = settings.notifications.volume;
@@ -157,6 +167,7 @@ impl AppShell {
             previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
             active_category: SettingsCategory::default(),
             draft_color_scheme: self.settings.color_scheme,
+            draft_language: self.settings.language,
             draft_proxy_mode: proxy.mode,
             draft_file_allocation: transfer_policy.file_allocation,
             draft_check_integrity: transfer_policy.check_integrity,
@@ -270,6 +281,27 @@ impl AppShell {
             settings,
             ProxyPasswordUpdateView::Unchanged,
             SettingsSaveSource::Theme,
+            cx,
+        );
+    }
+
+    pub(crate) fn select_language(
+        &mut self,
+        language: LanguagePreferenceView,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_settings_save.is_some() || language == self.settings.language {
+            return;
+        }
+        self.settings_page.draft_language = language;
+        // Apply immediately so chrome switches language before save returns.
+        self.set_language_runtime(language);
+        let mut settings = self.settings.clone();
+        settings.language = language;
+        self.request_settings_save(
+            settings,
+            ProxyPasswordUpdateView::Unchanged,
+            SettingsSaveSource::Language,
             cx,
         );
     }
@@ -805,7 +837,7 @@ impl AppShell {
                         div()
                             .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("Settings"),
+                            .child(self.t("ui-settings-title")),
                     ),
             )
             .child(
@@ -918,7 +950,7 @@ impl AppShell {
                             colors.text_secondary
                         }),
                 )
-                .child(div().child(category.label()))
+                .child(div().child(self.t(category.message_key())))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.select_settings_category(category, cx);
                 }));
@@ -1136,7 +1168,7 @@ impl AppShell {
             selected_scheme,
             self.theme,
         )
-        .aria_label("Color scheme")
+        .aria_label(self.t("settings-theme-aria"))
         .disabled(pending)
         .on_select(move |index, window, cx| {
             let scheme = ColorSchemeView::ALL
@@ -1149,30 +1181,74 @@ impl AppShell {
                 })
                 .ok();
         });
+        let draft_language = self.settings_page.draft_language;
+        let selected_language = LanguagePreferenceView::ALL
+            .iter()
+            .position(|language| *language == draft_language)
+            .unwrap_or(0);
+        let language_shell = cx.entity().downgrade();
+        let language_control = SegmentedControl::new(
+            "settings-language",
+            LanguagePreferenceView::ALL
+                .map(|language| Segment::new(self.t(language.message_key()))),
+            selected_language,
+            self.theme,
+        )
+        .aria_label(self.t("settings-language-aria"))
+        .disabled(pending)
+        .on_select(move |index, _window, cx| {
+            let language = LanguagePreferenceView::ALL
+                .get(index)
+                .copied()
+                .unwrap_or_default();
+            language_shell
+                .update(cx, |shell, cx| shell.select_language(language, cx))
+                .ok();
+        });
+        let appearance_title = self.t("settings-appearance");
+        let theme_label = self.t("settings-theme");
+        let language_label = self.t("settings-language");
+        let language_desc = self.t("settings-language-description");
+        let downloads_title = self.t("settings-downloads");
+        let default_dir_label = self.t("settings-default-directory");
+        let default_dir_desc = self.t("settings-default-directory-desc");
+        let browse_label = self.t("button-browse");
+        let browse_aria = self.t("settings-default-directory-browse-aria");
         div()
             .flex()
             .flex_col()
             .gap_4()
-            .child(settings_card("Appearance", colors).child(settings_row(
-                "Theme",
-                None,
-                scheme_control,
-                colors,
-            )))
-            .child(settings_card("Downloads", colors).child(settings_row(
-                "Default directory",
-                Some("New tasks use this directory unless aria2 overrides it."),
-                settings_path_field_row(
-                    self.settings_inputs.directory.clone(),
-                    "browse-download-directory",
-                    "Browse",
-                    "Choose default download directory",
-                    PathPickTarget::DownloadDirectory,
+            .child(
+                settings_card_owned(appearance_title, colors)
+                    .child(settings_row_owned(
+                        theme_label,
+                        None::<SharedString>,
+                        scheme_control,
+                        colors,
+                    ))
+                    .child(settings_row_owned(
+                        language_label,
+                        Some(language_desc),
+                        language_control,
+                        colors,
+                    )),
+            )
+            .child(
+                settings_card_owned(downloads_title, colors).child(settings_row_owned(
+                    default_dir_label,
+                    Some(default_dir_desc),
+                    settings_path_field_row(
+                        self.settings_inputs.directory.clone(),
+                        "browse-download-directory",
+                        browse_label,
+                        browse_aria,
+                        PathPickTarget::DownloadDirectory,
+                        colors,
+                        cx,
+                    ),
                     colors,
-                    cx,
-                ),
-                colors,
-            )))
+                )),
+            )
     }
 
     pub(crate) fn render_settings_profiles(&mut self, cx: &mut Context<Self>) -> Div {
@@ -1382,7 +1458,7 @@ impl AppShell {
                                                 div()
                                                     .text_xs()
                                                     .text_color(colors.text_muted)
-                                                    .child("Name"),
+                                                    .child(self.t("ui-profile-name")),
                                             )
                                             .child(self.settings_inputs.profile_name.clone()),
                                     )
@@ -1395,7 +1471,7 @@ impl AppShell {
                                                 div()
                                                     .text_xs()
                                                     .text_color(colors.text_muted)
-                                                    .child("Kind"),
+                                                    .child(self.t("ui-profile-kind")),
                                             )
                                             .child(kind_control),
                                     )
@@ -1447,7 +1523,7 @@ impl AppShell {
                                                         div()
                                                             .text_xs()
                                                             .text_color(colors.text_muted)
-                                                            .child("Endpoint (ws/wss)"),
+                                                            .child(self.t("ui-profile-endpoint")),
                                                     )
                                                     .child(
                                                         self.settings_inputs.profile_endpoint
@@ -1511,7 +1587,7 @@ impl AppShell {
                                                 div()
                                                     .text_xs()
                                                     .text_color(colors.text_muted)
-                                                    .child("Download directory"),
+                                                    .child(self.t("ui-profile-download-dir")),
                                             )
                                             .child(settings_path_field_row(
                                                 self.settings_inputs.profile_download
@@ -1851,7 +1927,7 @@ impl AppShell {
                             .text_xs()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(colors.text_primary)
-                            .child("Import or link local aria2c"),
+                            .child(self.t("ui-import-aria2c")),
                     )
                     .child(settings_path_field_row(
                         self.settings_inputs.core_path.clone(),

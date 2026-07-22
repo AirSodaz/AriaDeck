@@ -1,0 +1,16 @@
+[package]
+name = "ariadeck-i18n"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Fluent-based localization catalogs for AriaDeck (en, zh-CN)"
+
+[dependencies]
+fluent-bundle.workspace = true
+rust-embed.workspace = true
+sys-locale.workspace = true
+unic-langid.workspace = true
+
+[lints]
+workspace = true

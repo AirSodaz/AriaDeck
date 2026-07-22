@@ -10,6 +10,7 @@ mod shell;
 mod theme;
 
 pub use accessibility::{prefers_reduced_motion, set_prefers_reduced_motion_override};
+pub use ariadeck_i18n::{LanguagePreference, LocaleId, Translator};
 
 pub use actions::init;
 pub use actions::{
@@ -42,24 +43,24 @@ pub use model::{
     DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView, EngineHealthView,
     EngineSessionView, FileAllocationView, FileConflictPolicyView, FormatOptions,
     GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView,
-    NotificationSettingsView, NotificationVolumeView, OperationErrorView, PlatformSettingsView,
-    ProfileCatalogView, ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView,
-    ProxyModeView, ProxyPasswordUpdateView, RequestId, SaveProfileCatalogOutcomeView,
-    SaveProfileCatalogRequestView, SaveProfileCatalogResultView, SecretStringView,
-    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView, SwitchProfileOutcomeView,
-    SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
-    TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
-    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
-    TaskIdentity, TaskNameStateView, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
-    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
-    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
-    TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
-    WorkspaceSortDirection, WorkspaceSortKey, active_format_options, format_bytes,
-    format_bytes_with, format_eta, format_eta_with, format_percent, format_percent_with,
-    format_rate, format_rate_with, format_relative_time, format_relative_time_with,
-    format_share_ratio, format_share_ratio_with, format_speed_limit_field, parse_speed_limit_field,
-    set_active_format_options,
+    LanguagePreferenceView, NotificationSettingsView, NotificationVolumeView, OperationErrorView,
+    PlatformSettingsView, ProfileCatalogView, ProfileEntryView, ProfileKindView,
+    ProfileRpcSecretUpdateView, ProxyModeView, ProxyPasswordUpdateView, RequestId,
+    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
+    SecretStringView, SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
+    SettingsView, SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView,
+    SwitchProfileOutcomeView, SwitchProfileRequestView, SwitchProfileResultView,
+    TaskCommandRequestView, TaskCommandResultView, TaskCommandView, TaskCountsView,
+    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
+    TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView, TaskOpenOutcomeView,
+    TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView, TaskOptionView,
+    TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView, TaskStatusView,
+    TaskTrackerView, TaskUriStatusView, TaskUriView, TransferPolicySettingsView, WorkspaceFilter,
+    WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    active_format_options, format_bytes, format_bytes_with, format_eta, format_eta_with,
+    format_percent, format_percent_with, format_rate, format_rate_with, format_relative_time,
+    format_relative_time_with, format_share_ratio, format_share_ratio_with,
+    format_speed_limit_field, parse_speed_limit_field, set_active_format_options,
 };
 pub use search_input::{SearchInput, SearchInputEvent, TextField, TextFieldConfig, TextFieldEvent};
 pub use shell::{AppShell, AppShellEvent};

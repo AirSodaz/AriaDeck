@@ -25,11 +25,7 @@ impl AppShell {
             return;
         }
         if !self.snapshot.commands_available() {
-            self.show_notice(
-                "Connect and finish synchronization before adding a download.",
-                true,
-                cx,
-            );
+            self.show_notice(self.t("notice-connect-before-add"), true, cx);
             return;
         }
 
@@ -137,12 +133,8 @@ impl AppShell {
             self.add_dialog.error = Some(OperationErrorView {
                 code: "validation.invalid_request".into(),
                 summary: match self.add_dialog.input_mode {
-                    AddDownloadInputModeView::Links => {
-                        "Enter at least one URL or magnet link.".into()
-                    }
-                    AddDownloadInputModeView::MetadataFiles => {
-                        "Choose at least one Torrent or Metalink file.".into()
-                    }
+                    AddDownloadInputModeView::Links => self.t("notice-enter-url"),
+                    AddDownloadInputModeView::MetadataFiles => self.t("notice-choose-metadata"),
                 },
                 retryable: false,
             });
@@ -272,7 +264,7 @@ impl AppShell {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Choose Torrent or Metalink files".into()),
+            prompt: Some(self.t("dialog-add-choose-metadata").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let selected = selected.await;
@@ -582,7 +574,7 @@ impl AppShell {
                             .text_xs()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(colors.text_secondary)
-                            .child("URL or magnet link"),
+                            .child(self.t("dialog-add-url-or-magnet")),
                     )
                     .child(self.add_input.clone())
                     .child(
@@ -593,7 +585,7 @@ impl AppShell {
                             .gap_3()
                             .child(div().text_xs().text_color(colors.text_muted).child(
                                 if sources.is_empty() {
-                                    "No sources detected".to_owned()
+                                    self.t("dialog-add-no-sources")
                                 } else {
                                     format!(
                                         "{} source{} detected",
@@ -615,7 +607,7 @@ impl AppShell {
                                     .text_xs()
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(colors.text_secondary)
-                                    .child("If file exists"),
+                                    .child(self.t("dialog-add-if-file-exists")),
                             )
                             .child(conflict_control),
                     )
@@ -628,7 +620,7 @@ impl AppShell {
                                     .role(Role::Alert)
                                     .text_xs()
                                     .text_color(colors.danger)
-                                    .child("Existing destination files may be replaced."),
+                                    .child(self.t("ui-overwrite-warning")),
                             )
                         },
                     )
@@ -642,56 +634,61 @@ impl AppShell {
                 element.child(self.render_add_result_list(colors))
             })
             .when_some(error, |element, error| {
+                let message = self.te(&error);
                 element.child(
                     div()
                         .id("add-download-error")
                         .role(Role::Alert)
-                        .aria_label(error.summary.clone())
+                        .aria_label(message.clone())
                         .text_xs()
                         .text_color(colors.danger)
-                        .child(error.summary),
+                        .child(message),
                 )
             });
 
-        Dialog::new("add-download-dialog", "Add download", self.theme)
-            .key_context("AddDownloadDialog")
-            .track_focus(self.add_dialog_focus.clone())
-            .width(if input_mode == AddDownloadInputModeView::MetadataFiles {
-                720.0
-            } else if self.add_dialog.advanced_open {
-                640.0
-            } else {
-                560.0
-            })
-            .child(content)
-            .action(
-                Button::new("cancel-add-download", "Cancel")
-                    .aria_label("Cancel adding a download")
-                    .style(ButtonStyle::Secondary)
-                    .disabled(pending)
-                    .track_focus(self.add_cancel_focus.clone())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.close_add_download(window, cx);
-                    }))
-                    .render(colors),
-            )
-            .action(
-                Button::new("submit-add-download", "Add")
-                    .aria_label(if add_pending {
-                        "Adding download"
-                    } else {
-                        "Add download"
-                    })
-                    .style(ButtonStyle::Primary)
-                    .disabled(preview_pending)
-                    .loading(add_pending)
-                    .track_focus(self.add_submit_focus.clone())
-                    .on_click(cx.listener(|this, _, _window, cx| {
-                        this.submit_add_download(cx);
-                    }))
-                    .render(colors),
-            )
-            .into_any_element()
+        Dialog::new(
+            "add-download-dialog",
+            self.t("dialog-add-download"),
+            self.theme,
+        )
+        .key_context("AddDownloadDialog")
+        .track_focus(self.add_dialog_focus.clone())
+        .width(if input_mode == AddDownloadInputModeView::MetadataFiles {
+            720.0
+        } else if self.add_dialog.advanced_open {
+            640.0
+        } else {
+            560.0
+        })
+        .child(content)
+        .action(
+            Button::new("cancel-add-download", "Cancel")
+                .aria_label(self.t("dialog-add-cancel-aria"))
+                .style(ButtonStyle::Secondary)
+                .disabled(pending)
+                .track_focus(self.add_cancel_focus.clone())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.close_add_download(window, cx);
+                }))
+                .render(colors),
+        )
+        .action(
+            Button::new("submit-add-download", "Add")
+                .aria_label(if add_pending {
+                    self.t("dialog-add-submitting")
+                } else {
+                    self.t("dialog-add-submit")
+                })
+                .style(ButtonStyle::Primary)
+                .disabled(preview_pending)
+                .loading(add_pending)
+                .track_focus(self.add_submit_focus.clone())
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    this.submit_add_download(cx);
+                }))
+                .render(colors),
+        )
+        .into_any_element()
     }
 
     pub(crate) fn render_add_advanced_section(
@@ -735,7 +732,7 @@ impl AppShell {
                             .text_xs()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(colors.text_secondary)
-                            .child("Advanced options"),
+                            .child(self.t("ui-advanced-options")),
                     )
                     .child(
                         div()
@@ -902,7 +899,7 @@ impl AppShell {
                             )
                             .aria_label(format!("Remove {} file", kind.label()))
                             .disabled(pending)
-                            .tooltip(Tooltip::new("Remove file"))
+                            .tooltip(Tooltip::new(self.t("dialog-add-remove-file")))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.remove_metadata_file(index, cx);
                             }))
@@ -1062,7 +1059,7 @@ impl AppShell {
                 div()
                     .id("metadata-file-drop-target")
                     .role(Role::Group)
-                    .aria_label("Torrent and Metalink file drop target")
+                    .aria_label(self.t("dialog-add-drop-target-aria"))
                     .min_h(px(82.0))
                     .flex()
                     .items_center()
@@ -1086,7 +1083,7 @@ impl AppShell {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .child("Torrent / Metalink files")
+                                    .child(self.t("ui-torrent-metalink-files"))
                                     .child(div().text_xs().text_color(colors.text_muted).child(
                                         if preview_pending {
                                             "Reading metadata...".to_owned()
@@ -1102,7 +1099,7 @@ impl AppShell {
                     .child(
                         Button::new("choose-metadata-files", "Choose files")
                             .icon(IconName::FolderDown)
-                            .aria_label("Choose Torrent or Metalink files")
+                            .aria_label(self.t("dialog-add-choose-files-aria"))
                             .style(ButtonStyle::Secondary)
                             .disabled(pending)
                             .loading(preview_pending)
@@ -1117,7 +1114,7 @@ impl AppShell {
                     div()
                         .id("metadata-file-list")
                         .role(Role::List)
-                        .aria_label("Selected Torrent and Metalink files")
+                        .aria_label(self.t("dialog-add-selected-files-aria"))
                         .max_h(px(112.0))
                         .border_1()
                         .border_color(colors.border)
@@ -1163,7 +1160,7 @@ impl AppShell {
                                             .text_xs()
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(colors.text_secondary)
-                                            .child("Files"),
+                                            .child(self.t("ui-files")),
                                     ),
                             )
                             .child(
@@ -1202,13 +1199,11 @@ impl AppShell {
                         },
                         colors.success,
                     ),
-                    CommandOutcomeView::Failure(error) if error.outcome_unknown() => (
-                        IconName::TriangleAlert,
-                        format!("Outcome unknown · {}", error.summary),
-                        colors.warning,
-                    ),
+                    CommandOutcomeView::Failure(error) if error.outcome_unknown() => {
+                        (IconName::TriangleAlert, self.te(error), colors.warning)
+                    }
                     CommandOutcomeView::Failure(error) => {
-                        (IconName::CircleAlert, error.summary.clone(), colors.danger)
+                        (IconName::CircleAlert, self.te(error), colors.danger)
                     }
                 };
                 div()
@@ -1233,7 +1228,7 @@ impl AppShell {
         div()
             .id("add-download-results")
             .role(Role::List)
-            .aria_label("Add download results")
+            .aria_label(self.t("dialog-add-results-aria"))
             .max_h(px(220.0))
             .flex()
             .flex_col()

@@ -5,6 +5,7 @@ members = [
     "crates/ariadeck-application",
     "crates/ariadeck-domain",
     "crates/ariadeck-engine",
+    "crates/ariadeck-i18n",
     "crates/ariadeck-rpc",
     "crates/ariadeck-settings",
     "crates/ariadeck-telemetry",
@@ -23,6 +24,7 @@ base64 = "0.22.1"
 bitflags = { version = "2.10.0", features = ["serde"] }
 data-encoding = "2.11.0"
 rust-embed = "8.11.0"
+fluent-bundle = "0.16.0"
 futures = "0.3.31"
 futures-util = "0.3.31"
 gpui = { git = "https://github.com/zed-industries/zed.git", rev = "952d712dac48a4af2c54fb22c82d82a9d69b72d4" }
@@ -36,6 +38,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 secrecy = "0.8.0"
 sha2 = "0.11.0"
+sys-locale = "0.3.2"
 sysinfo = "0.31.4"
 tempfile = "3.23.0"
 thiserror = "2.0.17"
@@ -46,6 +49,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 tray-icon = { version = "0.24.1", default-features = false }
 url = { version = "2.5.7", features = ["serde"] }
+unic-langid = { version = "0.9.6", features = ["macros"] }
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
 
 [workspace.lints.rust]

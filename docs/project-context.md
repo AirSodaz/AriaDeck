@@ -1,6 +1,6 @@
 # AriaDeck — Project Design & Context
 
-**Status:** Product-ready core; ACCESS-001 landed; remaining work is privacy/security review, performance hardening, and release packaging  
+**Status:** Product-ready core; ACCESS-001 and en/zh-CN i18n foundation landed; remaining work is privacy/security review, performance hardening, release packaging, and broader string migration  
 **Last updated:** 2026-07-22  
 **Primary stack:** Rust 1.96 · GPUI (Zed `v1.11.3` pin) · aria2 JSON-RPC over WebSocket · Tokio
 
@@ -56,6 +56,7 @@ GPUI
 | `ariadeck-engine` | Local process lifecycle, profile ownership lock, core registry, crash restart |
 | `ariadeck-settings` | Versioned typed settings, atomic save, migration, corruption recovery |
 | `ariadeck-ui` | Design tokens, themes, GPUI components; pages must not depend on third-party widgets directly |
+| `ariadeck-i18n` | Fluent catalogs (en, zh-CN), locale resolution, Translator |
 | `ariadeck-telemetry` | Structured tracing setup |
 | `ariadeck-desktop` | Bootstrap, composition, workspace model, platform (tray/notifications), dialogs |
 
@@ -188,7 +189,8 @@ Bootstrap, domain/application store, typed WS RPC, sync/reconnect, virtualized w
 
 | ID | Scope |
 | --- | --- |
-| `ACCESS-001` | **Done** — SR labels on settings/controls, status icon+text (not color-only), reduced-motion caret/loading, larger toggle/segment hit targets, locale-shaped size/rate formatters (`FormatOptions`), integrity check uses unified `Toggle`+`settings_row`. Manual residual: high-DPI visual check at 125%/150% on Windows. Full i18n catalogs still deferred. |
+| `I18N-001` | **Done (en/zh-CN surface)** — Fluent catalogs (~360 keys), settings language (schema v8), hot-swap Translator; chrome/empty states/connection/engine, settings general/nav, dialogs, profiles/notices, task status badges, tray labels, error-code FTL mapping via `OperationErrorView::localized_summary`. Residual: niche advanced-dialog microcopy and some application-layer validation detail strings (stable error codes are localized). |
+| `ACCESS-001` | **Done** — SR labels on settings/controls, status icon+text (not color-only), reduced-motion caret/loading, larger toggle/segment hit targets, locale-shaped size/rate formatters (`FormatOptions`), integrity check uses unified `Toggle`+`settings_row`. Manual residual: high-DPI visual check at 125%/150% on Windows. |
 | `SEC-001` | Privacy review: URL credentials, tracker tokens, proxy secrets, filenames, symlinks, diagnostic export redaction tests |
 | `PERF-001` | Stress: 10k stopped, rapid updates, details polling, reconnect storms, minimized mode, memory growth |
 | `RELEASE-001` | Signing, installer/portable packaging, uninstall data retention, license notices, schema migration tests, app update/rollback |
@@ -202,7 +204,7 @@ Bootstrap, domain/application store, typed WS RPC, sync/reconnect, virtualized w
 - HTTP JSON-RPC transport as first-class profile option
 - Pause/resume scheduling
 - Tags/categories, browser/file associations
-- Full i18n message catalogs
+- Additional UI locales beyond en/zh-CN; remaining hard-coded English strings in dialogs/notices/application errors
 - Remote path mapping / remote file management
 - Application auto-update productization
 
@@ -222,6 +224,7 @@ Bootstrap, domain/application store, typed WS RPC, sync/reconnect, virtualized w
 | 008 | Download proxy ≠ RPC transport; credentials in OS keychain. |
 | 009 | Uncertain mutations reconciled from engine; Tokio for blocking from GPUI. |
 | 010 | Remote RPC WebSocket-only; fail closed on trust/auth errors. |
+| 011 | Fluent FTL catalogs in `ariadeck-i18n`; settings `language` (system/en/zh_cn); UI resolves locale and hot-swaps Translator; application errors stay code-oriented (full keying later). |
 
 ---
 
@@ -253,6 +256,7 @@ Live aria2 tests (ignored by default) need a real `aria2c` (e.g. Scoop) and `ARI
 | Settings migrations | `crates/ariadeck-settings/src/lib.rs` |
 | Workspace UI / dialogs | `apps/ariadeck-desktop/src/workspace.rs` |
 | Design tokens / components | `crates/ariadeck-ui/src/` |
+| i18n catalogs / Translator | `crates/ariadeck-i18n/` (see `docs/i18n.md`) |
 
 ### Implementation invariants (do not break)
 
