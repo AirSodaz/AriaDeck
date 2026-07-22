@@ -2012,11 +2012,55 @@ fn settings_mapping_clears_the_credential_only_when_explicitly_requested() {
     assert_eq!(unchanged.download_proxy.credential, Some(credential));
     assert!(matches!(update, ProxyPasswordUpdate::Unchanged));
 
+    let (detached, update) =
+        map_settings_request(&settings, &current, ProxyPasswordUpdateView::Detach)
+            .expect("credential detach is valid");
+    assert!(detached.download_proxy.credential.is_none());
+    assert!(matches!(update, ProxyPasswordUpdate::Detach));
+
     let (cleared, update) =
         map_settings_request(&settings, &current, ProxyPasswordUpdateView::Clear)
             .expect("explicit credential clear is valid");
     assert!(cleared.download_proxy.credential.is_none());
     assert!(matches!(update, ProxyPasswordUpdate::Clear));
+}
+
+#[test]
+fn credential_detach_keeps_the_keychain_entry_untouched() {
+    use secrecy::ExposeSecret as _;
+
+    let credentials = FakeProxyCredentialStore::default();
+    let credential = ProxyCredentialRef::new();
+    let mut previous = AppSettings::new("D:/Downloads");
+    previous.download_proxy.username = Some("proxy-user".into());
+    previous.download_proxy.credential = Some(credential);
+    credentials
+        .save(credential, &SecretString::new("local-secret".into()))
+        .expect("seed credential");
+    let mut next = previous.clone();
+    next.download_proxy.credential = None;
+    let previous_password =
+        load_proxy_password(&credentials, &previous).expect("load previous password");
+
+    let (password, mutation) = apply_credential_update(
+        &credentials,
+        &previous,
+        &next,
+        &ProxyPasswordUpdate::Detach,
+        previous_password,
+    )
+    .expect("detach credential");
+
+    assert!(password.is_none());
+    assert!(mutation.credential.is_none());
+    assert_eq!(
+        credentials
+            .load(credential)
+            .expect("load detached credential")
+            .expect("credential remains")
+            .expose_secret(),
+        "local-secret"
+    );
 }
 
 #[test]

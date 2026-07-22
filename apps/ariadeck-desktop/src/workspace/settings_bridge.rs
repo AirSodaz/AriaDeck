@@ -41,6 +41,13 @@ pub(crate) fn apply_credential_update(
                 },
             ))
         }
+        ProxyPasswordUpdate::Detach => Ok((
+            None,
+            CredentialMutation {
+                credential: None,
+                previous_password: None,
+            },
+        )),
         ProxyPasswordUpdate::Clear => {
             if let Some(credential) = previous.download_proxy.credential {
                 store

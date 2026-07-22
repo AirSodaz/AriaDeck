@@ -1572,6 +1572,8 @@ impl std::fmt::Debug for SecretStringView {
 pub enum ProxyPasswordUpdateView {
     #[default]
     Unchanged,
+    /// Detach the current keychain credential without deleting it.
+    Detach,
     Clear,
     Set(SecretStringView),
 }
@@ -1963,6 +1965,40 @@ pub struct SettingsSaveResultView {
     pub request_id: RequestId,
     pub settings: SettingsView,
     pub outcome: SettingsSaveOutcomeView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SettingsExportRequestView {
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SettingsExportOutcomeView {
+    Success,
+    Failure(OperationErrorView),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SettingsExportResultView {
+    pub path: String,
+    pub outcome: SettingsExportOutcomeView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SettingsImportRequestView {
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SettingsImportOutcomeView {
+    Ready(Box<SettingsView>),
+    Failure(OperationErrorView),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SettingsImportResultView {
+    pub path: String,
+    pub outcome: SettingsImportOutcomeView,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

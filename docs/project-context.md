@@ -124,6 +124,7 @@ Env knobs: see root `README.md` (`ARIADECK_RPC_*`).
 | D-033 | **PERF-001:** tray → Background poll; virtualize; details coalesce ≥500ms; 10k stress |
 | D-034 | **RELEASE-001:** Windows portable (+ Inno); MIT + notices; no in-app auto-update |
 | D-035 | Diagnostic export is an explicit user-chosen ZIP containing only the redacted runtime snapshot + privacy notice; no settings, logs, task/source data, paths, or credentials |
+| D-036 | Settings transfer uses a separate versioned JSON format with no password or credential reference; import is strictly validated, preserves local keychain secrets, and applies through the normal settings transaction |
 
 **SEC inventory (boundary):** raw URIs/options may live in domain for RPC/retry; list/details/clipboard/tracker/server URIs and option secrets must be redacted or keychain-only.  
 **PERF guards:** 10k stopped stress, light snapshot short-circuit, ActivityMode tray intervals, reconnect backoff.
@@ -136,7 +137,7 @@ Settings: versioned JSON (`ariadeck-settings`); separate `window.json`, `profile
 
 ### Done
 
-Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, add/pause/resume/retry/remove, details, local supervision, settings, themes, multi-select/batch, multiline/mirrors, Trash, proxy+keychain, torrent/metalink+file select, queue ops, rate limits, seeding, duplicates, stopped pagination, advanced add, context menu, notifications/activity, multi-profile, capabilities, core registry, tray, window prefs, i18n en/zh-CN (including dialogs/details and stable error codes), a11y baseline, privacy redaction, redacted diagnostic ZIP export, perf hardening, Windows portable/installer packaging, CI matrix (fmt/test/clippy/release-build on Windows, macOS, Linux).
+Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, add/pause/resume/retry/remove, details, local supervision, settings, settings transfer (credential-free JSON), themes, multi-select/batch, multiline/mirrors, Trash, proxy+keychain, torrent/metalink+file select, queue ops, rate limits, seeding, duplicates, stopped pagination, advanced add, context menu, notifications/activity, multi-profile, capabilities, core registry, tray, window prefs, i18n en/zh-CN (including dialogs/details and stable error codes), a11y baseline, privacy redaction, redacted diagnostic ZIP export, perf hardening, Windows portable/installer packaging, CI matrix (fmt/test/clippy/release-build on Windows, macOS, Linux).
 
 ### Residual (polish, not blockers for Windows ship)
 

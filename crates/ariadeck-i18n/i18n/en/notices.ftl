@@ -32,6 +32,8 @@ notice-settings-transfer-policy = Transfer policy saved.
 notice-settings-transfers = Transfer settings saved.
 notice-settings-notifications = Notification preferences saved.
 notice-settings-platform = Window and tray preferences saved.
+notice-settings-exported = Settings exported without credentials to { $path }.
+notice-settings-imported = Settings imported. Passwords stored on this device were unchanged.
 notice-diagnostics-exported = Redacted diagnostics exported to { $path }.
 
 # Tray

@@ -62,6 +62,8 @@ use ariadeck_ui::{
     PlatformSettingsView, ProfileCatalogView, ProfileEntryView, ProfileKindView,
     ProfileRpcSecretUpdateView, ProxyModeView, ProxyPasswordUpdateView,
     SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
+    SettingsExportOutcomeView, SettingsExportRequestView, SettingsExportResultView,
+    SettingsImportOutcomeView, SettingsImportRequestView, SettingsImportResultView,
     SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
     SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView, SwitchProfileOutcomeView,
     SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
@@ -147,6 +149,7 @@ pub(crate) struct SettingsPersistenceRequest {
 #[derive(Clone)]
 pub(crate) enum ProxyPasswordUpdate {
     Unchanged,
+    Detach,
     Clear,
     Set(SecretString),
 }
@@ -382,6 +385,12 @@ impl DesktopRoot {
                 }
                 AppShellEvent::SettingsSaveRequested(request) => {
                     this.enqueue_settings_save(request.clone(), window, cx);
+                }
+                AppShellEvent::SettingsExportRequested(request) => {
+                    this.spawn_settings_export(request.clone(), window, cx);
+                }
+                AppShellEvent::SettingsImportRequested(request) => {
+                    this.spawn_settings_import(request.clone(), window, cx);
                 }
                 AppShellEvent::DiagnosticExportRequested(request) => {
                     this.spawn_diagnostic_export(request.clone(), window, cx);
@@ -763,6 +772,96 @@ impl DesktopRoot {
                 this.workspace.update(cx, |workspace, cx| {
                     workspace.set_diagnostic_export_result(
                         DiagnosticExportResultView {
+                            path: request.path,
+                            outcome,
+                        },
+                        cx,
+                    );
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn spawn_settings_export(
+        &self,
+        request: SettingsExportRequestView,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let settings = self.settings.clone();
+        let destination = PathBuf::from(&request.path);
+        let runtime = self.runtime.handle().clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = match runtime
+                .spawn_blocking(move || {
+                    ariadeck_settings::export_settings_to_path(&destination, &settings)
+                })
+                .await
+            {
+                Ok(Ok(())) => SettingsExportOutcomeView::Success,
+                Ok(Err(error)) => SettingsExportOutcomeView::Failure(OperationErrorView {
+                    code: "settings.export_failed".into(),
+                    summary: error.to_string(),
+                    retryable: true,
+                }),
+                Err(error) => SettingsExportOutcomeView::Failure(OperationErrorView {
+                    code: "settings.export_failed".into(),
+                    summary: format!("Settings export worker failed: {error}"),
+                    retryable: true,
+                }),
+            };
+            this.update_in(cx, |this, _window, cx| {
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.set_settings_export_result(
+                        SettingsExportResultView {
+                            path: request.path,
+                            outcome,
+                        },
+                        cx,
+                    );
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn spawn_settings_import(
+        &self,
+        request: SettingsImportRequestView,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.settings.clone();
+        let source = PathBuf::from(&request.path);
+        let runtime = self.runtime.handle().clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = match runtime
+                .spawn_blocking(move || {
+                    ariadeck_settings::import_settings_from_path(&source, &current)
+                })
+                .await
+            {
+                Ok(Ok(settings)) => {
+                    SettingsImportOutcomeView::Ready(Box::new(map_settings(&settings)))
+                }
+                Ok(Err(error)) => SettingsImportOutcomeView::Failure(OperationErrorView {
+                    code: "settings.import_failed".into(),
+                    summary: error.to_string(),
+                    retryable: true,
+                }),
+                Err(error) => SettingsImportOutcomeView::Failure(OperationErrorView {
+                    code: "settings.import_failed".into(),
+                    summary: format!("Settings import worker failed: {error}"),
+                    retryable: true,
+                }),
+            };
+            this.update_in(cx, |this, _window, cx| {
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.set_settings_import_result(
+                        SettingsImportResultView {
                             path: request.path,
                             outcome,
                         },

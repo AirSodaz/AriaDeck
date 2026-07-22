@@ -38,7 +38,9 @@ use crate::{
     ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask,
     SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
     SaveSettings, SearchInputEvent, SecretStringView, Segment, SegmentedControl, SelectAllTasks,
-    SelectNextTask, SelectPreviousTask, SettingsSaveOutcomeView, SettingsSaveRequestView,
+    SelectNextTask, SelectPreviousTask, SettingsExportOutcomeView, SettingsExportRequestView,
+    SettingsExportResultView, SettingsImportOutcomeView, SettingsImportRequestView,
+    SettingsImportResultView, SettingsSaveOutcomeView, SettingsSaveRequestView,
     SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator,
     SubmitAddDownload, SubmitTaskOutputName, SubmitTaskSpeedLimit, SwitchProfileOutcomeView,
     SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
@@ -128,6 +130,8 @@ pub enum AppShellEvent {
     TaskDetailsRequested(TaskDetailsRequestView),
     TaskOpenRequested(TaskOpenRequestView),
     SettingsSaveRequested(SettingsSaveRequestView),
+    SettingsExportRequested(SettingsExportRequestView),
+    SettingsImportRequested(SettingsImportRequestView),
     DiagnosticExportRequested(DiagnosticExportRequestView),
     SwitchProfileRequested(SwitchProfileRequestView),
     SaveProfileCatalogRequested(SaveProfileCatalogRequestView),
@@ -404,6 +408,7 @@ pub(crate) enum SettingsSaveSource {
     Transfers,
     Notifications,
     Platform,
+    Import,
 }
 
 pub(crate) struct PendingSettingsSave {

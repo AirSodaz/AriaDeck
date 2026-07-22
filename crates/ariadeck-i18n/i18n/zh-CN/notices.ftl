@@ -32,6 +32,8 @@ notice-settings-transfer-policy = 传输策略已保存。
 notice-settings-transfers = 传输设置已保存。
 notice-settings-notifications = 通知偏好已保存。
 notice-settings-platform = 窗口与托盘偏好已保存。
+notice-settings-exported = 不含凭据的设置已导出到 { $path }。
+notice-settings-imported = 设置已导入；本机保存的密码未被更改。
 notice-diagnostics-exported = 脱敏诊断已导出到 { $path }。
 
 tray-show = 显示 AriaDeck

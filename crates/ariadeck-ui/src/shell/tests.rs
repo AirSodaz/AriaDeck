@@ -2619,7 +2619,7 @@ fn transfer_policy_integrity_toggle_updates_draft(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn about_settings_category_is_read_only(cx: &mut TestAppContext) {
+fn about_settings_category_has_no_footer_save(cx: &mut TestAppContext) {
     let initial = SettingsView {
         language: LanguagePreferenceView::English,
         ..SettingsView::default()
@@ -2633,11 +2633,82 @@ fn about_settings_category_is_read_only(cx: &mut TestAppContext) {
         assert_eq!(shell.settings_page.active_category, SettingsCategory::About);
         assert_eq!(shell.t("settings-nav-about"), "About");
         assert_eq!(shell.t("settings-about-version"), "Version");
-        // About is read-only: render path must not require a save footer.
+        // About actions are self-contained: the category has no draft save footer.
         let _ = shell.render_settings_about(cx);
         let footer = shell.render_settings_footer(cx);
         drop(footer);
         assert!(shell.pending_settings_save.is_none());
+    });
+}
+
+#[gpui::test]
+fn settings_import_routes_through_the_normal_save_without_a_password_update(
+    cx: &mut TestAppContext,
+) {
+    let initial = SettingsView {
+        language: LanguagePreferenceView::English,
+        download_directory: "C:/Downloads".into(),
+        ..SettingsView::default()
+    };
+    let (view, cx) =
+        cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let _subscription = view.update(cx, |_, cx| {
+        cx.subscribe(&view, move |_, _, event: &AppShellEvent, _| {
+            if let AppShellEvent::SettingsSaveRequested(request) = event {
+                sink.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(request.clone());
+            }
+        })
+    });
+    let imported = SettingsView {
+        language: LanguagePreferenceView::ChineseSimplified,
+        download_directory: "D:/Imported".into(),
+        ..SettingsView::default()
+    };
+
+    let (request_id, requested) = view.update(cx, |shell, cx| {
+        shell.set_settings_import_result(
+            SettingsImportResultView {
+                path: "D:/ariadeck-settings.json".into(),
+                outcome: SettingsImportOutcomeView::Ready(Box::new(imported.clone())),
+            },
+            cx,
+        );
+        let pending = shell
+            .pending_settings_save
+            .as_ref()
+            .expect("import must use settings persistence");
+        assert_eq!(pending.source, SettingsSaveSource::Import);
+        (pending.request_id, pending.settings.clone())
+    });
+    let requests = events
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].settings, imported);
+    assert_eq!(
+        requests[0].proxy_password,
+        ProxyPasswordUpdateView::Unchanged
+    );
+    drop(requests);
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.set_settings_save_result(
+            SettingsSaveResultView {
+                request_id,
+                settings: requested,
+                outcome: SettingsSaveOutcomeView::Success,
+            },
+            window,
+            cx,
+        );
+        assert_eq!(shell.settings.download_directory, "D:/Imported");
+        assert!(shell.status_notice.as_ref().is_some_and(|notice| {
+            notice.message.contains("设置已导入") && !notice.is_error
+        }));
     });
 }
 
@@ -2680,6 +2751,60 @@ fn diagnostic_snapshot_redacts_the_active_remote_endpoint(cx: &mut TestAppContex
         assert!(!summary.contains("C:/private"));
         assert!(!summary.contains("token=private"));
     });
+}
+
+#[gpui::test]
+fn settings_import_detaches_a_saved_password_when_proxy_identity_changes(cx: &mut TestAppContext) {
+    let initial = SettingsView {
+        download_directory: "C:/Downloads".into(),
+        download_proxy: DownloadProxySettingsView {
+            mode: ProxyModeView::Manual,
+            all_proxy: "http://old-proxy.example:8080".into(),
+            username: "proxy-user".into(),
+            has_password: true,
+            ..DownloadProxySettingsView::default()
+        },
+        ..SettingsView::default()
+    };
+    let (view, cx) =
+        cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let _subscription = view.update(cx, |_, cx| {
+        cx.subscribe(&view, move |_, _, event: &AppShellEvent, _| {
+            if let AppShellEvent::SettingsSaveRequested(request) = event {
+                sink.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(request.clone());
+            }
+        })
+    });
+    let imported = SettingsView {
+        download_directory: "C:/Downloads".into(),
+        download_proxy: DownloadProxySettingsView {
+            mode: ProxyModeView::Manual,
+            all_proxy: "http://new-proxy.example:8080".into(),
+            username: "proxy-user".into(),
+            has_password: false,
+            ..DownloadProxySettingsView::default()
+        },
+        ..SettingsView::default()
+    };
+
+    view.update(cx, |shell, cx| {
+        shell.set_settings_import_result(
+            SettingsImportResultView {
+                path: "D:/ariadeck-settings.json".into(),
+                outcome: SettingsImportOutcomeView::Ready(Box::new(imported)),
+            },
+            cx,
+        );
+    });
+    let requests = events
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].proxy_password, ProxyPasswordUpdateView::Detach);
 }
 
 #[gpui::test]

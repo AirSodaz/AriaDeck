@@ -20,6 +20,8 @@ use url::Url;
 use uuid::Uuid;
 
 pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 9;
+/// Version of the user-facing settings transfer document.
+pub const SETTINGS_EXPORT_FORMAT_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -482,6 +484,194 @@ pub struct AppSettings {
     pub ui: UiPreferences,
 }
 
+/// Portable settings representation used by explicit export/import actions.
+///
+/// This intentionally does not contain `ProxyCredentialRef`; credentials stay
+/// in the OS keychain and are never copied into a transfer document.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsExportDocument {
+    export_version: u32,
+    settings_schema_version: u32,
+    color_scheme: ColorScheme,
+    language: LanguagePreference,
+    download_directory: PathBuf,
+    download_proxy: SettingsExportProxy,
+    speed_limits: SpeedLimitSettings,
+    transfer_policy: TransferPolicySettings,
+    notifications: NotificationSettings,
+    platform: PlatformSettings,
+    ui: UiPreferences,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsExportProxy {
+    mode: DownloadProxyMode,
+    all_proxy: Option<String>,
+    http_proxy: Option<String>,
+    https_proxy: Option<String>,
+    ftp_proxy: Option<String>,
+    no_proxy: Vec<String>,
+    username: Option<String>,
+    check_certificate: bool,
+}
+
+impl From<&DownloadProxySettings> for SettingsExportProxy {
+    fn from(proxy: &DownloadProxySettings) -> Self {
+        Self {
+            mode: proxy.mode,
+            all_proxy: proxy.all_proxy.clone(),
+            http_proxy: proxy.http_proxy.clone(),
+            https_proxy: proxy.https_proxy.clone(),
+            ftp_proxy: proxy.ftp_proxy.clone(),
+            no_proxy: proxy.no_proxy.clone(),
+            username: proxy.username.clone(),
+            check_certificate: proxy.check_certificate,
+        }
+    }
+}
+
+impl SettingsExportDocument {
+    fn from_settings(settings: &AppSettings) -> Self {
+        Self {
+            export_version: SETTINGS_EXPORT_FORMAT_VERSION,
+            settings_schema_version: CURRENT_SETTINGS_SCHEMA_VERSION,
+            color_scheme: settings.color_scheme,
+            language: settings.language,
+            download_directory: settings.download_directory.clone(),
+            download_proxy: SettingsExportProxy::from(&settings.download_proxy),
+            speed_limits: settings.speed_limits,
+            transfer_policy: settings.transfer_policy,
+            notifications: settings.notifications,
+            platform: settings.platform,
+            ui: settings.ui,
+        }
+    }
+
+    fn into_settings(self, current: &AppSettings) -> Result<AppSettings, SettingsError> {
+        if self.export_version != SETTINGS_EXPORT_FORMAT_VERSION {
+            return Err(SettingsError::UnsupportedExportVersion {
+                found: self.export_version,
+                supported: SETTINGS_EXPORT_FORMAT_VERSION,
+            });
+        }
+        if self.settings_schema_version != CURRENT_SETTINGS_SCHEMA_VERSION {
+            return Err(SettingsError::UnsupportedSchemaVersion {
+                found: self.settings_schema_version,
+                supported: CURRENT_SETTINGS_SCHEMA_VERSION,
+            });
+        }
+        let same_proxy_identity = self.download_proxy.mode == current.download_proxy.mode
+            && self.download_proxy.all_proxy == current.download_proxy.all_proxy
+            && self.download_proxy.http_proxy == current.download_proxy.http_proxy
+            && self.download_proxy.https_proxy == current.download_proxy.https_proxy
+            && self.download_proxy.ftp_proxy == current.download_proxy.ftp_proxy
+            && self.download_proxy.no_proxy == current.download_proxy.no_proxy
+            && self.download_proxy.username == current.download_proxy.username;
+        let credential = same_proxy_identity
+            .then_some(current.download_proxy.credential)
+            .flatten();
+        let settings = AppSettings {
+            color_scheme: self.color_scheme,
+            language: self.language,
+            download_directory: self.download_directory,
+            download_proxy: DownloadProxySettings {
+                mode: self.download_proxy.mode,
+                all_proxy: self.download_proxy.all_proxy,
+                http_proxy: self.download_proxy.http_proxy,
+                https_proxy: self.download_proxy.https_proxy,
+                ftp_proxy: self.download_proxy.ftp_proxy,
+                no_proxy: self.download_proxy.no_proxy,
+                username: self.download_proxy.username,
+                credential,
+                check_certificate: self.download_proxy.check_certificate,
+            },
+            speed_limits: self.speed_limits,
+            transfer_policy: self.transfer_policy,
+            notifications: self.notifications,
+            platform: self.platform,
+            ui: self.ui,
+        };
+        settings.validate()?;
+        Ok(settings)
+    }
+}
+
+/// Serialize settings to the portable, credential-free transfer format.
+pub fn export_settings_json(settings: &AppSettings) -> Result<String, SettingsError> {
+    settings.validate()?;
+    serde_json::to_string_pretty(&SettingsExportDocument::from_settings(settings))
+        .map_err(SettingsError::Serialize)
+}
+
+/// Parse a portable settings document while preserving the current keychain credential.
+pub fn import_settings_json(
+    payload: &str,
+    current: &AppSettings,
+) -> Result<AppSettings, SettingsError> {
+    let document: SettingsExportDocument =
+        serde_json::from_str(payload).map_err(|error| SettingsError::MalformedExport {
+            message: error.to_string(),
+        })?;
+    document.into_settings(current)
+}
+
+/// Write a portable settings document to a user-selected path.
+pub fn export_settings_to_path(
+    path: impl AsRef<Path>,
+    settings: &AppSettings,
+) -> Result<(), SettingsError> {
+    let path = path.as_ref();
+    let payload = export_settings_json(settings)?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)
+        .map_err(|source| io_error("create the export directory", parent, source))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| SettingsError::InvalidStorePath {
+            path: path.to_path_buf(),
+        })?;
+    let temp_path = parent.join(format!(
+        ".{}.{}.tmp",
+        file_name.to_string_lossy(),
+        Uuid::new_v4()
+    ));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .map_err(|source| io_error("create the temporary export file", &temp_path, source))?;
+        file.write_all(payload.as_bytes())
+            .and_then(|_| file.write_all(b"\n"))
+            .map_err(|source| io_error("write the settings export", &temp_path, source))?;
+        file.flush()
+            .and_then(|_| file.sync_all())
+            .map_err(|source| io_error("flush the settings export", &temp_path, source))?;
+        replace_file(&temp_path, path)
+            .map_err(|source| io_error("replace the settings export", path, source))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
+}
+
+/// Read and validate a portable settings document from a user-selected path.
+pub fn import_settings_from_path(
+    path: impl AsRef<Path>,
+    current: &AppSettings,
+) -> Result<AppSettings, SettingsError> {
+    let path = path.as_ref();
+    let payload = fs::read_to_string(path)
+        .map_err(|source| io_error("read the settings export", path, source))?;
+    import_settings_json(&payload, current)
+}
+
 impl AppSettings {
     #[must_use]
     pub fn new(download_directory: impl Into<PathBuf>) -> Self {
@@ -538,6 +728,10 @@ pub enum SettingsError {
     InvalidTransferPolicy { field: &'static str, reason: String },
     #[error("unsupported settings schema version {found}; this build supports {supported}")]
     UnsupportedSchemaVersion { found: u32, supported: u32 },
+    #[error("unsupported settings export version {found}; this build supports {supported}")]
+    UnsupportedExportVersion { found: u32, supported: u32 },
+    #[error("malformed settings export: {message}")]
+    MalformedExport { message: String },
     #[error("malformed settings document at {path}: {message}")]
     MalformedDocument { path: PathBuf, message: String },
     #[error("failed to serialize settings: {0}")]
@@ -1859,6 +2053,65 @@ mod tests {
             fs::read_to_string(store.path()).expect("read future JSON"),
             future
         );
+    }
+
+    #[test]
+    fn portable_settings_round_trip_omits_credentials_and_preserves_current_keychain_ref() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let mut expected = settings(root.path());
+        let exported_credential = ProxyCredentialRef::new();
+        expected.download_proxy = DownloadProxySettings {
+            mode: DownloadProxyMode::Manual,
+            all_proxy: Some("http://proxy.example:8080".into()),
+            username: Some("proxy-user".into()),
+            credential: Some(exported_credential),
+            ..DownloadProxySettings::default()
+        };
+        let payload = export_settings_json(&expected).expect("export settings");
+        assert!(!payload.contains("credential"));
+        assert!(!payload.contains(&exported_credential.as_uuid().to_string()));
+        assert!(payload.contains("proxy-user"));
+
+        let current_credential = ProxyCredentialRef::new();
+        let mut current = expected.clone();
+        current.download_proxy.credential = Some(current_credential);
+        let imported = import_settings_json(&payload, &current).expect("import settings");
+        assert_eq!(imported.download_directory, expected.download_directory);
+        assert_eq!(
+            imported.download_proxy.all_proxy,
+            expected.download_proxy.all_proxy
+        );
+        assert_eq!(
+            imported.download_proxy.username,
+            expected.download_proxy.username
+        );
+        assert_eq!(imported.download_proxy.credential, Some(current_credential));
+
+        current.download_proxy.all_proxy = Some("http://different.example:8080".into());
+        let imported = import_settings_json(&payload, &current).expect("import changed proxy");
+        assert!(imported.download_proxy.credential.is_none());
+    }
+
+    #[test]
+    fn portable_settings_reject_unknown_fields_and_future_export_versions() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let current = settings(root.path());
+        let payload = export_settings_json(&current).expect("export settings");
+        let mut document: serde_json::Value = serde_json::from_str(&payload).expect("parse export");
+        document["unexpected"] = serde_json::json!(true);
+        let unknown = serde_json::to_string(&document).expect("serialize unknown field");
+        assert!(matches!(
+            import_settings_json(&unknown, &current),
+            Err(SettingsError::MalformedExport { .. })
+        ));
+
+        let mut document: serde_json::Value = serde_json::from_str(&payload).expect("parse export");
+        document["export_version"] = serde_json::json!(SETTINGS_EXPORT_FORMAT_VERSION + 1);
+        let future = serde_json::to_string(&document).expect("serialize future export");
+        assert!(matches!(
+            import_settings_json(&future, &current),
+            Err(SettingsError::UnsupportedExportVersion { .. })
+        ));
     }
 
     #[test]

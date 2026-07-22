@@ -56,15 +56,86 @@ impl AppShell {
                     }
                     SettingsSaveSource::Notifications => self.t("notice-settings-notifications"),
                     SettingsSaveSource::Platform => self.t("notice-settings-platform"),
+                    SettingsSaveSource::Import => self.t("notice-settings-imported"),
                 };
                 self.show_notice(message, false, cx);
             }
             SettingsSaveOutcomeView::Failure(error) => {
-                self.settings_page.error = Some(error);
-                cx.notify();
+                if source == SettingsSaveSource::Import {
+                    self.show_notice(self.te(&error), true, cx);
+                } else {
+                    self.settings_page.error = Some(error);
+                    cx.notify();
+                }
             }
         }
         let _ = window;
+    }
+
+    pub fn set_settings_export_result(
+        &mut self,
+        result: SettingsExportResultView,
+        cx: &mut Context<Self>,
+    ) {
+        match result.outcome {
+            SettingsExportOutcomeView::Success => self.show_notice(
+                self.t_args(
+                    "notice-settings-exported",
+                    &[("path", FluentValue::from(result.path))],
+                ),
+                false,
+                cx,
+            ),
+            SettingsExportOutcomeView::Failure(error) => {
+                self.show_notice(self.te(&error), true, cx);
+            }
+        }
+    }
+
+    pub fn set_settings_import_result(
+        &mut self,
+        result: SettingsImportResultView,
+        cx: &mut Context<Self>,
+    ) {
+        match result.outcome {
+            SettingsImportOutcomeView::Ready(settings) => {
+                if self.pending_settings_save.is_some() {
+                    let error = OperationErrorView {
+                        code: "settings.import_busy".into(),
+                        summary: "Another settings change is still being saved.".into(),
+                        retryable: true,
+                    };
+                    self.show_notice(self.te(&error), true, cx);
+                    return;
+                }
+                let settings = *settings;
+                let preserve_proxy_credential = self.settings.download_proxy.mode
+                    == settings.download_proxy.mode
+                    && self.settings.download_proxy.all_proxy == settings.download_proxy.all_proxy
+                    && self.settings.download_proxy.http_proxy
+                        == settings.download_proxy.http_proxy
+                    && self.settings.download_proxy.https_proxy
+                        == settings.download_proxy.https_proxy
+                    && self.settings.download_proxy.ftp_proxy == settings.download_proxy.ftp_proxy
+                    && self.settings.download_proxy.no_proxy == settings.download_proxy.no_proxy
+                    && self.settings.download_proxy.username == settings.download_proxy.username;
+                let credential_update =
+                    if self.settings.download_proxy.has_password && !preserve_proxy_credential {
+                        ProxyPasswordUpdateView::Detach
+                    } else {
+                        ProxyPasswordUpdateView::Unchanged
+                    };
+                self.request_settings_save(
+                    settings,
+                    credential_update,
+                    SettingsSaveSource::Import,
+                    cx,
+                );
+            }
+            SettingsImportOutcomeView::Failure(error) => {
+                self.show_notice(self.te(&error), true, cx);
+            }
+        }
     }
 
     // --- apply_settings..apply_settings ---
@@ -387,6 +458,7 @@ impl AppShell {
                 .into(),
             has_password: match &password_update {
                 ProxyPasswordUpdateView::Unchanged => self.settings.download_proxy.has_password,
+                ProxyPasswordUpdateView::Detach => false,
                 ProxyPasswordUpdateView::Clear => false,
                 ProxyPasswordUpdateView::Set(_) => true,
             },
@@ -753,6 +825,90 @@ impl AppShell {
                             path: path.to_string_lossy().into_owned(),
                         },
                     ));
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(error)) => {
+                    let error = OperationErrorView {
+                        code: "settings.path_picker_failed".into(),
+                        summary: format!("Path picker failed: {error}"),
+                        retryable: true,
+                    };
+                    let message = this.te(&error);
+                    this.show_notice(message, true, cx);
+                }
+                Err(error) => {
+                    let error = OperationErrorView {
+                        code: "settings.path_picker_closed".into(),
+                        summary: format!("Path picker closed unexpectedly: {error}"),
+                        retryable: true,
+                    };
+                    let message = this.te(&error);
+                    this.show_notice(message, true, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn export_settings_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_settings_save.is_some() {
+            return;
+        }
+        let initial_directory = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let selected = cx.prompt_for_new_path(&initial_directory, Some("ariadeck-settings.json"));
+        cx.spawn_in(window, async move |this, cx| {
+            let selected = selected.await;
+            let _ = this.update_in(cx, |this, _window, cx| match selected {
+                Ok(Ok(Some(path))) => cx.emit(AppShellEvent::SettingsExportRequested(
+                    SettingsExportRequestView {
+                        path: path.to_string_lossy().into_owned(),
+                    },
+                )),
+                Ok(Ok(None)) => {}
+                Ok(Err(error)) => {
+                    let error = OperationErrorView {
+                        code: "settings.path_picker_failed".into(),
+                        summary: format!("Path picker failed: {error}"),
+                        retryable: true,
+                    };
+                    let message = this.te(&error);
+                    this.show_notice(message, true, cx);
+                }
+                Err(error) => {
+                    let error = OperationErrorView {
+                        code: "settings.path_picker_closed".into(),
+                        summary: format!("Path picker closed unexpectedly: {error}"),
+                        retryable: true,
+                    };
+                    let message = this.te(&error);
+                    this.show_notice(message, true, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn import_settings_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_settings_save.is_some() {
+            return;
+        }
+        let selected = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(self.t("settings-import-picker-prompt").into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let selected = selected.await;
+            let _ = this.update_in(cx, |this, _window, cx| match selected {
+                Ok(Ok(Some(paths))) => {
+                    if let Some(path) = paths.into_iter().next() {
+                        cx.emit(AppShellEvent::SettingsImportRequested(
+                            SettingsImportRequestView {
+                                path: path.to_string_lossy().into_owned(),
+                            },
+                        ));
+                    }
                 }
                 Ok(Ok(None)) => {}
                 Ok(Err(error)) => {
@@ -2622,6 +2778,13 @@ impl AppShell {
         let runtime_title = self.t("settings-about-runtime");
         let platform_label = self.t("settings-about-platform");
         let aria2_label = self.t("settings-about-aria2-version");
+        let transfer_title = self.t("settings-transfer-title");
+        let settings_export_label = self.t("settings-export");
+        let settings_export_description = self.t("settings-export-description");
+        let settings_export_aria = self.t("settings-export-aria");
+        let settings_import_label = self.t("settings-import");
+        let settings_import_description = self.t("settings-import-description");
+        let settings_import_aria = self.t("settings-import-aria");
         let diagnostics_title = self.t("settings-diagnostics-title");
         let diagnostics_label = self.t("settings-diagnostics-export");
         let diagnostics_description = self.t("settings-diagnostics-description");
@@ -2650,6 +2813,27 @@ impl AppShell {
                     .update(cx, |shell, cx| shell.export_diagnostics(window, cx))
                     .ok();
             });
+        let transfer_pending = self.pending_settings_save.is_some();
+        let export_shell = cx.entity().downgrade();
+        let settings_export_button = Button::new("export-settings", settings_export_label.clone())
+            .icon(IconName::Download)
+            .aria_label(settings_export_aria)
+            .disabled(transfer_pending)
+            .on_click(move |_, window, cx| {
+                export_shell
+                    .update(cx, |shell, cx| shell.export_settings_file(window, cx))
+                    .ok();
+            });
+        let import_shell = cx.entity().downgrade();
+        let settings_import_button = Button::new("import-settings", settings_import_label.clone())
+            .icon(IconName::ArrowUp)
+            .aria_label(settings_import_aria)
+            .disabled(transfer_pending)
+            .on_click(move |_, window, cx| {
+                import_shell
+                    .update(cx, |shell, cx| shell.import_settings_file(window, cx))
+                    .ok();
+            });
 
         div()
             .flex()
@@ -2674,6 +2858,21 @@ impl AppShell {
                 settings_card_owned(runtime_title, colors)
                     .child(settings_info_row_owned(platform_label, platform, colors))
                     .child(settings_info_row_owned(aria2_label, aria2_version, colors)),
+            )
+            .child(
+                settings_card_owned(transfer_title, colors)
+                    .child(settings_row_owned(
+                        settings_export_label,
+                        Some(settings_export_description),
+                        settings_export_button.render(colors),
+                        colors,
+                    ))
+                    .child(settings_row_owned(
+                        settings_import_label,
+                        Some(settings_import_description),
+                        settings_import_button.render(colors),
+                        colors,
+                    )),
             )
             .child(
                 settings_card_owned(diagnostics_title, colors).child(settings_row_owned(

@@ -1057,6 +1057,7 @@ pub(crate) fn map_settings_request(
 ) -> Result<(AppSettings, ProxyPasswordUpdate), String> {
     let password = match password {
         ProxyPasswordUpdateView::Unchanged => ProxyPasswordUpdate::Unchanged,
+        ProxyPasswordUpdateView::Detach => ProxyPasswordUpdate::Detach,
         ProxyPasswordUpdateView::Clear => ProxyPasswordUpdate::Clear,
         ProxyPasswordUpdateView::Set(password) => {
             let password = password.into_inner();
@@ -1068,6 +1069,7 @@ pub(crate) fn map_settings_request(
     };
     let credential = match &password {
         ProxyPasswordUpdate::Unchanged => current.download_proxy.credential,
+        ProxyPasswordUpdate::Detach => None,
         ProxyPasswordUpdate::Clear => None,
         ProxyPasswordUpdate::Set(_) => Some(current.download_proxy.credential.unwrap_or_default()),
     };
