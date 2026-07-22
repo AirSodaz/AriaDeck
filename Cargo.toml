@@ -48,7 +48,7 @@ tokio-tungstenite = { version = "0.28.0", default-features = false, features = [
 trash = "5.2.3"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
-tray-icon = { version = "0.24.1", default-features = false }
+tray-icon = { version = "0.24.1", default-features = false, features = ["gtk"] }
 url = { version = "2.5.7", features = ["serde"] }
 unic-langid = { version = "0.9.6", features = ["macros"] }
 uuid = { version = "1.18.1", features = ["serde", "v4"] }

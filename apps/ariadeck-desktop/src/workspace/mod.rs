@@ -74,6 +74,7 @@ use ariadeck_ui::{
     format_speed_limit_field,
 };
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
+#[cfg(target_os = "windows")]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use secrecy::SecretString;
 
