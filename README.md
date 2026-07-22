@@ -11,6 +11,7 @@ Native Rust desktop client for [aria2](https://aria2.github.io/). GPUI UI; indep
 
 - Rust 1.96.0 (`rust-toolchain.toml`)
 - Windows / macOS / Linux with GPUI support
+- CI (`.github/workflows/ci.yml`): verify on Windows, macOS, and Ubuntu; portable package still Windows-only on `main`
 
 ```sh
 cargo run -p ariadeck-desktop
@@ -19,6 +20,8 @@ cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+Linux system packages for local GPUI builds roughly match the `Install Linux dependencies` step in CI (build tools, wayland/xkb, fontconfig, gtk/appindicator, libsecret, etc.).
 
 ### External aria2 RPC
 

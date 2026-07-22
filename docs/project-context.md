@@ -145,7 +145,7 @@ Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, ad
 | ACCESS | Manual high-DPI check (125%/150% Windows) |
 | SEC | Manual Windows reparse-point check; no support-bundle UI |
 | PERF | Manual memory under real aria2; no APM |
-| RELEASE | No prod signing cert; no macOS/Linux packages; no aria2 network installer |
+| RELEASE | No prod signing cert; no macOS/Linux **packages** (CI verify covers win/mac/linux); no aria2 network installer |
 
 ### Explicitly deferred
 

@@ -138,7 +138,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | --- | --- | --- |
 | E1 | macOS app bundle + notarization path (when signing ready) | Motrix matrix |
 | E2 | Linux AppImage and/or deb/rpm or Flatpak | Reach |
-| E3 | CI matrix for non-Windows smoke | Regressions |
+| E3 | CI matrix for non-Windows smoke | **Done (verify)** — `ci.yml` runs fmt/test/clippy/desktop release on windows-latest, macos-latest, ubuntu-latest; portable artifact still Windows-only |
 | E4 | Optional offline **aria2 core pack** (checksummed, user-initiated) | Still not silent network channel |
 
 **Exit:** Primary artifacts documented per OS; Windows remains best-supported until E1–E2 land.
