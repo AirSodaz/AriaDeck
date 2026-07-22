@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use notify_rust::Notification;
 use tray_icon::{
-    Icon, TrayIcon, TrayIconBuilder, TrayIconEvent,
+    Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
 };
 
@@ -105,15 +105,10 @@ impl SystemTray {
     pub fn poll_actions(&self) -> Vec<TrayAction> {
         let mut actions = Vec::new();
         while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            if matches!(
-                event,
-                TrayIconEvent::DoubleClick { .. } | TrayIconEvent::Click { .. }
-            ) {
-                // Prefer double-click restore; single click still shows so users
-                // without double-click habit can recover the window.
-                if !actions.contains(&TrayAction::Show) {
-                    actions.push(TrayAction::Show);
-                }
+            // Only left-click restores the window. Right-click must open the
+            // context menu without activate/raise, or the menu is dismissed.
+            if is_tray_show_click(&event) {
+                push_unique(&mut actions, TrayAction::Show);
             }
         }
         let ids = TRAY_MENU_IDS.get();
@@ -133,6 +128,23 @@ impl SystemTray {
             }
         }
         actions
+    }
+}
+
+/// Left single-click (button up) or left double-click restores the window.
+/// Right/middle clicks are ignored so the tray context menu is not interrupted.
+fn is_tray_show_click(event: &TrayIconEvent) -> bool {
+    match event {
+        TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        }
+        | TrayIconEvent::DoubleClick {
+            button: MouseButton::Left,
+            ..
+        } => true,
+        _ => false,
     }
 }
 
@@ -188,6 +200,53 @@ pub fn available_disk_space(directory: &std::path::Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tray_icon::{Rect, TrayIconId, dpi::PhysicalPosition};
+
+    fn empty_rect() -> Rect {
+        Rect::default()
+    }
+
+    fn sample_click(button: MouseButton, button_state: MouseButtonState) -> TrayIconEvent {
+        TrayIconEvent::Click {
+            id: TrayIconId::new("test"),
+            position: PhysicalPosition::new(0.0, 0.0),
+            rect: empty_rect(),
+            button,
+            button_state,
+        }
+    }
+
+    #[test]
+    fn tray_show_only_on_left_click_up_or_double_click() {
+        assert!(is_tray_show_click(&sample_click(
+            MouseButton::Left,
+            MouseButtonState::Up
+        )));
+        assert!(!is_tray_show_click(&sample_click(
+            MouseButton::Left,
+            MouseButtonState::Down
+        )));
+        assert!(!is_tray_show_click(&sample_click(
+            MouseButton::Right,
+            MouseButtonState::Up
+        )));
+        assert!(!is_tray_show_click(&sample_click(
+            MouseButton::Right,
+            MouseButtonState::Down
+        )));
+        assert!(is_tray_show_click(&TrayIconEvent::DoubleClick {
+            id: TrayIconId::new("test"),
+            position: PhysicalPosition::new(0.0, 0.0),
+            rect: empty_rect(),
+            button: MouseButton::Left,
+        }));
+        assert!(!is_tray_show_click(&TrayIconEvent::DoubleClick {
+            id: TrayIconId::new("test"),
+            position: PhysicalPosition::new(0.0, 0.0),
+            rect: empty_rect(),
+            button: MouseButton::Right,
+        }));
+    }
 
     #[test]
     fn tray_icon_bytes_decode() {

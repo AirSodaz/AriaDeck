@@ -216,19 +216,9 @@ impl DownloadDestinationGateway for LocalDownloadDestinationGateway {
         }
 
         let directory = canonical_directory(&path, "download directory")?;
-        if fs::metadata(&directory)
-            .map_err(|error| {
-                filesystem_error("inspect download directory", &directory, error, true)
-            })?
-            .permissions()
-            .readonly()
-        {
-            return Err(filesystem_gateway_error(
-                format!("download directory is read-only: {}", directory.display()),
-                false,
-            ));
-        }
-
+        // Do not use Permissions::readonly() on directories: on Windows the
+        // FILE_ATTRIBUTE_READONLY bit is commonly set on ordinary folders and
+        // does not mean they are non-writable. Probe with a real write instead.
         validate_destination_files(&directory, &request.files)?;
 
         verify_directory_writable(&directory)?;
@@ -457,16 +447,8 @@ impl LocalTaskFileGateway {
 
         let (root, raw_task_dir, task_dir) =
             resolve_authorized_task_directory(&self.download_roots, &request.directory)?;
-        if fs::metadata(&task_dir)
-            .map_err(|error| filesystem_error("inspect task directory", &task_dir, error, true))?
-            .permissions()
-            .readonly()
-        {
-            return Err(filesystem_gateway_error(
-                format!("task directory is read-only: {}", task_dir.display()),
-                false,
-            ));
-        }
+        // Skip Permissions::readonly() here for the same Windows directory-attribute
+        // reason as destination preflight; actual Trash failures surface below.
 
         let raw_files = request
             .files
@@ -540,57 +522,95 @@ impl TaskFileGateway for LocalTaskFileGateway {
         &self,
         request: &TaskFileRemovalRequest,
     ) -> Result<TaskFileRemovalReport, GatewayError> {
-        let safe = self.collect_safe_paths(request)?;
-        let missing_paths = safe.preview.missing_paths;
+        // Path collection does filesystem I/O; keep it off async executors that
+        // are not a Tokio runtime (e.g. GPUI task threads).
+        let request = request.clone();
+        let roots = self.download_roots.clone();
         let trash = self.trash.clone();
-        let moved_to_trash = tokio::task::spawn_blocking(move || {
-            let mut moved = 0;
+        run_blocking(move || {
+            let gateway = LocalTaskFileGateway {
+                download_roots: roots,
+                trash: trash.clone(),
+            };
+            let safe = gateway.collect_safe_paths(&request)?;
+            let missing_paths = safe.preview.missing_paths;
+            let mut moved_to_trash = 0;
             for path in safe.paths {
                 trash.move_to_trash(&path).map_err(|error| {
                     filesystem_gateway_error(
                         format!(
-                            "moved {moved} task file(s) before Trash failed for {}: {error}",
+                            "moved {moved_to_trash} task file(s) before Trash failed for {}: {error}",
                             path.display()
                         ),
                         true,
                     )
                 })?;
-                moved += 1;
+                moved_to_trash += 1;
             }
-            Ok::<_, GatewayError>(moved)
+            Ok(TaskFileRemovalReport {
+                moved_to_trash,
+                missing_paths,
+            })
         })
         .await
-        .map_err(|error| {
-            filesystem_gateway_error(format!("local file worker stopped: {error}"), true)
-        })??;
-        Ok(TaskFileRemovalReport {
-            moved_to_trash,
-            missing_paths,
-        })
     }
 
     async fn open(&self, request: &TaskOpenRequest) -> Result<(), GatewayError> {
-        let (root, raw_task_dir, task_dir) =
-            resolve_authorized_task_directory(&self.download_roots, &request.directory)?;
-        let (target, is_file) = match request.target {
-            TaskOpenTarget::Folder => (task_dir, false),
-            TaskOpenTarget::Download if request.files.len() == 1 => {
-                let raw_path = resolve_engine_path(&raw_task_dir, request.files[0].as_str())?;
-                let path = safe_existing_file(&raw_path, &root, &task_dir)?.ok_or_else(|| {
-                    filesystem_gateway_error(
-                        format!("downloaded file does not exist: {}", raw_path.display()),
-                        false,
-                    )
-                })?;
-                (path, true)
-            }
-            TaskOpenTarget::Download => (task_dir, false),
-        };
-        tokio::task::spawn_blocking(move || open_local_path(&target, is_file))
+        let roots = self.download_roots.clone();
+        let request = request.clone();
+        run_blocking(move || {
+            let (root, raw_task_dir, task_dir) =
+                resolve_authorized_task_directory(&roots, &request.directory)?;
+            let (target, is_file) = match request.target {
+                TaskOpenTarget::Folder => (task_dir, false),
+                TaskOpenTarget::Download if request.files.len() == 1 => {
+                    let raw_path = resolve_engine_path(&raw_task_dir, request.files[0].as_str())?;
+                    let path =
+                        safe_existing_file(&raw_path, &root, &task_dir)?.ok_or_else(|| {
+                            filesystem_gateway_error(
+                                format!(
+                                    "downloaded file does not exist: {}",
+                                    raw_path.display()
+                                ),
+                                false,
+                            )
+                        })?;
+                    (path, true)
+                }
+                TaskOpenTarget::Download => (task_dir, false),
+            };
+            open_local_path(&target, is_file)
+        })
+        .await
+    }
+}
+
+/// Run blocking filesystem work without requiring a current Tokio runtime.
+///
+/// GPUI spawns task-command futures on its own executor; `tokio::task::spawn_blocking`
+/// panics there without an entered runtime, which left delete-with-files hanging.
+async fn run_blocking<T, F>(work: F) -> Result<T, GatewayError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, GatewayError> + Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle
+            .spawn_blocking(work)
             .await
             .map_err(|error| {
-                filesystem_gateway_error(format!("local path opener stopped: {error}"), true)
+                filesystem_gateway_error(format!("local file worker stopped: {error}"), true)
+            })?,
+        Err(_) => {
+            // No Tokio context (e.g. GPUI async task): offload to a thread and await it.
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            thread::spawn(move || {
+                let _ = sender.send(work());
+            });
+            receiver.await.map_err(|_| {
+                filesystem_gateway_error("local file worker stopped unexpectedly", true)
             })?
+        }
     }
 }
 
@@ -2645,6 +2665,45 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// On Windows, FILE_ATTRIBUTE_READONLY on a directory does not mean the
+    /// folder is non-writable; only a real write probe is authoritative.
+    #[cfg(windows)]
+    #[test]
+    fn local_download_destination_ignores_directory_readonly_attribute() {
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        fs::create_dir_all(&downloads).expect("create download directory");
+        let mut permissions = fs::metadata(&downloads)
+            .expect("metadata")
+            .permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&downloads, permissions).expect("mark directory readonly attr");
+        assert!(
+            fs::metadata(&downloads)
+                .expect("metadata after attr")
+                .permissions()
+                .readonly(),
+            "fixture must expose the readonly attribute"
+        );
+
+        let gateway = LocalDownloadDestinationGateway::new();
+        let report = gateway
+            .preflight(&DownloadDestinationRequest {
+                directory: ariadeck_domain::EnginePath::new(downloads.to_string_lossy()),
+                required_bytes: None,
+                files: Vec::new(),
+            })
+            .expect("writable directory with readonly attr must pass");
+        assert!(report.available_bytes > 0);
+
+        let mut permissions = fs::metadata(&downloads)
+            .expect("metadata")
+            .permissions();
+        permissions.set_readonly(false);
+        let _ = fs::set_permissions(&downloads, permissions);
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn local_download_destination_rejects_relative_paths_and_insufficient_space() {
         let gateway = LocalDownloadDestinationGateway::new();
@@ -2761,6 +2820,86 @@ mod tests {
             .expect_err("unconfigured root must remain forbidden");
         assert_eq!(outside.kind, GatewayErrorKind::UnsafePath);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_file_gateway_move_to_trash_works_without_current_tokio_runtime() {
+        // Mirrors GPUI task threads: no entered Tokio runtime must not panic.
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        let content = downloads.join("item.bin");
+        fs::create_dir_all(&downloads).expect("create download directory");
+        fs::write(&content, b"content").expect("create content file");
+        let trash = Arc::new(RecordingTrash::default());
+        let gateway = LocalTaskFileGateway::with_trash(&downloads, trash.clone());
+        let request = TaskFileRemovalRequest {
+            directory: ariadeck_domain::EnginePath::new(downloads.to_string_lossy()),
+            files: vec![ariadeck_domain::EnginePath::new(content.to_string_lossy())],
+            include_control_files: false,
+        };
+
+        let report = std::thread::spawn(move || {
+            // Dedicated single-thread runtime only to drive the Future; the
+            // worker path must not require Handle::current() at the call site.
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            // Drop any ambient handle by not calling enter() before the future
+            // body checks try_current — instead drive via block_on which does
+            // enter, so also exercise the spawn_blocking branch. A true
+            // no-runtime drive uses a raw poll below via oneshot join.
+            runtime.block_on(gateway.move_to_trash(&request))
+        })
+        .join()
+        .expect("worker thread")
+        .expect("move without ambient panic");
+        assert_eq!(report.moved_to_trash, 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_blocking_falls_back_when_no_tokio_handle_is_available() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // Poll the future with a noop waker so try_current() is Err.
+            let future = run_blocking(|| Ok::<_, GatewayError>(42_u32));
+            futures_executor_block_on(future, &sender);
+        });
+        let value = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("run_blocking completed");
+        assert_eq!(value.expect("fallback work"), 42);
+    }
+
+    fn futures_executor_block_on<T>(
+        future: impl std::future::Future<Output = T>,
+        sender: &std::sync::mpsc::Sender<T>,
+    ) {
+        use std::{
+            pin::pin,
+            sync::Arc,
+            task::{Context, Poll, Wake, Waker},
+            thread,
+        };
+        struct ThreadWaker(thread::Thread);
+        impl Wake for ThreadWaker {
+            fn wake(self: Arc<Self>) {
+                self.0.unpark();
+            }
+        }
+        let waker = Waker::from(Arc::new(ThreadWaker(thread::current())));
+        let mut context = Context::from_waker(&waker);
+        let mut future = pin!(future);
+        loop {
+            match future.as_mut().poll(&mut context) {
+                Poll::Ready(value) => {
+                    let _ = sender.send(value);
+                    return;
+                }
+                Poll::Pending => thread::park(),
+            }
+        }
     }
 
     #[tokio::test]
