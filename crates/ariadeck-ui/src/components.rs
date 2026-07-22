@@ -1074,6 +1074,118 @@ impl RenderOnce for LoadingIndicator {
     }
 }
 
+/// A pill-shaped on/off switch for boolean settings.
+///
+/// The track uses the accent color when on and the surface color when off.
+/// The knob is always a contrasting circle inside the track.
+pub struct Toggle {
+    id: ElementId,
+    on: bool,
+    disabled: bool,
+    aria_label: Option<SharedString>,
+    on_click: Option<ClickHandler>,
+}
+
+impl Toggle {
+    #[must_use]
+    pub fn new(id: impl Into<ElementId>, on: bool) -> Self {
+        Self {
+            id: id.into(),
+            on,
+            disabled: false,
+            aria_label: None,
+            on_click: None,
+        }
+    }
+
+    #[must_use]
+    pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.aria_label = Some(label.into());
+        self
+    }
+
+    #[must_use]
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    #[must_use]
+    pub fn on_click(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_click = Some(Rc::new(handler));
+        self
+    }
+
+    /// Render the toggle switch. Width 36 × height 20 pill.
+    #[must_use]
+    pub fn render(self, colors: ThemeColors) -> Stateful<gpui::Div> {
+        let enabled = !self.disabled;
+        let on = self.on;
+
+        let track_bg = if on { colors.accent } else { colors.surface };
+        let track_border = if on { colors.accent } else { colors.border };
+        let knob_bg = if on {
+            colors.text_inverse
+        } else {
+            colors.text_secondary
+        };
+        let hover_bg = if on {
+            colors.accent_hover
+        } else {
+            colors.surface_hover
+        };
+
+        let aria = self
+            .aria_label
+            .unwrap_or_else(|| if on { "On".into() } else { "Off".into() });
+
+        let mut track = div()
+            .id(self.id)
+            .role(Role::Switch)
+            .aria_label(aria)
+            // aria-checked semantics for the Switch role; GPUI maps aria_selected to
+            // aria-checked on the rendered element when the role is Switch.
+            .aria_selected(on)
+            .focusable()
+            .tab_stop(enabled)
+            .w(px(36.0))
+            .h(px(20.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .px(px(2.0))
+            .rounded_full()
+            .border_1()
+            .border_color(track_border)
+            .bg(track_bg)
+            .when(on, |t| t.justify_end())
+            .when(!on, |t| t.justify_start())
+            .when(enabled, |t| {
+                t.cursor(CursorStyle::PointingHand)
+                    .hover(move |style| style.bg(hover_bg))
+            })
+            .when(!enabled, |t| t.opacity(0.45))
+            .child(
+                div()
+                    .size(px(16.0))
+                    .rounded_full()
+                    .bg(knob_bg)
+                    .flex_none(),
+            );
+
+        if enabled {
+            if let Some(handler) = self.on_click {
+                track = track.on_click(move |event, window, cx| handler(event, window, cx));
+            }
+        }
+
+        track
+    }
+}
+
 fn transparent() -> Hsla {
     gpui::transparent_black()
 }
@@ -1148,5 +1260,15 @@ mod tests {
         let segment = Segment::new("Dark").icon(IconName::Moon);
         assert_eq!(segment.label.as_ref(), "Dark");
         assert_eq!(segment.icon, Some(IconName::Moon));
+    }
+
+    #[test]
+    fn toggle_reflects_on_off_state() {
+        let on = Toggle::new("t1", true);
+        assert!(on.on);
+        assert!(!on.disabled);
+        let off = Toggle::new("t2", false).disabled(true);
+        assert!(!off.on);
+        assert!(off.disabled);
     }
 }

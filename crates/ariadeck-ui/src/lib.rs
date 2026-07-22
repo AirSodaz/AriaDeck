@@ -22,7 +22,8 @@ pub use actions::{
 pub use assets::Assets;
 pub use components::{
     Button, ButtonStyle, ButtonVariant, Dialog, Icon, IconButton, IconName, IconSize,
-    LoadingIndicator, Segment, SegmentedControl, StatusIndicator, Toast, ToastKind, Tooltip,
+    LoadingIndicator, Segment, SegmentedControl, StatusIndicator, Toast, ToastKind, Toggle,
+    Tooltip,
 };
 pub use model::{
     ActivityEntryView, ActivityKindView, AddDownloadAdvancedOptionsView, AddDownloadInputModeView,
