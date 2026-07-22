@@ -63,7 +63,7 @@ jobs:
         run: ./scripts/package-windows-portable.ps1
 
       - name: Upload portable artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ariadeck-windows-x64-portable
           path: dist/*
