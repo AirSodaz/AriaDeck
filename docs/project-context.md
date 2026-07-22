@@ -95,7 +95,7 @@ Env knobs: see root `README.md` (`ARIADECK_RPC_*`).
 | D-001 | Filename engine-owned after add; optional `out` for direct URI only |
 | D-002 | Multi-line add = one task per line; mirrors need explicit mode |
 | D-003 | Selection identity + query scoped; select-all = current loaded query |
-| D-004 | Download proxy ≠ RPC proxy; passwords in OS keychain |
+| D-004 | Download proxy ≠ RPC proxy; passwords in OS keychain. Modes: Disabled / **System** (OS or env static proxy at apply time; no PAC; no OS credential auto-fill) / Manual. Optional `check-certificate` (default **true**) applied with proxy options |
 | D-005/007 | Remove keeps files; local delete → Trash; exact paths + containment |
 | D-006 | Retry = new GID + option/mirror replay |
 | D-008 | Output conflict: Keep both / Reject / Overwrite |
@@ -166,7 +166,7 @@ Network aria2 package channels · SQLite history/analytics · Per-profile proxy/
 | 005 | One actor per WebSocket; auth as transport decorator |
 | 006 | Sync serialized & cancellation-aware |
 | 007 | Typed JSON settings now; SQLite later for multi-entity |
-| 008 | Download proxy ≠ RPC; credentials in OS keychain |
+| 008 | Download proxy ≠ RPC; credentials in OS keychain; System mode resolves static OS/env proxy in desktop layer |
 | 009 | Uncertain mutations reconciled from engine |
 | 010 | Remote RPC WebSocket-only; fail closed |
 | 011 | Fluent in `ariadeck-i18n`; UI maps error codes |

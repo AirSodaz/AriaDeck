@@ -1,5 +1,12 @@
 //! Typed, versioned application settings and their persistence boundary.
 
+mod system_proxy;
+
+pub use system_proxy::{
+    ResolvedSystemProxy, SystemProxyError, parse_windows_proxy_server, resolve_from_env_map,
+    resolve_system_proxy,
+};
+
 use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
@@ -12,7 +19,7 @@ use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 8;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 9;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -87,6 +94,10 @@ pub struct UiPreferences {
 pub enum DownloadProxyMode {
     #[default]
     Disabled,
+    /// Resolve static OS / environment proxy at apply time and push to aria2.
+    /// PAC / WPAD scripts are not supported; credentials are not auto-filled
+    /// from the OS keychain (use Manual for authenticated proxies).
+    System,
     Manual,
 }
 
@@ -210,7 +221,7 @@ impl ProxyCredentialStore for SystemProxyCredentialStore {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DownloadProxySettings {
     pub mode: DownloadProxyMode,
@@ -221,6 +232,30 @@ pub struct DownloadProxySettings {
     pub no_proxy: Vec<String>,
     pub username: Option<String>,
     pub credential: Option<ProxyCredentialRef>,
+    /// Verify peer TLS certificates (`check-certificate`). Default true.
+    /// Disable only when diagnosing proxy/MITM TLS handshake failures.
+    #[serde(default = "default_true")]
+    pub check_certificate: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for DownloadProxySettings {
+    fn default() -> Self {
+        Self {
+            mode: DownloadProxyMode::default(),
+            all_proxy: None,
+            http_proxy: None,
+            https_proxy: None,
+            ftp_proxy: None,
+            no_proxy: Vec::new(),
+            username: None,
+            credential: None,
+            check_certificate: true,
+        }
+    }
 }
 
 /// Persisted global speed limits. Zero means unlimited (aria2 convention).
@@ -419,7 +454,12 @@ impl DownloadProxySettings {
         {
             return Err(SettingsError::MissingManualProxyEndpoint);
         }
-        if self.credential.is_some() && self.username.as_deref().is_none_or(str::is_empty) {
+        // Credential refs are only meaningful for Manual mode. System/Disabled may
+        // retain a stale ref on disk after a mode switch; do not require a username.
+        if self.mode == DownloadProxyMode::Manual
+            && self.credential.is_some()
+            && self.username.as_deref().is_none_or(str::is_empty)
+        {
             return Err(SettingsError::ProxyCredentialWithoutUsername);
         }
         for entry in &self.no_proxy {
@@ -698,6 +738,22 @@ struct SettingsDocumentV7 {
     ui: UiPreferences,
 }
 
+/// Schema v8 lacked `download_proxy.check_certificate` (defaults to true).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsDocumentV8 {
+    schema_version: u32,
+    color_scheme: ColorScheme,
+    language: LanguagePreference,
+    download_directory: PathBuf,
+    download_proxy: DownloadProxySettings,
+    speed_limits: SpeedLimitSettings,
+    transfer_policy: TransferPolicySettings,
+    notifications: NotificationSettings,
+    platform: PlatformSettings,
+    ui: UiPreferences,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SettingsDocument {
@@ -935,6 +991,30 @@ impl JsonSettingsStore {
                 let settings = AppSettings {
                     color_scheme: document.color_scheme,
                     language: LanguagePreference::default(),
+                    download_directory: document.download_directory,
+                    download_proxy: document.download_proxy,
+                    speed_limits: document.speed_limits,
+                    transfer_policy: document.transfer_policy,
+                    notifications: document.notifications,
+                    platform: document.platform,
+                    ui: document.ui,
+                };
+                settings.validate()?;
+                Ok((settings, true))
+            }
+            8 => {
+                let document: SettingsDocumentV8 =
+                    serde_json::from_slice(&bytes).map_err(malformed)?;
+                if document.schema_version != 8 {
+                    return Err(SettingsError::UnsupportedSchemaVersion {
+                        found: document.schema_version,
+                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
+                    });
+                }
+                // `check_certificate` is #[serde(default = true)] on DownloadProxySettings.
+                let settings = AppSettings {
+                    color_scheme: document.color_scheme,
+                    language: document.language,
                     download_directory: document.download_directory,
                     download_proxy: document.download_proxy,
                     speed_limits: document.speed_limits,
@@ -1268,7 +1348,7 @@ mod tests {
         assert_eq!(store.load().expect("load settings"), expected);
 
         let document = fs::read_to_string(store.path()).expect("read settings JSON");
-        assert!(document.contains("\"schema_version\": 8"));
+        assert!(document.contains("\"schema_version\": 9"));
         assert!(document.contains("\"transfer_policy\""));
         assert!(document.contains("\"notifications\""));
         assert!(document.contains("\"platform\""));
@@ -1308,7 +1388,7 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 8"));
+        assert!(migrated.contains("\"schema_version\": 9"));
         assert!(migrated.contains("\"download_proxy\""));
         assert!(migrated.contains("\"speed_limits\""));
         assert!(migrated.contains("\"transfer_policy\""));
@@ -1344,7 +1424,7 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 8"));
+        assert!(migrated.contains("\"schema_version\": 9"));
         assert!(migrated.contains("\"speed_limits\""));
         assert!(migrated.contains("\"transfer_policy\""));
         assert!(migrated.contains("\"notifications\""));
@@ -1385,7 +1465,7 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 8"));
+        assert!(migrated.contains("\"schema_version\": 9"));
         assert!(migrated.contains("\"transfer_policy\""));
         assert!(migrated.contains("\"max_concurrent_downloads\""));
         assert!(migrated.contains("\"notifications\""));
@@ -1419,7 +1499,7 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 8"));
+        assert!(migrated.contains("\"schema_version\": 9"));
         assert!(migrated.contains("\"notifications\""));
         assert!(migrated.contains("\"notify_on_completion\""));
         assert!(migrated.contains("\"platform\""));
@@ -1456,11 +1536,32 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 8"));
+        assert!(migrated.contains("\"schema_version\": 9"));
         assert!(migrated.contains("\"platform\""));
         assert!(migrated.contains("\"os_notifications\""));
         assert!(migrated.contains("\"close_behavior\""));
         assert!(migrated.contains("\"ui\""));
+    }
+
+    #[test]
+    fn version_eight_document_is_migrated_with_check_certificate_true() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        fs::write(
+            store.path(),
+            r#"{"schema_version":8,"color_scheme":"system","language":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":true,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false},"ui":{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"}}"#,
+        )
+        .expect("seed version eight settings");
+
+        let loaded = store
+            .load_or_initialize(&settings(root.path()))
+            .expect("migrate version eight settings");
+
+        assert!(loaded.settings.download_proxy.check_certificate);
+        assert!(loaded.recovery.is_none());
+        let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
+        assert!(migrated.contains("\"schema_version\": 9"));
+        assert!(migrated.contains("\"check_certificate\": true"));
     }
 
     #[test]
@@ -1480,7 +1581,7 @@ mod tests {
         assert_eq!(loaded.settings.language, LanguagePreference::System);
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 8"));
+        assert!(migrated.contains("\"schema_version\": 9"));
         assert!(migrated.contains("\"language\""));
     }
 
@@ -1502,7 +1603,7 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 8"));
+        assert!(migrated.contains("\"schema_version\": 9"));
         assert!(migrated.contains("\"ui\""));
         assert!(migrated.contains("\"list_filter\""));
     }
@@ -1584,6 +1685,7 @@ mod tests {
             no_proxy: vec!["localhost".into(), "10.0.0.0/8".into()],
             username: Some("proxy-user".into()),
             credential: Some(ProxyCredentialRef::new()),
+            check_certificate: true,
         };
 
         store.save(&expected).expect("save proxy settings");
@@ -1701,6 +1803,10 @@ mod tests {
             (
                 7,
                 r#"{"schema_version":7,"color_scheme":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":true,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false},"ui":{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"}}"#,
+            ),
+            (
+                8,
+                r#"{"schema_version":8,"color_scheme":"system","language":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":true,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false},"ui":{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"}}"#,
             ),
         ];
 

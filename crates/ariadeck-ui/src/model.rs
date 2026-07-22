@@ -1245,20 +1245,46 @@ impl LanguagePreferenceView {
 pub enum ProxyModeView {
     #[default]
     Disabled,
+    /// Follow the operating-system / environment proxy at apply time.
+    System,
     Manual,
 }
 
 impl ProxyModeView {
     #[must_use]
+    pub const fn all() -> [Self; 3] {
+        [Self::Disabled, Self::System, Self::Manual]
+    }
+
+    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Disabled => "Disabled",
+            Self::System => "System",
             Self::Manual => "Manual",
+        }
+    }
+
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::Disabled => "settings-proxy-disabled",
+            Self::System => "settings-proxy-system",
+            Self::Manual => "settings-proxy-manual",
+        }
+    }
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Disabled => 0,
+            Self::System => 1,
+            Self::Manual => 2,
         }
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DownloadProxySettingsView {
     pub mode: ProxyModeView,
     pub all_proxy: String,
@@ -1268,6 +1294,24 @@ pub struct DownloadProxySettingsView {
     pub no_proxy: Vec<String>,
     pub username: String,
     pub has_password: bool,
+    /// Verify peer TLS certificates (`check-certificate`). Default true.
+    pub check_certificate: bool,
+}
+
+impl Default for DownloadProxySettingsView {
+    fn default() -> Self {
+        Self {
+            mode: ProxyModeView::default(),
+            all_proxy: String::new(),
+            http_proxy: String::new(),
+            https_proxy: String::new(),
+            ftp_proxy: String::new(),
+            no_proxy: Vec::new(),
+            username: String::new(),
+            has_password: false,
+            check_certificate: true,
+        }
+    }
 }
 
 /// Speed limit values as user-editable text using aria2's `K`/`M` suffix syntax.

@@ -350,6 +350,9 @@ pub enum FileConflictPolicy {
 pub enum DownloadProxyMode {
     #[default]
     Disabled,
+    /// Endpoints were resolved from the OS / environment by the desktop layer.
+    /// Treated like Manual when serializing to aria2 options.
+    System,
     Manual,
 }
 
@@ -363,6 +366,8 @@ pub struct DownloadProxyConfig {
     pub no_proxy: Vec<String>,
     pub username: Option<String>,
     pub password: Option<SecretString>,
+    /// Maps to aria2 `check-certificate`. Independent of proxy mode; default true.
+    pub check_certificate: bool,
 }
 
 impl Default for DownloadProxyConfig {
@@ -376,6 +381,7 @@ impl Default for DownloadProxyConfig {
             no_proxy: Vec::new(),
             username: None,
             password: None,
+            check_certificate: true,
         }
     }
 }
@@ -392,6 +398,7 @@ impl std::fmt::Debug for DownloadProxyConfig {
             .field("no_proxy", &self.no_proxy)
             .field("username", &self.username)
             .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("check_certificate", &self.check_certificate)
             .finish()
     }
 }
@@ -407,6 +414,7 @@ impl PartialEq for DownloadProxyConfig {
             && self.username == other.username
             && self.password.as_ref().map(ExposeSecret::expose_secret)
                 == other.password.as_ref().map(ExposeSecret::expose_secret)
+            && self.check_certificate == other.check_certificate
     }
 }
 
@@ -414,6 +422,8 @@ impl Eq for DownloadProxyConfig {}
 
 impl DownloadProxyConfig {
     fn validate(&self) -> Result<(), ApplicationError> {
+        // Manual requires at least one endpoint. System may resolve to “direct”
+        // (no proxy), which applies as cleared global proxy options.
         if self.mode == DownloadProxyMode::Manual
             && self.all_proxy.is_none()
             && self.http_proxy.is_none()

@@ -854,6 +854,43 @@ fn batch_retry_reconciliation_resolves_unknown_items_in_partial_success() {
 }
 
 #[test]
+fn system_proxy_mode_ignores_persisted_manual_fields_and_credentials() {
+    // Persisted manual endpoints / username must not leak into System apply path.
+    // Concrete host values come from the OS/env and are covered in ariadeck-settings tests.
+    let settings = AppSettings {
+        download_proxy: DownloadProxySettings {
+            mode: DownloadProxyMode::System,
+            all_proxy: Some("http://stale-manual.example:1".into()),
+            http_proxy: Some("http://stale-http.example:2".into()),
+            username: Some("stale-user".into()),
+            ..DownloadProxySettings::default()
+        },
+        ..AppSettings::new("downloads")
+    };
+    let config =
+        map_download_proxy_config(&settings, Some(SecretString::new("stale-secret".into())))
+            .expect("resolve system proxy");
+    assert!(
+        matches!(
+            config.mode,
+            ApplicationProxyMode::System | ApplicationProxyMode::Disabled
+        ),
+        "system mode maps to System (or Disabled when OS has no proxy), got {:?}",
+        config.mode
+    );
+    assert_ne!(
+        config.all_proxy.as_deref(),
+        Some("http://stale-manual.example:1")
+    );
+    assert_ne!(
+        config.http_proxy.as_deref(),
+        Some("http://stale-http.example:2")
+    );
+    assert!(config.username.is_none());
+    assert!(config.password.is_none());
+}
+
+#[test]
 fn details_mapping_keeps_remote_paths_as_display_strings() {
     let gid = Gid::from_u64(7);
     let details = TaskDetails {

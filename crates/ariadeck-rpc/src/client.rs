@@ -1116,19 +1116,24 @@ fn transfer_policy_options(config: &TransferPolicyConfig) -> Vec<(String, String
 }
 
 fn download_proxy_options(config: &DownloadProxyConfig) -> Vec<(String, String)> {
-    let manual = config.mode == DownloadProxyMode::Manual;
+    // Manual and System both carry concrete endpoints (System is resolved by
+    // the desktop layer before this call). Disabled clears every field.
+    let active = matches!(
+        config.mode,
+        DownloadProxyMode::Manual | DownloadProxyMode::System
+    );
     let endpoint = |value: &Option<String>| {
-        if manual {
+        if active {
             value.clone().unwrap_or_default()
         } else {
             String::new()
         }
     };
-    let username = manual
+    let username = active
         .then(|| config.username.clone())
         .flatten()
         .unwrap_or_default();
-    let password = if manual {
+    let password = if active {
         config
             .password
             .as_ref()
@@ -1138,7 +1143,7 @@ fn download_proxy_options(config: &DownloadProxyConfig) -> Vec<(String, String)>
     } else {
         String::new()
     };
-    let no_proxy = if manual {
+    let no_proxy = if active {
         config.no_proxy.join(",")
     } else {
         String::new()
@@ -1149,6 +1154,15 @@ fn download_proxy_options(config: &DownloadProxyConfig) -> Vec<(String, String)>
         ("https-proxy".into(), endpoint(&config.https_proxy)),
         ("ftp-proxy".into(), endpoint(&config.ftp_proxy)),
         ("no-proxy".into(), no_proxy),
+        // Always push: independent of proxy mode (TLS policy for all HTTPS peers).
+        (
+            "check-certificate".into(),
+            if config.check_certificate {
+                "true".into()
+            } else {
+                "false".into()
+            },
+        ),
     ];
     for prefix in ["all", "http", "https", "ftp"] {
         options.push((format!("{prefix}-proxy-user"), username.clone()));
@@ -1765,6 +1779,59 @@ mod tests {
         assert_eq!(options["min-split-size"], (1024 * 1024).to_string());
         assert_eq!(options["file-allocation"], "falloc");
         assert_eq!(options["check-integrity"], "true");
+    }
+
+    #[tokio::test]
+    async fn system_download_proxy_applies_resolved_endpoints_like_manual() {
+        let transport = ScriptedTransport::new([Ok(json!("OK"))]);
+        let client = Aria2Client::new(transport);
+        let config = DownloadProxyConfig {
+            mode: DownloadProxyMode::System,
+            all_proxy: Some("http://system-proxy.example:3128".into()),
+            no_proxy: vec!["localhost".into()],
+            ..DownloadProxyConfig::default()
+        };
+
+        DownloadEngineGateway::apply_download_proxy(&client, &config)
+            .await
+            .expect("system proxy is applied");
+
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let options = calls[0].1[0].as_object().expect("global option object");
+        assert_eq!(options["all-proxy"], "http://system-proxy.example:3128");
+        assert_eq!(options["no-proxy"], "localhost");
+        assert_eq!(options["all-proxy-user"], "");
+        assert_eq!(options["all-proxy-passwd"], "");
+        assert_eq!(options["check-certificate"], "true");
+    }
+
+    #[tokio::test]
+    async fn download_proxy_can_disable_certificate_verification() {
+        let transport = ScriptedTransport::new([Ok(json!("OK"))]);
+        let client = Aria2Client::new(transport);
+        let config = DownloadProxyConfig {
+            mode: DownloadProxyMode::Manual,
+            all_proxy: Some("http://127.0.0.1:7897".into()),
+            check_certificate: false,
+            ..DownloadProxyConfig::default()
+        };
+
+        DownloadEngineGateway::apply_download_proxy(&client, &config)
+            .await
+            .expect("proxy apply succeeds");
+
+        let calls = client
+            .transport()
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let options = calls[0].1[0].as_object().expect("global option object");
+        assert_eq!(options["all-proxy"], "http://127.0.0.1:7897");
+        assert_eq!(options["check-certificate"], "false");
     }
 
     #[tokio::test]

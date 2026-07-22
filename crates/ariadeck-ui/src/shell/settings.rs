@@ -79,6 +79,7 @@ impl AppShell {
         self.settings_page.draft_language = settings.language;
         self.set_language_runtime(settings.language);
         self.settings_page.draft_file_allocation = settings.transfer_policy.file_allocation;
+        self.settings_page.draft_check_certificate = settings.download_proxy.check_certificate;
         self.settings_page.draft_check_integrity = settings.transfer_policy.check_integrity;
         self.settings_page.draft_notification_volume = settings.notifications.volume;
         self.settings_page.draft_notify_on_completion = settings.notifications.notify_on_completion;
@@ -169,6 +170,7 @@ impl AppShell {
             draft_color_scheme: self.settings.color_scheme,
             draft_language: self.settings.language,
             draft_proxy_mode: proxy.mode,
+            draft_check_certificate: proxy.check_certificate,
             draft_file_allocation: transfer_policy.file_allocation,
             draft_check_integrity: transfer_policy.check_integrity,
             draft_notification_volume: self.settings.notifications.volume,
@@ -388,8 +390,17 @@ impl AppShell {
                 ProxyPasswordUpdateView::Clear => false,
                 ProxyPasswordUpdateView::Set(_) => true,
             },
+            check_certificate: self.settings_page.draft_check_certificate,
         };
         self.request_settings_save(settings, password_update, SettingsSaveSource::Proxy, cx);
+    }
+
+    pub(crate) fn toggle_check_certificate(&mut self, cx: &mut Context<Self>) {
+        if self.pending_settings_save.is_some() {
+            return;
+        }
+        self.settings_page.draft_check_certificate = !self.settings_page.draft_check_certificate;
+        cx.notify();
     }
 
     /// Save dirty speed-limit and/or transfer-policy fields in a single request.
@@ -1036,6 +1047,7 @@ impl AppShell {
                         .trim()
                         .into(),
                     has_password: proxy_has_password,
+                    check_certificate: self.settings_page.draft_check_certificate,
                 };
                 let dirty = proxy_draft != self.settings.download_proxy
                     || password_changed
@@ -2035,8 +2047,11 @@ impl AppShell {
                 .trim()
                 .into(),
             has_password: proxy_has_password,
+            check_certificate: self.settings_page.draft_check_certificate,
         };
         let manual_proxy = proxy_draft.mode == ProxyModeView::Manual;
+        let system_proxy = proxy_draft.mode == ProxyModeView::System;
+        let draft_check_certificate = self.settings_page.draft_check_certificate;
         let password_button_label = if password_cleared {
             "Keep saved proxy password"
         } else {
@@ -2050,24 +2065,57 @@ impl AppShell {
         let proxy_shell = cx.entity().downgrade();
         let proxy_mode_control = SegmentedControl::new(
             "settings-proxy-mode",
-            [Segment::new("Disabled"), Segment::new("Manual")],
-            usize::from(manual_proxy),
+            ProxyModeView::all().map(|mode| Segment::new(self.t(mode.message_key()))),
+            proxy_draft.mode.index(),
             self.theme,
         )
-        .aria_label("Download proxy mode")
+        .aria_label(self.t("settings-proxy-mode-aria"))
         .disabled(pending)
         .on_select(move |index, _window, cx| {
-            let mode = if index == 0 {
-                ProxyModeView::Disabled
-            } else {
-                ProxyModeView::Manual
+            let mode = match index {
+                1 => ProxyModeView::System,
+                2 => ProxyModeView::Manual,
+                _ => ProxyModeView::Disabled,
             };
             proxy_shell
                 .update(cx, |shell, cx| shell.select_proxy_mode(mode, cx))
                 .ok();
         });
+        let cert_shell = cx.entity().downgrade();
         settings_card("Network proxy", colors)
             .child(div().mt_3().flex().items_start().child(proxy_mode_control))
+            .child(
+                div().mt_4().max_w(px(620.0)).child(settings_row(
+                    "Verify HTTPS certificates",
+                    Some(
+                        "Maps to aria2 check-certificate. Leave on unless diagnosing TLS handshake failures through a local proxy or MITM CA.",
+                    ),
+                    Toggle::new("toggle-check-certificate", draft_check_certificate)
+                        .aria_label(if draft_check_certificate {
+                            "Disable HTTPS certificate verification"
+                        } else {
+                            "Enable HTTPS certificate verification"
+                        })
+                        .disabled(pending)
+                        .on_click(move |_, _, cx| {
+                            cert_shell
+                                .update(cx, |shell, cx| shell.toggle_check_certificate(cx))
+                                .ok();
+                        })
+                        .render(colors),
+                    colors,
+                )),
+            )
+            .when(system_proxy, |section| {
+                section.child(
+                    div()
+                        .mt_4()
+                        .max_w(px(620.0))
+                        .text_xs()
+                        .text_color(colors.text_muted)
+                        .child(self.t("settings-proxy-system-hint")),
+                )
+            })
             .when(manual_proxy, |section| {
                 section.child(
                     div()

@@ -52,6 +52,7 @@ tray-icon = { version = "0.24.1", default-features = false, features = ["gtk"] }
 url = { version = "2.5.7", features = ["serde"] }
 unic-langid = { version = "0.9.6", features = ["macros"] }
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
+winreg = "0.55"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

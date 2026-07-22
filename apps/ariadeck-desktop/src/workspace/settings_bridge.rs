@@ -25,7 +25,12 @@ pub(crate) fn apply_credential_update(
 ) -> Result<(Option<SecretString>, CredentialMutation), String> {
     match update {
         ProxyPasswordUpdate::Unchanged => {
-            if next.download_proxy.credential.is_some() && previous_password.is_none() {
+            // Only Manual mode applies keychain credentials to aria2. System/Disabled
+            // may still retain a credential ref on disk for when the user switches back.
+            if next.download_proxy.mode == DownloadProxyMode::Manual
+                && next.download_proxy.credential.is_some()
+                && previous_password.is_none()
+            {
                 return Err("The saved proxy password is missing from the system credential store. Enter it again or clear the saved password.".into());
             }
             Ok((
@@ -96,22 +101,62 @@ pub(crate) fn load_proxy_password(
         })
 }
 
-pub(crate) fn map_download_proxy_config(
+/// Best-effort proxy mapping used on rollback paths. Resolution failures fall back to
+/// clearing the engine proxy rather than aborting an already-partial recovery.
+pub(crate) fn map_download_proxy_config_or_clear(
     settings: &AppSettings,
     password: Option<SecretString>,
 ) -> DownloadProxyConfig {
-    DownloadProxyConfig {
-        mode: match settings.download_proxy.mode {
-            DownloadProxyMode::Disabled => ApplicationProxyMode::Disabled,
-            DownloadProxyMode::Manual => ApplicationProxyMode::Manual,
-        },
-        all_proxy: settings.download_proxy.all_proxy.clone(),
-        http_proxy: settings.download_proxy.http_proxy.clone(),
-        https_proxy: settings.download_proxy.https_proxy.clone(),
-        ftp_proxy: settings.download_proxy.ftp_proxy.clone(),
-        no_proxy: settings.download_proxy.no_proxy.clone(),
-        username: settings.download_proxy.username.clone(),
-        password,
+    map_download_proxy_config(settings, password).unwrap_or_else(|_| DownloadProxyConfig {
+        mode: ApplicationProxyMode::Disabled,
+        ..DownloadProxyConfig::default()
+    })
+}
+
+pub(crate) fn map_download_proxy_config(
+    settings: &AppSettings,
+    password: Option<SecretString>,
+) -> Result<DownloadProxyConfig, String> {
+    match settings.download_proxy.mode {
+        DownloadProxyMode::Disabled => Ok(DownloadProxyConfig {
+            mode: ApplicationProxyMode::Disabled,
+            check_certificate: settings.download_proxy.check_certificate,
+            ..DownloadProxyConfig::default()
+        }),
+        DownloadProxyMode::Manual => Ok(DownloadProxyConfig {
+            mode: ApplicationProxyMode::Manual,
+            all_proxy: settings.download_proxy.all_proxy.clone(),
+            http_proxy: settings.download_proxy.http_proxy.clone(),
+            https_proxy: settings.download_proxy.https_proxy.clone(),
+            ftp_proxy: settings.download_proxy.ftp_proxy.clone(),
+            no_proxy: settings.download_proxy.no_proxy.clone(),
+            username: settings.download_proxy.username.clone(),
+            password,
+            check_certificate: settings.download_proxy.check_certificate,
+        }),
+        DownloadProxyMode::System => {
+            let resolved = resolve_system_proxy().map_err(|error| error.to_string())?;
+            // Direct / empty system proxy: clear aria2 proxy options (same as Disabled).
+            if resolved.is_empty() {
+                return Ok(DownloadProxyConfig {
+                    mode: ApplicationProxyMode::Disabled,
+                    check_certificate: settings.download_proxy.check_certificate,
+                    ..DownloadProxyConfig::default()
+                });
+            }
+            Ok(DownloadProxyConfig {
+                mode: ApplicationProxyMode::System,
+                all_proxy: resolved.all_proxy,
+                http_proxy: resolved.http_proxy,
+                https_proxy: resolved.https_proxy,
+                ftp_proxy: resolved.ftp_proxy,
+                no_proxy: resolved.no_proxy,
+                // System mode never auto-fills credentials (D-004 / ADR-008).
+                username: None,
+                password: None,
+                check_certificate: settings.download_proxy.check_certificate,
+            })
+        }
     }
 }
 
@@ -247,16 +292,20 @@ pub(crate) fn spawn_proxy_reapply_bridge(
                     .and_then(|result| result);
                 let result = match loaded {
                     Ok((settings, password)) => {
-                        let proxy = map_download_proxy_config(&settings, password);
-                        let proxy_result = handle
-                            .apply_download_proxy(snapshot.session, proxy)
-                            .await
-                            .map_err(|error| {
-                                format!(
-                                    "Download proxy settings were not applied: {}",
-                                    error.summary
-                                )
-                            });
+                        let proxy_result = match map_download_proxy_config(&settings, password) {
+                            Ok(proxy) => handle
+                                .apply_download_proxy(snapshot.session, proxy)
+                                .await
+                                .map_err(|error| {
+                                    format!(
+                                        "Download proxy settings were not applied: {}",
+                                        error.summary
+                                    )
+                                }),
+                            Err(error) => {
+                                Err(format!("Download proxy settings were not applied: {error}"))
+                            }
+                        };
                         // Reapply persisted speed limits and transfer policy on
                         // the fresh session so a reconnect restores the user's
                         // throttle and connection defaults.
@@ -308,6 +357,10 @@ pub(crate) fn spawn_proxy_settings_load(
 ) -> JoinHandle<Result<(AppSettings, Option<SecretString>), String>> {
     runtime.spawn_blocking(move || {
         let settings = store.load().map_err(|error| error.to_string())?;
+        // System / Disabled modes never send keychain credentials to aria2.
+        if !matches!(settings.download_proxy.mode, DownloadProxyMode::Manual) {
+            return Ok((settings, None));
+        }
         let password = load_proxy_password(credential_store.as_ref(), &settings)?;
         if settings.download_proxy.credential.is_some() && password.is_none() {
             return Err(

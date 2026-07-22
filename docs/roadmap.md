@@ -153,6 +153,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | F1 | In-app auto-update | Explicit product decision; signing required |
 | F2 | Hot profile switch without restart | Hard; needs session rebind design |
 | F3 | Per-profile proxy/limit bags | After C/history model stable |
+| — | **System download proxy mode** (OS/env static; no PAC) | **Done** (settings + apply path; Manual/Disabled retained) |
 | F4 | HTTP JSON-RPC transport | Only if remote ops demand; WS remains default |
 | F5 | More locales (zh-TW, ja, …) | After A2 string freeze |
 | F6 | Bundled maintained aria2 **fork** | Only if stock aria2 blocks critical fixes—prefer stock |

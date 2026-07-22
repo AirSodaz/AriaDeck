@@ -975,6 +975,7 @@ pub(crate) fn map_settings(settings: &AppSettings) -> SettingsView {
         download_proxy: DownloadProxySettingsView {
             mode: match settings.download_proxy.mode {
                 DownloadProxyMode::Disabled => ProxyModeView::Disabled,
+                DownloadProxyMode::System => ProxyModeView::System,
                 DownloadProxyMode::Manual => ProxyModeView::Manual,
             },
             all_proxy: settings
@@ -1000,6 +1001,7 @@ pub(crate) fn map_settings(settings: &AppSettings) -> SettingsView {
             no_proxy: settings.download_proxy.no_proxy.clone(),
             username: settings.download_proxy.username.clone().unwrap_or_default(),
             has_password: settings.download_proxy.credential.is_some(),
+            check_certificate: settings.download_proxy.check_certificate,
         },
         speed_limits: SpeedLimitSettingsView {
             download_limit: format_speed_limit_field(settings.speed_limits.download_limit),
@@ -1084,6 +1086,7 @@ pub(crate) fn map_settings_request(
         download_proxy: DownloadProxySettings {
             mode: match settings.download_proxy.mode {
                 ProxyModeView::Disabled => DownloadProxyMode::Disabled,
+                ProxyModeView::System => DownloadProxyMode::System,
                 ProxyModeView::Manual => DownloadProxyMode::Manual,
             },
             all_proxy: trimmed_value(&settings.download_proxy.all_proxy),
@@ -1100,6 +1103,7 @@ pub(crate) fn map_settings_request(
                 .collect(),
             username: trimmed_value(&settings.download_proxy.username),
             credential,
+            check_certificate: settings.download_proxy.check_certificate,
         },
         speed_limits: SpeedLimitSettings {
             download_limit: settings
@@ -1266,7 +1270,13 @@ pub(crate) async fn persist_settings_request(
         rollback_credential_async(credential_store, mutation).await?;
         return Err("Download proxy settings cannot be applied because the synchronization coordinator is unavailable.".into());
     };
-    let next_proxy = map_download_proxy_config(&request.settings, password);
+    let next_proxy = match map_download_proxy_config(&request.settings, password) {
+        Ok(proxy) => proxy,
+        Err(error) => {
+            rollback_credential_async(credential_store, mutation).await?;
+            return Err(error);
+        }
+    };
     if let Err(error) = sync
         .apply_download_proxy(snapshot.session, next_proxy)
         .await
@@ -1288,7 +1298,7 @@ pub(crate) async fn persist_settings_request(
         // Roll the proxy and credential mutation back so the engine matches the
         // still-unchanged persisted settings.
         let rollback_proxy =
-            map_download_proxy_config(&request.previous_settings, previous_password);
+            map_download_proxy_config_or_clear(&request.previous_settings, previous_password);
         let engine_rollback = sync
             .apply_download_proxy(snapshot.session, rollback_proxy)
             .await
@@ -1316,7 +1326,7 @@ pub(crate) async fn persist_settings_request(
             .await
     {
         let rollback_proxy =
-            map_download_proxy_config(&request.previous_settings, previous_password);
+            map_download_proxy_config_or_clear(&request.previous_settings, previous_password);
         let proxy_rollback = sync
             .apply_download_proxy(snapshot.session, rollback_proxy)
             .await
@@ -1360,7 +1370,7 @@ pub(crate) async fn persist_settings_request(
     .map_err(|error| format!("settings persistence task failed: {error}"))?
     {
         let rollback_proxy =
-            map_download_proxy_config(&request.previous_settings, previous_password);
+            map_download_proxy_config_or_clear(&request.previous_settings, previous_password);
         let engine_rollback = sync
             .apply_download_proxy(snapshot.session, rollback_proxy)
             .await

@@ -42,7 +42,7 @@ use ariadeck_settings::{
     ListFilterPreference, ListSortDirectionPreference, ListSortKeyPreference, NotificationSettings,
     NotificationVolume, PlatformSettings, ProxyCredentialRef, ProxyCredentialStore,
     SpeedLimitSettings, SystemProxyCredentialStore, TransferPolicySettings, UiPreferences,
-    WindowGeometry,
+    WindowGeometry, resolve_system_proxy,
 };
 use ariadeck_ui::{
     AddDownloadAdvancedOptionsView, AddDownloadItemResultView, AddDownloadMetadataFileView,

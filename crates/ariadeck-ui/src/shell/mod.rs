@@ -275,6 +275,7 @@ pub(crate) struct SettingsPage {
     draft_color_scheme: ColorSchemeView,
     draft_language: LanguagePreferenceView,
     draft_proxy_mode: ProxyModeView,
+    draft_check_certificate: bool,
     draft_file_allocation: FileAllocationView,
     draft_check_integrity: bool,
     draft_notification_volume: NotificationVolumeView,

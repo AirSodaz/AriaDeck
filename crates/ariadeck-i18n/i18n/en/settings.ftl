@@ -77,7 +77,12 @@ settings-tray-hint = Tray menu: Show AriaDeck, Pause all, Resume all, Quit. Mana
 settings-network-proxy = Network proxy
 settings-proxy-mode-aria = Download proxy mode
 settings-proxy-disabled = Disabled
+settings-proxy-system = System
 settings-proxy-manual = Manual
+settings-proxy-system-hint = Uses the operating-system or environment proxy (HTTP/HTTPS/FTP). Endpoints are normalized for aria2 (https:// proxy URLs become http:// so TLS is not opened against the proxy itself). PAC/auto-config scripts are not supported. Proxy passwords are not read from the OS—use Manual for authenticated proxies. Applied to downloads only, not the aria2 RPC connection.
+settings-proxy-check-certificate = Verify HTTPS certificates
+settings-proxy-check-certificate-desc = Maps to aria2 check-certificate. Leave on unless diagnosing TLS handshake failures through a local proxy or MITM CA.
+settings-proxy-check-certificate-aria = Toggle HTTPS certificate verification
 
 settings-profiles = Profiles
 settings-engine-cores = Managed aria2 cores
