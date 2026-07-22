@@ -1,325 +1,232 @@
-# AriaDeck — Project Design & Context
+# AriaDeck — Project Context
 
-**Status:** Product-ready core; ACCESS-001, en/zh-CN i18n, SEC-001 privacy, PERF-001 stress hardening, and RELEASE-001 Windows packaging landed; remaining work is broader string migration and multi-platform distribution  
+**Status:** Product-ready core (MVP + download-manager surface). Landed: ACCESS-001, I18N-001 (en/zh-CN), SEC-001, PERF-001, RELEASE-001 (Windows).  
 **Last updated:** 2026-07-22  
-**Primary stack:** Rust 1.96 · GPUI (Zed `v1.11.3` pin) · aria2 JSON-RPC over WebSocket · Tokio
+**Stack:** Rust 1.96 · GPUI (Zed `v1.11.3`) · aria2 JSON-RPC (WebSocket) · Tokio  
 
-This document is the single source of truth for product intent, architecture, accepted decisions, current capability, and remaining work. Prefer the workspace code over this file when they diverge; update this file when scope or architecture changes.
+Single source of truth for intent, architecture, contracts, and residual work. Prefer code when it diverges; update this file when scope or boundaries change.  
+**Next work:** [`docs/roadmap.md`](roadmap.md) · **Release:** [`docs/release.md`](release.md) · **i18n:** [`docs/i18n.md`](i18n.md)
 
 ---
 
-## 1. What AriaDeck Is
+## 1. Product
 
-AriaDeck is a **native Rust desktop client for aria2**. It does not embed aria2 as a library. It manages or connects to an independent `aria2c` process through authenticated JSON-RPC (WebSocket only today).
+Native Rust desktop client for **aria2**. Does not embed aria2 as a library. Manages or connects to an independent `aria2c` via authenticated JSON-RPC (WebSocket only).
 
-Users can:
+| Mode | Behavior |
+| --- | --- |
+| Managed local | Owns process lifecycle, session, optional core registry |
+| External local | User binary; may still supervise process |
+| Remote | Profile / `ARIADECK_RPC_URL`; connection-only |
 
-- Run a **managed local** engine (AriaDeck owns process lifecycle, session, and optional core registry).
-- Point at an **external** local executable (user-owned binary; AriaDeck still may spawn it).
-- Connect to a **remote** RPC endpoint (`ws`/`wss` …`/jsonrpc`).
-- Keep multiple **profiles** (local/remote catalog); active profile switch is restart-bound.
-- Install/import multiple **managed aria2 cores** side by side (import/link/verify/activate/rollback; no network update channel yet).
+Multiple **profiles** (activate = restart-bound). Multiple **managed cores** (import/link/verify/activate/rollback; no network install channel).
 
-Product feel: modern desktop download manager (keyboard-first, high-density lists, batch actions), not a browser admin panel for aria2.
+**Feel:** keyboard-first download manager (dense lists, batch ops)—not a browser admin panel for aria2.
 
-### Non-goals (still)
+### Non-goals
 
-- Reimplementing the download engine
-- Web UI / mobile
-- AriaDeck cloud sync
-- Arbitrary in-process plugins
-- Treating remote engine paths as local filesystem paths
-- Silent HTTP fallback when WebSocket/TLS/auth fails
+Reimplement the engine · Web/mobile UI · Cloud sync · In-process plugins · Treat remote paths as local FS · Silent HTTP fallback when WS/TLS/auth fails
 
 ---
 
 ## 2. Architecture
 
 ```text
-GPUI
-  → ariadeck-ui (tokens, components, shell)
-  → ariadeck-desktop (composition root, windows, tray, bridges)
-  → ariadeck-application (store, sync, commands, ports, views)
-  → ariadeck-domain (IDs, task/engine/transfer types)
-  → ariadeck-rpc | ariadeck-engine | ariadeck-settings
-       ↓ WebSocket JSON-RPC
-  managed / external / remote aria2
+GPUI → ariadeck-ui → ariadeck-desktop (composition, tray, bridges)
+                  → ariadeck-application (store, sync, commands, ports)
+                  → ariadeck-domain
+                  → ariadeck-rpc | ariadeck-engine | ariadeck-settings
+                       ↓ WS JSON-RPC
+                  managed / external / remote aria2
 ```
-
-### Crates (actual workspace)
 
 | Crate | Responsibility |
 | --- | --- |
-| `ariadeck-domain` | Strong IDs, task/engine/transfer value types, no I/O |
-| `ariadeck-application` | Incremental download store, sync coordinator, commands, ports, derived views |
-| `ariadeck-rpc` | WebSocket transport, auth token injection, typed aria2 adapter, notifications as refresh hints |
-| `ariadeck-engine` | Local process lifecycle, profile ownership lock, core registry, crash restart |
-| `ariadeck-settings` | Versioned typed settings, atomic save, migration, corruption recovery |
-| `ariadeck-ui` | Design tokens, themes, GPUI components; pages must not depend on third-party widgets directly |
-| `ariadeck-i18n` | Fluent catalogs (en, zh-CN), locale resolution, Translator |
-| `ariadeck-telemetry` | Structured tracing setup |
-| `ariadeck-desktop` | Bootstrap, composition, workspace model, platform (tray/notifications), dialogs |
+| `ariadeck-domain` | IDs, task/engine/transfer types; privacy redaction helpers |
+| `ariadeck-application` | Store, sync, commands, ports, derived views |
+| `ariadeck-rpc` | WS transport, auth, typed adapter; notifications = refresh hints |
+| `ariadeck-engine` | Process lifecycle, profile lock, core registry |
+| `ariadeck-settings` | Versioned JSON settings, migrate, atomic save |
+| `ariadeck-ui` | Tokens, themes, GPUI components (pages use only this + app ports) |
+| `ariadeck-i18n` | Fluent catalogs (en, zh-CN) |
+| `ariadeck-telemetry` | Tracing setup |
+| `ariadeck-desktop` | Bootstrap, composition root, platform |
 
-**Not yet separate crates** (design-time names only): `ariadeck-core-manager` (lives in `ariadeck-engine::cores`), `ariadeck-storage` (SQLite still deferred), `ariadeck-platform` (partially in desktop).
+**Not separate crates yet:** core-manager (in engine), storage/SQLite (deferred), platform (partially desktop).
 
 ### Dependency rules
 
-1. Business logic must not depend on GPUI types.
-2. Application pages depend only on `ariadeck-ui` + application/domain ports.
-3. aria2 wire models stay in `ariadeck-rpc`; domain types are clean.
-4. Secrets never appear in logs, settings JSON, or UI debug dumps.
-5. Background work (RPC, FS, hashing, process wait) never runs on the GPUI render path; desktop owns a Tokio runtime for blocking work launched from GPUI tasks.
+1. Business logic must not depend on GPUI.
+2. Pages depend on `ariadeck-ui` + application/domain only.
+3. Wire models stay in `ariadeck-rpc`.
+4. Secrets never in logs, settings JSON, or UI dumps.
+5. RPC/FS/process work never on the GPUI render path (Tokio via desktop).
 
 ---
 
-## 3. Core Design Principles
+## 3. Design principles
 
-1. **GUI ⊥ engine** — only RPC; no fixed path/version assumption.
-2. **Capabilities over versions** — `system.listMethods` → `EngineCapabilities`; empty probe is open-handed, non-empty probe is fail-closed for advanced writes.
-3. **Incremental state** — tasks keyed by session-scoped GID; patches by field; no full-list replace every poll.
-4. **Session generations** — stale-generation responses discarded; task identity is profile + session aware (Magnet `followedBy`/`belongsTo` migrate selection/details).
-5. **Destructive ops are explicit** — remove task ≠ delete files; local Trash only for managed local filesystem capability.
-6. **Unknown mutations: refresh once, never auto-replay** — timeouts/disconnects after a write are outcome-unknown; one authoritative reconcile; user may retry safely when engine state confirms absence.
-7. **Local vs remote paths** — external/remote profiles never get “open folder” / Trash as if paths were local.
-8. **Virtualization first** — off-screen task rows do not create GPUI elements.
-
----
-
-## 4. Engine & RPC Model
-
-### Engine sources
-
-```text
-Managed  → AriaDeck owns core install (optional) + process + session dir + lock
-External → user executable path; still may be supervised as local process
-Remote   → ARIADECK_RPC_URL or profile endpoint; connection-only (no managed spawn)
-```
-
-Local managed startup (summary): resolve executable (env → active core → profile pin → discovery) → exclusive profile lock → session recover/validate → loopback port + ephemeral secret → spawn with isolated RPC/session args → WebSocket connect → capability probe → snapshot sync → apply global options (proxy, speed limits, transfer policy) once per new session.
-
-Shutdown: `aria2.shutdown` then kill/wait fallback. Tray **close** may hide window (engine keeps running); **Quit** drops `DesktopRoot` and stops the owned managed engine. Remote engines are never stopped by AriaDeck.
-
-### RPC policy (hard)
-
-- Only `ws` / `wss` with path `/jsonrpc`.
-- No automatic HTTP fallback.
-- Plain `ws` defaults to loopback; remote plaintext needs `ARIADECK_RPC_ALLOW_INSECURE_REMOTE=true`.
-- WSS uses OS trust store; no cert bypass.
-- Credentials/query/fragment rejected in URL; secret via `ARIADECK_RPC_SECRET` or credential ref.
-- One actor owns the WebSocket; concurrent requests via IDs; notifications = refresh hints only.
-
-Startup env knobs: `ARIADECK_RPC_URL`, `ARIADECK_RPC_SECRET`, connect/request/reconnect timing vars (see README).
+1. **GUI ⊥ engine** — RPC only; no fixed path/version assumption.
+2. **Capabilities over versions** — `listMethods` → gate advanced writes (empty probe open-handed; non-empty fail-closed).
+3. **Incremental state** — GID-keyed patches; no full-list replace every poll.
+4. **Session generations** — discard stale responses; Magnet identity migration for selection/details.
+5. **Destructive ops explicit** — remove ≠ delete files; Trash only for managed-local paths.
+6. **Unknown mutations** — one authoritative refresh; never auto-replay writes.
+7. **Local vs remote paths** — no open-folder/Trash for remote.
+8. **Virtualization first** — off-screen rows create no GPUI elements.
 
 ---
 
-## 5. Product Behavior (accepted decisions)
+## 4. Engine & RPC
 
-Compressed product contracts agents must not casually reverse:
+**Local managed startup (summary):** resolve exe → profile lock → session recover → loopback + ephemeral secret → spawn → WS connect → capability probe → snapshot → apply globals once per session.  
+**Shutdown:** `aria2.shutdown` then kill/wait. Tray close may keep engine; Quit stops owned managed engine. Remote never stopped by AriaDeck.
+
+**RPC hard rules:** only `ws`/`wss` path `/jsonrpc` · no HTTP auto-fallback · plain `ws` = loopback unless `ARIADECK_RPC_ALLOW_INSECURE_REMOTE` · WSS uses OS trust (no cert bypass) · credentials not in URL · one actor per socket.
+
+Env knobs: see root `README.md` (`ARIADECK_RPC_*`).
+
+---
+
+## 5. Product contracts (do not reverse casually)
 
 | ID | Rule |
 | --- | --- |
-| D-001 | Filename is engine-owned after add; optional `out` for direct URI only (not BT/Metalink rename). |
-| D-002 | Multi-line add = one task per non-empty line; mirrors require explicit mode. |
-| D-003 | Selection is identity-based and query-scoped; select-all = current loaded query. |
-| D-004 | Download proxy ≠ RPC proxy; passwords in OS keychain; session-bound `changeGlobalOption`. |
-| D-005/007 | Remove keeps files; local delete → Trash; exact `tellStatus.files` paths + control files; containment checks. |
-| D-006 | Retry = new GID with option/mirror replay; old failed result stays until removed. |
-| D-008 | Output conflict: Keep both / Reject / Overwrite mapped to aria2 overwrite + auto-rename. |
-| D-009 | Known-size free-space preflight before mutate; disk-full (code 9) surfaced. |
-| D-010 | Mutations single-flight; unknown → one refresh; never auto-replay. |
-| D-011 | Remote RPC WebSocket-only, fail-closed trust. |
-| D-012 | Torrent/Metalink: client reads file, Base64 upload; no engine-side local path for remote. |
-| D-013 | File selection preview-bound at add; live per-file progress later. |
-| D-014 | Sort is local; queue priority changes authoritative waiting order (unfiltered ascending only). |
-| D-015/027 | Advanced controls gated by `listMethods` / capabilities. |
-| D-016/023 | Speed limits & transfer policy typed, scope-labeled, reapplied on new session. |
-| D-017 | Detail projections on-demand, request-scoped, revision-bounded while drawer open. |
-| D-018 | Seeding ≠ completed (`seeder=true`); stays in Active filter. |
-| D-019 | Post-metadata output conflicts surfaced, not silent. |
-| D-020 | Duplicate detection by normalized URI / info hash; open file/folder local-only. |
-| D-021 | Stopped history is aria2 memory (`tellStopped`); managed `--max-download-result=5000`; paginated Load more. |
-| D-022 | Advanced add (headers/auth/checksum) URI-only; secrets redacted. |
-| D-024 | Context menu parity with toolbar; no second undo stack (Trash is recovery). |
-| D-025 | Grouped completion/error toasts; Normal/Quiet/Silent + categories; session activity panel. |
-| D-026 | Profile dir exclusive lock; corrupt session/profile recover with backup + notice. |
-| D-028 | Multi-profile catalog schema 2; activate saves then **restart** to rebind engine. |
-| D-029 | Core registry under `data/cores/aria2`; import/link; activate/rollback restart-bound. |
-| D-030 | Tray + close-to-tray prefs; OS notifications; low-disk warnings. |
-| D-031 | System/Light/Dark theme; debounced `window.json` geometry; last filter/sort only (not search text). |
-| D-032 | **Privacy (SEC-001):** secrets and high-entropy tokens must never appear in UI projections, clipboard “copy source”, notices/activity, `Debug`/`Display` of config types, or diagnostic snapshots. Domain/engine may retain raw engine data for RPC and retry. Redaction lives in `ariadeck_domain::privacy`. |
-| D-033 | **Performance (PERF-001):** tray-hidden sessions use Background poll intervals; list/details stay virtualized (viewport only); details ready→ready re-fetch coalesces (≥500ms); snapshot light updates skip O(n) selection work when `source_revision`/session stable; store/view stress covers 10k stopped + rapid patches. |
-| D-034 | **Release (RELEASE-001):** Windows-first portable (+ optional Inno installer); data dir order `ARIADECK_DATA_DIR` → portable marker `ariadeck.portable` → OS defaults; uninstall keeps `%LOCALAPPDATA%\AriaDeck` by default; MIT + `THIRD_PARTY_NOTICES.md`; no in-app auto-update; no network aria2 channel. See `docs/release.md`. |
+| D-001 | Filename engine-owned after add; optional `out` for direct URI only |
+| D-002 | Multi-line add = one task per line; mirrors need explicit mode |
+| D-003 | Selection identity + query scoped; select-all = current loaded query |
+| D-004 | Download proxy ≠ RPC proxy; passwords in OS keychain |
+| D-005/007 | Remove keeps files; local delete → Trash; exact paths + containment |
+| D-006 | Retry = new GID + option/mirror replay |
+| D-008 | Output conflict: Keep both / Reject / Overwrite |
+| D-009 | Known-size free-space preflight; disk-full surfaced |
+| D-010 | Mutations single-flight; unknown → one refresh |
+| D-011 | Remote RPC WebSocket-only, fail-closed trust |
+| D-012 | Torrent/Metalink: client reads file, Base64 upload |
+| D-013 | File selection preview-bound at add |
+| D-014 | Sort local; queue priority = waiting order (unfiltered ascending) |
+| D-015/027 | Advanced UI gated by capabilities |
+| D-016/023 | Speed limits & transfer policy typed, reapplied on new session |
+| D-017 | Detail projections on-demand, revision-bounded while open |
+| D-018 | Seeding ≠ completed (`seeder=true`); stays in Active |
+| D-019 | Post-metadata output conflicts surfaced |
+| D-020 | Duplicates by URI/info-hash; open path local-only |
+| D-021 | Stopped history = aria2 memory; paginated Load more |
+| D-022 | Advanced add URI-only; secrets redacted |
+| D-024 | Context menu = toolbar parity; no second undo stack |
+| D-025 | Grouped toasts; Normal/Quiet/Silent; activity panel |
+| D-026 | Profile exclusive lock; corrupt session → backup + notice |
+| D-028 | Multi-profile catalog schema 2; activate → restart |
+| D-029 | Core registry under `data/cores/aria2`; activate → restart |
+| D-030 | Tray + close-to-tray; OS notifications; low-disk warnings |
+| D-031 | Theme System/Light/Dark; debounced window geometry |
+| D-032 | **SEC-001:** redact secrets in UI/clipboard/notices/Debug/diagnostics (`domain::privacy`) |
+| D-033 | **PERF-001:** tray → Background poll; virtualize; details coalesce ≥500ms; 10k stress |
+| D-034 | **RELEASE-001:** Windows portable (+ Inno); MIT + notices; no in-app auto-update |
 
-#### SEC-001 sensitive-flow inventory (redaction boundary)
+**SEC inventory (boundary):** raw URIs/options may live in domain for RPC/retry; list/details/clipboard/tracker/server URIs and option secrets must be redacted or keychain-only.  
+**PERF guards:** 10k stopped stress, light snapshot short-circuit, ActivityMode tray intervals, reconnect backoff.
 
-| Source | Stored raw? | UI / copy / log |
-| --- | --- | --- |
-| Download URI userinfo/query/fragment | Domain `primary_uri` (engine) | `redact_source_uri` in list/details/labels/clipboard |
-| Magnet `tr` / `dn` / extra params | Domain until redact | Magnets collapse to `xt` info-hash only |
-| BT announce trackers (path passkeys) | Details trackers | `redact_tracker_uri` (origin or safe `/announce`) |
-| Active server / redirect URIs | Connection details | Sanitized like download sources |
-| `getOption` secrets (passwd, cookie, header, proxy, tracker opts) | Cleared in RPC adapter (`redacted: true`) | Details show “Hidden” |
-| Advanced add cookie/http-passwd | `SecretString` → aria2 only | Debug `[REDACTED]` |
-| Download proxy password | OS keychain + `credential` UUID | Settings JSON has no password field |
-| RPC secret | Env / keychain / ephemeral local | `RpcSecret` Debug redacted; URL creds rejected |
-| Filenames (`out`) | Engine after add | Reject path separators / `.` / `..` |
-| Local paths / Trash | Exact engine paths | Symlink components + containment rejected |
-| Diagnostic export | N/A (no support-bundle UI) | `DiagnosticSnapshot` + redacted endpoint only |
-
-#### PERF-001 stress matrix (acceptance)
-
-| Scenario | Path | Guard / test |
-| --- | --- | --- |
-| 10k stopped | `apply_stopped_page` + `view`/`counts` + UI list | `stress_ten_thousand_*`, `ten_thousand_tasks_render_*` |
-| Rapid live updates | `reconcile_live` / `apply_task_snapshot` + snapshot bridge | empty reconcile stability; light snapshot short-circuit |
-| Details polling | revision-driven `request_current_details` | 500ms ready→ready coalesce + catch-up |
-| Reconnect storms | backoff + max attempts + notification debounce | existing `reconnect_*` / `notification_storm_*` |
-| Minimized / tray | `hide_to_tray` / `show_from_tray` | `ActivityMode::Background` / `Foreground` |
-| Memory growth | speed history, activity log, task map | capacity/prune tests + stress map size stable |
-
-### Settings schemas (current direction)
-
-Settings are versioned JSON with migrations (`ariadeck-settings`). Notable fields: theme/scheme, download dir, download proxy (+ credential ref), speed limits, transfer policy, notification volume, platform/tray prefs, UI filter/sort. Separate `window.json` for geometry. Profile catalog is its own document (multi-profile schema 2). Core registry: `cores.json`.
+Settings: versioned JSON (`ariadeck-settings`); separate `window.json`, `profiles.json`, `cores.json`.
 
 ---
 
-## 6. Implementation Status
+## 6. Status
 
-### MVP (Stages 1–8) — complete
+### Done
 
-Bootstrap, domain/application store, typed WS RPC, sync/reconnect, virtualized workspace, add/pause/resume/retry/remove, details drawer, local engine supervision, typed settings, speed chart, themes, health presentation.
+Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, add/pause/resume/retry/remove, details, local supervision, settings, themes, multi-select/batch, multiline/mirrors, Trash, proxy+keychain, torrent/metalink+file select, queue ops, rate limits, seeding, duplicates, stopped pagination, advanced add, context menu, notifications/activity, multi-profile, capabilities, core registry, tray, window prefs, i18n en/zh-CN, a11y baseline, privacy redaction, perf hardening, Windows portable/installer packaging.
 
-### Post-MVP download manager — complete (P0/P1 + most P2 product surface)
+### Residual (polish, not blockers for Windows ship)
 
-| Area | Status |
+| Area | Residual |
 | --- | --- |
-| Filename / Magnet identity | Done |
-| Multi-select + batch actions | Done |
-| Multiline add / mirrors / unknown outcomes | Done |
-| Retry option replay | Done |
-| Safe remove + Trash | Done |
-| Download proxy + keychain | Done |
-| Torrent/Metalink add + file select | Done |
-| Queue sort/move + pause-all | Done |
-| Global/per-task rate limits + transfer policy | Done |
-| Details: files/network/options | Done |
-| Seeding state + seed options | Done |
-| Duplicates, open path, path errors | Done |
-| Stopped history pagination | Done |
-| Advanced add controls | Done |
-| Context menu / list ergonomics | Done |
-| In-app + OS notifications, activity | Done |
-| Profile ownership + multi-profile catalog | Done |
-| Capability gating (`listMethods`) | Done |
-| Managed core registry (local import) | Done |
-| System tray / close-to-tray | Done |
-| System theme + window geometry + list prefs | Done |
-
-### Remaining (before multi-platform distribution)
-
-| ID | Scope |
-| --- | --- |
-| `I18N-001` | **Done (en/zh-CN surface)** — Fluent catalogs (~360 keys), settings language (schema v8), hot-swap Translator; chrome/empty states/connection/engine, settings general/nav, dialogs, profiles/notices, task status badges, tray labels, error-code FTL mapping via `OperationErrorView::localized_summary`. Residual: niche advanced-dialog microcopy and some application-layer validation detail strings (stable error codes are localized). |
-| `ACCESS-001` | **Done** — SR labels on settings/controls, status icon+text (not color-only), reduced-motion caret/loading, larger toggle/segment hit targets, locale-shaped size/rate formatters (`FormatOptions`), integrity check uses unified `Toggle`+`settings_row`. Manual residual: high-DPI visual check at 125%/150% on Windows. |
-| `SEC-001` | **Done** — Shared `ariadeck-domain` privacy helpers (`redact_source_uri` / `redact_tracker_uri` / `task_option_key_is_sensitive` / `DiagnosticSnapshot`); list + details projections redact URI userinfo/query/fragment, magnet extras, tracker path tokens, and server URIs; option secrets cleared in RPC adapter; proxy/RPC secrets stay in keychain with Debug redaction; duplicate-add errors redact credentials; filename `out` rejects path separators; symlink components rejected on destination preflight (unix test). Residual: raw engine data retained in domain for retry; no user-facing support-bundle UI; manual Windows reparse-point check. |
-| `PERF-001` | **Done** — Tray hide/show switches `ActivityMode` Background/Foreground poll intervals; `counts()` single-pass O(n); details ready→ready re-fetch min 500ms coalesce; identical `WorkspaceSnapshot` short-circuit; application stress tests for 10k stopped pages + rapid patches + view filter/sort; UI 10k rapid snapshot virtualization; set_activity reconnect-safe. Residual: manual Windows memory sampling under real aria2 load; no production APM. |
-| `RELEASE-001` | **Done** — Windows portable package script + optional Inno installer (per-user, data retained on uninstall); `ariadeck.portable` / `ARIADECK_DATA_DIR` data-dir resolution; MIT `LICENSE` + generated `THIRD_PARTY_NOTICES.md`; winres product metadata; settings migration matrix + future-schema fail-closed; CI + tag release workflows; signing env hooks (no certs in-repo). Residual: no production signing cert, no in-app auto-update, no macOS/Linux primary packages, no network aria2 installer channel. |
+| I18N | Niche advanced-dialog / application validation English leftovers |
+| ACCESS | Manual high-DPI check (125%/150% Windows) |
+| SEC | Manual Windows reparse-point check; no support-bundle UI |
+| PERF | Manual memory under real aria2; no APM |
+| RELEASE | No prod signing cert; no macOS/Linux packages; no aria2 network installer |
 
 ### Explicitly deferred
 
-- Network channels for downloading official aria2 packages
-- SQLite multi-profile history/analytics (stopped history still aria2-owned)
-- Per-profile proxy/limit bags (global settings for now)
-- In-process profile switch without restart
-- HTTP JSON-RPC transport as first-class profile option
-- Pause/resume scheduling
-- Tags/categories, browser/file associations
-- Additional UI locales beyond en/zh-CN; remaining hard-coded English strings in dialogs/notices/application errors
-- Remote path mapping / remote file management
-- Application auto-update productization
+Network aria2 package channels · SQLite history/analytics · Per-profile proxy/limit bags · Hot profile switch without restart · HTTP JSON-RPC as first-class transport · Pause/resume **scheduling** · Tags/categories · Browser/file associations · Extra locales · Remote path mapping · In-app auto-update productization  
+
+→ Prioritized product roadmap: [`docs/roadmap.md`](roadmap.md)
 
 ---
 
-## 7. Key Architecture Decisions (ADRs)
+## 7. ADRs (summary)
 
 | ADR | Decision |
 | --- | --- |
-| 001 | `ariadeck-application` owns use cases, ports, store (no GPUI/RPC/SQLite). |
-| 002 | Pin GPUI to Zed `v1.11.3` SHA `952d712dac48a4af2c54fb22c82d82a9d69b72d4`. |
-| 003 | External/managed process path before full networked core installer. |
-| 004 | Mutable state scoped to engine session generation. |
-| 005 | Single actor owns each WebSocket; auth is transport decorator. |
-| 006 | Sync serialized & cancellation-aware; retry budget resets after stable interval. |
-| 007 | Typed JSON settings for app prefs; SQLite later for multi-entity storage. |
-| 008 | Download proxy ≠ RPC transport; credentials in OS keychain. |
-| 009 | Uncertain mutations reconciled from engine; Tokio for blocking from GPUI. |
-| 010 | Remote RPC WebSocket-only; fail closed on trust/auth errors. |
-| 011 | Fluent FTL catalogs in `ariadeck-i18n`; settings `language` (system/en/zh_cn); UI resolves locale and hot-swaps Translator; application errors stay code-oriented (full keying later). |
+| 001 | Application owns use cases/store (no GPUI/RPC/SQLite) |
+| 002 | Pin GPUI to Zed `v1.11.3` SHA `952d712dac48a4af2c54fb22c82d82a9d69b72d4` |
+| 003 | Process path before networked core installer |
+| 004 | Mutable state scoped to engine session generation |
+| 005 | One actor per WebSocket; auth as transport decorator |
+| 006 | Sync serialized & cancellation-aware |
+| 007 | Typed JSON settings now; SQLite later for multi-entity |
+| 008 | Download proxy ≠ RPC; credentials in OS keychain |
+| 009 | Uncertain mutations reconciled from engine |
+| 010 | Remote RPC WebSocket-only; fail closed |
+| 011 | Fluent in `ariadeck-i18n`; UI maps error codes |
 
 ---
 
-## 8. Developer Context
-
-### Run / verify
+## 8. Developer map
 
 ```sh
 cargo run -p ariadeck-desktop
-
-cargo fmt --all --check
-cargo test --workspace
+cargo fmt --all --check && cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo build -p ariadeck-desktop
 ```
 
-Live aria2 tests (ignored by default) need a real `aria2c` (e.g. Scoop) and `ARIA2C_PATH` where applicable.
-
-### Where to look
-
-| Concern | Start here |
+| Concern | Start |
 | --- | --- |
-| Task model / status / seeding | `crates/ariadeck-domain/src/task.rs` |
-| Store, filters, selection identity | `crates/ariadeck-application/src/store.rs`, `view.rs` |
-| Polling, reconnect, generations | `crates/ariadeck-application/src/sync.rs` |
-| Commands & outcomes | `crates/ariadeck-application/src/commands.rs`, `ports.rs` |
-| Wire models / options / multicall | `crates/ariadeck-rpc/src/` |
-| Process / lock / cores | `crates/ariadeck-engine/src/` |
-| Settings migrations | `crates/ariadeck-settings/src/lib.rs` |
-| Workspace UI / dialogs | `apps/ariadeck-desktop/src/workspace.rs` |
-| Design tokens / components | `crates/ariadeck-ui/src/` |
-| i18n catalogs / Translator | `crates/ariadeck-i18n/` (see `docs/i18n.md`) |
+| Task / seeding | `crates/ariadeck-domain/src/task.rs` |
+| Store / selection | `application/src/store.rs`, `view.rs` |
+| Sync / generations | `application/src/sync.rs` |
+| Commands | `application/src/commands.rs`, `ports.rs` |
+| Wire / multicall | `crates/ariadeck-rpc/` |
+| Process / cores | `crates/ariadeck-engine/` |
+| Settings migrate | `crates/ariadeck-settings/` |
+| Workspace / dialogs | `apps/ariadeck-desktop/src/workspace.rs` |
+| UI shell | `crates/ariadeck-ui/src/` |
+| i18n | `crates/ariadeck-i18n/` · `docs/i18n.md` |
 
-### Implementation invariants (do not break)
+### Invariants
 
-- Session-bind every mutating command; reject stale session/generation.
-- Prefer authoritative engine refresh over optimistic multi-step writes.
-- Keep secrets in adapter/credential store; redact in UI projections, notices, clipboard source copy, Debug, and diagnostic snapshots (`ariadeck_domain::privacy`).
-- Gate filesystem actions on managed-local capability + path containment.
-- Prefer capability preflight over raw “method missing” transport errors for advanced UI.
-- Keep list virtualization and bound poll cost: tray-hidden sessions use Background intervals; details revision refreshes coalesce; large queues stay page/view scoped.
-- Profile activate and core activate are **restart-bound** until bridges support hot rebind.
+- Session-bind every mutating command.
+- Prefer engine refresh over optimistic multi-step writes.
+- Secrets: keychain/adapter only; redact projections (`privacy`).
+- FS actions: managed-local + path containment.
+- Capability preflight before raw method-missing errors.
+- Virtualization + Background poll when tray-hidden.
+- Profile/core activate remain **restart-bound** until hot rebind exists.
 
-### Working rules for agents
+### Agent rules
 
-1. Code is source of truth; update this doc when behavior or package boundaries change.
-2. Research aria2 manual / comparable clients before changing user-visible contracts.
-3. Keep provider-neutral contracts in application; aria2 option strings at RPC boundary.
-4. A feature is not done without tests or a recorded live check for engine-touching paths.
-5. Release packaging stays within `docs/release.md` (Windows portable/installer). Do not expand into network aria2 download channels or in-app auto-update productization unless asked.
+1. Code wins; update this doc when behavior changes.  
+2. Check aria2 manual / comparable clients before UX contract changes.  
+3. Provider-neutral contracts in application; option strings at RPC boundary.  
+4. Engine-touching features need tests or a recorded live check.  
+5. Packaging stays in `docs/release.md` unless asked to expand.
 
 ---
 
 ## 9. Risks
 
-| Risk | Mitigation in tree |
+| Risk | Mitigation |
 | --- | --- |
-| GPUI API churn | Pinned Zed revision; UI confined to `ariadeck-ui` + desktop |
-| Large queues | Virtualization, incremental patches, paged stopped history |
-| aria2 build variance | `listMethods` capabilities; open-handed empty probe |
-| Process/session corruption | Atomic writes, session backup rename, ownership lock, restart recovery |
-| Remote path confusion | Capability flags; no local open/Trash for remote profiles |
+| GPUI churn | Pinned Zed rev; UI confined |
+| Large queues | Virtualization, patches, paged stopped |
+| aria2 build variance | `listMethods` capabilities |
+| Session corruption | Atomic writes, backup, ownership lock |
+| Remote path confusion | Capability flags; no local open/Trash |
 
 ---
 
-## 10. Document history
+## 10. History
 
-Previous long-form design (`design.md`), stage checklist (`implementation-progress.md`), and post-MVP task log (`post-mvp-progress.md`) were consolidated into this file on 2026-07-22. Historical verification tables and commit-by-commit stage notes were intentionally dropped; recover from git history if needed.
+`design.md`, `implementation-progress.md`, and `post-mvp-progress.md` were consolidated here on 2026-07-22. Long verification tables live in git history.  
+2026-07-22 (later): compressed this file; product gap plan moved to `docs/roadmap.md`.
