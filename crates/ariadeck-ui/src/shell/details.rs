@@ -35,18 +35,25 @@ impl AppShell {
             tab: TaskDetailsTab::Info,
             file_scroll: UniformListScrollHandle::new(),
             rendered_file_range: 0..0,
+            last_ready_refresh_at: None,
+            refresh_coalesced: false,
         });
         if self.snapshot.commands_available() {
-            self.request_current_details(cx);
+            self.request_current_details(false, cx);
         }
         cx.notify();
     }
 
-    pub(crate) fn request_current_details(&mut self, cx: &mut Context<Self>) {
+    /// Request details for the open drawer.
+    ///
+    /// When `rate_limited` is true and a recent fetch already ran for a Ready
+    /// drawer, the request is coalesced until the min interval elapses or the
+    /// next non-limited catch-up path runs (PERF-001).
+    pub(crate) fn request_current_details(&mut self, rate_limited: bool, cx: &mut Context<Self>) {
         let Some(session) = self.snapshot.engine_session() else {
             return;
         };
-        let Some((identity, source_revision, active, is_bittorrent)) =
+        let Some((identity, source_revision, active, is_bittorrent, ready)) =
             self.details_drawer.as_ref().and_then(|drawer| {
                 drawer.pending.is_none().then(|| {
                     (
@@ -58,6 +65,7 @@ impl AppShell {
                             crate::TaskSourceKindView::Magnet
                                 | crate::TaskSourceKindView::BitTorrent
                         ) || drawer.overview.status == TaskStatusView::Seeding,
+                        matches!(drawer.state, TaskDetailsLoadState::Ready { .. }),
                     )
                 })
             })
@@ -65,6 +73,18 @@ impl AppShell {
             return;
         };
         if identity.profile_id != session.profile_id || !self.snapshot.commands_available() {
+            return;
+        }
+
+        // Only throttle ready→ready revision refreshes (PERF-001). Initial loads
+        // and forced catch-ups always proceed so D-017 stays responsive.
+        if rate_limited
+            && ready
+            && let Some(drawer) = self.details_drawer.as_mut()
+            && let Some(last) = drawer.last_ready_refresh_at
+            && last.elapsed() < DETAILS_REFRESH_MIN_INTERVAL
+        {
+            drawer.refresh_coalesced = true;
             return;
         }
 
@@ -78,6 +98,10 @@ impl AppShell {
                 request_id,
                 source_revision,
             });
+            if ready {
+                drawer.last_ready_refresh_at = Some(Instant::now());
+            }
+            drawer.refresh_coalesced = false;
         }
         cx.emit(AppShellEvent::TaskDetailsRequested(
             TaskDetailsRequestView {
@@ -193,7 +217,7 @@ impl AppShell {
                         colors,
                     )
                     .on_click(cx.listener(|this, _, _window, cx| {
-                        this.request_current_details(cx);
+                        this.request_current_details(false, cx);
                     })),
                 )
                 .into_any_element(),
@@ -232,7 +256,7 @@ impl AppShell {
                             colors,
                         )
                         .on_click(cx.listener(|this, _, _window, cx| {
-                            this.request_current_details(cx);
+                            this.request_current_details(false, cx);
                         })),
                     )
                 })

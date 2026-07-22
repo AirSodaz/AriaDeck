@@ -9,7 +9,7 @@ use std::{
 };
 
 use ariadeck_application::{
-    AddDownloadAdvancedOptions, AddDownloadRequest, AddDownloadSource, AppCommand,
+    ActivityMode, AddDownloadAdvancedOptions, AddDownloadRequest, AddDownloadSource, AppCommand,
     ApplicationError, ApplicationErrorCode, CommandItem, CommandOutcome, CoordinatorConfig,
     DownloadDestinationFile, DownloadDestinationGateway, DownloadDestinationRequest,
     DownloadProxyConfig, DownloadProxyMode as ApplicationProxyMode, EngineCapabilities,
@@ -578,6 +578,8 @@ impl DesktopRoot {
             if let Some(tray) = self.tray.as_ref() {
                 tray.set_visible(true);
             }
+            // PERF-001: slow live/global/stopped polls while the window is hidden.
+            self.set_sync_activity(ActivityMode::Background, cx);
         }
     }
 
@@ -587,7 +589,18 @@ impl DesktopRoot {
             TRAY_SESSION_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
             window.activate_window();
             cx.activate(true);
+            self.set_sync_activity(ActivityMode::Foreground, cx);
         }
+    }
+
+    fn set_sync_activity(&self, mode: ActivityMode, cx: &mut Context<Self>) {
+        let Some(handle) = self.sync.clone() else {
+            return;
+        };
+        self.runtime.spawn(async move {
+            handle.set_activity(mode).await;
+        });
+        let _ = cx;
     }
 
     fn quit_application(&mut self, cx: &mut Context<Self>) {

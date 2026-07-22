@@ -605,7 +605,8 @@ pub enum StoreError {
 #[cfg(test)]
 mod tests {
     use ariadeck_domain::{
-        ByteRate, DownloadStatus, EngineSessionId, ProfileId, SessionGeneration, TaskSnapshot,
+        ByteCount, ByteRate, DownloadStatus, EngineSessionId, GlobalStat, ProfileId,
+        SessionGeneration, TaskSnapshot,
     };
 
     use super::*;
@@ -931,5 +932,129 @@ mod tests {
             store.update_global_stat(generation(), GlobalStat::default()),
             Err(StoreError::StaleGeneration { .. })
         ));
+    }
+
+    #[test]
+    fn stress_ten_thousand_stopped_pages_and_rapid_progress_patches() {
+        // PERF-001: 10k stopped tasks across pages + rapid field-only updates stay bounded.
+        let mut store = store();
+        let total = 10_000usize;
+        let page_size = 100usize;
+        let mut offset = 0usize;
+        while offset < total {
+            let page = (offset..offset + page_size)
+                .map(|index| {
+                    task(
+                        (index + 1) as u64,
+                        DownloadStatus::Complete,
+                        &format!("file-{index}.bin"),
+                    )
+                })
+                .collect::<Vec<_>>();
+            store
+                .apply_stopped_page(generation(), offset, Some(total), page)
+                .expect("apply stopped page");
+            offset += page_size;
+        }
+        let history = store.stopped_history();
+        assert_eq!(history.loaded, total);
+        assert_eq!(history.total, Some(total));
+        assert!(!history.can_load_more);
+        assert_eq!(store.tasks.len(), total);
+
+        // Rapid progress-like patches on a live task must not grow the map.
+        let live = task(99_999, DownloadStatus::Active, "live.bin");
+        store
+            .reconcile_live(generation(), vec![live], Vec::new())
+            .expect("seed live task");
+        let live_gid = Gid::from_u64(99_999);
+        for completed in 1..=200u64 {
+            let mut snapshot = task(99_999, DownloadStatus::Active, "live.bin");
+            snapshot.completed_length = ByteCount::new(completed * 1_024);
+            snapshot.total_length = ByteCount::new(200 * 1_024);
+            snapshot.download_speed = ByteRate::new(1_024);
+            let patch = store
+                .apply_task_snapshot(generation(), live_gid, Some(snapshot))
+                .expect("progress patch");
+            assert!(
+                patch.inserted.is_empty(),
+                "progress updates must not insert"
+            );
+            assert!(patch.removed.is_empty(), "progress updates must not remove");
+        }
+        assert_eq!(store.tasks.len(), total + 1);
+        assert_eq!(
+            store.speed_history().samples().len(),
+            0,
+            "progress patches must not touch speed history"
+        );
+    }
+
+    #[test]
+    fn stress_repeated_identical_live_reconcile_is_empty_and_stable() {
+        let mut store = store();
+        let active = (1..=500u64)
+            .map(|id| task(id, DownloadStatus::Active, &format!("a{id}")))
+            .collect::<Vec<_>>();
+        store
+            .reconcile_live(generation(), active.clone(), Vec::new())
+            .expect("initial live");
+        let revision = store.revision();
+        for _ in 0..50 {
+            let patch = store
+                .reconcile_live(generation(), active.clone(), Vec::new())
+                .expect("identical reconcile");
+            assert!(patch.is_empty());
+        }
+        assert_eq!(store.revision(), revision);
+        assert_eq!(store.tasks.len(), 500);
+    }
+
+    #[test]
+    fn stress_fixed_task_set_survives_thousand_patch_cycles() {
+        // PERF-001 memory: patch churn on a fixed set must not grow the task map
+        // or leak seeding/search bookkeeping.
+        let mut store = store();
+        let active = (1..=100u64)
+            .map(|id| task(id, DownloadStatus::Active, &format!("live-{id}")))
+            .collect::<Vec<_>>();
+        store
+            .reconcile_live(generation(), active, Vec::new())
+            .expect("seed live set");
+        let task_count = store.tasks.len();
+        let search_count = store.search_index.len();
+
+        for cycle in 0..1_000u64 {
+            let refreshed = (1..=100u64)
+                .map(|id| {
+                    let mut snapshot = task(id, DownloadStatus::Active, &format!("live-{id}"));
+                    snapshot.completed_length = ByteCount::new(cycle + id);
+                    snapshot.total_length = ByteCount::new(10_000);
+                    snapshot.download_speed = ByteRate::new(1_024 + (cycle % 7));
+                    snapshot
+                })
+                .collect::<Vec<_>>();
+            store
+                .reconcile_live(generation(), refreshed, Vec::new())
+                .expect("patch cycle");
+            store
+                .record_speed_sample(
+                    generation(),
+                    GlobalStat {
+                        download_speed: ByteRate::new(cycle),
+                        upload_speed: ByteRate::new(cycle / 2),
+                        ..GlobalStat::default()
+                    },
+                )
+                .expect("speed sample");
+        }
+
+        assert_eq!(store.tasks.len(), task_count);
+        assert_eq!(store.search_index.len(), search_count);
+        assert!(store.speed_history().samples().len() <= crate::DEFAULT_SPEED_HISTORY_CAPACITY);
+        assert_eq!(
+            store.speed_history().samples().len(),
+            crate::DEFAULT_SPEED_HISTORY_CAPACITY.min(1_000)
+        );
     }
 }

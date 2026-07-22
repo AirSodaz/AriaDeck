@@ -1890,6 +1890,7 @@ fn task_revision_refreshes_visible_file_details_without_loading_flicker(cx: &mut
 
     view.update(cx, |shell, cx| {
         let mut revision_two = snapshot(1);
+        revision_two.source_revision = 2;
         revision_two.tasks[0].revision = 2;
         shell.set_snapshot(revision_two, cx);
     });
@@ -1906,6 +1907,7 @@ fn task_revision_refreshes_visible_file_details_without_loading_flicker(cx: &mut
 
     view.update(cx, |shell, cx| {
         let mut revision_three = snapshot(1);
+        revision_three.source_revision = 3;
         revision_three.tasks[0].revision = 3;
         shell.set_snapshot(revision_three, cx);
     });
@@ -2097,6 +2099,8 @@ fn ten_thousand_detail_files_render_only_a_viewport_window(cx: &mut TestAppConte
             tab: TaskDetailsTab::Files,
             file_scroll: UniformListScrollHandle::new(),
             rendered_file_range: 0..0,
+            last_ready_refresh_at: None,
+            refresh_coalesced: false,
         });
         shell
     });
@@ -3114,5 +3118,55 @@ fn core_registry_commands_emit_and_apply_results(cx: &mut TestAppContext) {
                 .as_ref()
                 .is_some_and(|notice| notice.message.contains("verified"))
         );
+    });
+}
+
+#[gpui::test]
+fn rapid_ten_thousand_snapshots_keep_viewport_window(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(10_000);
+        shell
+    });
+
+    for revision in 2..=20u64 {
+        view.update(cx, |shell, cx| {
+            let mut next = snapshot(10_000);
+            next.source_revision = revision;
+            next.download_rate = revision;
+            shell.set_snapshot(next, cx);
+        });
+    }
+
+    view.read_with(cx, |shell, _| {
+        let rendered = shell.rendered_range();
+        assert!(!rendered.is_empty());
+        assert!(
+            rendered.len() < 64,
+            "rapid full-list snapshots must stay virtualized ({})",
+            rendered.len()
+        );
+        assert_eq!(shell.snapshot.tasks.len(), 10_000);
+        assert_eq!(shell.snapshot.source_revision, 20);
+    });
+}
+
+#[gpui::test]
+fn identical_snapshot_is_a_no_op_for_selection_and_details(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(3);
+        shell.selected = Some(shell.snapshot.tasks[1].identity.clone());
+        shell
+    });
+    let selected = view.read_with(cx, |shell, _| shell.selected.clone());
+
+    view.update(cx, |shell, cx| {
+        let same = shell.snapshot.clone();
+        shell.set_snapshot(same, cx);
+    });
+    view.read_with(cx, |shell, _| {
+        assert_eq!(shell.selected, selected);
+        assert_eq!(shell.snapshot.source_revision, 1);
     });
 }

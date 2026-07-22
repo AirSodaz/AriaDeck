@@ -78,8 +78,18 @@ impl DownloadStore {
 
     #[must_use]
     pub fn counts(&self) -> TaskCounts {
+        // Scan each task once in queue order without building a full `view()`
+        // (PERF-001: counts must stay O(n) without an extra allocation pass).
         let mut counts = TaskCounts::default();
-        for gid in self.view(&TaskListQuery::default()).visible_gids {
+        let mut seen = HashSet::new();
+        for gid in self
+            .active_order
+            .iter()
+            .chain(&self.waiting_order)
+            .chain(&self.stopped_order)
+            .copied()
+            .filter(|gid| seen.insert(*gid))
+        {
             let Some(task) = self.tasks.get(&gid) else {
                 continue;
             };
@@ -157,8 +167,8 @@ const fn apply_direction(ordering: Ordering, direction: SortDirection) -> Orderi
 #[cfg(test)]
 mod tests {
     use ariadeck_domain::{
-        ByteCount, DownloadStatus, EngineSession, EngineSessionId, ProfileId, SessionGeneration,
-        TaskSnapshot,
+        ByteCount, DownloadFilter, DownloadSort, DownloadStatus, EngineSession, EngineSessionId,
+        ProfileId, SessionGeneration, SortDirection, SortKey, TaskSnapshot,
     };
 
     use super::*;
@@ -244,5 +254,59 @@ mod tests {
                 .visible_gids,
             vec![Gid::from_u64(3)]
         );
+    }
+
+    #[test]
+    fn stress_ten_thousand_view_filter_sort_and_counts() {
+        let generation = SessionGeneration::initial();
+        let mut store = DownloadStore::new(EngineSession::new(
+            ProfileId::new(),
+            EngineSessionId::new(),
+            generation,
+        ));
+        let total = 10_000usize;
+        let page = (0..total)
+            .map(|index| {
+                let status = if index % 5 == 0 {
+                    DownloadStatus::Error
+                } else {
+                    DownloadStatus::Complete
+                };
+                TaskSnapshot::new(
+                    Gid::from_u64((index + 1) as u64),
+                    status,
+                    format!("item-{index:05}.bin"),
+                )
+            })
+            .collect::<Vec<_>>();
+        store
+            .apply_stopped_page(generation, 0, Some(total), page)
+            .expect("load 10k stopped");
+
+        let failed = store.view(&TaskListQuery {
+            filter: DownloadFilter::Failed,
+            ..TaskListQuery::default()
+        });
+        assert_eq!(failed.visible_gids.len(), total / 5);
+
+        let sorted = store.view(&TaskListQuery {
+            filter: DownloadFilter::All,
+            sort: DownloadSort {
+                key: SortKey::Name,
+                direction: SortDirection::Descending,
+            },
+            ..TaskListQuery::default()
+        });
+        assert_eq!(sorted.visible_gids.len(), total);
+        assert_eq!(
+            sorted.visible_gids.first().copied(),
+            Some(Gid::from_u64(total as u64)),
+            "descending name should put highest index first with zero-padded names"
+        );
+
+        let counts = store.counts();
+        assert_eq!(counts.all, total);
+        assert_eq!(counts.completed, total - total / 5);
+        assert_eq!(counts.failed, total / 5);
     }
 }

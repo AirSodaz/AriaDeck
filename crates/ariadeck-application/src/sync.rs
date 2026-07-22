@@ -2866,4 +2866,39 @@ mod tests {
         );
         assert_eq!(store.counts().completed, 1);
     }
+
+    #[tokio::test]
+    async fn set_activity_switches_poll_intervals_without_disconnect() {
+        let profile_id = ProfileId::new();
+        let gid = Gid::from_u64(42);
+        let (notification_tx, notification_rx) = mpsc::channel(8);
+        let connector = Arc::new(ScriptedConnector {
+            steps: Mutex::new(VecDeque::from([Ok(ConnectedSyncSession::new(
+                Box::new(FakeSession {
+                    initial: initial_snapshot(gid),
+                    targeted_calls: Arc::new(Mutex::new(Vec::new())),
+                }),
+                notification_rx,
+            ))])),
+            calls: AtomicUsize::new(0),
+        });
+        let handle = spawn_sync_coordinator(connector, test_config(profile_id));
+        let _ = wait_until_connected(&handle).await;
+
+        handle.set_activity(ActivityMode::Background).await;
+        handle.set_activity(ActivityMode::Foreground).await;
+
+        let snapshot = handle
+            .snapshot(TaskListQuery::default())
+            .await
+            .expect("snapshot after activity changes");
+        assert_eq!(snapshot.connection_state, ConnectionState::Connected);
+        assert!(
+            snapshot.tasks.iter().any(|task| task.gid == gid),
+            "activity mode changes must not drop tasks"
+        );
+
+        handle.stop().await;
+        drop(notification_tx);
+    }
 }

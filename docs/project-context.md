@@ -1,6 +1,6 @@
 # AriaDeck — Project Design & Context
 
-**Status:** Product-ready core; ACCESS-001, en/zh-CN i18n foundation, and SEC-001 privacy redaction landed; remaining work is performance hardening, release packaging, and broader string migration  
+**Status:** Product-ready core; ACCESS-001, en/zh-CN i18n, SEC-001 privacy, and PERF-001 stress hardening landed; remaining work is release packaging and broader string migration  
 **Last updated:** 2026-07-22  
 **Primary stack:** Rust 1.96 · GPUI (Zed `v1.11.3` pin) · aria2 JSON-RPC over WebSocket · Tokio
 
@@ -147,6 +147,7 @@ Compressed product contracts agents must not casually reverse:
 | D-030 | Tray + close-to-tray prefs; OS notifications; low-disk warnings. |
 | D-031 | System/Light/Dark theme; debounced `window.json` geometry; last filter/sort only (not search text). |
 | D-032 | **Privacy (SEC-001):** secrets and high-entropy tokens must never appear in UI projections, clipboard “copy source”, notices/activity, `Debug`/`Display` of config types, or diagnostic snapshots. Domain/engine may retain raw engine data for RPC and retry. Redaction lives in `ariadeck_domain::privacy`. |
+| D-033 | **Performance (PERF-001):** tray-hidden sessions use Background poll intervals; list/details stay virtualized (viewport only); details ready→ready re-fetch coalesces (≥500ms); snapshot light updates skip O(n) selection work when `source_revision`/session stable; store/view stress covers 10k stopped + rapid patches. |
 
 #### SEC-001 sensitive-flow inventory (redaction boundary)
 
@@ -163,6 +164,17 @@ Compressed product contracts agents must not casually reverse:
 | Filenames (`out`) | Engine after add | Reject path separators / `.` / `..` |
 | Local paths / Trash | Exact engine paths | Symlink components + containment rejected |
 | Diagnostic export | N/A (no support-bundle UI) | `DiagnosticSnapshot` + redacted endpoint only |
+
+#### PERF-001 stress matrix (acceptance)
+
+| Scenario | Path | Guard / test |
+| --- | --- | --- |
+| 10k stopped | `apply_stopped_page` + `view`/`counts` + UI list | `stress_ten_thousand_*`, `ten_thousand_tasks_render_*` |
+| Rapid live updates | `reconcile_live` / `apply_task_snapshot` + snapshot bridge | empty reconcile stability; light snapshot short-circuit |
+| Details polling | revision-driven `request_current_details` | 500ms ready→ready coalesce + catch-up |
+| Reconnect storms | backoff + max attempts + notification debounce | existing `reconnect_*` / `notification_storm_*` |
+| Minimized / tray | `hide_to_tray` / `show_from_tray` | `ActivityMode::Background` / `Foreground` |
+| Memory growth | speed history, activity log, task map | capacity/prune tests + stress map size stable |
 
 ### Settings schemas (current direction)
 
@@ -209,7 +221,7 @@ Bootstrap, domain/application store, typed WS RPC, sync/reconnect, virtualized w
 | `I18N-001` | **Done (en/zh-CN surface)** — Fluent catalogs (~360 keys), settings language (schema v8), hot-swap Translator; chrome/empty states/connection/engine, settings general/nav, dialogs, profiles/notices, task status badges, tray labels, error-code FTL mapping via `OperationErrorView::localized_summary`. Residual: niche advanced-dialog microcopy and some application-layer validation detail strings (stable error codes are localized). |
 | `ACCESS-001` | **Done** — SR labels on settings/controls, status icon+text (not color-only), reduced-motion caret/loading, larger toggle/segment hit targets, locale-shaped size/rate formatters (`FormatOptions`), integrity check uses unified `Toggle`+`settings_row`. Manual residual: high-DPI visual check at 125%/150% on Windows. |
 | `SEC-001` | **Done** — Shared `ariadeck-domain` privacy helpers (`redact_source_uri` / `redact_tracker_uri` / `task_option_key_is_sensitive` / `DiagnosticSnapshot`); list + details projections redact URI userinfo/query/fragment, magnet extras, tracker path tokens, and server URIs; option secrets cleared in RPC adapter; proxy/RPC secrets stay in keychain with Debug redaction; duplicate-add errors redact credentials; filename `out` rejects path separators; symlink components rejected on destination preflight (unix test). Residual: raw engine data retained in domain for retry; no user-facing support-bundle UI; manual Windows reparse-point check. |
-| `PERF-001` | Stress: 10k stopped, rapid updates, details polling, reconnect storms, minimized mode, memory growth |
+| `PERF-001` | **Done** — Tray hide/show switches `ActivityMode` Background/Foreground poll intervals; `counts()` single-pass O(n); details ready→ready re-fetch min 500ms coalesce; identical `WorkspaceSnapshot` short-circuit; application stress tests for 10k stopped pages + rapid patches + view filter/sort; UI 10k rapid snapshot virtualization; set_activity reconnect-safe. Residual: manual Windows memory sampling under real aria2 load; no production APM. |
 | `RELEASE-001` | Signing, installer/portable packaging, uninstall data retention, license notices, schema migration tests, app update/rollback |
 
 ### Explicitly deferred
@@ -282,6 +294,7 @@ Live aria2 tests (ignored by default) need a real `aria2c` (e.g. Scoop) and `ARI
 - Keep secrets in adapter/credential store; redact in UI projections, notices, clipboard source copy, Debug, and diagnostic snapshots (`ariadeck_domain::privacy`).
 - Gate filesystem actions on managed-local capability + path containment.
 - Prefer capability preflight over raw “method missing” transport errors for advanced UI.
+- Keep list virtualization and bound poll cost: tray-hidden sessions use Background intervals; details revision refreshes coalesce; large queues stay page/view scoped.
 - Profile activate and core activate are **restart-bound** until bridges support hot rebind.
 
 ### Working rules for agents

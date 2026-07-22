@@ -3,7 +3,7 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use gpui::{
@@ -73,6 +73,8 @@ const TASK_LAYOUT_WIDE_MIN_WIDTH: f32 = 820.0;
 const TASK_ROW_HEIGHT: f32 = 68.0;
 const ACTIVITY_HISTORY_LIMIT: usize = 100;
 const ACTIVITY_PANEL_WIDTH: f32 = 360.0;
+/// Minimum gap between revision-driven details re-fetches while the drawer is open (PERF-001).
+const DETAILS_REFRESH_MIN_INTERVAL: Duration = Duration::from_millis(500);
 
 #[cfg(target_os = "macos")]
 const TITLEBAR_BRAND_INSET: f32 = 52.0;
@@ -243,6 +245,10 @@ struct TaskDetailsDrawer {
     tab: TaskDetailsTab,
     file_scroll: UniformListScrollHandle,
     rendered_file_range: Range<usize>,
+    /// Last time a ready→ready details RPC was emitted (coalesce rapid revisions).
+    last_ready_refresh_at: Option<Instant>,
+    /// True when a revision-driven refresh was deferred by the min interval.
+    refresh_coalesced: bool,
 }
 
 struct StatusNotice {
@@ -1475,6 +1481,38 @@ impl AppShell {
     }
 
     pub fn set_snapshot(&mut self, snapshot: WorkspaceSnapshot, cx: &mut Context<Self>) {
+        // PERF-001: when store revision/session are unchanged, tasks are stable.
+        // Only connection/rates/history/counts may move — avoid O(n) selection work.
+        if self.snapshot.source_revision == snapshot.source_revision
+            && self.snapshot.generation == snapshot.generation
+            && self.snapshot.profile_id == snapshot.profile_id
+            && self.snapshot.session_id == snapshot.session_id
+        {
+            let light_changed = self.snapshot.connection != snapshot.connection
+                || self.snapshot.stale != snapshot.stale
+                || self.snapshot.download_rate != snapshot.download_rate
+                || self.snapshot.upload_rate != snapshot.upload_rate
+                || self.snapshot.speed_history != snapshot.speed_history
+                || self.snapshot.counts != snapshot.counts
+                || self.snapshot.stopped_history != snapshot.stopped_history
+                || self.snapshot.capabilities != snapshot.capabilities
+                || self.snapshot.local_path_actions_available
+                    != snapshot.local_path_actions_available;
+            if !light_changed {
+                return;
+            }
+            self.snapshot.connection = snapshot.connection;
+            self.snapshot.stale = snapshot.stale;
+            self.snapshot.download_rate = snapshot.download_rate;
+            self.snapshot.upload_rate = snapshot.upload_rate;
+            self.snapshot.speed_history = snapshot.speed_history;
+            self.snapshot.counts = snapshot.counts;
+            self.snapshot.stopped_history = snapshot.stopped_history;
+            self.snapshot.capabilities = snapshot.capabilities;
+            self.snapshot.local_path_actions_available = snapshot.local_path_actions_available;
+            cx.notify();
+            return;
+        }
         let previous_session = self.snapshot.engine_session();
         let previous_commands_available = self.snapshot.commands_available();
         let next_session = snapshot.engine_session();
@@ -1626,14 +1664,14 @@ impl AppShell {
             }
         }
 
+        let force_details_refresh =
+            followed_task || session_changed || !previous_commands_available;
         let should_refresh_details = self.details_drawer.is_some()
             && self.snapshot.commands_available()
-            && (followed_task
-                || session_changed
-                || !previous_commands_available
-                || details_revision_advanced);
+            && (force_details_refresh || details_revision_advanced);
         if should_refresh_details {
-            self.request_current_details(cx);
+            // Revision-only refreshes are rate-limited; session/follow always run.
+            self.request_current_details(!force_details_refresh && details_revision_advanced, cx);
         }
         cx.notify();
     }
@@ -2204,13 +2242,22 @@ impl AppShell {
         };
 
         if request_again {
-            self.request_current_details(cx);
+            // Catch-up after a completed request is not rate-limited so the drawer
+            // can converge to the latest overview revision (D-017).
+            self.request_current_details(false, cx);
         } else if let Some(summary) = refresh_failure {
             self.show_notice(
                 format!("{}: {summary}", self.t("dialog-details-load-failed")),
                 true,
                 cx,
             );
+        } else if self
+            .details_drawer
+            .as_ref()
+            .is_some_and(|drawer| drawer.refresh_coalesced)
+        {
+            self.request_current_details(true, cx);
+            cx.notify();
         } else {
             cx.notify();
         }
