@@ -1115,10 +1115,11 @@ impl AppShell {
             )
     }
 
-    pub(crate) fn render_settings_nav(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn render_settings_nav(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let colors = self.theme.colors;
         let active = self.settings_page.active_category;
         let mut nav = div()
+            .id("settings-category-list")
             .w(px(168.0))
             .flex_none()
             .flex()
@@ -1126,11 +1127,19 @@ impl AppShell {
             .border_r_1()
             .border_color(colors.border)
             .bg(colors.background)
-            .py_3();
+            .py_3()
+            .role(Role::TabList)
+            .aria_label("Settings categories");
         for category in SettingsCategory::ALL {
             let is_active = category == active;
             let item = div()
                 .id(SharedString::from(format!("nav-{}", category.label())))
+                .role(Role::Tab)
+                .aria_label(self.t(category.message_key()))
+                .aria_selected(is_active)
+                .focusable()
+                .tab_stop(true)
+                .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
                 .flex()
                 .items_center()
                 .gap_3()

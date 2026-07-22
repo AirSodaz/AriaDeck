@@ -668,6 +668,9 @@ impl AppShell {
                 .id(id)
                 .role(Role::MenuItem)
                 .aria_label(label)
+                .focusable()
+                .tab_stop(enabled)
+                .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
                 .w_full()
                 .px_3()
                 .py_1p5()
@@ -690,6 +693,13 @@ impl AppShell {
                                 this.activate_text_field_context_action(action, window, cx);
                             })
                         })
+                        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                            if event.is_keyboard() {
+                                cx.stop_propagation();
+                                window.prevent_default();
+                                this.activate_text_field_context_action(action, window, cx);
+                            }
+                        }))
                 })
                 .child(label)
         };

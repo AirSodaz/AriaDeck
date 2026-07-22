@@ -144,6 +144,7 @@ Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, ad
 | Area | Residual |
 | --- | --- |
 | ACCESS | Manual high-DPI check (125%/150% Windows) |
+| ACCESS | Manual NVDA / Narrator pass for the role, label, and focus baseline |
 | SEC | Manual Windows reparse-point check |
 | PERF | Manual memory under real aria2; no APM |
 | RELEASE | No prod signing cert; no macOS/Linux **packages** (CI verify covers win/mac/linux); no aria2 network installer |

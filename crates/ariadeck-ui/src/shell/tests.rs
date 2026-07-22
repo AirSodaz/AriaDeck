@@ -2521,6 +2521,59 @@ fn speed_popover_toggles_and_restores_previous_focus(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn task_settings_dialogs_keep_tab_focus_inside_the_modal(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        let mut workspace = snapshot(1);
+        workspace.tasks[0].status = TaskStatusView::Active;
+        shell.selected = Some(workspace.tasks[0].identity.clone());
+        shell.snapshot = workspace;
+        shell
+    });
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_task_speed_limit(window, cx);
+    });
+    view.update_in(cx, |shell, window, cx| {
+        window.focus(&shell.focus_handle, cx);
+        shell.focus_next(&FocusNext, window, cx);
+        assert!(
+            shell
+                .task_inputs
+                .download_limit
+                .focus_handle(cx)
+                .is_focused(window)
+        );
+
+        window.focus(&shell.focus_handle, cx);
+        shell.focus_previous(&FocusPrevious, window, cx);
+        assert!(shell.task_speed_limit_submit_focus.is_focused(window));
+        shell.close_task_speed_limit(window, cx);
+        shell.open_task_options(window, cx);
+    });
+    view.update_in(cx, |shell, window, cx| {
+        window.focus(&shell.focus_handle, cx);
+        shell.focus_next(&FocusNext, window, cx);
+        assert!(
+            shell
+                .task_inputs
+                .seed_ratio
+                .focus_handle(cx)
+                .is_focused(window)
+        );
+
+        window.focus(&shell.focus_handle, cx);
+        shell.focus_previous(&FocusPrevious, window, cx);
+        assert!(shell.task_options_submit_focus.is_focused(window));
+    });
+    cx.simulate_keystrokes("escape");
+    view.read_with(cx, |shell, _| {
+        assert!(shell.task_options_dialog.is_none());
+    });
+}
+
+#[gpui::test]
 fn task_status_transitions_group_completions_into_one_notice(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut shell = AppShell::new(Theme::dark(), window, cx);

@@ -355,6 +355,7 @@ impl AppShell {
                     },
                     self.theme,
                 )
+                .aria_label(self.t("dialog-details-tabs-aria"))
                 .on_select(move |index, _window, cx| {
                     let tab = match index {
                         1 => TaskDetailsTab::Files,

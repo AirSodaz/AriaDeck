@@ -65,8 +65,8 @@ Legend: **Have** · **Partial** · **Missing** · **Won’t** (non-goal)
 | UPnP / port map UI | Missing | Have | Options raw | Gate on capabilities |
 | Keep-awake / shutdown after done | Missing | Next | N/A | Power integration |
 | In-app auto-update | Missing | Have | N/A | Deferred productization |
-| Export/import settings | Missing | AriaNg | Have | Ops convenience |
-| Diagnostic zip | Missing | Next | N/A | SEC-safe export |
+| Export/import settings | Have | AriaNg | Have | Ops convenience |
+| Diagnostic zip | Have | Next | N/A | SEC-safe export |
 | Remote path mapping | Won’t (near term) | Rare | N/A | Keep non-goal |
 | Web UI / mobile | Won’t | N/A | Is web | Keep non-goal |
 | yt-dlp / site extractors | Won’t | Rare | N/A | Out of scope |
@@ -88,7 +88,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | A3 | High-DPI + Windows reparse manual QA | ACCESS/SEC residuals |
 | A4 | **Done** — optional diagnostic export (redacted ZIP) | Support without leaking secrets; excludes URLs, paths, settings, credentials, and logs |
 | A5 | **Done** — settings export/import (versioned JSON, no credentials) | AriaNg parity; strict validation, local keychain secrets unchanged |
-| A6 | Screen reader baseline (NVDA / Narrator): interactive controls labeled, focus order correct | a11y beyond high-DPI; Windows-first |
+| A6 | **In progress** — code baseline for roles, labels, keyboard focus, and modal focus traps | Manual NVDA / Narrator pass remains |
 
 **Exit:** Signed Windows portable + installer; no known P0 privacy/a11y holes.
 

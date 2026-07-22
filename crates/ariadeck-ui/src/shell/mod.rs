@@ -23,35 +23,35 @@ use crate::{
     AddDownloadResultView, AddDownloadSourceView, BatchCommandOutcomeView,
     BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
     BatchTaskFailureView, Button, ButtonStyle, ClearSearch, CloseAddDownload, CloseBatchFailures,
-    CloseBehaviorView, CloseSettings, CloseTaskOutputName, CloseTaskSpeedLimit, ColorSchemeView,
-    CommandOutcomeView, ConnectionView, CoreCommandOutcomeView, CoreCommandRequestView,
-    CoreCommandResultView, CoreCommandView, CoreRegistryView, DiagnosticExportOutcomeView,
-    DiagnosticExportRequestView, DiagnosticExportResultView, Dialog, DownloadProxySettingsView,
-    DownloadRowView, EngineHealthView, EngineSessionView, FileAllocationView,
-    FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch, GlobalTaskCommandRequestView,
-    GlobalTaskCommandResultView, GlobalTaskCommandView, Icon, IconButton, IconName, IconSize,
-    LanguagePreferenceView, LocaleId, MoveTaskDownInQueue, MoveTaskToQueueBottom,
-    MoveTaskToQueueTop, MoveTaskUpInQueue, NotificationSettingsView, NotificationVolumeView,
-    OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit,
-    OperationErrorView, PauseSelectedTask, PlatformSettingsView, ProfileCatalogView,
-    ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView,
-    ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask,
-    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
-    SaveSettings, SearchInputEvent, SecretStringView, Segment, SegmentedControl, SelectAllTasks,
-    SelectNextTask, SelectPreviousTask, SettingsExportOutcomeView, SettingsExportRequestView,
-    SettingsExportResultView, SettingsImportOutcomeView, SettingsImportRequestView,
-    SettingsImportResultView, SettingsSaveOutcomeView, SettingsSaveRequestView,
-    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator,
-    SubmitAddDownload, SubmitTaskOutputName, SubmitTaskSpeedLimit, SwitchProfileOutcomeView,
-    SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
-    TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView, TaskDetailsRequestView,
-    TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity, TaskOpenOutcomeView,
-    TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView, TaskOptionView,
-    TaskPathValidationView, TaskStatusView, TextField, TextFieldConfig, Theme, ThemeMode, Toast,
-    ToastKind, Toggle, Tooltip, TransferPolicySettingsView, Translator, WorkspaceFilter,
-    WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
-    actions::TEXT_FIELD_KEY_CONTEXT, format_bytes, format_eta, format_percent, format_rate,
-    format_share_ratio,
+    CloseBehaviorView, CloseSettings, CloseTaskOptions, CloseTaskOutputName, CloseTaskSpeedLimit,
+    ColorSchemeView, CommandOutcomeView, ConnectionView, CoreCommandOutcomeView,
+    CoreCommandRequestView, CoreCommandResultView, CoreCommandView, CoreRegistryView,
+    DiagnosticExportOutcomeView, DiagnosticExportRequestView, DiagnosticExportResultView, Dialog,
+    DownloadProxySettingsView, DownloadRowView, EngineHealthView, EngineSessionView,
+    FileAllocationView, FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch,
+    GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView, Icon,
+    IconButton, IconName, IconSize, LanguagePreferenceView, LocaleId, MoveTaskDownInQueue,
+    MoveTaskToQueueBottom, MoveTaskToQueueTop, MoveTaskUpInQueue, NotificationSettingsView,
+    NotificationVolumeView, OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName,
+    OpenTaskSpeedLimit, OperationErrorView, PauseSelectedTask, PlatformSettingsView,
+    ProfileCatalogView, ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView,
+    ProxyModeView, ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask,
+    RetrySelectedTask, SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView,
+    SaveProfileCatalogResultView, SaveSettings, SearchInputEvent, SecretStringView, Segment,
+    SegmentedControl, SelectAllTasks, SelectNextTask, SelectPreviousTask,
+    SettingsExportOutcomeView, SettingsExportRequestView, SettingsExportResultView,
+    SettingsImportOutcomeView, SettingsImportRequestView, SettingsImportResultView,
+    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
+    SpeedLimitSettingsView, SpeedSampleView, StatusIndicator, SubmitAddDownload, SubmitTaskOptions,
+    SubmitTaskOutputName, SubmitTaskSpeedLimit, SwitchProfileOutcomeView, SwitchProfileRequestView,
+    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
+    TaskFileView, TaskIdentity, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
+    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskStatusView, TextField,
+    TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Toggle, Tooltip,
+    TransferPolicySettingsView, Translator, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
+    WorkspaceSortDirection, WorkspaceSortKey, actions::TEXT_FIELD_KEY_CONTEXT, format_bytes,
+    format_eta, format_percent, format_rate, format_share_ratio,
 };
 
 #[cfg(test)]
@@ -2870,6 +2870,16 @@ impl AppShell {
             && !self.batch_failure_dialog_focus.contains_focused(window, cx)
         {
             window.focus(&self.batch_failure_close_focus, cx);
+        } else if self.task_speed_limit_dialog.is_some()
+            && !self
+                .task_speed_limit_dialog_focus
+                .contains_focused(window, cx)
+        {
+            window.focus(&self.task_inputs.download_limit.focus_handle(cx), cx);
+        } else if self.task_options_dialog.is_some()
+            && !self.task_options_dialog_focus.contains_focused(window, cx)
+        {
+            window.focus(&self.task_inputs.seed_ratio.focus_handle(cx), cx);
         }
     }
 
@@ -2889,6 +2899,16 @@ impl AppShell {
             && !self.batch_failure_dialog_focus.contains_focused(window, cx)
         {
             window.focus(&self.batch_failure_close_focus, cx);
+        } else if self.task_speed_limit_dialog.is_some()
+            && !self
+                .task_speed_limit_dialog_focus
+                .contains_focused(window, cx)
+        {
+            window.focus(&self.task_speed_limit_submit_focus, cx);
+        } else if self.task_options_dialog.is_some()
+            && !self.task_options_dialog_focus.contains_focused(window, cx)
+        {
+            window.focus(&self.task_options_submit_focus, cx);
         }
     }
 
@@ -3039,6 +3059,8 @@ impl Render for AppShell {
             .on_action(cx.listener(Self::open_task_speed_limit_action))
             .on_action(cx.listener(Self::close_task_speed_limit_action))
             .on_action(cx.listener(Self::submit_task_speed_limit_action))
+            .on_action(cx.listener(Self::close_task_options_action))
+            .on_action(cx.listener(Self::submit_task_options_action))
             .on_action(cx.listener(Self::close_batch_failure_details_action))
             .on_action(cx.listener(Self::remove_selected))
             .on_action(cx.listener(Self::focus_next))

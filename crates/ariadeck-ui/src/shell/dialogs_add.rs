@@ -507,6 +507,7 @@ impl AppShell {
             usize::from(input_mode == AddDownloadInputModeView::MetadataFiles),
             self.theme,
         )
+        .aria_label(self.t("dialog-add-input-type-aria"))
         .disabled(pending)
         .on_select(move |index, _window, cx| {
             let mode = if index == 0 {
@@ -527,6 +528,7 @@ impl AppShell {
             usize::from(mode == AddDownloadModeView::Mirrors),
             self.theme,
         )
+        .aria_label(self.t("dialog-add-mode-aria"))
         .disabled(pending)
         .on_select(move |index, _window, cx| {
             let mode = if index == 0 {
@@ -552,6 +554,7 @@ impl AppShell {
             },
             self.theme,
         )
+        .aria_label(self.t("dialog-add-file-conflict-aria"))
         .disabled(pending)
         .on_select(move |index, _window, cx| {
             let policy = match index {
@@ -876,6 +879,9 @@ impl AppShell {
                         .id(SharedString::from(format!("metadata-file-{index}")))
                         .role(Role::ListItem)
                         .aria_label(row_aria)
+                        .focusable()
+                        .tab_stop(!pending)
+                        .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
                         .h(px(48.0))
                         .flex_none()
                         .flex()
@@ -1012,6 +1018,11 @@ impl AppShell {
                                                         ("size", FluentValue::from(size)),
                                                     ],
                                                 )
+                                            })
+                                            .focusable()
+                                            .tab_stop(!pending)
+                                            .focus_visible(|style| {
+                                                style.border_1().border_color(colors.focus_ring)
                                             })
                                             .h(px(40.0))
                                             .w_full()
@@ -1180,6 +1191,11 @@ impl AppShell {
                                     .aria_label(match active_selection_state {
                                         Toggled::True => self.t("dialog-add-clear-file-selection"),
                                         Toggled::False | Toggled::Mixed => self.t("select-all"),
+                                    })
+                                    .focusable()
+                                    .tab_stop(!pending)
+                                    .focus_visible(|style| {
+                                        style.border_1().border_color(colors.focus_ring)
                                     })
                                     .flex()
                                     .items_center()

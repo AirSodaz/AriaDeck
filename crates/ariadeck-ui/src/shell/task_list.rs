@@ -44,6 +44,9 @@ impl AppShell {
                         Toggled::False | Toggled::Mixed => "Select all visible tasks",
                     })
                     .aria_toggled(selection_state)
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
                     .size(px(20.0))
                     .flex_none()
                     .flex()
@@ -614,6 +617,8 @@ impl AppShell {
 
         let mut menu = div()
             .id("sort-menu")
+            .role(Role::Menu)
+            .aria_label("Sort downloads")
             .absolute()
             .right(px(12.0))
             .top(px(96.0))
@@ -644,6 +649,9 @@ impl AppShell {
                     .id(SharedString::from(format!("sort-key-{}", key.key())))
                     .role(Role::Button)
                     .aria_label(format!("Sort by {}", key.label()))
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
                     .h(px(32.0))
                     .px_2()
                     .flex()
@@ -704,6 +712,9 @@ impl AppShell {
                     } else {
                         Toggled::False
                     })
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
                     .h(px(32.0))
                     .px_2()
                     .flex()
@@ -1366,6 +1377,9 @@ impl AppShell {
                     } else {
                         Toggled::False
                     })
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
                     .size(px(20.0))
                     .flex_none()
                     .flex()

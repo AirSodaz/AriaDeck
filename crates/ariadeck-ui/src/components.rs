@@ -2,8 +2,8 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, AnyView, App, AppContext as _, ClickEvent, CursorStyle, ElementId, FocusHandle,
-    Hsla, IntoElement, Render, RenderOnce, Role, SharedString, Stateful, Window, div, prelude::*,
-    px, svg,
+    Hsla, IntoElement, Render, RenderOnce, Role, SharedString, Stateful, Toggled, Window, div,
+    prelude::*, px, svg,
 };
 
 use crate::{Theme, ThemeColors};
@@ -405,6 +405,7 @@ impl Button {
             .aria_label(aria_label)
             .focusable()
             .tab_stop(enabled)
+            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
             .h(px(32.0))
             .min_w(px(32.0))
             .flex()
@@ -584,6 +585,7 @@ impl IconButton {
             .aria_label(label.clone())
             .focusable()
             .tab_stop(enabled)
+            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
             .size(px(32.0))
             .flex_none()
             .flex()
@@ -817,6 +819,7 @@ impl RenderOnce for SegmentedControl {
                             .aria_selected(is_selected)
                             .focusable()
                             .tab_stop(!disabled)
+                            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
                             .h(px(28.0))
                             .min_w(px(28.0))
                             .flex()
@@ -1042,6 +1045,9 @@ impl RenderOnce for Toast {
             .id(close_id)
             .role(Role::Button)
             .aria_label("Dismiss notification")
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
             .size(px(26.0))
             .flex_none()
             .flex()
@@ -1207,11 +1213,10 @@ impl Toggle {
             .id(self.id)
             .role(Role::Switch)
             .aria_label(aria)
-            // aria-checked semantics for the Switch role; GPUI maps aria_selected to
-            // aria-checked on the rendered element when the role is Switch.
-            .aria_selected(on)
+            .aria_toggled(if on { Toggled::True } else { Toggled::False })
             .focusable()
             .tab_stop(enabled)
+            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
             .min_h(px(32.0))
             .min_w(px(44.0))
             .flex_none()

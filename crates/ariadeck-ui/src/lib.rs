@@ -14,14 +14,14 @@ pub use ariadeck_i18n::{LanguagePreference, LocaleId, Translator};
 
 pub use actions::init;
 pub use actions::{
-    Backspace, ClearSearch, CloseAddDownload, CloseBatchFailures, CloseSettings,
+    Backspace, ClearSearch, CloseAddDownload, CloseBatchFailures, CloseSettings, CloseTaskOptions,
     CloseTaskOutputName, CloseTaskSpeedLimit, Copy, Cut, Delete, FocusNext, FocusPrevious,
     FocusSearch, InsertNewline, MoveEnd, MoveHome, MoveLeft, MoveRight, MoveTaskDownInQueue,
     MoveTaskToQueueBottom, MoveTaskToQueueTop, MoveTaskUpInQueue, OpenAddDownload, OpenSettings,
     OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit, Paste, PauseSelectedTask,
     RemoveSelectedTask, ResumeSelectedTask, RetrySelectedTask, SaveSettings, SelectAll,
     SelectAllTasks, SelectLeft, SelectNextTask, SelectPreviousTask, SelectRight, SubmitAddDownload,
-    SubmitTaskOutputName, SubmitTaskSpeedLimit,
+    SubmitTaskOptions, SubmitTaskOutputName, SubmitTaskSpeedLimit,
 };
 pub use assets::Assets;
 pub use components::{

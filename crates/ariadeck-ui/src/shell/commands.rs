@@ -335,6 +335,24 @@ impl AppShell {
         );
     }
 
+    pub(crate) fn close_task_options_action(
+        &mut self,
+        _: &CloseTaskOptions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_task_options(window, cx);
+    }
+
+    pub(crate) fn submit_task_options_action(
+        &mut self,
+        _: &SubmitTaskOptions,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.submit_task_options(cx);
+    }
+
     pub(crate) fn open_task_options(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.task_options_dialog.is_some() {
             window.focus(&self.task_inputs.seed_ratio.focus_handle(cx), cx);
@@ -1167,6 +1185,9 @@ impl AppShell {
                 } else {
                     Toggled::False
                 })
+                .focusable()
+                .tab_stop(true)
+                .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
                 .flex()
                 .items_start()
                 .gap_2()
