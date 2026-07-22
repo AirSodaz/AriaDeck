@@ -32,7 +32,9 @@ tray-icon.workspace = true
 url.workspace = true
 zip.workspace = true
 image.workspace = true
+interprocess.workspace = true
 raw-window-handle = "0.6"
+serde.workspace = true
 
 [build-dependencies]
 ico = "0.3.0"

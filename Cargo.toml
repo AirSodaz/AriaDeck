@@ -31,6 +31,7 @@ futures-util = "0.3.31"
 gpui = { git = "https://github.com/zed-industries/zed.git", rev = "952d712dac48a4af2c54fb22c82d82a9d69b72d4" }
 gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "952d712dac48a4af2c54fb22c82d82a9d69b72d4" }
 image = { version = "0.25.10", default-features = false }
+interprocess = { version = "2.4.2", features = ["tokio"] }
 keyring = "4.1.5"
 lava_torrent = "0.11.1"
 notify-rust = "4.18.0"

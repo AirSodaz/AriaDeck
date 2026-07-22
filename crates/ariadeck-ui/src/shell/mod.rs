@@ -3071,7 +3071,7 @@ impl Render for AppShell {
                 })
             })
             .on_drop::<ExternalPaths>(cx.listener(|this, paths: &ExternalPaths, window, cx| {
-                this.add_metadata_paths(paths.paths().to_vec(), window, cx);
+                let _ = this.open_metadata_paths(paths.paths().to_vec(), window, cx);
             }))
             .relative()
             .size_full()

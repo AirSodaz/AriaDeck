@@ -275,7 +275,9 @@ impl AppShell {
         cx.spawn_in(window, async move |this, cx| {
             let selected = selected.await;
             let _ = this.update_in(cx, |this, window, cx| match selected {
-                Ok(Ok(Some(paths))) => this.add_metadata_paths(paths, window, cx),
+                Ok(Ok(Some(paths))) => {
+                    let _ = this.open_metadata_paths(paths, window, cx);
+                }
                 Ok(Ok(None)) => {}
                 Ok(Err(error)) => {
                     this.set_add_dialog_error(format!("File picker failed: {error}"), cx);
@@ -291,12 +293,32 @@ impl AppShell {
         .detach();
     }
 
-    pub(crate) fn add_metadata_paths(
+    #[must_use]
+    pub fn can_open_metadata_paths(&self) -> bool {
+        self.snapshot.commands_available()
+            && self.add_dialog.pending.is_none()
+            && self.add_dialog.preview_pending.is_none()
+            && self.pending_task_command.is_none()
+            && self.pending_batch_command.is_none()
+            && (self.add_dialog.open
+                || (self.output_name_dialog.is_none()
+                    && self.task_speed_limit_dialog.is_none()
+                    && self.task_options_dialog.is_none()
+                    && self.remove_confirmation.is_none()
+                    && self.batch_failure_details.is_none()))
+    }
+
+    /// Open the add-download dialog and enqueue metadata files for preview.
+    #[must_use]
+    pub fn open_metadata_paths(
         &mut self,
         paths: Vec<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
+        if !self.can_open_metadata_paths() {
+            return false;
+        }
         if !self.add_dialog.open {
             self.open_add_download(&OpenAddDownload, window, cx);
         }
@@ -304,7 +326,7 @@ impl AppShell {
             || self.add_dialog.pending.is_some()
             || self.add_dialog.preview_pending.is_some()
         {
-            return;
+            return false;
         }
 
         let mut known = self
@@ -355,6 +377,7 @@ impl AppShell {
             ));
         }
         cx.notify();
+        true
     }
 
     pub(crate) fn remove_metadata_file(&mut self, index: usize, cx: &mut Context<Self>) {

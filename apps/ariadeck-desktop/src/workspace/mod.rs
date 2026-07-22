@@ -4,7 +4,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::Command,
-    sync::Arc,
+    sync::{Arc, mpsc::Receiver},
     time::Duration,
 };
 
@@ -80,7 +80,10 @@ use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use secrecy::SecretString;
 
-use crate::platform::{self, SystemTray, TrayAction};
+use crate::{
+    instance::{LaunchRequest, MAX_LAUNCH_PATHS},
+    platform::{self, SystemTray, TrayAction},
+};
 use tokio::{
     runtime::Runtime,
     sync::{mpsc, watch},
@@ -131,6 +134,8 @@ pub struct DesktopRoot {
     window_geometry_store: JsonWindowGeometryStore,
     last_saved_geometry: Option<WindowGeometry>,
     pending_geometry: Option<WindowGeometry>,
+    pending_metadata_paths: Vec<PathBuf>,
+    instance_requests: Option<Receiver<LaunchRequest>>,
     geometry_save_generation: u64,
     _workspace_subscription: Subscription,
 }
@@ -173,7 +178,13 @@ impl DesktopRoot {
     }
 
     #[must_use]
-    pub fn new(runtime: Arc<Runtime>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        runtime: Arc<Runtime>,
+        initial_metadata_paths: Vec<PathBuf>,
+        instance_requests: Option<Receiver<LaunchRequest>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let data_dir = default_data_dir();
         let defaults = AppSettings::new(
             env::var_os("ARIADECK_DOWNLOAD_DIR")
@@ -506,6 +517,8 @@ impl DesktopRoot {
             window_geometry_store,
             last_saved_geometry,
             pending_geometry: None,
+            pending_metadata_paths: initial_metadata_paths,
+            instance_requests,
             geometry_save_generation: 0,
             _workspace_subscription: workspace_subscription,
         };
@@ -529,7 +542,10 @@ impl DesktopRoot {
         })
         .detach();
 
-        if root.settings.platform.start_minimized_to_tray && root.tray.is_some() {
+        if root.pending_metadata_paths.is_empty()
+            && root.settings.platform.start_minimized_to_tray
+            && root.tray.is_some()
+        {
             // Defer hide so the first frame can finish constructing the window.
             cx.spawn_in(window, async move |this, cx| {
                 cx.background_executor()
@@ -547,6 +563,7 @@ impl DesktopRoot {
     }
 
     fn poll_platform_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.poll_instance_requests(window, cx);
         let tray_actions = self
             .tray
             .as_ref()
@@ -578,6 +595,34 @@ impl DesktopRoot {
         self.workspace.update(cx, |shell, cx| {
             shell.report_disk_space(free, cx);
         });
+    }
+
+    fn poll_instance_requests(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut activate = false;
+        if let Some(receiver) = self.instance_requests.as_ref() {
+            while let Ok(request) = receiver.try_recv() {
+                activate = true;
+                let remaining = MAX_LAUNCH_PATHS.saturating_sub(self.pending_metadata_paths.len());
+                self.pending_metadata_paths
+                    .extend(request.paths.into_iter().take(remaining));
+            }
+        }
+        if activate {
+            self.show_from_tray(window, cx);
+        }
+        if self.pending_metadata_paths.is_empty()
+            || !self.workspace.read(cx).can_open_metadata_paths()
+        {
+            return;
+        }
+
+        let paths = std::mem::take(&mut self.pending_metadata_paths);
+        let opened = self.workspace.update(cx, |workspace, cx| {
+            workspace.open_metadata_paths(paths.clone(), window, cx)
+        });
+        if !opened {
+            self.pending_metadata_paths = paths;
+        }
     }
 
     fn hide_to_tray(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -56,7 +56,7 @@ Legend: **Have** · **Partial** · **Missing** · **Won’t** (non-goal)
 | Windows portable/installer | Have | Have | N/A | macOS/Linux CI-verified; packages = next distro (Phase E) |
 | Bundled aria2 | Partial (import) | Have | N/A | Optional offline pack later; no forced network channel |
 | Browser extension / intercept | Missing | Have (Next strong) | 3rd party | High user expectation |
-| Protocol handlers (magnet/torrent file) | Missing | Have | N/A | High for “default DM” |
+| Protocol handlers / file associations | Partial (`.torrent`/Metalink files) | Have | N/A | `magnet:` remains B2 |
 | Tags / categories / folders | Missing | Next: categories | Filters | Organization |
 | Download scheduling | Missing | Next: time windows | Weak | Persepolis-class |
 | Queue named groups | Partial (aria2 wait order) | Have | Partial | Productize queues |
@@ -98,7 +98,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 
 | ID | Work | Why |
 | --- | --- | --- |
-| B1 | File associations: `.torrent`, `.metalink` | Double-click → add dialog |
+| B1 | **Done** — opt-in associations for `.torrent`, `.metalink`, and `.meta4`; double-click forwards to the running instance and opens the existing preview/confirmation flow | OS file integration without auto-submission |
 | B2 | Protocol handlers: `magnet:`, optional custom `ariadeck:` | System integration |
 | B3a | Browser extension: define API contract (auth model, confirm policy, referer/cookie handling) | Design before build; minimize attack surface |
 | B3b | Native messaging host + local RPC endpoint for browser add-on | Motrix Next differentiator |

@@ -933,7 +933,7 @@ fn metadata_paths_are_classified_deduplicated_switchable_and_removable(cx: &mut 
     });
 
     view.update_in(cx, |shell, window, cx| {
-        shell.add_metadata_paths(
+        assert!(shell.open_metadata_paths(
             vec![
                 PathBuf::from("sample.TORRENT"),
                 PathBuf::from("sample.TORRENT"),
@@ -942,7 +942,7 @@ fn metadata_paths_are_classified_deduplicated_switchable_and_removable(cx: &mut 
             ],
             window,
             cx,
-        );
+        ));
         assert!(shell.add_dialog.open);
         assert_eq!(
             shell.add_dialog.input_mode,
@@ -1017,6 +1017,23 @@ fn metadata_paths_are_classified_deduplicated_switchable_and_removable(cx: &mut 
 }
 
 #[gpui::test]
+fn metadata_paths_wait_until_commands_are_available(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    view.update_in(cx, |shell, window, cx| {
+        assert!(!shell.can_open_metadata_paths());
+        assert!(!shell.open_metadata_paths(vec![PathBuf::from("queued.torrent")], window, cx,));
+        assert!(!shell.add_dialog.open);
+
+        shell.snapshot = snapshot(1);
+        assert!(shell.can_open_metadata_paths());
+        assert!(shell.open_metadata_paths(vec![PathBuf::from("queued.torrent")], window, cx,));
+        assert!(shell.add_dialog.open);
+        assert!(shell.add_dialog.preview_pending.is_some());
+    });
+}
+
+#[gpui::test]
 fn metadata_preview_keeps_successes_reports_failures_and_ignores_stale_results(
     cx: &mut TestAppContext,
 ) {
@@ -1026,11 +1043,11 @@ fn metadata_preview_keeps_successes_reports_failures_and_ignores_stale_results(
         shell
     });
     let request_id = view.update_in(cx, |shell, window, cx| {
-        shell.add_metadata_paths(
+        assert!(shell.open_metadata_paths(
             vec![PathBuf::from("one.torrent"), PathBuf::from("two.meta4")],
             window,
             cx,
-        );
+        ));
         shell
             .add_dialog
             .preview_pending

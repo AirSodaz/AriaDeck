@@ -54,8 +54,8 @@ powershell -ExecutionPolicy Bypass -File scripts/package-windows-portable.ps1
 $env:ARIADECK_SIGN_CERT_THUMBPRINT = "<thumbprint>"
 powershell -ExecutionPolicy Bypass -File scripts/package-windows-portable.ps1 -Sign
 
-# Optional installer (Inno Setup 6+, ISCC on PATH)
-iscc /DMyAppVersion=0.1.0 packaging\windows\AriaDeck.iss
+# Installer (Inno Setup 6+)
+powershell -ExecutionPolicy Bypass -File scripts/package-windows-installer.ps1 -SkipBuild
 ```
 
 ### Signing env
@@ -66,6 +66,7 @@ iscc /DMyAppVersion=0.1.0 packaging\windows\AriaDeck.iss
 | `ARIADECK_SIGN_CERT_THUMBPRINT` | Store thumbprint |
 | `ARIADECK_SIGN_PFX` / `ARIADECK_SIGN_PFX_PASSWORD` | PFX signing |
 | `ARIADECK_SIGN_DESCRIPTION` | `/d` (default `AriaDeck`) |
+| `ARIADECK_INNO_SETUP` | Optional full path to `ISCC.exe` |
 
 Unsigned builds may hit SmartScreen. No certs in-repo.
 
@@ -91,6 +92,8 @@ Unsigned builds may hit SmartScreen. No certs in-repo.
 | Future schema rejected | `future_schema_is_rejected_*` |
 | Uninstall keeps data | Inno default |
 | Licenses staged | portable script |
+| File associations | Explicit default-unchecked Inno task; owned ProgIDs only |
+| External metadata open | `--open-metadata` → preview/confirmation; running instance activated |
 
 ## Manual checklist
 
@@ -100,4 +103,7 @@ Unsigned builds may hit SmartScreen. No certs in-repo.
 4. Portable zip + marker → `./data`
 5. No marker → `%LOCALAPPDATA%\AriaDeck`
 6. Installer uninstall without data checkbox → data remains
-7. Optional: `signtool verify /pa`
+7. Installer association task defaults unchecked; opting in registers `.torrent`, `.metalink`, `.meta4`
+8. Double-click while closed and while tray-hidden opens one preview without auto-submitting
+9. Uninstall removes AriaDeck ProgIDs without deleting shared extension keys
+10. Optional: `signtool verify /pa`

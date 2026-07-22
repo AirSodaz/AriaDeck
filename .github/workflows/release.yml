@@ -9,8 +9,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  windows-portable:
-    name: Windows portable release
+  windows-package:
+    name: Windows release packages
     runs-on: windows-latest
     permissions:
       contents: write
@@ -48,17 +48,37 @@ jobs:
           ARIADECK_SIGN_PFX_PASSWORD: ${{ secrets.ARIADECK_SIGN_PFX_PASSWORD }}
           ARIADECK_SIGN_DESCRIPTION: AriaDeck
 
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Package installer
+        shell: pwsh
+        run: |
+          $arguments = @("-SkipStage")
+          if ($env:ARIADECK_SIGN_CERT_THUMBPRINT -or $env:ARIADECK_SIGN_PFX) {
+            $arguments += "-Sign"
+          }
+          ./scripts/package-windows-installer.ps1 @arguments
+        env:
+          ARIADECK_SIGN_TOOL: ${{ secrets.ARIADECK_SIGN_TOOL }}
+          ARIADECK_SIGN_CERT_THUMBPRINT: ${{ secrets.ARIADECK_SIGN_CERT_THUMBPRINT }}
+          ARIADECK_SIGN_PFX: ${{ secrets.ARIADECK_SIGN_PFX }}
+          ARIADECK_SIGN_PFX_PASSWORD: ${{ secrets.ARIADECK_SIGN_PFX_PASSWORD }}
+          ARIADECK_SIGN_DESCRIPTION: AriaDeck
+
       - name: Upload artifacts
         # v5 still targets Node 20; v6+ is node24-native.
         uses: actions/upload-artifact@v6
         with:
-          name: ariadeck-windows-x64-portable
+          name: ariadeck-windows-x64
           path: dist/*
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
+          files: |
+            dist/*.zip
+            dist/*-setup.exe
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

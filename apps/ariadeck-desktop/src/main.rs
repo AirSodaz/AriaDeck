@@ -3,11 +3,12 @@
     windows_subsystem = "windows"
 )]
 
+mod instance;
 mod metadata;
 mod platform;
 mod workspace;
 
-use std::sync::Arc;
+use std::{env, ffi::OsString, path::PathBuf, sync::Arc};
 
 use gpui::{
     App, AppContext as _, Bounds, Point, TitlebarOptions, WindowBounds, WindowDecorations,
@@ -18,7 +19,10 @@ use tokio::runtime::Builder;
 
 use ariadeck_settings::{JsonWindowGeometryStore, WINDOW_DEFAULT_HEIGHT, WINDOW_DEFAULT_WIDTH};
 
-use crate::workspace::DesktopRoot;
+use crate::{
+    instance::{InstanceRole, MAX_LAUNCH_PATHS, coordinate_instance},
+    workspace::DesktopRoot,
+};
 
 fn main() {
     ariadeck_telemetry::init("ariadeck=info");
@@ -33,6 +37,21 @@ fn main() {
         Err(error) => {
             tracing::error!(%error, "failed to initialize the asynchronous runtime");
             return;
+        }
+    };
+
+    let current_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let initial_metadata_paths = metadata_paths_from_args(env::args_os().skip(1), &current_dir);
+    let instance_requests = match coordinate_instance(
+        runtime.as_ref(),
+        &DesktopRoot::default_data_dir(),
+        &initial_metadata_paths,
+    ) {
+        Ok(InstanceRole::Primary(receiver)) => Some(receiver),
+        Ok(InstanceRole::Forwarded) => return,
+        Err(error) => {
+            tracing::warn!(%error, "single-instance coordination is unavailable");
+            None
         }
     };
 
@@ -68,7 +87,19 @@ fn main() {
                 },
                 {
                     let runtime = runtime.clone();
-                    move |window, cx| cx.new(|cx| DesktopRoot::new(runtime.clone(), window, cx))
+                    let initial_metadata_paths = initial_metadata_paths.clone();
+                    let instance_requests = instance_requests;
+                    move |window, cx| {
+                        cx.new(|cx| {
+                            DesktopRoot::new(
+                                runtime.clone(),
+                                initial_metadata_paths.clone(),
+                                instance_requests,
+                                window,
+                                cx,
+                            )
+                        })
+                    }
                 },
             );
 
@@ -80,6 +111,41 @@ fn main() {
 
             cx.activate(true);
         });
+}
+
+fn metadata_paths_from_args(
+    args: impl IntoIterator<Item = OsString>,
+    current_dir: &std::path::Path,
+) -> Vec<PathBuf> {
+    let mut args = args.into_iter();
+    let mut paths = Vec::new();
+    while let Some(argument) = args.next() {
+        if argument != "--open-metadata" {
+            continue;
+        }
+        let Some(path) = args.next().map(PathBuf::from) else {
+            break;
+        };
+        let supported = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("torrent")
+                    || extension.eq_ignore_ascii_case("metalink")
+                    || extension.eq_ignore_ascii_case("meta4")
+            });
+        if supported {
+            paths.push(if path.is_absolute() {
+                path
+            } else {
+                current_dir.join(path)
+            });
+            if paths.len() == MAX_LAUNCH_PATHS {
+                break;
+            }
+        }
+    }
+    paths
 }
 
 fn restored_window_bounds(cx: &App) -> WindowBounds {
@@ -154,4 +220,60 @@ fn platform_window_decorations() -> Option<WindowDecorations> {
 #[cfg(not(target_os = "linux"))]
 fn platform_window_decorations() -> Option<WindowDecorations> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::metadata_paths_from_args;
+    use std::{ffi::OsString, path::PathBuf};
+
+    #[test]
+    fn metadata_paths_from_args_accepts_supported_extensions_only() {
+        let current_dir = PathBuf::from("launch-directory");
+        let paths = metadata_paths_from_args(
+            [
+                OsString::from("ignored.torrent"),
+                OsString::from("--open-metadata"),
+                OsString::from("sample.TORRENT"),
+                OsString::from("--open-metadata"),
+                OsString::from("sample.metalink"),
+                OsString::from("--open-metadata"),
+                OsString::from("sample.meta4"),
+                OsString::from("--open-metadata"),
+                OsString::from("sample.txt"),
+            ],
+            &current_dir,
+        );
+        assert_eq!(
+            paths,
+            vec![
+                current_dir.join("sample.TORRENT"),
+                current_dir.join("sample.metalink"),
+                current_dir.join("sample.meta4"),
+            ]
+        );
+    }
+
+    #[test]
+    fn metadata_paths_from_args_preserves_unicode_spaces_and_leading_dashes() {
+        let current_dir = PathBuf::from("launch-directory");
+        let paths = metadata_paths_from_args(
+            [
+                OsString::from("bare.torrent"),
+                OsString::from("--open-metadata"),
+                OsString::from("示例 file.TORRENT"),
+                OsString::from("--open-metadata"),
+                OsString::from("--leading-dash.meta4"),
+            ],
+            &current_dir,
+        );
+
+        assert_eq!(
+            paths,
+            vec![
+                current_dir.join("示例 file.TORRENT"),
+                current_dir.join("--leading-dash.meta4"),
+            ]
+        );
+    }
 }

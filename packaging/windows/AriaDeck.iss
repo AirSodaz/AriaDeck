@@ -38,12 +38,14 @@ LicenseFile={#SourceDir}\LICENSE
 InfoAfterFile=
 ; Do not touch %LOCALAPPDATA%\AriaDeck application data on uninstall.
 CloseApplications=yes
+ChangesAssociations=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "fileassociations"; Description: "Associate .torrent, .metalink, and .meta4 files with AriaDeck"; GroupDescription: "Windows integration:"; Flags: unchecked
 
 [Files]
 ; Installed builds must NOT ship ariadeck.portable — data goes to LocalAppData.
@@ -55,6 +57,25 @@ Source: "{#SourceDir}\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreve
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Registry]
+; Extension keys are shared. Remove only AriaDeck's values during uninstall.
+Root: HKCU; Subkey: "Software\Classes\.torrent"; ValueType: string; ValueName: ""; ValueData: "AriaDeck.Torrent"; Flags: uninsdeletevalue; Tasks: fileassociations
+Root: HKCU; Subkey: "Software\Classes\.torrent\OpenWithProgids"; ValueType: none; ValueName: "AriaDeck.Torrent"; Flags: uninsdeletevalue; Tasks: fileassociations
+Root: HKCU; Subkey: "Software\Classes\.metalink"; ValueType: string; ValueName: ""; ValueData: "AriaDeck.Metalink"; Flags: uninsdeletevalue; Tasks: fileassociations
+Root: HKCU; Subkey: "Software\Classes\.metalink\OpenWithProgids"; ValueType: none; ValueName: "AriaDeck.Metalink"; Flags: uninsdeletevalue; Tasks: fileassociations
+Root: HKCU; Subkey: "Software\Classes\.meta4"; ValueType: string; ValueName: ""; ValueData: "AriaDeck.Meta4"; Flags: uninsdeletevalue; Tasks: fileassociations
+Root: HKCU; Subkey: "Software\Classes\.meta4\OpenWithProgids"; ValueType: none; ValueName: "AriaDeck.Meta4"; Flags: uninsdeletevalue; Tasks: fileassociations
+
+Root: HKCU; Subkey: "Software\Classes\AriaDeck.Torrent"; ValueType: string; ValueName: ""; ValueData: "BitTorrent file"; Flags: uninsdeletekey; Tasks: fileassociations
+Root: HKCU; Subkey: "Software\Classes\AriaDeck.Torrent\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"; Tasks: fileassociations
+Root: HKCU; Subkey: "Software\Classes\AriaDeck.Torrent\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --open-metadata ""%1"""; Tasks: fileassociations
+Root: HKCU; Subkey: "Software\Classes\AriaDeck.Metalink"; ValueType: string; ValueName: ""; ValueData: "Metalink file"; Flags: uninsdeletekey; Tasks: fileassociations
+Root: HKCU; Subkey: "Software\Classes\AriaDeck.Metalink\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"; Tasks: fileassociations
+Root: HKCU; Subkey: "Software\Classes\AriaDeck.Metalink\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --open-metadata ""%1"""; Tasks: fileassociations
+Root: HKCU; Subkey: "Software\Classes\AriaDeck.Meta4"; ValueType: string; ValueName: ""; ValueData: "Metalink v4 file"; Flags: uninsdeletekey; Tasks: fileassociations
+Root: HKCU; Subkey: "Software\Classes\AriaDeck.Meta4\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"; Tasks: fileassociations
+Root: HKCU; Subkey: "Software\Classes\AriaDeck.Meta4\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --open-metadata ""%1"""; Tasks: fileassociations
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
