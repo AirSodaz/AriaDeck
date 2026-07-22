@@ -568,10 +568,7 @@ impl TaskFileGateway for LocalTaskFileGateway {
                     let path =
                         safe_existing_file(&raw_path, &root, &task_dir)?.ok_or_else(|| {
                             filesystem_gateway_error(
-                                format!(
-                                    "downloaded file does not exist: {}",
-                                    raw_path.display()
-                                ),
+                                format!("downloaded file does not exist: {}", raw_path.display()),
                                 false,
                             )
                         })?;
@@ -595,12 +592,9 @@ where
     F: FnOnce() -> Result<T, GatewayError> + Send + 'static,
 {
     match tokio::runtime::Handle::try_current() {
-        Ok(handle) => handle
-            .spawn_blocking(work)
-            .await
-            .map_err(|error| {
-                filesystem_gateway_error(format!("local file worker stopped: {error}"), true)
-            })?,
+        Ok(handle) => handle.spawn_blocking(work).await.map_err(|error| {
+            filesystem_gateway_error(format!("local file worker stopped: {error}"), true)
+        })?,
         Err(_) => {
             // No Tokio context (e.g. GPUI async task): offload to a thread and await it.
             let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -2673,9 +2667,7 @@ mod tests {
         let root = temporary_directory();
         let downloads = root.join("downloads");
         fs::create_dir_all(&downloads).expect("create download directory");
-        let mut permissions = fs::metadata(&downloads)
-            .expect("metadata")
-            .permissions();
+        let mut permissions = fs::metadata(&downloads).expect("metadata").permissions();
         permissions.set_readonly(true);
         fs::set_permissions(&downloads, permissions).expect("mark directory readonly attr");
         assert!(
@@ -2696,9 +2688,7 @@ mod tests {
             .expect("writable directory with readonly attr must pass");
         assert!(report.available_bytes > 0);
 
-        let mut permissions = fs::metadata(&downloads)
-            .expect("metadata")
-            .permissions();
+        let mut permissions = fs::metadata(&downloads).expect("metadata").permissions();
         permissions.set_readonly(false);
         let _ = fs::set_permissions(&downloads, permissions);
         let _ = fs::remove_dir_all(root);
@@ -2771,6 +2761,35 @@ mod tests {
             .expect_err("file parent must fail containment validation");
         assert_eq!(error.kind, GatewayErrorKind::UnsafePath);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn local_download_destination_rejects_symlink_components() {
+        use std::os::unix::fs::symlink;
+
+        let root = temporary_directory();
+        let outside = temporary_directory();
+        let nested = root.join("nested");
+        fs::create_dir_all(&nested).expect("create nested");
+        let link = nested.join("escape");
+        symlink(&outside, &link).expect("create symlink escape");
+
+        let gateway = LocalDownloadDestinationGateway::new();
+        let error = gateway
+            .preflight(&DownloadDestinationRequest {
+                directory: ariadeck_domain::EnginePath::new(root.to_string_lossy()),
+                required_bytes: Some(1),
+                files: vec![DownloadDestinationFile {
+                    relative_path: ariadeck_domain::EnginePath::new("nested/escape/secret.bin"),
+                    reject_existing: false,
+                }],
+            })
+            .expect_err("symlink path components must be rejected");
+        assert_eq!(error.kind, GatewayErrorKind::UnsafePath);
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(outside);
     }
 
     #[test]

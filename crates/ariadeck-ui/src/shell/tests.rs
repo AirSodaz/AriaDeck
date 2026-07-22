@@ -2944,12 +2944,9 @@ fn profile_catalog_can_switch_and_add_drafts(cx: &mut TestAppContext) {
 
     view.update(cx, |shell, cx| {
         shell.request_switch_profile("p1".into(), cx);
-        assert!(
-            shell
-                .status_notice
-                .as_ref()
-                .is_some_and(|notice| notice.message.contains("already active"))
-        );
+        assert!(shell.status_notice.as_ref().is_some_and(|notice| {
+            notice.message.contains("already active") || notice.message.contains("已是当前配置")
+        }));
         shell.add_draft_local_profile(cx);
         assert_eq!(shell.profiles.profiles.len(), 3);
         let draft = shell

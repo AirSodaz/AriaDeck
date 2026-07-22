@@ -135,33 +135,7 @@ pub(crate) fn normalize_add_uri_key(uri: &str) -> String {
     Url::parse(uri.trim()).map_or_else(|_| uri.trim().to_owned(), |parsed| parsed.to_string())
 }
 
-pub(crate) fn magnet_info_hash(uri: &str) -> Option<String> {
-    let parsed = Url::parse(uri.trim()).ok()?;
-    if !parsed.scheme().eq_ignore_ascii_case("magnet") {
-        return None;
-    }
-    let value = parsed
-        .query_pairs()
-        .find(|(key, _)| key.eq_ignore_ascii_case("xt"))?
-        .1;
-    let value = value.as_ref();
-    const BTIH_PREFIX: &str = "urn:btih:";
-    let prefix = value.get(..BTIH_PREFIX.len())?;
-    if !prefix.eq_ignore_ascii_case(BTIH_PREFIX) {
-        return None;
-    }
-    let hash = value.get(BTIH_PREFIX.len()..)?;
-    if hash.len() == 40 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Some(hash.to_ascii_lowercase());
-    }
-    if hash.len() == 32 {
-        let decoded = BASE32_NOPAD
-            .decode(hash.to_ascii_uppercase().as_bytes())
-            .ok()?;
-        return Some(decoded.iter().map(|byte| format!("{byte:02x}")).collect());
-    }
-    None
-}
+pub(crate) use ariadeck_domain::magnet_info_hash;
 
 pub(crate) async fn execute_global_task_command(
     sync: Option<SyncHandle>,
@@ -635,14 +609,14 @@ pub(crate) fn map_task_details(
             .into_iter()
             .map(|tracker| TaskTrackerView {
                 tier: tracker.tier,
-                uri: tracker.uri,
+                uri: ariadeck_domain::redact_tracker_uri(&tracker.uri),
             })
             .collect(),
         uris: connection
             .uris
             .into_iter()
             .map(|uri| TaskUriView {
-                uri: uri.uri,
+                uri: sanitize_source_uri(&uri.uri),
                 status: match uri.status {
                     TaskUriStatus::Used => TaskUriStatusView::Used,
                     TaskUriStatus::Waiting => TaskUriStatusView::Waiting,
@@ -655,8 +629,8 @@ pub(crate) fn map_task_details(
             .into_iter()
             .map(|server| TaskServerView {
                 file_index: server.file_index,
-                uri: server.uri,
-                current_uri: server.current_uri,
+                uri: sanitize_source_uri(&server.uri),
+                current_uri: sanitize_source_uri(&server.current_uri),
                 download_rate: server.download_speed.get(),
             })
             .collect(),
@@ -1681,7 +1655,7 @@ pub(crate) fn map_task(
         .metadata
         .primary_uri
         .as_deref()
-        .map(sanitize_source_uri);
+        .map(ariadeck_domain::redact_source_uri);
     let directory = task.metadata.directory.as_ref().map(ToString::to_string);
     DownloadRowView {
         identity: TaskIdentity {
@@ -1780,15 +1754,5 @@ pub(crate) fn classify_task_error(error: ariadeck_domain::TaskError) -> TaskErro
 }
 
 pub(crate) fn sanitize_source_uri(uri: &str) -> String {
-    if let Some(info_hash) = magnet_info_hash(uri) {
-        return format!("magnet:?xt=urn:btih:{}", info_hash.to_ascii_lowercase());
-    }
-    let Ok(mut parsed) = Url::parse(uri.trim()) else {
-        return "Source available (details redacted)".into();
-    };
-    let _ = parsed.set_username("");
-    let _ = parsed.set_password(None);
-    parsed.set_query(None);
-    parsed.set_fragment(None);
-    parsed.to_string()
+    ariadeck_domain::redact_source_uri(uri)
 }

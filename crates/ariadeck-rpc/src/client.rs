@@ -697,35 +697,7 @@ where
 }
 
 fn task_option_is_sensitive(key: &str) -> bool {
-    let key = key.trim().to_ascii_lowercase();
-    key.contains("passwd")
-        || key.contains("password")
-        || key.contains("cookie")
-        || key.contains("secret")
-        || key.contains("token")
-        || key.contains("credential")
-        || key.contains("private-key")
-        || key.contains("certificate")
-        || key.contains("netrc")
-        || key.contains("auth")
-        || matches!(
-            key.as_str(),
-            "header"
-                | "referer"
-                | "http-user"
-                | "ftp-user"
-                | "all-proxy"
-                | "all-proxy-user"
-                | "http-proxy"
-                | "http-proxy-user"
-                | "https-proxy"
-                | "https-proxy-user"
-                | "ftp-proxy"
-                | "ftp-proxy-user"
-                | "bt-tracker"
-                | "bt-exclude-tracker"
-                | "metalink-location"
-        )
+    ariadeck_domain::task_option_key_is_sensitive(key)
 }
 
 fn apply_file_conflict_policy(options: &mut Map<String, Value>, policy: FileConflictPolicy) {

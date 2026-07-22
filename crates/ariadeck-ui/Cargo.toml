@@ -6,6 +6,7 @@ rust-version.workspace = true
 authors.workspace = true
 
 [dependencies]
+ariadeck-domain = { path = "../ariadeck-domain" }
 ariadeck-i18n = { path = "../ariadeck-i18n" }
 gpui.workspace = true
 rust-embed.workspace = true

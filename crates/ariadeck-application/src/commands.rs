@@ -499,7 +499,10 @@ impl AddDownloadRequest {
             if !unique.insert(uri) {
                 return Err(ApplicationError::new(
                     ApplicationErrorCode::Validation,
-                    format!("Duplicate download URI: {uri}"),
+                    format!(
+                        "Duplicate download URI: {}",
+                        ariadeck_domain::redact_source_uri(uri)
+                    ),
                     false,
                 ));
             }
@@ -2073,8 +2076,8 @@ mod tests {
         let outcome = block_on(service.execute(
             AppCommand::AddDownload(AddDownloadRequest {
                 source: AddDownloadSource::Uris(vec![
-                    "https://example.test/archive.iso".into(),
-                    "https://example.test/archive.iso".into(),
+                    "https://user:secret@example.test/archive.iso?token=private".into(),
+                    "https://user:secret@example.test/archive.iso?token=private".into(),
                 ]),
                 destination: None,
                 file_conflict: FileConflictPolicy::default(),
@@ -2089,6 +2092,12 @@ mod tests {
             panic!("expected duplicate mirror validation failure");
         };
         assert_eq!(failed[0].error.code, ApplicationErrorCode::Validation);
+        assert!(
+            !failed[0].error.summary.contains("secret"),
+            "duplicate validation must redact credentials: {}",
+            failed[0].error.summary
+        );
+        assert!(!failed[0].error.summary.contains("token=private"));
         assert!(
             gateway
                 .adds

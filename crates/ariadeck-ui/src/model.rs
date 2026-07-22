@@ -824,7 +824,9 @@ impl AddDownloadSourceView {
     #[must_use]
     pub fn label(&self) -> String {
         match self {
-            Self::Uri { line, uri } => format!("Line {line} - {uri}"),
+            Self::Uri { line, uri } => {
+                format!("Line {line} - {}", ariadeck_domain::redact_source_uri(uri))
+            }
             Self::MetadataFile { path, kind, .. } => {
                 let name = path.file_name().map_or_else(
                     || path.display().to_string(),

@@ -864,7 +864,7 @@ fn details_mapping_keeps_remote_paths_as_display_strings() {
         piece_count: Some(2),
         trackers: vec![ariadeck_domain::TaskTracker {
             tier: 1,
-            uri: "https://tracker.example/announce".into(),
+            uri: "https://tracker.example/announce/passkey-secret?token=x".into(),
         }],
         files: vec![TaskFile {
             index: 1,
@@ -876,8 +876,14 @@ fn details_mapping_keeps_remote_paths_as_display_strings() {
     };
     let mut connection = TaskConnectionDetails::new(gid);
     connection.uris.push(ariadeck_domain::TaskUri {
-        uri: "https://example.test/archive.bin".into(),
+        uri: "https://user:secret@example.test/archive.bin?token=private".into(),
         status: TaskUriStatus::Used,
+    });
+    connection.servers.push(ariadeck_domain::TaskServer {
+        file_index: 1,
+        uri: "https://user:secret@cdn.example/file?sig=abc".into(),
+        current_uri: "https://user:secret@cdn.example/file?sig=abc".into(),
+        download_speed: ByteRate::new(1_024),
     });
     connection.options.push(ariadeck_domain::TaskOptionEntry {
         key: "http-passwd".into(),
@@ -890,7 +896,17 @@ fn details_mapping_keeps_remote_paths_as_display_strings() {
     assert_eq!(mapped.files[0].path, "/srv/downloads/archive.bin");
     assert_eq!(mapped.files[0].completed_length, 1_024);
     assert_eq!(mapped.trackers[0].tier, 1);
+    assert_eq!(mapped.trackers[0].uri, "https://tracker.example/");
+    assert!(!mapped.trackers[0].uri.contains("passkey"));
     assert_eq!(mapped.uris[0].status, TaskUriStatusView::Used);
+    assert_eq!(mapped.uris[0].uri, "https://example.test/archive.bin");
+    assert!(!mapped.uris[0].uri.contains("secret"));
+    assert_eq!(mapped.servers[0].uri, "https://cdn.example/file");
+    assert_eq!(mapped.servers[0].current_uri, "https://cdn.example/file");
+    assert_eq!(
+        mapped.primary_source.as_deref(),
+        Some("https://example.test/archive.bin")
+    );
     assert!(mapped.options[0].redacted);
     assert!(mapped.options[0].value.is_empty());
 }
@@ -1323,7 +1339,7 @@ fn magnet_reconciliation_normalizes_base32_btih_values() {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    let encoded = BASE32_NOPAD.encode(&bytes);
+    let encoded = data_encoding::BASE32_NOPAD.encode(&bytes);
     let source = AddDownloadSourceView::Uri {
         line: 1,
         uri: format!("magnet:?xt=URN:BTIH:{encoded}"),

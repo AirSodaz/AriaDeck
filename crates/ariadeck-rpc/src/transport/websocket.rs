@@ -345,12 +345,7 @@ fn is_loopback(endpoint: &Url) -> bool {
 }
 
 fn redacted_endpoint(endpoint: &Url) -> String {
-    let mut redacted = endpoint.clone();
-    let _ = redacted.set_username("");
-    let _ = redacted.set_password(None);
-    redacted.set_query(None);
-    redacted.set_fragment(None);
-    redacted.to_string()
+    ariadeck_domain::redact_endpoint_url(endpoint.as_str())
 }
 
 fn map_websocket_error(error: WebSocketError) -> RpcError {

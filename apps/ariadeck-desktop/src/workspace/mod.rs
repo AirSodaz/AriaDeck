@@ -73,7 +73,6 @@ use ariadeck_ui::{
     WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
     format_speed_limit_field,
 };
-use data_encoding::BASE32_NOPAD;
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use secrecy::SecretString;
