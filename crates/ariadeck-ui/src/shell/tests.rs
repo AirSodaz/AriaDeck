@@ -2307,8 +2307,11 @@ fn global_speed_limit_save_emits_parsed_request_and_normalizes_on_success(cx: &m
         })
     });
 
+    // open_settings hydrates transfer-policy fields so only the speed draft is dirty.
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_settings(&OpenSettings, window, cx);
+    });
     view.update(cx, |shell, cx| {
-        shell.page = AppPage::Settings;
         // "2M" and blank (unlimited) both go through the K/M parser.
         shell
             .settings_inputs
@@ -2318,7 +2321,7 @@ fn global_speed_limit_save_emits_parsed_request_and_normalizes_on_success(cx: &m
             });
     });
     let request_id = view.update(cx, |shell, cx| {
-        shell.submit_speed_limits(cx);
+        shell.submit_transfers(cx);
         shell
             .pending_settings_save
             .as_ref()
@@ -2373,8 +2376,10 @@ fn invalid_global_speed_limit_is_rejected_before_a_save_request(cx: &mut TestApp
     // Set the text in its own cycle so the field's change event (which
     // dismisses stale errors) is flushed before the submit runs, matching
     // the real "type, then click Save" order.
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_settings(&OpenSettings, window, cx);
+    });
     view.update(cx, |shell, cx| {
-        shell.page = AppPage::Settings;
         shell
             .settings_inputs
             .download_limit
@@ -2383,11 +2388,16 @@ fn invalid_global_speed_limit_is_rejected_before_a_save_request(cx: &mut TestApp
             });
     });
     view.update(cx, |shell, cx| {
-        shell.submit_speed_limits(cx);
+        shell.submit_transfers(cx);
     });
     view.read_with(cx, |shell, _cx| {
         assert!(shell.pending_settings_save.is_none());
-        assert!(shell.settings_page.error.is_some());
+        let error = shell
+            .settings_page
+            .error
+            .as_ref()
+            .expect("invalid speed limit must surface an error");
+        assert_eq!(error.code, "settings.invalid_speed_limit");
     });
 }
 

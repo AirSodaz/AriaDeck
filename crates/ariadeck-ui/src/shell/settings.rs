@@ -360,30 +360,6 @@ impl AppShell {
         self.request_settings_save(settings, password_update, SettingsSaveSource::Proxy, cx);
     }
 
-    pub(crate) fn submit_speed_limits(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
-            return;
-        }
-        let draft = self.read_speed_limit_draft(cx);
-        if !draft.is_valid() {
-            self.settings_page.error = Some(OperationErrorView {
-                code: "settings.invalid_speed_limit".into(),
-                summary: "Enter a speed as bytes/second or a K/M/G value, or leave it blank for unlimited.".into(),
-                retryable: false,
-            });
-            cx.notify();
-            return;
-        }
-        let mut settings = self.settings.clone();
-        settings.speed_limits = draft;
-        self.request_settings_save(
-            settings,
-            ProxyPasswordUpdateView::Unchanged,
-            SettingsSaveSource::SpeedLimit,
-            cx,
-        );
-    }
-
     /// Save dirty speed-limit and/or transfer-policy fields in a single request.
     /// Used by the Transfers category footer so both groups persist together.
     pub(crate) fn submit_transfers(&mut self, cx: &mut Context<Self>) {
