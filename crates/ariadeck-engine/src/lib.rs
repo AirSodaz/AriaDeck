@@ -3275,11 +3275,13 @@ mod tests {
 
         drop(first);
         // Stale lock file with a dead pid should be reclaimable.
+        // Avoid pid 1: on Linux/macOS CI it is always the live init process.
+        let stale_pid = unused_process_id();
         let stale_path = profile_dir.join(".ariadeck-engine.lock");
         fs::write(
             &stale_path,
             format!(
-                "{{\"profile_id\":\"{profile_id}\",\"owner_pid\":1,\"acquired_unix_secs\":0}}\n"
+                "{{\"profile_id\":\"{profile_id}\",\"owner_pid\":{stale_pid},\"acquired_unix_secs\":0}}\n"
             ),
         )
         .expect("seed stale lock");
@@ -3288,6 +3290,18 @@ mod tests {
         assert_eq!(reclaimed.owner_pid(), std::process::id());
         drop(reclaimed);
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// Pick a pid that does not appear alive so lock reclaim tests stay portable.
+    fn unused_process_id() -> u32 {
+        // High end of 32-bit pid space is unused on typical desktop/CI hosts.
+        for candidate in (1_000_000_u32..=1_000_050).chain([u32::MAX - 1, u32::MAX]) {
+            if candidate != std::process::id() && !process_appears_alive(candidate) {
+                return candidate;
+            }
+        }
+        // Last resort: current pid + large offset (still must not appear alive).
+        std::process::id().wrapping_add(50_000).max(2)
     }
 
     #[test]
