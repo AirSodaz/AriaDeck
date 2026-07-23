@@ -25,7 +25,6 @@ notice-change-option-unsupported = This aria2 build does not support changing ta
 notice-force-remove-unsupported = This aria2 build does not support force remove.
 notice-batch-command-failed = The batch command failed for { $count } tasks. { $detail }
 notice-settings-appearance = Appearance updated.
-notice-settings-directory = Download directory saved.
 notice-settings-proxy = Download proxy settings saved.
 notice-settings-speed = Speed limits saved.
 notice-settings-transfer-policy = Transfer policy saved.

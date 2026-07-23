@@ -26,7 +26,7 @@ impl AppShell {
                 let message = match source {
                     SettingsSaveSource::Theme => self.t("notice-settings-appearance"),
                     SettingsSaveSource::Language => self.t("settings-language-saved"),
-                    SettingsSaveSource::Directory => self.t("notice-settings-categories"),
+                    SettingsSaveSource::Categories => self.t("notice-settings-categories"),
                     SettingsSaveSource::Proxy => {
                         self.settings_inputs
                             .proxy_password
@@ -369,7 +369,7 @@ impl AppShell {
         self.request_settings_save(
             settings,
             ProxyPasswordUpdateView::Unchanged,
-            SettingsSaveSource::Directory,
+            SettingsSaveSource::Categories,
             cx,
         );
     }
@@ -1402,7 +1402,7 @@ impl AppShell {
                 let saving = self
                     .pending_settings_save
                     .as_ref()
-                    .is_some_and(|p| p.source == SettingsSaveSource::Directory);
+                    .is_some_and(|p| p.source == SettingsSaveSource::Categories);
                 (dirty, saving)
             }
             SettingsCategory::Network => {

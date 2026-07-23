@@ -2423,3 +2423,29 @@ fn resolve_data_dir_falls_back_to_localappdata_without_marker() {
     );
     assert_eq!(resolved, local_app.join("AriaDeck"));
 }
+
+#[test]
+fn resolve_download_dir_prefers_env_then_userprofile_downloads() {
+    let data = PathBuf::from("/tmp/ariadeck-data");
+    let from_env = resolve_download_dir(
+        |key| match key {
+            "ARIADECK_DOWNLOAD_DIR" => Some(std::ffi::OsString::from("/custom/dl")),
+            _ => None,
+        },
+        data.clone(),
+    );
+    assert_eq!(from_env, PathBuf::from("/custom/dl"));
+
+    let from_profile = resolve_download_dir(
+        |key| match key {
+            "USERPROFILE" => Some(std::ffi::OsString::from("C:/Users/demo")),
+            _ => None,
+        },
+        data.clone(),
+    );
+    assert_eq!(from_profile, PathBuf::from("C:/Users/demo/Downloads"));
+
+    let fallback = resolve_download_dir(|_| None, data.clone());
+    assert_eq!(fallback, data.join("downloads"));
+}
+

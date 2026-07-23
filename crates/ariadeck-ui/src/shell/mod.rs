@@ -337,7 +337,7 @@ pub(crate) struct SettingsPage {
     draft_close_behavior: CloseBehaviorView,
     draft_show_tray_icon: bool,
     draft_start_minimized_to_tray: bool,
-    /// Working copy of download categories (C1 / D-042); saved with Directory/General.
+    /// Working copy of download categories (C1 / D-042); saved with General.
     draft_categories: Vec<crate::DownloadCategoryView>,
     /// Which draft category row is bound to the shared name/extensions fields.
     draft_category_edit_index: Option<usize>,
@@ -452,7 +452,7 @@ impl SettingsCategory {
 pub(crate) enum SettingsSaveSource {
     Theme,
     Language,
-    Directory,
+    Categories,
     Proxy,
     SpeedLimit,
     TransferPolicy,
@@ -525,7 +525,6 @@ pub(crate) struct SettingsInputs {
     pub(crate) profile_name: Entity<TextField>,
     pub(crate) profile_executable: Entity<TextField>,
     pub(crate) profile_endpoint: Entity<TextField>,
-    pub(crate) profile_download: Entity<TextField>,
     pub(crate) profile_secret: Entity<TextField>,
     pub(crate) all_proxy: Entity<TextField>,
     pub(crate) http_proxy: Entity<TextField>,
@@ -547,14 +546,13 @@ pub(crate) struct SettingsInputs {
 }
 
 impl SettingsInputs {
-    pub(crate) fn all(&self) -> [&Entity<TextField>; 24] {
+    pub(crate) fn all(&self) -> [&Entity<TextField>; 23] {
         [
             &self.directory,
             &self.core_path,
             &self.profile_name,
             &self.profile_executable,
             &self.profile_endpoint,
-            &self.profile_download,
             &self.profile_secret,
             &self.all_proxy,
             &self.http_proxy,
@@ -1080,7 +1078,7 @@ impl AppShell {
             TextField::new_with_config(
                 TextFieldConfig {
                     element_id: "settings-download-directory".into(),
-                    key_context: "SettingsDirectoryInput".into(),
+                    key_context: "SettingsCategoryDirectoryInput".into(),
                     role: Role::TextInput,
                     accessibility_label: "Default download directory".into(),
                     placeholder: "D:\\Downloads".into(),
@@ -1159,23 +1157,6 @@ impl AppShell {
                     accessibility_label: "Remote aria2 WebSocket endpoint".into(),
                     placeholder: "wss://host:6800/jsonrpc".into(),
                     leading_icon: Some(IconName::Link),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
-        let settings_profile_download_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "settings-profile-download".into(),
-                    key_context: "SettingsProfileDownloadInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "Default download directory for this profile".into(),
-                    placeholder: "D:\\Downloads".into(),
-                    leading_icon: Some(IconName::FolderDown),
                     clearable: true,
                     allow_newlines: false,
                     secure: false,
@@ -1421,7 +1402,6 @@ impl AppShell {
             &settings_profile_name_input,
             &settings_profile_executable_input,
             &settings_profile_endpoint_input,
-            &settings_profile_download_input,
             &settings_profile_secret_input,
             &settings_all_proxy_input,
             &settings_http_proxy_input,
@@ -1525,7 +1505,6 @@ impl AppShell {
                 profile_name: settings_profile_name_input,
                 profile_executable: settings_profile_executable_input,
                 profile_endpoint: settings_profile_endpoint_input,
-                profile_download: settings_profile_download_input,
                 profile_secret: settings_profile_secret_input,
                 all_proxy: settings_all_proxy_input,
                 http_proxy: settings_http_proxy_input,

@@ -193,11 +193,7 @@ impl DesktopRoot {
         cx: &mut Context<Self>,
     ) -> Self {
         let data_dir = default_data_dir();
-        let defaults = AppSettings::new(
-            env::var_os("ARIADECK_DOWNLOAD_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| data_dir.join("downloads")),
-        );
+        let defaults = AppSettings::new(default_download_dir());
         let settings_store = JsonSettingsStore::new(data_dir.join("settings.json"));
         let (mut settings, settings_store, startup_notice) =
             match settings_store.load_or_initialize(&defaults) {

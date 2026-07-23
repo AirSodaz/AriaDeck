@@ -168,7 +168,6 @@ settings-profile-secret-keep = 保留已保存的密钥
 settings-profile-secret-remove = 清除已保存的密钥
 settings-profile-secret-none = 没有已保存的密钥
 settings-profile-secret-toggle-aria = 切换是否清除已保存的 RPC 密钥
-settings-profile-download-browse-aria = 选择配置的下载目录
 settings-profile-delete-title = 删除配置“{ $name }”？
 settings-profile-delete-active-hint = 这是当前配置。删除后会激活另一个配置，本地会话数据不会从磁盘删除。
 settings-profile-delete-hint = 本地会话数据不会从磁盘删除；配置目录会立即保存。

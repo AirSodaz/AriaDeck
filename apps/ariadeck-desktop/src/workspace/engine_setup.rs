@@ -354,6 +354,35 @@ pub(crate) fn default_data_dir() -> PathBuf {
     resolve_data_dir(|key| env::var_os(key), current_exe_dir().as_deref())
 }
 
+/// Default download root for new installs (category fallback / General).
+///
+/// Resolution order:
+/// 1. ARIADECK_DOWNLOAD_DIR when set
+/// 2. System Downloads folder (USERPROFILE/Downloads on Windows, HOME/Downloads elsewhere)
+/// 3. <data_dir>/downloads fallback
+#[must_use]
+pub(crate) fn default_download_dir() -> PathBuf {
+    resolve_download_dir(|key| env::var_os(key), default_data_dir())
+}
+
+/// Testable download-dir resolver.
+#[must_use]
+pub(crate) fn resolve_download_dir(
+    mut env_var: impl FnMut(&str) -> Option<std::ffi::OsString>,
+    data_dir: PathBuf,
+) -> PathBuf {
+    if let Some(path) = env_var("ARIADECK_DOWNLOAD_DIR") {
+        return PathBuf::from(path);
+    }
+    // Windows Known Folder is not required for MVP; USERPROFILE\Downloads is the
+    // conventional shell Downloads location and matches Explorer for typical profiles.
+    if let Some(home) = env_var("USERPROFILE").or_else(|| env_var("HOME")) {
+        let downloads = PathBuf::from(home).join("Downloads");
+        return downloads;
+    }
+    data_dir.join("downloads")
+}
+
 fn current_exe_dir() -> Option<PathBuf> {
     env::current_exe()
         .ok()

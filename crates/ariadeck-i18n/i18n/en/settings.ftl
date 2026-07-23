@@ -168,7 +168,6 @@ settings-profile-secret-keep = Keep saved secret
 settings-profile-secret-remove = Clear saved secret
 settings-profile-secret-none = No saved secret
 settings-profile-secret-toggle-aria = Toggle clearing the saved RPC secret
-settings-profile-download-browse-aria = Choose profile download directory
 settings-profile-delete-title = Delete profile "{ $name }"?
 settings-profile-delete-active-hint = This is the active profile. Another profile will become active. Local session data is not deleted from disk.
 settings-profile-delete-hint = Local session data is not deleted from disk. This saves the catalog immediately.

@@ -19,7 +19,7 @@ use thiserror::Error;
 use url::Url;
 pub use uuid::Uuid;
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 12;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 1;
 /// Version of the user-facing settings transfer document.
 pub const SETTINGS_EXPORT_FORMAT_VERSION: u32 = 1;
 
@@ -238,30 +238,6 @@ pub fn sync_download_directory_from_fallback(settings: &mut AppSettings) {
     } else if let Some(first) = settings.categories.first() {
         settings.download_directory = first.directory.clone();
     }
-}
-
-/// Migrate legacy manual categories + optional default id into fallback-aware model.
-fn migrate_categories_to_v12(
-    mut categories: Vec<DownloadCategory>,
-    default_category_id: Option<Uuid>,
-    download_directory: &Path,
-) -> Vec<DownloadCategory> {
-    if categories.is_empty() {
-        return default_download_categories(download_directory);
-    }
-    for category in &mut categories {
-        category.extensions =
-            normalize_category_extensions(std::mem::take(&mut category.extensions));
-        category.is_fallback = false;
-    }
-    if let Some(default_id) = default_category_id
-        && let Some(category) = categories.iter_mut().find(|c| c.id == default_id)
-    {
-        category.is_fallback = true;
-    } else if let Some(first) = categories.first_mut() {
-        first.is_fallback = true;
-    }
-    categories
 }
 
 /// Soft cap for persisted tracker list text (characters).
@@ -1191,197 +1167,6 @@ struct SettingsVersionProbe {
     schema_version: u32,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SettingsDocumentV1 {
-    schema_version: u32,
-    color_scheme: ColorScheme,
-    download_directory: PathBuf,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SettingsDocumentV2 {
-    schema_version: u32,
-    color_scheme: ColorScheme,
-    download_directory: PathBuf,
-    download_proxy: DownloadProxySettings,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SettingsDocumentV3 {
-    schema_version: u32,
-    color_scheme: ColorScheme,
-    download_directory: PathBuf,
-    download_proxy: DownloadProxySettings,
-    speed_limits: SpeedLimitSettings,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SettingsDocumentV4 {
-    schema_version: u32,
-    color_scheme: ColorScheme,
-    download_directory: PathBuf,
-    download_proxy: DownloadProxySettings,
-    speed_limits: SpeedLimitSettings,
-    transfer_policy: TransferPolicySettings,
-}
-
-/// Schema v5 notifications lacked OS/low-disk fields; migrate with defaults.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NotificationSettingsV5 {
-    volume: NotificationVolume,
-    notify_on_completion: bool,
-    notify_on_error: bool,
-    notify_on_engine_events: bool,
-}
-
-impl From<NotificationSettingsV5> for NotificationSettings {
-    fn from(value: NotificationSettingsV5) -> Self {
-        Self {
-            volume: value.volume,
-            notify_on_completion: value.notify_on_completion,
-            notify_on_error: value.notify_on_error,
-            notify_on_engine_events: value.notify_on_engine_events,
-            ..Self::default()
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SettingsDocumentV5 {
-    schema_version: u32,
-    color_scheme: ColorScheme,
-    download_directory: PathBuf,
-    download_proxy: DownloadProxySettings,
-    speed_limits: SpeedLimitSettings,
-    transfer_policy: TransferPolicySettings,
-    notifications: NotificationSettingsV5,
-}
-
-/// Schema v6 platform settings lacked UI list preferences.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SettingsDocumentV6 {
-    schema_version: u32,
-    color_scheme: ColorScheme,
-    download_directory: PathBuf,
-    download_proxy: DownloadProxySettings,
-    speed_limits: SpeedLimitSettings,
-    transfer_policy: TransferPolicySettings,
-    notifications: NotificationSettings,
-    platform: PlatformSettings,
-}
-
-/// Schema v7 lacked display language preference.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SettingsDocumentV7 {
-    schema_version: u32,
-    color_scheme: ColorScheme,
-    download_directory: PathBuf,
-    download_proxy: DownloadProxySettings,
-    speed_limits: SpeedLimitSettings,
-    transfer_policy: TransferPolicySettings,
-    notifications: NotificationSettings,
-    platform: PlatformSettings,
-    ui: UiPreferences,
-}
-
-/// Schema v8 lacked `download_proxy.check_certificate` (defaults to true).
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SettingsDocumentV8 {
-    schema_version: u32,
-    color_scheme: ColorScheme,
-    language: LanguagePreference,
-    download_directory: PathBuf,
-    download_proxy: DownloadProxySettings,
-    speed_limits: SpeedLimitSettings,
-    transfer_policy: TransferPolicySettings,
-    notifications: NotificationSettings,
-    platform: PlatformSettings,
-    ui: UiPreferences,
-}
-
-/// Schema v9 lacked download categories (C1).
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SettingsDocumentV9 {
-    schema_version: u32,
-    color_scheme: ColorScheme,
-    language: LanguagePreference,
-    download_directory: PathBuf,
-    download_proxy: DownloadProxySettings,
-    speed_limits: SpeedLimitSettings,
-    transfer_policy: TransferPolicySettings,
-    notifications: NotificationSettings,
-    platform: PlatformSettings,
-    ui: UiPreferences,
-}
-
-/// Schema v10 lacked tracker list settings (D1).
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SettingsDocumentV10 {
-    schema_version: u32,
-    color_scheme: ColorScheme,
-    language: LanguagePreference,
-    download_directory: PathBuf,
-    download_proxy: DownloadProxySettings,
-    speed_limits: SpeedLimitSettings,
-    transfer_policy: TransferPolicySettings,
-    notifications: NotificationSettings,
-    platform: PlatformSettings,
-    ui: UiPreferences,
-    categories: Vec<LegacyDownloadCategoryV11>,
-    default_category_id: Option<Uuid>,
-}
-
-/// Schema v11 used manual default_category_id without extension routing (D-042).
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SettingsDocumentV11 {
-    schema_version: u32,
-    color_scheme: ColorScheme,
-    language: LanguagePreference,
-    download_directory: PathBuf,
-    download_proxy: DownloadProxySettings,
-    speed_limits: SpeedLimitSettings,
-    transfer_policy: TransferPolicySettings,
-    notifications: NotificationSettings,
-    platform: PlatformSettings,
-    ui: UiPreferences,
-    categories: Vec<LegacyDownloadCategoryV11>,
-    default_category_id: Option<Uuid>,
-    tracker_list: TrackerListSettings,
-}
-
-/// Pre-v12 category rows (name + directory only).
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyDownloadCategoryV11 {
-    id: Uuid,
-    name: String,
-    directory: PathBuf,
-}
-
-impl From<LegacyDownloadCategoryV11> for DownloadCategory {
-    fn from(value: LegacyDownloadCategoryV11) -> Self {
-        Self {
-            id: value.id,
-            name: value.name,
-            directory: value.directory,
-            extensions: Vec::new(),
-            is_fallback: false,
-        }
-    }
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SettingsDocument {
@@ -1464,333 +1249,26 @@ impl JsonSettingsStore {
     }
 
     pub fn load(&self) -> Result<AppSettings, SettingsError> {
-        self.load_versioned().map(|(settings, _)| settings)
-    }
-
-    fn load_versioned(&self) -> Result<(AppSettings, bool), SettingsError> {
         let bytes = fs::read(&self.path)
             .map_err(|source| io_error("read the settings document", &self.path, source))?;
         let malformed = |error: serde_json::Error| SettingsError::MalformedDocument {
             path: self.path.clone(),
             message: error.to_string(),
         };
-        let version: SettingsVersionProbe = serde_json::from_slice(&bytes).map_err(malformed)?;
-        match version.schema_version {
-            1 => {
-                let document: SettingsDocumentV1 =
-                    serde_json::from_slice(&bytes).map_err(malformed)?;
-                if document.schema_version != 1 {
-                    return Err(SettingsError::UnsupportedSchemaVersion {
-                        found: document.schema_version,
-                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
-                    });
-                }
-                let categories = default_download_categories(&document.download_directory);
-                let settings = AppSettings {
-                    color_scheme: document.color_scheme,
-                    language: LanguagePreference::default(),
-                    download_directory: document.download_directory,
-                    download_proxy: DownloadProxySettings::default(),
-                    speed_limits: SpeedLimitSettings::default(),
-                    transfer_policy: TransferPolicySettings::default(),
-                    notifications: NotificationSettings::default(),
-                    platform: PlatformSettings::default(),
-                    ui: UiPreferences::default(),
-                    categories,
-                    tracker_list: TrackerListSettings::default(),
-                };
-                settings.validate()?;
-                Ok((settings, true))
-            }
-            2 => {
-                let document: SettingsDocumentV2 =
-                    serde_json::from_slice(&bytes).map_err(malformed)?;
-                if document.schema_version != 2 {
-                    return Err(SettingsError::UnsupportedSchemaVersion {
-                        found: document.schema_version,
-                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
-                    });
-                }
-                let categories = default_download_categories(&document.download_directory);
-                let settings = AppSettings {
-                    color_scheme: document.color_scheme,
-                    language: LanguagePreference::default(),
-                    download_directory: document.download_directory,
-                    download_proxy: document.download_proxy,
-                    speed_limits: SpeedLimitSettings::default(),
-                    transfer_policy: TransferPolicySettings::default(),
-                    notifications: NotificationSettings::default(),
-                    platform: PlatformSettings::default(),
-                    ui: UiPreferences::default(),
-                    categories,
-                    tracker_list: TrackerListSettings::default(),
-                };
-                settings.validate()?;
-                Ok((settings, true))
-            }
-            3 => {
-                let document: SettingsDocumentV3 =
-                    serde_json::from_slice(&bytes).map_err(malformed)?;
-                if document.schema_version != 3 {
-                    return Err(SettingsError::UnsupportedSchemaVersion {
-                        found: document.schema_version,
-                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
-                    });
-                }
-                let categories = default_download_categories(&document.download_directory);
-                let settings = AppSettings {
-                    color_scheme: document.color_scheme,
-                    language: LanguagePreference::default(),
-                    download_directory: document.download_directory,
-                    download_proxy: document.download_proxy,
-                    speed_limits: document.speed_limits,
-                    transfer_policy: TransferPolicySettings::default(),
-                    notifications: NotificationSettings::default(),
-                    platform: PlatformSettings::default(),
-                    ui: UiPreferences::default(),
-                    categories,
-                    tracker_list: TrackerListSettings::default(),
-                };
-                settings.validate()?;
-                Ok((settings, true))
-            }
-            4 => {
-                let document: SettingsDocumentV4 =
-                    serde_json::from_slice(&bytes).map_err(malformed)?;
-                if document.schema_version != 4 {
-                    return Err(SettingsError::UnsupportedSchemaVersion {
-                        found: document.schema_version,
-                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
-                    });
-                }
-                let categories = default_download_categories(&document.download_directory);
-                let settings = AppSettings {
-                    color_scheme: document.color_scheme,
-                    language: LanguagePreference::default(),
-                    download_directory: document.download_directory,
-                    download_proxy: document.download_proxy,
-                    speed_limits: document.speed_limits,
-                    transfer_policy: document.transfer_policy,
-                    notifications: NotificationSettings::default(),
-                    platform: PlatformSettings::default(),
-                    ui: UiPreferences::default(),
-                    categories,
-                    tracker_list: TrackerListSettings::default(),
-                };
-                settings.validate()?;
-                Ok((settings, true))
-            }
-            5 => {
-                let document: SettingsDocumentV5 =
-                    serde_json::from_slice(&bytes).map_err(malformed)?;
-                if document.schema_version != 5 {
-                    return Err(SettingsError::UnsupportedSchemaVersion {
-                        found: document.schema_version,
-                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
-                    });
-                }
-                let categories = default_download_categories(&document.download_directory);
-                let settings = AppSettings {
-                    color_scheme: document.color_scheme,
-                    language: LanguagePreference::default(),
-                    download_directory: document.download_directory,
-                    download_proxy: document.download_proxy,
-                    speed_limits: document.speed_limits,
-                    transfer_policy: document.transfer_policy,
-                    notifications: document.notifications.into(),
-                    platform: PlatformSettings::default(),
-                    ui: UiPreferences::default(),
-                    categories,
-                    tracker_list: TrackerListSettings::default(),
-                };
-                settings.validate()?;
-                Ok((settings, true))
-            }
-            6 => {
-                let document: SettingsDocumentV6 =
-                    serde_json::from_slice(&bytes).map_err(malformed)?;
-                if document.schema_version != 6 {
-                    return Err(SettingsError::UnsupportedSchemaVersion {
-                        found: document.schema_version,
-                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
-                    });
-                }
-                let categories = default_download_categories(&document.download_directory);
-                let settings = AppSettings {
-                    color_scheme: document.color_scheme,
-                    language: LanguagePreference::default(),
-                    download_directory: document.download_directory,
-                    download_proxy: document.download_proxy,
-                    speed_limits: document.speed_limits,
-                    transfer_policy: document.transfer_policy,
-                    notifications: document.notifications,
-                    platform: document.platform,
-                    ui: UiPreferences::default(),
-                    categories,
-                    tracker_list: TrackerListSettings::default(),
-                };
-                settings.validate()?;
-                Ok((settings, true))
-            }
-            7 => {
-                let document: SettingsDocumentV7 =
-                    serde_json::from_slice(&bytes).map_err(malformed)?;
-                if document.schema_version != 7 {
-                    return Err(SettingsError::UnsupportedSchemaVersion {
-                        found: document.schema_version,
-                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
-                    });
-                }
-                let categories = default_download_categories(&document.download_directory);
-                let settings = AppSettings {
-                    color_scheme: document.color_scheme,
-                    language: LanguagePreference::default(),
-                    download_directory: document.download_directory,
-                    download_proxy: document.download_proxy,
-                    speed_limits: document.speed_limits,
-                    transfer_policy: document.transfer_policy,
-                    notifications: document.notifications,
-                    platform: document.platform,
-                    ui: document.ui,
-                    categories,
-                    tracker_list: TrackerListSettings::default(),
-                };
-                settings.validate()?;
-                Ok((settings, true))
-            }
-            8 => {
-                let document: SettingsDocumentV8 =
-                    serde_json::from_slice(&bytes).map_err(malformed)?;
-                if document.schema_version != 8 {
-                    return Err(SettingsError::UnsupportedSchemaVersion {
-                        found: document.schema_version,
-                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
-                    });
-                }
-                // `check_certificate` is #[serde(default = true)] on DownloadProxySettings.
-                let categories = default_download_categories(&document.download_directory);
-                let settings = AppSettings {
-                    color_scheme: document.color_scheme,
-                    language: document.language,
-                    download_directory: document.download_directory,
-                    download_proxy: document.download_proxy,
-                    speed_limits: document.speed_limits,
-                    transfer_policy: document.transfer_policy,
-                    notifications: document.notifications,
-                    platform: document.platform,
-                    ui: document.ui,
-                    categories,
-                    tracker_list: TrackerListSettings::default(),
-                };
-                settings.validate()?;
-                Ok((settings, true))
-            }
-            9 => {
-                let document: SettingsDocumentV9 =
-                    serde_json::from_slice(&bytes).map_err(malformed)?;
-                if document.schema_version != 9 {
-                    return Err(SettingsError::UnsupportedSchemaVersion {
-                        found: document.schema_version,
-                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
-                    });
-                }
-                let categories = default_download_categories(&document.download_directory);
-                let settings = AppSettings {
-                    color_scheme: document.color_scheme,
-                    language: document.language,
-                    download_directory: document.download_directory,
-                    download_proxy: document.download_proxy,
-                    speed_limits: document.speed_limits,
-                    transfer_policy: document.transfer_policy,
-                    notifications: document.notifications,
-                    platform: document.platform,
-                    ui: document.ui,
-                    categories,
-                    tracker_list: TrackerListSettings::default(),
-                };
-                settings.validate()?;
-                Ok((settings, true))
-            }
-            10 => {
-                let document: SettingsDocumentV10 =
-                    serde_json::from_slice(&bytes).map_err(malformed)?;
-                if document.schema_version != 10 {
-                    return Err(SettingsError::UnsupportedSchemaVersion {
-                        found: document.schema_version,
-                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
-                    });
-                }
-                let categories = migrate_categories_to_v12(
-                    document
-                        .categories
-                        .into_iter()
-                        .map(DownloadCategory::from)
-                        .collect(),
-                    document.default_category_id,
-                    &document.download_directory,
-                );
-                let mut settings = AppSettings {
-                    color_scheme: document.color_scheme,
-                    language: document.language,
-                    download_directory: document.download_directory,
-                    download_proxy: document.download_proxy,
-                    speed_limits: document.speed_limits,
-                    transfer_policy: document.transfer_policy,
-                    notifications: document.notifications,
-                    platform: document.platform,
-                    ui: document.ui,
-                    categories,
-                    tracker_list: TrackerListSettings::default(),
-                };
-                sync_download_directory_from_fallback(&mut settings);
-                settings.validate()?;
-                Ok((settings, true))
-            }
-            11 => {
-                let document: SettingsDocumentV11 =
-                    serde_json::from_slice(&bytes).map_err(malformed)?;
-                if document.schema_version != 11 {
-                    return Err(SettingsError::UnsupportedSchemaVersion {
-                        found: document.schema_version,
-                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
-                    });
-                }
-                let categories = migrate_categories_to_v12(
-                    document
-                        .categories
-                        .into_iter()
-                        .map(DownloadCategory::from)
-                        .collect(),
-                    document.default_category_id,
-                    &document.download_directory,
-                );
-                let mut settings = AppSettings {
-                    color_scheme: document.color_scheme,
-                    language: document.language,
-                    download_directory: document.download_directory,
-                    download_proxy: document.download_proxy,
-                    speed_limits: document.speed_limits,
-                    transfer_policy: document.transfer_policy,
-                    notifications: document.notifications,
-                    platform: document.platform,
-                    ui: document.ui,
-                    categories,
-                    tracker_list: document.tracker_list,
-                };
-                sync_download_directory_from_fallback(&mut settings);
-                settings.validate()?;
-                Ok((settings, true))
-            }
-            CURRENT_SETTINGS_SCHEMA_VERSION => {
-                let document: SettingsDocument =
-                    serde_json::from_slice(&bytes).map_err(malformed)?;
-                AppSettings::try_from(document).map(|settings| (settings, false))
-            }
-            found => Err(SettingsError::UnsupportedSchemaVersion {
-                found,
+        // Probe version before full decode so unsupported schemas are not mistaken
+        // for malformed documents (which load_or_initialize would silently reset).
+        // Only the current schema is accepted in-tree. When a release tag needs a
+        // migration, add a single previous-tag path here. Dev configs are maintained
+        // manually (reset settings.json as needed).
+        let probe: SettingsVersionProbe = serde_json::from_slice(&bytes).map_err(malformed)?;
+        if probe.schema_version != CURRENT_SETTINGS_SCHEMA_VERSION {
+            return Err(SettingsError::UnsupportedSchemaVersion {
+                found: probe.schema_version,
                 supported: CURRENT_SETTINGS_SCHEMA_VERSION,
-            }),
+            });
         }
+        let document: SettingsDocument = serde_json::from_slice(&bytes).map_err(malformed)?;
+        AppSettings::try_from(document)
     }
 
     pub fn load_or_initialize(
@@ -1806,16 +1284,11 @@ impl JsonSettingsStore {
             });
         }
 
-        match self.load_versioned() {
-            Ok((settings, migrated)) => {
-                if migrated {
-                    self.save(&settings)?;
-                }
-                Ok(LoadedSettings {
-                    settings,
-                    recovery: None,
-                })
-            }
+        match self.load() {
+            Ok(settings) => Ok(LoadedSettings {
+                settings,
+                recovery: None,
+            }),
             Err(error @ SettingsError::MalformedDocument { .. })
             | Err(error @ SettingsError::EmptyDownloadDirectory)
             | Err(error @ SettingsError::MissingManualProxyEndpoint)
@@ -2117,273 +1590,6 @@ mod tests {
     }
 
     #[test]
-    fn version_one_document_is_migrated_with_proxy_disabled() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let store = JsonSettingsStore::new(root.path().join("settings.json"));
-        fs::write(
-            store.path(),
-            r#"{"schema_version":1,"color_scheme":"light","download_directory":"downloads"}"#,
-        )
-        .expect("seed version one settings");
-
-        let loaded = store
-            .load_or_initialize(&settings(root.path()))
-            .expect("migrate version one settings");
-
-        assert_eq!(
-            loaded.settings.download_proxy,
-            DownloadProxySettings::default()
-        );
-        assert_eq!(loaded.settings.speed_limits, SpeedLimitSettings::default());
-        assert_eq!(
-            loaded.settings.transfer_policy,
-            TransferPolicySettings::default()
-        );
-        assert_eq!(
-            loaded.settings.notifications,
-            NotificationSettings::default()
-        );
-        assert_eq!(loaded.settings.platform, PlatformSettings::default());
-        assert_eq!(loaded.settings.ui, UiPreferences::default());
-        assert!(loaded.recovery.is_none());
-        let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains(&format!(
-            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
-        )));
-        assert!(migrated.contains("\"download_proxy\""));
-        assert!(migrated.contains("\"speed_limits\""));
-        assert!(migrated.contains("\"transfer_policy\""));
-        assert!(migrated.contains("\"notifications\""));
-        assert!(migrated.contains("\"platform\""));
-        assert!(migrated.contains("\"ui\""));
-    }
-
-    #[test]
-    fn version_two_document_is_migrated_with_speed_limits_at_zero() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let store = JsonSettingsStore::new(root.path().join("settings.json"));
-        fs::write(
-            store.path(),
-            r#"{"schema_version":2,"color_scheme":"dark","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null}}"#,
-        )
-        .expect("seed version two settings");
-
-        let loaded = store
-            .load_or_initialize(&settings(root.path()))
-            .expect("migrate version two settings");
-
-        assert_eq!(loaded.settings.speed_limits, SpeedLimitSettings::default());
-        assert_eq!(
-            loaded.settings.transfer_policy,
-            TransferPolicySettings::default()
-        );
-        assert_eq!(
-            loaded.settings.notifications,
-            NotificationSettings::default()
-        );
-        assert_eq!(loaded.settings.platform, PlatformSettings::default());
-        assert_eq!(loaded.settings.ui, UiPreferences::default());
-        assert!(loaded.recovery.is_none());
-        let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains(&format!(
-            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
-        )));
-        assert!(migrated.contains("\"speed_limits\""));
-        assert!(migrated.contains("\"transfer_policy\""));
-        assert!(migrated.contains("\"notifications\""));
-        assert!(migrated.contains("\"platform\""));
-        assert!(migrated.contains("\"ui\""));
-    }
-
-    #[test]
-    fn version_three_document_is_migrated_with_default_transfer_policy() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let store = JsonSettingsStore::new(root.path().join("settings.json"));
-        fs::write(
-            store.path(),
-            r#"{"schema_version":3,"color_scheme":"dark","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":1048576,"upload_limit":0}}"#,
-        )
-        .expect("seed version three settings");
-
-        let loaded = store
-            .load_or_initialize(&settings(root.path()))
-            .expect("migrate version three settings");
-
-        assert_eq!(
-            loaded.settings.speed_limits,
-            SpeedLimitSettings {
-                download_limit: 1_048_576,
-                upload_limit: 0,
-            }
-        );
-        assert_eq!(
-            loaded.settings.transfer_policy,
-            TransferPolicySettings::default()
-        );
-        assert_eq!(
-            loaded.settings.notifications,
-            NotificationSettings::default()
-        );
-        assert_eq!(loaded.settings.platform, PlatformSettings::default());
-        assert_eq!(loaded.settings.ui, UiPreferences::default());
-        assert!(loaded.recovery.is_none());
-        let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains(&format!(
-            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
-        )));
-        assert!(migrated.contains("\"transfer_policy\""));
-        assert!(migrated.contains("\"max_concurrent_downloads\""));
-        assert!(migrated.contains("\"notifications\""));
-        assert!(migrated.contains("\"platform\""));
-        assert!(migrated.contains("\"ui\""));
-    }
-
-    #[test]
-    fn version_four_document_is_migrated_with_default_notifications() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let store = JsonSettingsStore::new(root.path().join("settings.json"));
-        fs::write(
-            store.path(),
-            r#"{"schema_version":4,"color_scheme":"dark","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false}}"#,
-        )
-        .expect("seed version four settings");
-
-        let loaded = store
-            .load_or_initialize(&settings(root.path()))
-            .expect("migrate version four settings");
-
-        assert_eq!(
-            loaded.settings.transfer_policy,
-            TransferPolicySettings::default()
-        );
-        assert_eq!(
-            loaded.settings.notifications,
-            NotificationSettings::default()
-        );
-        assert_eq!(loaded.settings.platform, PlatformSettings::default());
-        assert_eq!(loaded.settings.ui, UiPreferences::default());
-        assert!(loaded.recovery.is_none());
-        let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains(&format!(
-            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
-        )));
-        assert!(migrated.contains("\"notifications\""));
-        assert!(migrated.contains("\"notify_on_completion\""));
-        assert!(migrated.contains("\"platform\""));
-        assert!(migrated.contains("\"ui\""));
-    }
-
-    #[test]
-    fn version_five_document_is_migrated_with_default_platform_and_os_notifications() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let store = JsonSettingsStore::new(root.path().join("settings.json"));
-        fs::write(
-            store.path(),
-            r#"{"schema_version":5,"color_scheme":"dark","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"quiet","notify_on_completion":false,"notify_on_error":true,"notify_on_engine_events":true}}"#,
-        )
-        .expect("seed version five settings");
-
-        let loaded = store
-            .load_or_initialize(&settings(root.path()))
-            .expect("migrate version five settings");
-
-        assert_eq!(
-            loaded.settings.notifications,
-            NotificationSettings {
-                volume: NotificationVolume::Quiet,
-                notify_on_completion: false,
-                notify_on_error: true,
-                notify_on_engine_events: true,
-                os_notifications: true,
-                notify_on_low_disk: true,
-                low_disk_threshold_bytes: 1_073_741_824,
-            }
-        );
-        assert_eq!(loaded.settings.platform, PlatformSettings::default());
-        assert_eq!(loaded.settings.ui, UiPreferences::default());
-        assert!(loaded.recovery.is_none());
-        let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains(&format!(
-            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
-        )));
-        assert!(migrated.contains("\"platform\""));
-        assert!(migrated.contains("\"os_notifications\""));
-        assert!(migrated.contains("\"close_behavior\""));
-        assert!(migrated.contains("\"ui\""));
-    }
-
-    #[test]
-    fn version_eight_document_is_migrated_with_check_certificate_true() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let store = JsonSettingsStore::new(root.path().join("settings.json"));
-        fs::write(
-            store.path(),
-            r#"{"schema_version":8,"color_scheme":"system","language":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":true,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false},"ui":{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"}}"#,
-        )
-        .expect("seed version eight settings");
-
-        let loaded = store
-            .load_or_initialize(&settings(root.path()))
-            .expect("migrate version eight settings");
-
-        assert!(loaded.settings.download_proxy.check_certificate);
-        assert!(loaded.recovery.is_none());
-        let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains(&format!(
-            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
-        )));
-        assert!(migrated.contains("\"check_certificate\": true"));
-    }
-
-    #[test]
-    fn version_seven_document_is_migrated_with_default_language() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let store = JsonSettingsStore::new(root.path().join("settings.json"));
-        fs::write(
-            store.path(),
-            r#"{"schema_version":7,"color_scheme":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":true,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false},"ui":{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"}}"#,
-        )
-        .expect("seed version seven settings");
-
-        let loaded = store
-            .load_or_initialize(&settings(root.path()))
-            .expect("migrate version seven settings");
-
-        assert_eq!(loaded.settings.language, LanguagePreference::System);
-        assert!(loaded.recovery.is_none());
-        let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains(&format!(
-            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
-        )));
-        assert!(migrated.contains("\"language\""));
-    }
-
-    #[test]
-    fn version_six_document_is_migrated_with_default_ui_preferences() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let store = JsonSettingsStore::new(root.path().join("settings.json"));
-        fs::write(
-            store.path(),
-            r#"{"schema_version":6,"color_scheme":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":true,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false}}"#,
-        )
-        .expect("seed version six settings");
-
-        let loaded = store
-            .load_or_initialize(&settings(root.path()))
-            .expect("migrate version six settings");
-
-        assert_eq!(loaded.settings.color_scheme, ColorScheme::System);
-        assert_eq!(loaded.settings.ui, UiPreferences::default());
-        assert!(loaded.recovery.is_none());
-        let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains(&format!(
-            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
-        )));
-        assert!(migrated.contains("\"ui\""));
-        assert!(migrated.contains("\"list_filter\""));
-    }
-
-    #[test]
     fn ui_preferences_and_system_theme_round_trip() {
         let root = tempfile::tempdir().expect("temporary directory");
         let store = JsonSettingsStore::new(root.path().join("settings.json"));
@@ -2517,21 +1723,18 @@ mod tests {
     fn invalid_proxy_document_is_preserved_before_defaults_are_restored() {
         let root = tempfile::tempdir().expect("temporary directory");
         let store = JsonSettingsStore::new(root.path().join("settings.json"));
-        let invalid = r#"{
-            "schema_version": 2,
-            "color_scheme": "dark",
-            "download_directory": "downloads",
-            "download_proxy": {
-                "mode": "manual",
-                "all_proxy": null,
-                "http_proxy": null,
-                "https_proxy": null,
-                "ftp_proxy": null,
-                "no_proxy": [],
-                "username": null,
-                "credential": null
-            }
-        }"#;
+        // Current schema, but manual proxy with no endpoints → validation recovery.
+        let invalid = concat!(
+            r#"{"schema_version":1,"color_scheme":"dark","language":"system","download_directory":"downloads","#,
+            r#""download_proxy":{"mode":"manual","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null,"check_certificate":true},"#,
+            r#""speed_limits":{"download_limit":0,"upload_limit":0},"#,
+            r#""transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"#,
+            r#""notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":false,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"#,
+            r#""platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false},"#,
+            r#""ui":{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"},"#,
+            r#""categories":[{"id":"00000000-0000-4000-8000-000000000001","name":"General","directory":"downloads","extensions":[],"is_fallback":true}],"#,
+            r#""tracker_list":{"enabled":false,"source":"curated","custom_url":null,"auto_refresh":false,"last_refreshed_at":null,"list_text":""}}"#
+        );
         fs::write(store.path(), invalid).expect("seed invalid proxy settings");
         let defaults = settings(root.path());
 
@@ -2545,79 +1748,6 @@ mod tests {
         );
         assert_eq!(loaded.settings, defaults);
         assert_eq!(store.load().expect("load restored defaults"), defaults);
-    }
-
-    #[test]
-    fn release_migration_matrix_covers_every_historical_schema_version() {
-        // RELEASE-001: each prior schema must land on CURRENT with critical defaults.
-        let fixtures: &[(u32, &str)] = &[
-            (
-                1,
-                r#"{"schema_version":1,"color_scheme":"light","download_directory":"downloads"}"#,
-            ),
-            (
-                2,
-                r#"{"schema_version":2,"color_scheme":"dark","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null}}"#,
-            ),
-            (
-                3,
-                r#"{"schema_version":3,"color_scheme":"dark","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0}}"#,
-            ),
-            (
-                4,
-                r#"{"schema_version":4,"color_scheme":"dark","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false}}"#,
-            ),
-            (
-                5,
-                r#"{"schema_version":5,"color_scheme":"dark","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"quiet","notify_on_completion":false,"notify_on_error":true,"notify_on_engine_events":true}}"#,
-            ),
-            (
-                6,
-                r#"{"schema_version":6,"color_scheme":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":true,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false}}"#,
-            ),
-            (
-                7,
-                r#"{"schema_version":7,"color_scheme":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":true,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false},"ui":{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"}}"#,
-            ),
-            (
-                8,
-                r#"{"schema_version":8,"color_scheme":"system","language":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":true,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false},"ui":{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"}}"#,
-            ),
-            (
-                9,
-                r#"{"schema_version":9,"color_scheme":"system","language":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null,"check_certificate":true},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":true,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false},"ui":{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"}}"#,
-            ),
-        ];
-
-        for &(version, body) in fixtures {
-            let root = tempfile::tempdir().expect("temporary directory");
-            let store = JsonSettingsStore::new(root.path().join("settings.json"));
-            fs::write(store.path(), body).expect("seed historical settings");
-            let loaded = store
-                .load_or_initialize(&settings(root.path()))
-                .unwrap_or_else(|error| panic!("migrate schema {version}: {error}"));
-            assert!(
-                loaded.recovery.is_none(),
-                "schema {version} should migrate cleanly"
-            );
-            let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-            assert!(
-                migrated.contains(&format!(
-                    "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
-                )),
-                "schema {version} must rewrite to current"
-            );
-            assert_eq!(
-                loaded.settings.language,
-                LanguagePreference::System,
-                "schema {version} language default"
-            );
-            // Platform/ui exist from v6+/v7+ migrations; defaults apply for older.
-            let _ = loaded.settings.platform;
-            let _ = loaded.settings.ui;
-            let reloaded = store.load().expect("reload current document");
-            assert_eq!(reloaded.download_directory, PathBuf::from("downloads"));
-        }
     }
 
     #[test]
@@ -2669,25 +1799,6 @@ mod tests {
             expected.validate(),
             Err(SettingsError::EmptyCategoryName)
         ));
-    }
-
-    #[test]
-    fn categories_migrate_from_v11_manual_default() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let store = JsonSettingsStore::new(root.path().join("settings.json"));
-        let movies_id = Uuid::new_v4();
-        let payload = format!(
-            r#"{{"schema_version":11,"color_scheme":"light","language":"system","download_directory":"downloads","download_proxy":{{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null,"check_certificate":true}},"speed_limits":{{"download_limit":0,"upload_limit":0}},"transfer_policy":{{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false}},"notifications":{{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":false,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824}},"platform":{{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false}},"ui":{{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"}},"categories":[{{"id":"{movies_id}","name":"Movies","directory":"downloads/movies"}}],"default_category_id":"{movies_id}","tracker_list":{{"enabled":false,"source":"curated","custom_url":null,"auto_refresh":false,"last_refreshed_at":null,"list_text":""}}}}"#
-        );
-        fs::write(store.path(), payload).expect("seed v11");
-        let loaded = store
-            .load_or_initialize(&settings(root.path()))
-            .expect("migrate v11");
-        assert_eq!(loaded.settings.categories.len(), 1);
-        assert!(loaded.settings.categories[0].is_fallback);
-        assert_eq!(loaded.settings.categories[0].id, movies_id);
-        let saved = fs::read_to_string(store.path()).expect("read");
-        assert!(saved.contains("is_fallback"), "saved={saved}");
     }
 
     #[test]
@@ -2750,24 +1861,7 @@ mod tests {
     }
 
     #[test]
-    fn tracker_list_settings_validate_and_migrate_from_v10() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let store = JsonSettingsStore::new(root.path().join("settings.json"));
-        fs::write(
-            store.path(),
-            r#"{"schema_version":10,"color_scheme":"light","language":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null,"check_certificate":true},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":false,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false},"ui":{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"},"categories":[],"default_category_id":null}"#,
-        )
-        .expect("seed v10");
-        let loaded = store
-            .load_or_initialize(&settings(root.path()))
-            .expect("migrate v10");
-        assert_eq!(loaded.settings.tracker_list, TrackerListSettings::default());
-        assert!(
-            fs::read_to_string(store.path())
-                .expect("read")
-                .contains("\"tracker_list\"")
-        );
-
+    fn tracker_list_settings_validate() {
         let mut invalid = TrackerListSettings {
             source: TrackerListSource::Custom,
             ..TrackerListSettings::default()
