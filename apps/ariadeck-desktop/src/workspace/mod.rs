@@ -72,7 +72,8 @@ use ariadeck_ui::{
     TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
     TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
     TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
-    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TransferPolicySettingsView,
+    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TrackerListSettingsView,
+    TrackerListSourceView, TransferPolicySettingsView,
     WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
     format_speed_limit_field,
 };
@@ -99,6 +100,7 @@ mod engine_setup;
 mod mapping;
 mod ops;
 mod settings_bridge;
+mod tracker_list;
 
 // Re-export so DesktopRoot methods and tests keep short names.
 #[allow(unused_imports)]
@@ -109,6 +111,8 @@ pub(crate) use mapping::*;
 pub(crate) use ops::*;
 #[allow(unused_imports)]
 pub(crate) use settings_bridge::*;
+#[allow(unused_imports)]
+pub(crate) use tracker_list::*;
 
 /// Process-wide flag: true while AriaDeck is intentionally hidden to tray with
 /// no open window. Prevents `on_window_closed` from quitting the app.
@@ -125,6 +129,7 @@ pub struct DesktopRoot {
     query_sender: watch::Sender<TaskListQuery>,
     settings_sender: Option<mpsc::UnboundedSender<SettingsPersistenceRequest>>,
     settings_task: Option<JoinHandle<()>>,
+    tracker_list_sender: Option<mpsc::UnboundedSender<TrackerListRefreshRequest>>,
     settings: AppSettings,
     data_dir: PathBuf,
     profile_store: JsonProfileStore,
@@ -151,6 +156,7 @@ pub(crate) struct SettingsPersistenceRequest {
     pub(crate) apply_proxy: bool,
     pub(crate) apply_speed_limit: bool,
     pub(crate) apply_transfer_policy: bool,
+    pub(crate) apply_bt_tracker: bool,
 }
 
 #[derive(Clone)]
@@ -405,6 +411,9 @@ impl DesktopRoot {
                 AppShellEvent::SettingsImportRequested(request) => {
                     this.spawn_settings_import(request.clone(), window, cx);
                 }
+                AppShellEvent::TrackerListRefreshRequested { request_id } => {
+                    this.enqueue_tracker_list_refresh(*request_id, window, cx);
+                }
                 AppShellEvent::DiagnosticExportRequested(request) => {
                     this.spawn_diagnostic_export(request.clone(), window, cx);
                 }
@@ -474,15 +483,32 @@ impl DesktopRoot {
         if let Some(results) = settings_results {
             spawn_settings_result_bridge(results, window, cx);
         }
-        if let (Some(handle), Some(store)) = (sync.clone(), proxy_reapply_store) {
+        if let (Some(handle), Some(store)) = (sync.clone(), proxy_reapply_store.clone()) {
             spawn_proxy_reapply_bridge(
                 runtime.handle().clone(),
                 handle,
                 store,
-                credential_store,
+                credential_store.clone(),
                 cx,
             );
         }
+        let tracker_list_sender = if let Some(store) = proxy_reapply_store {
+            let (req_tx, req_rx) = mpsc::unbounded_channel::<TrackerListRefreshRequest>();
+            let (res_tx, res_rx) = mpsc::unbounded_channel::<TrackerListRefreshResult>();
+            spawn_tracker_list_refresh_bridge(
+                runtime.handle().clone(),
+                store,
+                sync.clone(),
+                credential_store.clone(),
+                req_rx,
+                res_tx,
+            );
+            spawn_tracker_list_result_bridge(res_rx, window, cx);
+            spawn_tracker_list_auto_refresh(runtime.handle().clone(), req_tx.clone());
+            Some(req_tx)
+        } else {
+            None
+        };
         if let Some(health) = local_engine_health {
             spawn_local_engine_health_bridge(health, cx);
         }
@@ -509,6 +535,7 @@ impl DesktopRoot {
             query_sender,
             settings_sender,
             settings_task,
+            tracker_list_sender,
             settings,
             data_dir: data_dir.clone(),
             profile_store,
@@ -734,6 +761,7 @@ impl DesktopRoot {
                 apply_proxy: false,
                 apply_speed_limit: false,
                 apply_transfer_policy: false,
+                apply_bt_tracker: false,
             };
             if sender.send(request).is_ok() {
                 self.settings = next;
@@ -959,6 +987,7 @@ impl DesktopRoot {
             || !matches!(proxy_password, ProxyPasswordUpdate::Unchanged);
         let apply_speed_limit = settings.speed_limits != self.settings.speed_limits;
         let apply_transfer_policy = settings.transfer_policy != self.settings.transfer_policy;
+        let apply_bt_tracker = settings.tracker_list != self.settings.tracker_list;
         let Some(sender) = &self.settings_sender else {
             self.deliver_settings_error(
                 request,
@@ -977,6 +1006,7 @@ impl DesktopRoot {
                 apply_proxy,
                 apply_speed_limit,
                 apply_transfer_policy,
+                apply_bt_tracker,
             })
             .is_err()
         {
@@ -987,6 +1017,68 @@ impl DesktopRoot {
                 cx,
             );
         }
+    }
+
+    fn enqueue_tracker_list_refresh(
+        &self,
+        request_id: ariadeck_ui::RequestId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let draft = self.workspace.read(cx).settings().tracker_list.clone();
+        let draft = ariadeck_settings::TrackerListSettings {
+            enabled: draft.enabled,
+            source: match draft.source {
+                TrackerListSourceView::Curated => ariadeck_settings::TrackerListSource::Curated,
+                TrackerListSourceView::Custom => ariadeck_settings::TrackerListSource::Custom,
+            },
+            custom_url: trimmed_value(&draft.custom_url),
+            auto_refresh: draft.auto_refresh,
+            last_refreshed_at: draft.last_refreshed_at,
+            list_text: draft.list_text,
+        };
+        let Some(sender) = &self.tracker_list_sender else {
+            self.workspace.update(cx, |workspace, cx| {
+                workspace.set_tracker_list_refresh_result(
+                    request_id,
+                    None,
+                    0,
+                    Err(OperationErrorView {
+                        code: "settings.tracker_refresh_unavailable".into(),
+                        summary: "Tracker list refresh is unavailable for this session.".into(),
+                        retryable: false,
+                    }),
+                    false,
+                    cx,
+                );
+            });
+            let _ = window;
+            return;
+        };
+        if sender
+            .send(TrackerListRefreshRequest {
+                request_id,
+                auto: false,
+                draft: Some(draft),
+            })
+            .is_err()
+        {
+            self.workspace.update(cx, |workspace, cx| {
+                workspace.set_tracker_list_refresh_result(
+                    request_id,
+                    None,
+                    0,
+                    Err(OperationErrorView {
+                        code: "settings.tracker_refresh_failed".into(),
+                        summary: "The tracker list refresh worker stopped unexpectedly.".into(),
+                        retryable: true,
+                    }),
+                    false,
+                    cx,
+                );
+            });
+        }
+        let _ = window;
     }
 
     fn deliver_settings_error(
@@ -1460,6 +1552,7 @@ impl Drop for DesktopRoot {
         self.window_hidden_to_tray = false;
         self.tray.take();
         self.settings_sender.take();
+        self.tracker_list_sender.take();
         if let Some(task) = self.settings_task.take()
             && let Err(error) = self.runtime.block_on(task)
         {

@@ -190,6 +190,16 @@ pub(crate) fn map_transfer_policy_config(settings: &AppSettings) -> TransferPoli
     }
 }
 
+/// Trackers to push as aria2 `bt-tracker`. Empty when disabled (clears previous).
+#[must_use]
+pub(crate) fn map_bt_tracker_list(settings: &AppSettings) -> Vec<String> {
+    if settings.tracker_list.enabled {
+        ariadeck_domain::parse_tracker_list(&settings.tracker_list.list_text)
+    } else {
+        Vec::new()
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn persist_settings(
     store: &JsonSettingsStore,
@@ -273,6 +283,46 @@ pub(crate) fn spawn_settings_result_bridge(
     .detach();
 }
 
+pub(crate) fn spawn_tracker_list_result_bridge(
+    mut results: mpsc::UnboundedReceiver<TrackerListRefreshResult>,
+    window: &Window,
+    cx: &mut Context<DesktopRoot>,
+) {
+    cx.spawn_in(window, async move |this, cx| {
+        while let Some(result) = results.recv().await {
+            if this
+                .update_in(cx, |this, _window, cx| {
+                    if let Some(settings) = result.settings.as_ref()
+                        && result.result.is_ok()
+                    {
+                        this.settings = settings.clone();
+                    }
+                    let outcome = result.result.map_err(|summary| OperationErrorView {
+                        code: "settings.tracker_refresh_failed".into(),
+                        summary,
+                        retryable: true,
+                    });
+                    let mapped = result.settings.as_ref().map(map_settings);
+                    this.workspace.update(cx, |workspace, cx| {
+                        workspace.set_tracker_list_refresh_result(
+                            result.request_id,
+                            mapped,
+                            result.tracker_count,
+                            outcome,
+                            result.auto,
+                            cx,
+                        );
+                    });
+                })
+                .is_err()
+            {
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
 pub(crate) fn spawn_proxy_reapply_bridge(
     runtime: tokio::runtime::Handle,
     handle: SyncHandle,
@@ -313,9 +363,9 @@ pub(crate) fn spawn_proxy_reapply_bridge(
                                 Err(format!("Download proxy settings were not applied: {error}"))
                             }
                         };
-                        // Reapply persisted speed limits and transfer policy on
-                        // the fresh session so a reconnect restores the user's
-                        // throttle and connection defaults.
+                        // Reapply persisted speed limits, transfer policy, and
+                        // tracker list on the fresh session so a reconnect
+                        // restores the user's engine defaults.
                         let speed_result = handle
                             .apply_speed_limit(snapshot.session, map_speed_limit_config(&settings))
                             .await
@@ -331,7 +381,16 @@ pub(crate) fn spawn_proxy_reapply_bridge(
                             .map_err(|error| {
                                 format!("Transfer policy was not applied: {}", error.summary)
                             });
-                        proxy_result.and(speed_result).and(policy_result)
+                        let tracker_result = handle
+                            .apply_bt_tracker(snapshot.session, map_bt_tracker_list(&settings))
+                            .await
+                            .map_err(|error| {
+                                format!("Tracker list was not applied: {}", error.summary)
+                            });
+                        proxy_result
+                            .and(speed_result)
+                            .and(policy_result)
+                            .and(tracker_result)
                     }
                     Err(error) => Err(error),
                 };

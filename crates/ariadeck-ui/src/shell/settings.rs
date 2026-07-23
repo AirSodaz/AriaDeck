@@ -45,6 +45,7 @@ impl AppShell {
                     SettingsSaveSource::Transfers => {
                         self.sync_speed_limit_fields_from_settings(cx);
                         self.sync_transfer_policy_fields_from_settings(cx);
+                        self.sync_tracker_list_fields_from_settings(cx);
                         self.t("notice-settings-transfers")
                     }
                     SettingsSaveSource::Notifications => self.t("notice-settings-notifications"),
@@ -158,6 +159,9 @@ impl AppShell {
         self.settings_page.draft_show_tray_icon = settings.platform.show_tray_icon;
         self.settings_page.draft_start_minimized_to_tray =
             settings.platform.start_minimized_to_tray;
+        self.settings_page.draft_tracker_enabled = settings.tracker_list.enabled;
+        self.settings_page.draft_tracker_source = settings.tracker_list.source;
+        self.settings_page.draft_tracker_auto_refresh = settings.tracker_list.auto_refresh;
         self.apply_theme_to_text_fields(cx);
     }
 
@@ -226,6 +230,17 @@ impl AppShell {
         self.settings_inputs.min_split_size.update(cx, |input, cx| {
             input.set_text(transfer_policy.min_split_size.clone(), cx);
         });
+        let tracker_list = self.settings.tracker_list.clone();
+        self.settings_inputs
+            .tracker_custom_url
+            .update(cx, |input, cx| {
+                input.set_text(tracker_list.custom_url.clone(), cx);
+            });
+        self.settings_inputs
+            .tracker_list_text
+            .update(cx, |input, cx| {
+                input.set_text(tracker_list.list_text.clone(), cx);
+            });
         self.page = AppPage::Settings;
         self.details_drawer = None;
         self.speed_popover_open = false;
@@ -250,6 +265,10 @@ impl AppShell {
             draft_start_minimized_to_tray: self.settings.platform.start_minimized_to_tray,
             draft_categories: self.settings.categories.clone(),
             draft_default_category_id: self.settings.default_category_id.clone(),
+            draft_tracker_enabled: self.settings.tracker_list.enabled,
+            draft_tracker_source: self.settings.tracker_list.source,
+            draft_tracker_auto_refresh: self.settings.tracker_list.auto_refresh,
+            pending_tracker_refresh: None,
             clear_proxy_password: false,
             editing_profile_id: None,
             draft_profile_kind: ProfileKindView::LocalManaged,
@@ -474,17 +493,19 @@ impl AppShell {
         cx.notify();
     }
 
-    /// Save dirty speed-limit and/or transfer-policy fields in a single request.
-    /// Used by the Transfers category footer so both groups persist together.
+    /// Save dirty speed-limit, transfer-policy, and/or tracker-list fields.
+    /// Used by the Transfers category footer so groups persist together.
     pub(crate) fn submit_transfers(&mut self, cx: &mut Context<Self>) {
         if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
             return;
         }
         let speed_limit_draft = self.read_speed_limit_draft(cx);
         let transfer_policy_draft = self.read_transfer_policy_draft(cx);
+        let tracker_list_draft = self.read_tracker_list_draft(cx);
         let sl_dirty = speed_limit_draft != self.settings.speed_limits;
         let tp_dirty = transfer_policy_draft != self.settings.transfer_policy;
-        if !sl_dirty && !tp_dirty {
+        let tl_dirty = tracker_list_draft != self.settings.tracker_list;
+        if !sl_dirty && !tp_dirty && !tl_dirty {
             return;
         }
         if sl_dirty && !speed_limit_draft.is_valid() {
@@ -512,11 +533,17 @@ impl AppShell {
         if tp_dirty {
             settings.transfer_policy = transfer_policy_draft;
         }
-        let source = match (sl_dirty, tp_dirty) {
-            (true, true) => SettingsSaveSource::Transfers,
-            (true, false) => SettingsSaveSource::SpeedLimit,
-            (false, true) => SettingsSaveSource::TransferPolicy,
-            (false, false) => return,
+        if tl_dirty {
+            settings.tracker_list = tracker_list_draft;
+        }
+        let source = if tl_dirty || (sl_dirty && tp_dirty) {
+            SettingsSaveSource::Transfers
+        } else if sl_dirty {
+            SettingsSaveSource::SpeedLimit
+        } else if tp_dirty {
+            SettingsSaveSource::TransferPolicy
+        } else {
+            return;
         };
         self.request_settings_save(settings, ProxyPasswordUpdateView::Unchanged, source, cx);
     }
@@ -569,6 +596,142 @@ impl AppShell {
                 .into(),
             file_allocation: self.settings_page.draft_file_allocation,
             check_integrity: self.settings_page.draft_check_integrity,
+        }
+    }
+
+    pub(crate) fn read_tracker_list_draft(&self, cx: &Context<Self>) -> TrackerListSettingsView {
+        TrackerListSettingsView {
+            enabled: self.settings_page.draft_tracker_enabled,
+            source: self.settings_page.draft_tracker_source,
+            custom_url: self
+                .settings_inputs
+                .tracker_custom_url
+                .read(cx)
+                .text()
+                .trim()
+                .into(),
+            auto_refresh: self.settings_page.draft_tracker_auto_refresh,
+            // Timestamp is owned by successful network refresh, not the form.
+            last_refreshed_at: self.settings.tracker_list.last_refreshed_at,
+            list_text: self
+                .settings_inputs
+                .tracker_list_text
+                .read(cx)
+                .text()
+                .into(),
+        }
+    }
+
+    pub(crate) fn sync_tracker_list_fields_from_settings(&mut self, cx: &mut Context<Self>) {
+        let tracker = self.settings.tracker_list.clone();
+        self.settings_page.draft_tracker_enabled = tracker.enabled;
+        self.settings_page.draft_tracker_source = tracker.source;
+        self.settings_page.draft_tracker_auto_refresh = tracker.auto_refresh;
+        self.settings_inputs
+            .tracker_custom_url
+            .update(cx, |input, cx| {
+                input.set_text(tracker.custom_url.clone(), cx);
+            });
+        self.settings_inputs
+            .tracker_list_text
+            .update(cx, |input, cx| {
+                input.set_text(tracker.list_text.clone(), cx);
+            });
+    }
+
+    pub(crate) fn toggle_tracker_list_enabled(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        self.settings_page.draft_tracker_enabled = !self.settings_page.draft_tracker_enabled;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    pub(crate) fn select_tracker_list_source(
+        &mut self,
+        source: TrackerListSourceView,
+        cx: &mut Context<Self>,
+    ) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        if self.settings_page.draft_tracker_source == source {
+            return;
+        }
+        self.settings_page.draft_tracker_source = source;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_tracker_list_auto_refresh(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        self.settings_page.draft_tracker_auto_refresh =
+            !self.settings_page.draft_tracker_auto_refresh;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    pub(crate) fn request_tracker_list_refresh(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings
+            || self.pending_settings_save.is_some()
+            || self.settings_page.pending_tracker_refresh.is_some()
+        {
+            return;
+        }
+        // Mirror the form draft into settings so desktop can read URL/source for this fetch.
+        let draft = self.read_tracker_list_draft(cx);
+        self.settings.tracker_list = draft;
+        let request_id = self.allocate_request_id();
+        self.settings_page.pending_tracker_refresh = Some(request_id);
+        self.settings_page.error = None;
+        cx.emit(AppShellEvent::TrackerListRefreshRequested { request_id });
+        cx.notify();
+    }
+
+    pub fn set_tracker_list_refresh_result(
+        &mut self,
+        request_id: RequestId,
+        settings: Option<SettingsView>,
+        tracker_count: usize,
+        result: Result<(), OperationErrorView>,
+        auto: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings_page.pending_tracker_refresh != Some(request_id) && !auto {
+            // Stale manual request or auto tick without a pending marker.
+            if !auto {
+                return;
+            }
+        }
+        if self.settings_page.pending_tracker_refresh == Some(request_id) {
+            self.settings_page.pending_tracker_refresh = None;
+        }
+        match result {
+            Ok(()) => {
+                if let Some(settings) = settings {
+                    self.apply_settings(settings, cx);
+                    self.sync_tracker_list_fields_from_settings(cx);
+                }
+                if !auto {
+                    self.show_notice(
+                        self.t_args(
+                            "notice-settings-tracker-refreshed",
+                            &[("count", FluentValue::from(tracker_count as i64))],
+                        ),
+                        false,
+                        cx,
+                    );
+                }
+            }
+            Err(error) => {
+                if !auto {
+                    self.settings_page.error = Some(error);
+                    cx.notify();
+                }
+            }
         }
     }
 
@@ -1280,10 +1443,12 @@ impl AppShell {
             SettingsCategory::Transfers => {
                 let speed_limit_draft = self.read_speed_limit_draft(cx);
                 let transfer_policy_draft = self.read_transfer_policy_draft(cx);
+                let tracker_list_draft = self.read_tracker_list_draft(cx);
                 // Dirty is independent of validity so invalid edits still show the
                 // footer; submit_transfers reports validation errors on click.
                 let dirty = speed_limit_draft != self.settings.speed_limits
-                    || transfer_policy_draft != self.settings.transfer_policy;
+                    || transfer_policy_draft != self.settings.transfer_policy
+                    || tracker_list_draft != self.settings.tracker_list;
                 let saving = self.pending_settings_save.as_ref().is_some_and(|p| {
                     matches!(
                         p.source,
@@ -1291,7 +1456,7 @@ impl AppShell {
                             | SettingsSaveSource::TransferPolicy
                             | SettingsSaveSource::Transfers
                     )
-                });
+                }) || self.settings_page.pending_tracker_refresh.is_some();
                 (dirty, saving)
             }
             SettingsCategory::Notifications => {
@@ -2834,6 +2999,162 @@ impl AppShell {
                                 .child(self.t("settings-transfer-policy-hint")),
                         ),
                 ),
+            )
+            .child(self.render_settings_tracker_list(cx))
+    }
+
+    pub(crate) fn render_settings_tracker_list(&mut self, cx: &mut Context<Self>) -> Div {
+        let colors = self.theme.colors;
+        let pending = self.pending_settings_save.is_some()
+            || self.settings_page.pending_tracker_refresh.is_some();
+        let enabled = self.settings_page.draft_tracker_enabled;
+        let auto_refresh = self.settings_page.draft_tracker_auto_refresh;
+        let source = self.settings_page.draft_tracker_source;
+        let custom = source == TrackerListSourceView::Custom;
+        let tracker_count = self
+            .settings_inputs
+            .tracker_list_text
+            .read(cx)
+            .text()
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .count();
+        let last_refreshed = self.settings.tracker_list.last_refreshed_at;
+        let source_selected = source.index();
+        let source_shell = cx.entity().downgrade();
+        let source_control = SegmentedControl::new(
+            "settings-tracker-source",
+            TrackerListSourceView::all().map(|item| Segment::new(self.t(item.message_key()))),
+            source_selected,
+            self.theme,
+        )
+        .aria_label(self.t("settings-tracker-source-aria"))
+        .disabled(pending)
+        .on_select(move |index, _window, cx| {
+            let source = match index {
+                1 => TrackerListSourceView::Custom,
+                _ => TrackerListSourceView::Curated,
+            };
+            source_shell
+                .update(cx, |shell, cx| shell.select_tracker_list_source(source, cx))
+                .ok();
+        });
+        let enable_shell = cx.entity().downgrade();
+        let auto_shell = cx.entity().downgrade();
+        let refresh_shell = cx.entity().downgrade();
+        settings_section_owned(self.t("settings-tracker-list"), colors)
+            .child(
+                div()
+                    .pt_4()
+                    .max_w(px(760.0))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(self.t("settings-tracker-list-desc")),
+                    )
+                    .child(settings_section_row_owned(
+                        self.t("settings-tracker-enabled"),
+                        Some(self.t("settings-tracker-enabled-desc")),
+                        Toggle::new("toggle-tracker-enabled", enabled)
+                            .aria_label(self.t("settings-tracker-enabled-aria"))
+                            .disabled(pending)
+                            .on_click(move |_, _, cx| {
+                                enable_shell
+                                    .update(cx, |shell, cx| shell.toggle_tracker_list_enabled(cx))
+                                    .ok();
+                            })
+                            .render(colors),
+                        colors,
+                    ))
+                    .child(settings_section_row_owned(
+                        self.t("settings-tracker-source"),
+                        Some(self.t("settings-tracker-source-desc")),
+                        source_control,
+                        colors,
+                    ))
+                    .when(custom, |section| {
+                        section.child(settings_labeled_input(
+                            self.t("settings-tracker-custom-url"),
+                            self.settings_inputs.tracker_custom_url.clone(),
+                            colors,
+                        ))
+                    })
+                    .child(settings_section_row_owned(
+                        self.t("settings-tracker-auto-refresh"),
+                        Some(self.t("settings-tracker-auto-refresh-desc")),
+                        Toggle::new("toggle-tracker-auto-refresh", auto_refresh)
+                            .aria_label(self.t("settings-tracker-auto-refresh-aria"))
+                            .disabled(pending)
+                            .on_click(move |_, _, cx| {
+                                auto_shell
+                                    .update(cx, |shell, cx| {
+                                        shell.toggle_tracker_list_auto_refresh(cx)
+                                    })
+                                    .ok();
+                            })
+                            .render(colors),
+                        colors,
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                Button::new(
+                                    "refresh-tracker-list",
+                                    self.t("settings-tracker-refresh"),
+                                )
+                                .aria_label(self.t("settings-tracker-refresh-aria"))
+                                .style(ButtonStyle::Secondary)
+                                .disabled(pending)
+                                .loading(
+                                    self.settings_page.pending_tracker_refresh.is_some(),
+                                )
+                                .on_click(move |_, _, cx| {
+                                    refresh_shell
+                                        .update(cx, |shell, cx| {
+                                            shell.request_tracker_list_refresh(cx)
+                                        })
+                                        .ok();
+                                })
+                                .render(colors),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(colors.text_muted)
+                                    .child(match last_refreshed {
+                                        Some(ts) => self.t_args(
+                                            "settings-tracker-last-refreshed",
+                                            &[
+                                                ("count", FluentValue::from(tracker_count as i64)),
+                                                ("when", FluentValue::from(ts)),
+                                            ],
+                                        ),
+                                        None => self.t_args(
+                                            "settings-tracker-never-refreshed",
+                                            &[("count", FluentValue::from(tracker_count as i64))],
+                                        ),
+                                    }),
+                            ),
+                    )
+                    .child(settings_labeled_input(
+                        self.t("settings-tracker-list-text"),
+                        self.settings_inputs.tracker_list_text.clone(),
+                        colors,
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(self.t("settings-tracker-list-hint")),
+                    ),
             )
     }
 

@@ -64,6 +64,27 @@ settings-integrity-check-enable = 启用新下载的完整性校验
 settings-integrity-check-disable = 关闭新下载的完整性校验
 settings-transfer-policy-hint = 同时下载数：影响当前与未来任务。连接数/分片/预分配/校验：默认仅作用于新下载。
 
+settings-tracker-list = BitTorrent 追踪器
+settings-tracker-list-desc = 可选的额外 announce 地址，作为 aria2 全局 bt-tracker 应用。仅在你点击刷新或开启自动刷新时才会联网下载。
+settings-tracker-enabled = 应用额外追踪器
+settings-tracker-enabled-desc = 将下方列表推送到 aria2 的 bt-tracker，供新的 BitTorrent 下载使用。
+settings-tracker-enabled-aria = 启用额外 BitTorrent 追踪器
+settings-tracker-source = 列表来源
+settings-tracker-source-desc = 内置公开列表，或你提供的自定义 HTTPS 地址。
+settings-tracker-source-aria = 追踪器列表来源
+settings-tracker-source-curated = 精选列表
+settings-tracker-source-custom = 自定义 URL
+settings-tracker-custom-url = 自定义列表 URL
+settings-tracker-auto-refresh = 每日自动刷新
+settings-tracker-auto-refresh-desc = AriaDeck 运行期间最多每天重新下载一次列表。默认关闭。
+settings-tracker-auto-refresh-aria = 每日自动刷新追踪器列表
+settings-tracker-refresh = 立即刷新
+settings-tracker-refresh-aria = 从所选来源下载追踪器列表
+settings-tracker-last-refreshed = { $count } 个追踪器 · 上次刷新 { $when }
+settings-tracker-never-refreshed = { $count } 个追踪器 · 尚未刷新
+settings-tracker-list-text = 追踪器列表
+settings-tracker-list-hint = 每行一个 announce URL。可手动编辑或粘贴；启用后点击保存会应用到 aria2。
+
 settings-notifications = 通知
 settings-volume = 通知级别
 settings-volume-aria = 通知级别

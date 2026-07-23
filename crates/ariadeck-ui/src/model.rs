@@ -1449,6 +1449,47 @@ impl Default for TransferPolicySettingsView {
     }
 }
 
+/// Extra BitTorrent trackers applied as aria2 global `bt-tracker` (D1).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TrackerListSourceView {
+    #[default]
+    Curated,
+    Custom,
+}
+
+impl TrackerListSourceView {
+    #[must_use]
+    pub const fn all() -> [Self; 2] {
+        [Self::Curated, Self::Custom]
+    }
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Curated => 0,
+            Self::Custom => 1,
+        }
+    }
+
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::Curated => "settings-tracker-source-curated",
+            Self::Custom => "settings-tracker-source-custom",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TrackerListSettingsView {
+    pub enabled: bool,
+    pub source: TrackerListSourceView,
+    pub custom_url: String,
+    pub auto_refresh: bool,
+    pub last_refreshed_at: Option<i64>,
+    pub list_text: String,
+}
+
 impl TransferPolicySettingsView {
     #[must_use]
     pub fn parse_max_concurrent_downloads(&self) -> Option<u32> {
@@ -1984,6 +2025,7 @@ pub struct SettingsView {
     pub platform: PlatformSettingsView,
     pub categories: Vec<DownloadCategoryView>,
     pub default_category_id: Option<String>,
+    pub tracker_list: TrackerListSettingsView,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

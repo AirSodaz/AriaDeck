@@ -30,6 +30,7 @@ notice-settings-proxy = Download proxy settings saved.
 notice-settings-speed = Speed limits saved.
 notice-settings-transfer-policy = Transfer policy saved.
 notice-settings-transfers = Transfer settings saved.
+notice-settings-tracker-refreshed = Tracker list refreshed ({ $count } entries).
 notice-settings-notifications = Notification preferences saved.
 notice-settings-platform = Window and tray preferences saved.
 notice-settings-exported = Settings exported without credentials to { $path }.

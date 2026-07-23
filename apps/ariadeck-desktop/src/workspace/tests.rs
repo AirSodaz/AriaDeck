@@ -1995,6 +1995,7 @@ fn settings_mapping_allocates_a_credential_reference_without_exposing_the_passwo
         platform: PlatformSettingsView::default(),
         categories: Vec::new(),
         default_category_id: None,
+    tracker_list: Default::default(),
     };
 
     let (mapped, password) = map_settings_request(
@@ -2178,6 +2179,7 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
         ui: UiPreferences::default(),
         categories: Vec::new(),
         default_category_id: None,
+    tracker_list: Default::default(),
     };
     let second = AppSettings {
         color_scheme: ColorScheme::Light,
@@ -2191,6 +2193,7 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
         ui: UiPreferences::default(),
         categories: Vec::new(),
         default_category_id: None,
+    tracker_list: Default::default(),
     };
     sender
         .send(SettingsPersistenceRequest {
@@ -2201,6 +2204,7 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
             apply_proxy: false,
             apply_speed_limit: false,
             apply_transfer_policy: false,
+        apply_bt_tracker: false,
         })
         .expect("queue first settings");
     sender
@@ -2212,6 +2216,7 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
             apply_proxy: false,
             apply_speed_limit: false,
             apply_transfer_policy: false,
+        apply_bt_tracker: false,
         })
         .expect("queue second settings");
     drop(sender);
@@ -2256,6 +2261,7 @@ fn external_engine_settings_do_not_touch_the_desktop_filesystem() {
         ui: UiPreferences::default(),
         categories: Vec::new(),
         default_category_id: None,
+    tracker_list: Default::default(),
     };
 
     persist_settings(&store, &settings, None).expect("persist external engine path");

@@ -7,6 +7,7 @@ mod engine;
 mod ids;
 mod privacy;
 mod task;
+mod tracker_list;
 mod transfer;
 
 pub use engine::{
@@ -25,6 +26,10 @@ pub use task::{
     TaskConnectionDetails, TaskDetails, TaskError, TaskFields, TaskFile, TaskMetadata,
     TaskNameState, TaskOptionEntry, TaskPeer, TaskServer, TaskSnapshot, TaskSourceKind,
     TaskTracker, TaskUpdateError, TaskUri, TaskUriStatus,
+};
+pub use tracker_list::{
+    MAX_TRACKER_LIST_BODY_BYTES, MAX_TRACKER_LIST_ENTRIES, MAX_TRACKER_URI_LEN,
+    format_bt_tracker_option, format_tracker_list_text, parse_tracker_list,
 };
 pub use transfer::{
     ByteCount, ByteRate, FileAllocationMethod, GlobalStat, SpeedLimitConfig, TaskConnectionPolicy,

@@ -1816,6 +1816,7 @@ fn proxy_settings_build_a_manual_draft_with_a_masked_password(cx: &mut TestAppCo
         platform: PlatformSettingsView::default(),
         categories: Vec::new(),
         default_category_id: None,
+    tracker_list: Default::default(),
     };
     let (view, cx) =
         cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));

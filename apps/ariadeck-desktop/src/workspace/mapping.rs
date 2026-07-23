@@ -1066,6 +1066,21 @@ pub(crate) fn map_settings(settings: &AppSettings) -> SettingsView {
             })
             .collect(),
         default_category_id: settings.default_category_id.map(|id| id.to_string()),
+        tracker_list: TrackerListSettingsView {
+            enabled: settings.tracker_list.enabled,
+            source: match settings.tracker_list.source {
+                ariadeck_settings::TrackerListSource::Curated => TrackerListSourceView::Curated,
+                ariadeck_settings::TrackerListSource::Custom => TrackerListSourceView::Custom,
+            },
+            custom_url: settings
+                .tracker_list
+                .custom_url
+                .clone()
+                .unwrap_or_default(),
+            auto_refresh: settings.tracker_list.auto_refresh,
+            last_refreshed_at: settings.tracker_list.last_refreshed_at,
+            list_text: settings.tracker_list.list_text.clone(),
+        },
     }
 }
 
@@ -1191,6 +1206,17 @@ pub(crate) fn map_settings_request(
         ui: current.ui,
         categories: Vec::new(),
         default_category_id: None,
+        tracker_list: ariadeck_settings::TrackerListSettings {
+            enabled: settings.tracker_list.enabled,
+            source: match settings.tracker_list.source {
+                TrackerListSourceView::Curated => ariadeck_settings::TrackerListSource::Curated,
+                TrackerListSourceView::Custom => ariadeck_settings::TrackerListSource::Custom,
+            },
+            custom_url: trimmed_value(&settings.tracker_list.custom_url),
+            auto_refresh: settings.tracker_list.auto_refresh,
+            last_refreshed_at: settings.tracker_list.last_refreshed_at,
+            list_text: settings.tracker_list.list_text.clone(),
+        },
     };
     let mut categories = Vec::with_capacity(settings.categories.len());
     for category in &settings.categories {
@@ -1273,7 +1299,11 @@ pub(crate) async fn persist_settings_request(
     // engine options change we still push them to the running engine before
     // persisting, then persist and roll the engine back on a save failure so
     // disk and engine stay consistent.
-    if (request.apply_speed_limit || request.apply_transfer_policy) && !request.apply_proxy {
+    if (request.apply_speed_limit
+        || request.apply_transfer_policy
+        || request.apply_bt_tracker)
+        && !request.apply_proxy
+    {
         return apply_engine_policy_only(store, sync, request).await;
     }
 
@@ -1402,6 +1432,59 @@ pub(crate) async fn persist_settings_request(
         return Err(summary);
     }
 
+    if request.apply_bt_tracker
+        && let Err(error) = sync
+            .apply_bt_tracker(snapshot.session, map_bt_tracker_list(&request.settings))
+            .await
+    {
+        let rollback_proxy =
+            map_download_proxy_config_or_clear(&request.previous_settings, previous_password);
+        let proxy_rollback = sync
+            .apply_download_proxy(snapshot.session, rollback_proxy)
+            .await
+            .err()
+            .map(|error| error.summary);
+        let speed_rollback = if request.apply_speed_limit {
+            sync.apply_speed_limit(
+                snapshot.session,
+                map_speed_limit_config(&request.previous_settings),
+            )
+            .await
+            .err()
+            .map(|error| error.summary)
+        } else {
+            None
+        };
+        let policy_rollback = if request.apply_transfer_policy {
+            sync.apply_transfer_policy(
+                snapshot.session,
+                map_transfer_policy_config(&request.previous_settings),
+            )
+            .await
+            .err()
+            .map(|error| error.summary)
+        } else {
+            None
+        };
+        let credential_rollback = rollback_credential_async(credential_store, mutation)
+            .await
+            .err();
+        let mut summary = error.summary;
+        if let Some(error) = proxy_rollback {
+            summary.push_str(&format!(" Proxy rollback also failed: {error}"));
+        }
+        if let Some(error) = speed_rollback {
+            summary.push_str(&format!(" Speed-limit rollback also failed: {error}"));
+        }
+        if let Some(error) = policy_rollback {
+            summary.push_str(&format!(" Transfer-policy rollback also failed: {error}"));
+        }
+        if let Some(error) = credential_rollback {
+            summary.push_str(&format!(" Credential rollback also failed: {error}"));
+        }
+        return Err(summary);
+    }
+
     let settings_to_save = request.settings.clone();
     let save_store = store.clone();
     if let Err(error) = tokio::task::spawn_blocking(move || {
@@ -1441,6 +1524,17 @@ pub(crate) async fn persist_settings_request(
         } else {
             None
         };
+        let tracker_rollback = if request.apply_bt_tracker {
+            sync.apply_bt_tracker(
+                snapshot.session,
+                map_bt_tracker_list(&request.previous_settings),
+            )
+            .await
+            .err()
+            .map(|error| error.summary)
+        } else {
+            None
+        };
         let credential_rollback = rollback_credential_async(credential_store, mutation)
             .await
             .err();
@@ -1453,6 +1547,9 @@ pub(crate) async fn persist_settings_request(
         }
         if let Some(error) = policy_rollback {
             summary.push_str(&format!(" Transfer-policy rollback also failed: {error}"));
+        }
+        if let Some(error) = tracker_rollback {
+            summary.push_str(&format!(" Tracker-list rollback also failed: {error}"));
         }
         if let Some(error) = credential_rollback {
             summary.push_str(&format!(" Credential rollback also failed: {error}"));
@@ -1508,6 +1605,29 @@ pub(crate) async fn apply_engine_policy_only(
         }
         return Err(error.summary);
     }
+    if request.apply_bt_tracker
+        && let Err(error) = sync
+            .apply_bt_tracker(snapshot.session, map_bt_tracker_list(&request.settings))
+            .await
+    {
+        if request.apply_speed_limit {
+            let _ = sync
+                .apply_speed_limit(
+                    snapshot.session,
+                    map_speed_limit_config(&request.previous_settings),
+                )
+                .await;
+        }
+        if request.apply_transfer_policy {
+            let _ = sync
+                .apply_transfer_policy(
+                    snapshot.session,
+                    map_transfer_policy_config(&request.previous_settings),
+                )
+                .await;
+        }
+        return Err(error.summary);
+    }
 
     let settings_to_save = request.settings.clone();
     let save_store = store.clone();
@@ -1543,6 +1663,18 @@ pub(crate) async fn apply_engine_policy_only(
                 .map(|error| error.summary)
         {
             summary.push_str(&format!(" Transfer-policy rollback also failed: {error}"));
+        }
+        if request.apply_bt_tracker
+            && let Some(error) = sync
+                .apply_bt_tracker(
+                    snapshot.session,
+                    map_bt_tracker_list(&request.previous_settings),
+                )
+                .await
+                .err()
+                .map(|error| error.summary)
+        {
+            summary.push_str(&format!(" Tracker-list rollback also failed: {error}"));
         }
         return Err(summary);
     }

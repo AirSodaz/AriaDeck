@@ -61,7 +61,7 @@ Legend: **Have** · **Partial** · **Missing** · **Won’t** (non-goal)
 | Download scheduling | Missing | Next: time windows | Weak | Persepolis-class |
 | Queue named groups | Partial (aria2 wait order) | Have | Partial | Productize queues |
 | SQLite history beyond aria2 memory | Have | Next: Have | N/A | D-039; D-021 still engine paging |
-| Auto tracker list update | Missing | Have | Manual | BT quality of life |
+| Auto tracker list update | Have (opt-in) | Have | Manual | D1 / D-041; default off, explicit consent |
 | UPnP / port map UI | Missing | Have | Options raw | Gate on capabilities |
 | Keep-awake / shutdown after done | Missing | Next | N/A | Power integration |
 | In-app auto-update | Missing | Have | N/A | Deferred productization |
@@ -127,7 +127,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 
 | ID | Work | Why |
 | --- | --- | --- |
-| D1 | Tracker list refresh (user URL or curated list, explicit consent) | Motrix daily trackers |
+| D1 | **Done** — tracker list refresh (curated or custom HTTPS URL; explicit Refresh / opt-in daily auto-refresh; global `bt-tracker`) | Motrix daily trackers; D-041 |
 | D2 | Richer peer/tracker presentation (already partial details) | AriaNg depth |
 | D3 | UPnP/NAT-PMP **if** engine exposes/supports—capability gated | Motrix feature |
 | D4 | Live per-file progress after add (D-013 extension) | Selective download UX |

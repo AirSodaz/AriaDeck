@@ -1030,6 +1030,18 @@ impl CommandService {
             .map_err(Into::into)
     }
 
+    /// Apply or clear aria2 global `bt-tracker` (extra announce URLs).
+    pub async fn apply_bt_tracker(
+        &self,
+        trackers: &[String],
+    ) -> Result<(), ApplicationError> {
+        self.require_method("aria2.changeGlobalOption")?;
+        self.gateway
+            .apply_bt_tracker(trackers)
+            .await
+            .map_err(Into::into)
+    }
+
     async fn change_options_gated(
         &self,
         gid: ariadeck_domain::Gid,
@@ -1867,6 +1879,17 @@ mod tests {
                         config.upload_limit.get().to_string(),
                     ),
                 ]);
+            Ok(())
+        }
+
+        async fn apply_bt_tracker(&self, trackers: &[String]) -> Result<(), GatewayError> {
+            self.global_options
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(vec![(
+                    "bt-tracker".into(),
+                    trackers.join(","),
+                )]);
             Ok(())
         }
 

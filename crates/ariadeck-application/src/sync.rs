@@ -563,6 +563,25 @@ impl SyncHandle {
         })?
     }
 
+    pub async fn apply_bt_tracker(
+        &self,
+        session: EngineSession,
+        trackers: Vec<String>,
+    ) -> Result<(), ApplicationError> {
+        let (sender, receiver) = oneshot::channel();
+        self.commands
+            .send(Control::ApplyBtTracker {
+                session,
+                trackers,
+                sender,
+            })
+            .await
+            .map_err(|_| unavailable_error("The synchronization coordinator is unavailable."))?;
+        receiver.await.map_err(|_| {
+            unavailable_error("The synchronization coordinator stopped unexpectedly.")
+        })?
+    }
+
     pub async fn task_details(
         &self,
         session: EngineSession,
@@ -654,6 +673,11 @@ enum Control {
         config: TransferPolicyConfig,
         sender: oneshot::Sender<Result<(), ApplicationError>>,
     },
+    ApplyBtTracker {
+        session: EngineSession,
+        trackers: Vec<String>,
+        sender: oneshot::Sender<Result<(), ApplicationError>>,
+    },
     TaskDetails {
         session: EngineSession,
         task: TaskIdentity,
@@ -738,6 +762,12 @@ fn handle_unavailable_control(
         Some(Control::ApplyTransferPolicy { sender, .. }) => {
             let _ = sender.send(Err(unavailable_error(
                 "Transfer policy cannot be applied until aria2 is connected and synchronized.",
+            )));
+            UnavailableControlDisposition::Continue
+        }
+        Some(Control::ApplyBtTracker { sender, .. }) => {
+            let _ = sender.send(Err(unavailable_error(
+                "Tracker list cannot be applied until aria2 is connected and synchronized.",
             )));
             UnavailableControlDisposition::Continue
         }
@@ -1474,6 +1504,29 @@ async fn run_connected(
                             biased;
                             () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
                             result = service.apply_transfer_policy(&transfer_policy) => result,
+                        };
+                        let _ = sender.send(result);
+                    }
+                    Some(Control::ApplyBtTracker {
+                        session: expected_session,
+                        trackers,
+                        sender,
+                    }) => {
+                        if expected_session != store.session() {
+                            let _ = sender.send(Err(stale_session_error()));
+                            continue;
+                        }
+                        let Some(gateway) = command_gateway else {
+                            let _ = sender.send(Err(unsupported_error(
+                                "The connected engine does not expose global tracker settings.",
+                            )));
+                            continue;
+                        };
+                        let service = CommandService::new(config.profile_id, gateway.clone(), capabilities.clone());
+                        let result = tokio::select! {
+                            biased;
+                            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
+                            result = service.apply_bt_tracker(&trackers) => result,
                         };
                         let _ = sender.send(result);
                     }

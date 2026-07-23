@@ -19,7 +19,7 @@ use thiserror::Error;
 use url::Url;
 pub use uuid::Uuid;
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 10;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 11;
 /// Version of the user-facing settings transfer document.
 pub const SETTINGS_EXPORT_FORMAT_VERSION: u32 = 1;
 
@@ -113,6 +113,97 @@ impl DownloadCategory {
 
 /// Soft cap so settings UI and export stay manageable.
 pub const MAX_DOWNLOAD_CATEGORIES: usize = 32;
+
+/// Soft cap for persisted tracker list text (characters).
+pub const MAX_TRACKER_LIST_TEXT_CHARS: usize = 2 * 1024 * 1024;
+/// Soft cap for a custom tracker list URL.
+pub const MAX_TRACKER_LIST_URL_CHARS: usize = 2_048;
+
+/// Curated public tracker list URL (ngosang best list). Fetched only with
+/// explicit user refresh or opt-in auto-refresh (D-041).
+pub const CURATED_TRACKER_LIST_URL: &str =
+    "https://cdn.jsdelivr.net/gh/ngosang/trackerslist@master/trackers_best.txt";
+
+/// Where the extra tracker list is obtained from.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackerListSource {
+    /// Built-in curated public list URL.
+    #[default]
+    Curated,
+    /// User-supplied HTTPS URL.
+    Custom,
+}
+
+/// Extra BitTorrent trackers applied as aria2 global `bt-tracker` (D1 / D-041).
+///
+/// Network fetch is opt-in: empty by default, no auto-refresh unless enabled,
+/// and never fetched on first run without user action.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrackerListSettings {
+    /// When true, push the parsed list to aria2 as `bt-tracker`.
+    pub enabled: bool,
+    /// Curated constant URL vs user HTTPS URL.
+    pub source: TrackerListSource,
+    /// Required when `source` is Custom; must be `https:` without credentials.
+    pub custom_url: Option<String>,
+    /// When true, refresh at most once per day while the app is running.
+    pub auto_refresh: bool,
+    /// Unix timestamp (seconds) of the last successful network refresh.
+    pub last_refreshed_at: Option<i64>,
+    /// Last applied / edited newline-separated tracker list body.
+    pub list_text: String,
+}
+
+impl TrackerListSettings {
+    pub fn validate(&self) -> Result<(), SettingsError> {
+        if self.list_text.chars().count() > MAX_TRACKER_LIST_TEXT_CHARS {
+            return Err(SettingsError::TrackerListTextTooLarge);
+        }
+        if self.source == TrackerListSource::Custom {
+            let Some(url) = self.custom_url.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            else {
+                return Err(SettingsError::MissingCustomTrackerListUrl);
+            };
+            if url.chars().count() > MAX_TRACKER_LIST_URL_CHARS {
+                return Err(SettingsError::TrackerListUrlTooLong);
+            }
+            let parsed = Url::parse(url).map_err(|_| SettingsError::InvalidTrackerListUrl {
+                reason: "not a valid URL".into(),
+            })?;
+            if parsed.scheme() != "https" {
+                return Err(SettingsError::InvalidTrackerListUrl {
+                    reason: "only https URLs are allowed".into(),
+                });
+            }
+            if !parsed.username().is_empty() || parsed.password().is_some() {
+                return Err(SettingsError::InvalidTrackerListUrl {
+                    reason: "credentials in the URL are not allowed".into(),
+                });
+            }
+            if parsed.host_str().is_none() {
+                return Err(SettingsError::InvalidTrackerListUrl {
+                    reason: "URL must include a host".into(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolved fetch URL for the active source (when a network refresh runs).
+    #[must_use]
+    pub fn fetch_url(&self) -> Option<&str> {
+        match self.source {
+            TrackerListSource::Curated => Some(CURATED_TRACKER_LIST_URL),
+            TrackerListSource::Custom => self
+                .custom_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -509,6 +600,8 @@ pub struct AppSettings {
     pub categories: Vec<DownloadCategory>,
     /// Optional default category for new downloads; None uses `download_directory`.
     pub default_category_id: Option<Uuid>,
+    /// Extra BitTorrent trackers for aria2 `bt-tracker` (D1).
+    pub tracker_list: TrackerListSettings,
 }
 
 /// Portable settings representation used by explicit export/import actions.
@@ -531,6 +624,7 @@ struct SettingsExportDocument {
     ui: UiPreferences,
     categories: Vec<DownloadCategory>,
     default_category_id: Option<Uuid>,
+    tracker_list: TrackerListSettings,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -577,6 +671,7 @@ impl SettingsExportDocument {
             ui: settings.ui,
             categories: settings.categories.clone(),
             default_category_id: settings.default_category_id,
+            tracker_list: settings.tracker_list.clone(),
         }
     }
 
@@ -625,6 +720,7 @@ impl SettingsExportDocument {
             ui: self.ui,
             categories: self.categories,
             default_category_id: self.default_category_id,
+            tracker_list: self.tracker_list,
         };
         settings.validate()?;
         Ok(settings)
@@ -720,6 +816,7 @@ impl AppSettings {
             ui: UiPreferences::default(),
             categories: Vec::new(),
             default_category_id: None,
+            tracker_list: TrackerListSettings::default(),
         }
     }
 
@@ -730,6 +827,7 @@ impl AppSettings {
         self.download_proxy.validate()?;
         self.transfer_policy.validate()?;
         validate_categories(&self.categories, self.default_category_id)?;
+        self.tracker_list.validate()?;
         Ok(())
     }
 }
@@ -762,6 +860,14 @@ pub enum SettingsError {
     TooManyCategories,
     #[error("default download category id is not present in categories")]
     UnknownDefaultCategory,
+    #[error("custom tracker list source requires an HTTPS URL")]
+    MissingCustomTrackerListUrl,
+    #[error("tracker list URL is too long")]
+    TrackerListUrlTooLong,
+    #[error("tracker list text is too large")]
+    TrackerListTextTooLarge,
+    #[error("invalid tracker list URL: {reason}")]
+    InvalidTrackerListUrl { reason: String },
     #[error("manual download proxy requires at least one proxy endpoint")]
     MissingManualProxyEndpoint,
     #[error("proxy credential requires a non-empty username")]
@@ -1043,6 +1149,24 @@ struct SettingsDocumentV9 {
     ui: UiPreferences,
 }
 
+/// Schema v10 lacked tracker list settings (D1).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsDocumentV10 {
+    schema_version: u32,
+    color_scheme: ColorScheme,
+    language: LanguagePreference,
+    download_directory: PathBuf,
+    download_proxy: DownloadProxySettings,
+    speed_limits: SpeedLimitSettings,
+    transfer_policy: TransferPolicySettings,
+    notifications: NotificationSettings,
+    platform: PlatformSettings,
+    ui: UiPreferences,
+    categories: Vec<DownloadCategory>,
+    default_category_id: Option<Uuid>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SettingsDocument {
@@ -1058,6 +1182,7 @@ struct SettingsDocument {
     ui: UiPreferences,
     categories: Vec<DownloadCategory>,
     default_category_id: Option<Uuid>,
+    tracker_list: TrackerListSettings,
 }
 
 impl From<&AppSettings> for SettingsDocument {
@@ -1075,6 +1200,7 @@ impl From<&AppSettings> for SettingsDocument {
             ui: settings.ui,
             categories: settings.categories.clone(),
             default_category_id: settings.default_category_id,
+            tracker_list: settings.tracker_list.clone(),
         }
     }
 }
@@ -1101,6 +1227,7 @@ impl TryFrom<SettingsDocument> for AppSettings {
             ui: document.ui,
             categories: document.categories,
             default_category_id: document.default_category_id,
+            tracker_list: document.tracker_list,
         };
         settings.validate()?;
         Ok(settings)
@@ -1157,6 +1284,7 @@ impl JsonSettingsStore {
                     ui: UiPreferences::default(),
                     categories: Vec::new(),
                     default_category_id: None,
+                    tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1182,6 +1310,7 @@ impl JsonSettingsStore {
                     ui: UiPreferences::default(),
                     categories: Vec::new(),
                     default_category_id: None,
+                    tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1207,6 +1336,7 @@ impl JsonSettingsStore {
                     ui: UiPreferences::default(),
                     categories: Vec::new(),
                     default_category_id: None,
+                    tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1232,6 +1362,7 @@ impl JsonSettingsStore {
                     ui: UiPreferences::default(),
                     categories: Vec::new(),
                     default_category_id: None,
+                    tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1257,6 +1388,7 @@ impl JsonSettingsStore {
                     ui: UiPreferences::default(),
                     categories: Vec::new(),
                     default_category_id: None,
+                    tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1282,6 +1414,7 @@ impl JsonSettingsStore {
                     ui: UiPreferences::default(),
                     categories: Vec::new(),
                     default_category_id: None,
+                    tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1307,6 +1440,7 @@ impl JsonSettingsStore {
                     ui: document.ui,
                     categories: Vec::new(),
                     default_category_id: None,
+                    tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1333,6 +1467,7 @@ impl JsonSettingsStore {
                     ui: document.ui,
                     categories: Vec::new(),
                     default_category_id: None,
+                    tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1358,6 +1493,33 @@ impl JsonSettingsStore {
                     ui: document.ui,
                     categories: Vec::new(),
                     default_category_id: None,
+                    tracker_list: TrackerListSettings::default(),
+                };
+                settings.validate()?;
+                Ok((settings, true))
+            }
+            10 => {
+                let document: SettingsDocumentV10 =
+                    serde_json::from_slice(&bytes).map_err(malformed)?;
+                if document.schema_version != 10 {
+                    return Err(SettingsError::UnsupportedSchemaVersion {
+                        found: document.schema_version,
+                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
+                    });
+                }
+                let settings = AppSettings {
+                    color_scheme: document.color_scheme,
+                    language: document.language,
+                    download_directory: document.download_directory,
+                    download_proxy: document.download_proxy,
+                    speed_limits: document.speed_limits,
+                    transfer_policy: document.transfer_policy,
+                    notifications: document.notifications,
+                    platform: document.platform,
+                    ui: document.ui,
+                    categories: document.categories,
+                    default_category_id: document.default_category_id,
+                    tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1669,6 +1831,7 @@ mod tests {
             ui: UiPreferences::default(),
             categories: Vec::new(),
             default_category_id: None,
+            tracker_list: TrackerListSettings::default(),
         }
     }
 
@@ -2300,6 +2463,40 @@ mod tests {
             import_settings_json(&future, &current),
             Err(SettingsError::UnsupportedExportVersion { .. })
         ));
+    }
+
+    #[test]
+    fn tracker_list_settings_validate_and_migrate_from_v10() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        fs::write(
+            store.path(),
+            r#"{"schema_version":10,"color_scheme":"light","language":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null,"check_certificate":true},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":false,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false},"ui":{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"},"categories":[],"default_category_id":null}"#,
+        )
+        .expect("seed v10");
+        let loaded = store
+            .load_or_initialize(&settings(root.path()))
+            .expect("migrate v10");
+        assert_eq!(loaded.settings.tracker_list, TrackerListSettings::default());
+        assert!(fs::read_to_string(store.path())
+            .expect("read")
+            .contains("\"tracker_list\""));
+
+        let mut invalid = TrackerListSettings {
+            source: TrackerListSource::Custom,
+            ..TrackerListSettings::default()
+        };
+        assert!(matches!(
+            invalid.validate(),
+            Err(SettingsError::MissingCustomTrackerListUrl)
+        ));
+        invalid.custom_url = Some("http://insecure.example/list.txt".into());
+        assert!(matches!(
+            invalid.validate(),
+            Err(SettingsError::InvalidTrackerListUrl { .. })
+        ));
+        invalid.custom_url = Some("https://example.com/list.txt".into());
+        invalid.validate().expect("https custom url ok");
     }
 
     #[test]

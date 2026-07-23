@@ -5,7 +5,7 @@ use ariadeck_application::{
 };
 use ariadeck_domain::{
     Gid, GlobalStat, SpeedLimitConfig, TaskConnectionDetails, TaskDetails, TaskOptionEntry,
-    TaskSnapshot, TransferPolicyConfig,
+    TaskSnapshot, TransferPolicyConfig, format_bt_tracker_option,
 };
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -1044,6 +1044,12 @@ where
             .map_err(map_mutation_error)
     }
 
+    async fn apply_bt_tracker(&self, trackers: &[String]) -> Result<(), GatewayError> {
+        self.change_global_options(&bt_tracker_options(trackers))
+            .await
+            .map_err(map_mutation_error)
+    }
+
     async fn remove(&self, gid: Gid, target: TaskRemovalTarget) -> Result<(), GatewayError> {
         match target {
             TaskRemovalTarget::LiveTask => match Aria2Client::remove(self, gid).await {
@@ -1113,6 +1119,10 @@ fn transfer_policy_options(config: &TransferPolicyConfig) -> Vec<(String, String
             },
         ),
     ]
+}
+
+fn bt_tracker_options(trackers: &[String]) -> Vec<(String, String)> {
+    vec![("bt-tracker".into(), format_bt_tracker_option(trackers))]
 }
 
 fn download_proxy_options(config: &DownloadProxyConfig) -> Vec<(String, String)> {

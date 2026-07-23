@@ -64,6 +64,27 @@ settings-integrity-check-enable = Enable integrity check for new downloads
 settings-integrity-check-disable = Disable integrity check for new downloads
 settings-transfer-policy-hint = Concurrent downloads: all current and future downloads. Connections/split/allocation/integrity: new downloads by default.
 
+settings-tracker-list = BitTorrent trackers
+settings-tracker-list-desc = Optional extra announce URLs applied as aria2 global bt-tracker. Network fetch happens only when you refresh or enable auto-refresh.
+settings-tracker-enabled = Apply extra trackers
+settings-tracker-enabled-desc = Push the list below to aria2 as bt-tracker for new BitTorrent downloads.
+settings-tracker-enabled-aria = Enable extra BitTorrent trackers
+settings-tracker-source = List source
+settings-tracker-source-desc = Curated public list or a custom HTTPS URL you provide.
+settings-tracker-source-aria = Tracker list source
+settings-tracker-source-curated = Curated
+settings-tracker-source-custom = Custom URL
+settings-tracker-custom-url = Custom list URL
+settings-tracker-auto-refresh = Auto-refresh daily
+settings-tracker-auto-refresh-desc = While AriaDeck is running, re-download the list at most once per day. Off by default.
+settings-tracker-auto-refresh-aria = Automatically refresh tracker list daily
+settings-tracker-refresh = Refresh now
+settings-tracker-refresh-aria = Download tracker list from the selected source
+settings-tracker-last-refreshed = { $count } trackers · last refresh { $when }
+settings-tracker-never-refreshed = { $count } trackers · not refreshed yet
+settings-tracker-list-text = Tracker list
+settings-tracker-list-hint = One announce URL per line. You can edit or paste manually; Save applies the text to aria2 when enabled.
+
 settings-notifications = Notifications
 settings-volume = Volume
 settings-volume-aria = Notification volume

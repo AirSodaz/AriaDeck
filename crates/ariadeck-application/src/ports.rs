@@ -86,6 +86,17 @@ pub trait DownloadEngineGateway: Send + Sync {
             false,
         ))
     }
+    /// Apply aria2 global `bt-tracker` (comma-separated extra announce URLs).
+    ///
+    /// An empty slice clears the option so a previous list does not stick after
+    /// the user disables extra trackers.
+    async fn apply_bt_tracker(&self, _trackers: &[String]) -> Result<(), GatewayError> {
+        Err(GatewayError::new(
+            GatewayErrorKind::Unsupported,
+            "The connected engine does not expose global tracker settings.",
+            false,
+        ))
+    }
     async fn remove(&self, gid: Gid, target: TaskRemovalTarget) -> Result<(), GatewayError>;
     /// Force-remove a live task without graceful peer/server teardown.
     /// Stopped-result removal still uses the ordinary result path.

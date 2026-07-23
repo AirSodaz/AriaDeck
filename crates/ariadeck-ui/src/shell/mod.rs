@@ -48,10 +48,10 @@ use crate::{
     TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
     TaskFileView, TaskIdentity, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
     TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskStatusView, TextField,
-    TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Toggle, Tooltip,
-    TransferPolicySettingsView, Translator, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
-    WorkspaceSortDirection, WorkspaceSortKey, actions::TEXT_FIELD_KEY_CONTEXT, format_bytes,
-    format_eta, format_percent, format_rate, format_share_ratio,
+    TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Toggle, Tooltip, TrackerListSettingsView,
+    TrackerListSourceView, TransferPolicySettingsView, Translator, WorkspaceFilter, WorkspaceQuery,
+    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, actions::TEXT_FIELD_KEY_CONTEXT,
+    format_bytes, format_eta, format_percent, format_rate, format_share_ratio,
 };
 
 #[cfg(test)]
@@ -166,6 +166,10 @@ pub enum AppShellEvent {
     SettingsSaveRequested(SettingsSaveRequestView),
     SettingsExportRequested(SettingsExportRequestView),
     SettingsImportRequested(SettingsImportRequestView),
+    /// Fetch the configured tracker list URL and apply it (D1 / D-041).
+    TrackerListRefreshRequested {
+        request_id: RequestId,
+    },
     DiagnosticExportRequested(DiagnosticExportRequestView),
     SwitchProfileRequested(SwitchProfileRequestView),
     SaveProfileCatalogRequested(SaveProfileCatalogRequestView),
@@ -336,6 +340,12 @@ pub(crate) struct SettingsPage {
     /// Working copy of download categories (C1); saved with Directory/General.
     draft_categories: Vec<crate::DownloadCategoryView>,
     draft_default_category_id: Option<String>,
+    /// Tracker list drafts (D1); saved with Transfers.
+    draft_tracker_enabled: bool,
+    draft_tracker_source: crate::TrackerListSourceView,
+    draft_tracker_auto_refresh: bool,
+    /// In-flight network refresh of the tracker list.
+    pending_tracker_refresh: Option<RequestId>,
     clear_proxy_password: bool,
     /// Profile id currently open in the inline editor (Settings → Profiles).
     editing_profile_id: Option<String>,
@@ -531,10 +541,12 @@ pub(crate) struct SettingsInputs {
     pub(crate) max_connection: Entity<TextField>,
     pub(crate) split: Entity<TextField>,
     pub(crate) min_split_size: Entity<TextField>,
+    pub(crate) tracker_custom_url: Entity<TextField>,
+    pub(crate) tracker_list_text: Entity<TextField>,
 }
 
 impl SettingsInputs {
-    pub(crate) fn all(&self) -> [&Entity<TextField>; 20] {
+    pub(crate) fn all(&self) -> [&Entity<TextField>; 22] {
         [
             &self.directory,
             &self.core_path,
@@ -556,6 +568,8 @@ impl SettingsInputs {
             &self.max_connection,
             &self.split,
             &self.min_split_size,
+            &self.tracker_custom_url,
+            &self.tracker_list_text,
         ]
     }
 }
@@ -1347,6 +1361,30 @@ impl AppShell {
                 cx,
             )
         });
+        let settings_tracker_custom_url_input = cx.new(|cx| {
+            TextField::new_with_config(
+                settings_input_config(
+                    "settings-tracker-custom-url",
+                    "Custom tracker list URL",
+                    "https://example.com/trackers.txt",
+                    None,
+                    false,
+                ),
+                theme,
+                cx,
+            )
+        });
+        let settings_tracker_list_text_input = cx.new(|cx| {
+            let mut config = settings_input_config(
+                "settings-tracker-list-text",
+                "Tracker list",
+                "https://tracker.example/announce",
+                None,
+                false,
+            );
+            config.allow_newlines = true;
+            TextField::new_with_config(config, theme, cx)
+        });
         let mut settings_subscriptions = [
             &settings_directory_input,
             &settings_core_path_input,
@@ -1367,6 +1405,8 @@ impl AppShell {
             &settings_max_connection_input,
             &settings_split_input,
             &settings_min_split_size_input,
+            &settings_tracker_custom_url_input,
+            &settings_tracker_list_text_input,
         ]
         .into_iter()
         .map(|input| {
@@ -1468,6 +1508,8 @@ impl AppShell {
                 max_connection: settings_max_connection_input,
                 split: settings_split_input,
                 min_split_size: settings_min_split_size_input,
+                tracker_custom_url: settings_tracker_custom_url_input,
+                tracker_list_text: settings_tracker_list_text_input,
             },
             add_dialog: AddDownloadDialog::default(),
             add_dialog_focus: cx.focus_handle(),
