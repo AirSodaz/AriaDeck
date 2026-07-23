@@ -25,14 +25,7 @@ impl AppShell {
                 self.settings_page.error = None;
                 let message = match source {
                     SettingsSaveSource::Theme => self.t("notice-settings-appearance"),
-                    SettingsSaveSource::Language => {
-                        let msg = self.t("settings-language-saved");
-                        if msg == "settings-language-saved" {
-                            "Language preference saved.".to_owned()
-                        } else {
-                            msg
-                        }
-                    }
+                    SettingsSaveSource::Language => self.t("settings-language-saved"),
                     SettingsSaveSource::Directory => self.t("notice-settings-directory"),
                     SettingsSaveSource::Proxy => {
                         self.settings_inputs
@@ -102,7 +95,7 @@ impl AppShell {
                 if self.pending_settings_save.is_some() {
                     let error = OperationErrorView {
                         code: "settings.import_busy".into(),
-                        summary: "Another settings change is still being saved.".into(),
+                        summary: self.t("error-settings-import-busy"),
                         retryable: true,
                     };
                     self.show_notice(self.te(&error), true, cx);
@@ -310,7 +303,7 @@ impl AppShell {
         if download_directory.is_empty() {
             self.settings_page.error = Some(OperationErrorView {
                 code: "settings.invalid_download_directory".into(),
-                summary: "Choose a non-empty download directory.".into(),
+                summary: self.t("error-settings-invalid-download-directory"),
                 retryable: false,
             });
             cx.notify();
@@ -491,7 +484,7 @@ impl AppShell {
         if sl_dirty && !speed_limit_draft.is_valid() {
             self.settings_page.error = Some(OperationErrorView {
                 code: "settings.invalid_speed_limit".into(),
-                summary: "Enter a speed as bytes/second or a K/M/G value, or leave it blank for unlimited.".into(),
+                summary: self.t("error-settings-invalid-speed-limit"),
                 retryable: false,
             });
             cx.notify();
@@ -500,7 +493,7 @@ impl AppShell {
         if tp_dirty && !transfer_policy_draft.is_valid() {
             self.settings_page.error = Some(OperationErrorView {
                 code: "settings.invalid_transfer_policy".into(),
-                summary: "Enter positive integers for concurrent downloads, connections (1-16), and split, plus a positive min-split size (for example 1M).".into(),
+                summary: self.t("error-settings-invalid-transfer-policy"),
                 retryable: false,
             });
             cx.notify();
@@ -827,19 +820,19 @@ impl AppShell {
                     ));
                 }
                 Ok(Ok(None)) => {}
-                Ok(Err(error)) => {
+                Ok(Err(_)) => {
                     let error = OperationErrorView {
                         code: "settings.path_picker_failed".into(),
-                        summary: format!("Path picker failed: {error}"),
+                        summary: this.t("error-settings-path-picker-failed"),
                         retryable: true,
                     };
                     let message = this.te(&error);
                     this.show_notice(message, true, cx);
                 }
-                Err(error) => {
+                Err(_) => {
                     let error = OperationErrorView {
                         code: "settings.path_picker_closed".into(),
-                        summary: format!("Path picker closed unexpectedly: {error}"),
+                        summary: this.t("error-settings-path-picker-closed"),
                         retryable: true,
                     };
                     let message = this.te(&error);
@@ -865,19 +858,19 @@ impl AppShell {
                     },
                 )),
                 Ok(Ok(None)) => {}
-                Ok(Err(error)) => {
+                Ok(Err(_)) => {
                     let error = OperationErrorView {
                         code: "settings.path_picker_failed".into(),
-                        summary: format!("Path picker failed: {error}"),
+                        summary: this.t("error-settings-path-picker-failed"),
                         retryable: true,
                     };
                     let message = this.te(&error);
                     this.show_notice(message, true, cx);
                 }
-                Err(error) => {
+                Err(_) => {
                     let error = OperationErrorView {
                         code: "settings.path_picker_closed".into(),
-                        summary: format!("Path picker closed unexpectedly: {error}"),
+                        summary: this.t("error-settings-path-picker-closed"),
                         retryable: true,
                     };
                     let message = this.te(&error);
@@ -911,19 +904,19 @@ impl AppShell {
                     }
                 }
                 Ok(Ok(None)) => {}
-                Ok(Err(error)) => {
+                Ok(Err(_)) => {
                     let error = OperationErrorView {
                         code: "settings.path_picker_failed".into(),
-                        summary: format!("Path picker failed: {error}"),
+                        summary: this.t("error-settings-path-picker-failed"),
                         retryable: true,
                     };
                     let message = this.te(&error);
                     this.show_notice(message, true, cx);
                 }
-                Err(error) => {
+                Err(_) => {
                     let error = OperationErrorView {
                         code: "settings.path_picker_closed".into(),
-                        summary: format!("Path picker closed unexpectedly: {error}"),
+                        summary: this.t("error-settings-path-picker-closed"),
                         retryable: true,
                     };
                     let message = this.te(&error);
@@ -943,15 +936,15 @@ impl AppShell {
     ) {
         let (files, directories, prompt) = match target {
             PathPickTarget::DownloadDirectory | PathPickTarget::ProfileDownloadDirectory => {
-                (false, true, "Choose download directory")
+                (false, true, self.t("settings-pick-download-directory"))
             }
             PathPickTarget::CoreExecutable | PathPickTarget::ProfileExecutable => (
                 true,
                 false,
                 if cfg!(windows) {
-                    "Choose aria2c.exe"
+                    self.t("settings-pick-aria2c-windows")
                 } else {
-                    "Choose aria2c"
+                    self.t("settings-pick-aria2c")
                 },
             ),
         };
@@ -970,18 +963,18 @@ impl AppShell {
                     }
                 }
                 Ok(Ok(None)) => {}
-                Ok(Err(error)) => {
+                Ok(Err(_)) => {
                     this.settings_page.error = Some(OperationErrorView {
                         code: "settings.path_picker_failed".into(),
-                        summary: format!("Path picker failed: {error}"),
+                        summary: this.t("error-settings-path-picker-failed"),
                         retryable: true,
                     });
                     cx.notify();
                 }
-                Err(error) => {
+                Err(_) => {
                     this.settings_page.error = Some(OperationErrorView {
                         code: "settings.path_picker_closed".into(),
-                        summary: format!("Path picker closed unexpectedly: {error}"),
+                        summary: this.t("error-settings-path-picker-closed"),
                         retryable: true,
                     });
                     cx.notify();
@@ -1024,18 +1017,20 @@ impl AppShell {
             .id("settings-page")
             .key_context("SettingsPage")
             .role(Role::Main)
-            .aria_label("Application settings")
+            .aria_label(self.t("settings-title"))
             .size_full()
             .flex()
             .flex_col()
             .bg(colors.background)
             .child(
                 div()
-                    .h(px(44.0))
+                    .h(px(48.0))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .px_4()
+                    .px_6()
+                    .border_b_1()
+                    .border_color(colors.border)
                     .bg(colors.toolbar_surface)
                     .child(
                         div()
@@ -1068,15 +1063,16 @@ impl AppShell {
                                             .flex_1()
                                             .min_h_0()
                                             .px_6()
-                                            .py_5()
+                                            .py_6()
                                             .overflow_y_scroll()
                                             .track_scroll(&self.settings_scroll)
                                             .child(
                                                 div()
-                                                    .max_w(px(680.0))
+                                                    .w_full()
+                                                    .max_w(px(760.0))
                                                     .flex()
                                                     .flex_col()
-                                                    .gap_5()
+                                                    .gap_6()
                                                     .child(match active_category {
                                                         SettingsCategory::General => self
                                                             .render_settings_general(cx)
@@ -1127,9 +1123,9 @@ impl AppShell {
             .border_r_1()
             .border_color(colors.border)
             .bg(colors.background)
-            .py_3()
+            .py_4()
             .role(Role::TabList)
-            .aria_label("Settings categories");
+            .aria_label(self.t("settings-nav-aria"));
         for category in SettingsCategory::ALL {
             let is_active = category == active;
             let item = div()
@@ -1144,7 +1140,7 @@ impl AppShell {
                 .items_center()
                 .gap_3()
                 .px_4()
-                .py_2p5()
+                .py_2()
                 .text_sm()
                 .cursor_pointer()
                 .text_color(if is_active {
@@ -1312,7 +1308,8 @@ impl AppShell {
             }
         };
 
-        if !dirty && error.is_none() {
+        // Keep the footer out of the way until there is something to save or report.
+        if !dirty && !saving && error.is_none() {
             return div().into_any_element();
         }
 
@@ -1321,17 +1318,17 @@ impl AppShell {
             .border_t_1()
             .border_color(colors.border)
             .bg(colors.toolbar_surface)
-            .h(px(52.0))
+            .h(px(48.0))
             .flex()
             .items_center()
             .px_6()
             .gap_3()
             .child(
-                Button::new("footer-save", if saving { "Saving..." } else { "Save" })
+                Button::new("footer-save", self.t("button-save"))
                     .aria_label(if saving {
-                        "Saving settings"
+                        self.t("settings-save-saving")
                     } else {
-                        "Save settings"
+                        self.t("settings-save")
                     })
                     .style(ButtonStyle::Primary)
                     .disabled(pending || !dirty)
@@ -1381,9 +1378,9 @@ impl AppShell {
         let scheme_control = SegmentedControl::new(
             "settings-theme",
             [
-                Segment::new("System").icon(IconName::Settings),
-                Segment::new("Light").icon(IconName::Sun),
-                Segment::new("Dark").icon(IconName::Moon),
+                Segment::new(self.t("settings-theme-system")).icon(IconName::Settings),
+                Segment::new(self.t("settings-theme-light")).icon(IconName::Sun),
+                Segment::new(self.t("settings-theme-dark")).icon(IconName::Moon),
             ],
             selected_scheme,
             self.theme,
@@ -1437,24 +1434,24 @@ impl AppShell {
         div()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap_6()
             .child(
-                settings_card_owned(appearance_title, colors)
-                    .child(settings_row_owned(
+                settings_section_owned(appearance_title, colors)
+                    .child(settings_section_row_owned(
                         theme_label,
                         None::<SharedString>,
                         scheme_control,
                         colors,
                     ))
-                    .child(settings_row_owned(
+                    .child(settings_section_row_owned(
                         language_label,
                         Some(language_desc),
                         language_control,
                         colors,
                     )),
             )
-            .child(
-                settings_card_owned(downloads_title, colors).child(settings_row_owned(
+            .child(settings_section_owned(downloads_title, colors).child(
+                settings_section_row_owned(
                     default_dir_label,
                     Some(default_dir_desc),
                     settings_path_field_row(
@@ -1467,8 +1464,8 @@ impl AppShell {
                         cx,
                     ),
                     colors,
-                )),
-            )
+                ),
+            ))
     }
 
     pub(crate) fn render_settings_profiles(&mut self, cx: &mut Context<Self>) -> Div {
@@ -1476,493 +1473,478 @@ impl AppShell {
         let profiles = self.profiles.clone();
         let active_id = profiles.active_profile_id.clone();
         let profiles_count = profiles.profiles.len();
-        settings_card("Profiles", colors)
+        settings_section_owned(self.t("settings-profiles"), colors)
+            .child(div().mt_3().flex().flex_col().gap_2().children(
+                profiles.profiles.into_iter().map(|profile| {
+                    let is_active = profile.profile_id == active_id;
+                    let profile_id = profile.profile_id.clone();
+                    let switch_id = profile_id.clone();
+                    let edit_id = profile_id.clone();
+                    let remove_id = profile_id.clone();
+                    let can_remove = profiles_count > 1;
+                    let summary = match profile.kind {
+                        ProfileKindView::LocalManaged => {
+                            if profile.executable.is_empty() {
+                                self.t("settings-profile-summary-local-managed")
+                            } else {
+                                self.t_args(
+                                    "settings-profile-summary-local-pinned",
+                                    &[("path", FluentValue::from(profile.executable.as_str()))],
+                                )
+                            }
+                        }
+                        ProfileKindView::RemoteRpc => {
+                            let endpoint = if profile.endpoint.is_empty() {
+                                self.t("settings-profile-no-endpoint")
+                            } else {
+                                profile.endpoint.clone()
+                            };
+                            if profile.has_secret {
+                                self.t_args(
+                                    "settings-profile-summary-remote-secret",
+                                    &[("endpoint", FluentValue::from(endpoint.as_str()))],
+                                )
+                            } else {
+                                self.t_args(
+                                    "settings-profile-summary-remote",
+                                    &[("endpoint", FluentValue::from(endpoint.as_str()))],
+                                )
+                            }
+                        }
+                    };
+                    div()
+                        .id(SharedString::from(format!(
+                            "profile-row-{}",
+                            profile.profile_id
+                        )))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .py_2()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(if is_active {
+                            colors.accent
+                        } else {
+                            colors.border
+                        })
+                        .bg(if is_active {
+                            with_alpha(colors.accent, 0.08)
+                        } else {
+                            colors.surface
+                        })
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap_0p5()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(colors.text_primary)
+                                        .child(profile.name.clone()),
+                                )
+                                .child(
+                                    div().text_xs().text_color(colors.text_muted).child(summary),
+                                ),
+                        )
+                        .child(
+                            Button::new(
+                                SharedString::from(format!("activate-profile-{}", profile_id)),
+                                if is_active {
+                                    self.t("settings-item-active")
+                                } else {
+                                    self.t("settings-item-activate")
+                                },
+                            )
+                            .aria_label(if is_active {
+                                self.t_args(
+                                    "settings-profile-active-aria",
+                                    &[("name", FluentValue::from(profile.name.as_str()))],
+                                )
+                            } else {
+                                self.t_args(
+                                    "settings-profile-activate-aria",
+                                    &[("name", FluentValue::from(profile.name.as_str()))],
+                                )
+                            })
+                            .style(if is_active {
+                                ButtonStyle::Secondary
+                            } else {
+                                ButtonStyle::Primary
+                            })
+                            .disabled(is_active)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.request_switch_profile(switch_id.clone(), cx);
+                            }))
+                            .render(colors),
+                        )
+                        .child(
+                            Button::new(
+                                SharedString::from(format!("edit-profile-{}", edit_id)),
+                                self.t("settings-item-edit"),
+                            )
+                            .aria_label(self.t_args(
+                                "settings-profile-edit-aria",
+                                &[("name", FluentValue::from(profile.name.as_str()))],
+                            ))
+                            .style(ButtonStyle::Secondary)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_profile_editor(edit_id.clone(), cx);
+                            }))
+                            .render(colors),
+                        )
+                        .child(
+                            Button::new(
+                                SharedString::from(format!("remove-profile-{}", remove_id)),
+                                self.t("button-delete"),
+                            )
+                            .aria_label(self.t_args(
+                                "settings-profile-delete-aria",
+                                &[("name", FluentValue::from(profile.name.as_str()))],
+                            ))
+                            .style(ButtonStyle::Secondary)
+                            .disabled(!can_remove)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.request_remove_profile(remove_id.clone(), cx);
+                            }))
+                            .render(colors),
+                        )
+                }),
+            ))
+            .when_some(
+                self.settings_page.editing_profile_id.clone(),
+                |section, editing_id| {
+                    let kind = self.settings_page.draft_profile_kind;
+                    let is_local = kind == ProfileKindView::LocalManaged;
+                    let kind_shell = cx.entity().downgrade();
+                    let kind_control = SegmentedControl::new(
+                        "settings-profile-kind",
+                        [
+                            Segment::new(self.t("settings-profile-kind-local")),
+                            Segment::new(self.t("settings-profile-kind-remote")),
+                        ],
+                        usize::from(!is_local),
+                        self.theme,
+                    )
+                    .aria_label(self.t("settings-profile-kind-aria"))
+                    .on_select(move |index, _window, cx| {
+                        let kind = if index == 0 {
+                            ProfileKindView::LocalManaged
+                        } else {
+                            ProfileKindView::RemoteRpc
+                        };
+                        kind_shell
+                            .update(cx, |shell, cx| {
+                                shell.select_profile_editor_kind(kind, cx);
+                            })
+                            .ok();
+                    });
+                    section.child(
+                        div()
+                            .mt_3()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .px_3()
+                            .py_3()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(colors.border)
+                            .bg(colors.surface)
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(colors.text_primary)
+                                    .child(self.t_args(
+                                        "settings-profile-editor-title",
+                                        &[("id", FluentValue::from(editing_id.as_str()))],
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(colors.text_muted)
+                                    .child(self.t("settings-profile-editor-hint")),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(colors.text_muted)
+                                            .child(self.t("ui-profile-name")),
+                                    )
+                                    .child(self.settings_inputs.profile_name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(colors.text_muted)
+                                            .child(self.t("ui-profile-kind")),
+                                    )
+                                    .child(kind_control),
+                            )
+                            .child(if is_local {
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(colors.text_muted)
+                                            .child(self.t("settings-profile-executable-label")),
+                                    )
+                                    .child(settings_path_field_row(
+                                        self.settings_inputs.profile_executable.clone(),
+                                        "browse-profile-executable",
+                                        self.t("button-browse"),
+                                        self.t("settings-profile-executable-browse-aria"),
+                                        PathPickTarget::ProfileExecutable,
+                                        colors,
+                                        cx,
+                                    ))
+                                    .into_any_element()
+                            } else {
+                                let has_secret = self
+                                    .profiles
+                                    .profiles
+                                    .iter()
+                                    .find(|profile| profile.profile_id == editing_id)
+                                    .is_some_and(|profile| profile.has_secret);
+                                let secret_cleared = self.settings_page.clear_profile_rpc_secret;
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(colors.text_muted)
+                                                    .child(self.t("ui-profile-endpoint")),
+                                            )
+                                            .child(self.settings_inputs.profile_endpoint.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(colors.text_muted)
+                                                    .child(if secret_cleared {
+                                                        self.t("settings-profile-secret-clear")
+                                                    } else if has_secret {
+                                                        self.t("settings-profile-secret-saved")
+                                                    } else {
+                                                        self.t("settings-profile-secret-optional")
+                                                    }),
+                                            )
+                                            .child(self.settings_inputs.profile_secret.clone()),
+                                    )
+                                    .child(
+                                        Button::new(
+                                            "toggle-clear-profile-secret",
+                                            if secret_cleared {
+                                                self.t("settings-profile-secret-keep")
+                                            } else if has_secret {
+                                                self.t("settings-profile-secret-remove")
+                                            } else {
+                                                self.t("settings-profile-secret-none")
+                                            },
+                                        )
+                                        .aria_label(self.t("settings-profile-secret-toggle-aria"))
+                                        .style(ButtonStyle::Secondary)
+                                        .disabled(!has_secret && !secret_cleared)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_clear_profile_rpc_secret(cx);
+                                        }))
+                                        .render(colors),
+                                    )
+                                    .into_any_element()
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(colors.text_muted)
+                                            .child(self.t("ui-profile-download-dir")),
+                                    )
+                                    .child(settings_path_field_row(
+                                        self.settings_inputs.profile_download.clone(),
+                                        "browse-profile-download",
+                                        self.t("button-browse"),
+                                        self.t("settings-profile-download-browse-aria"),
+                                        PathPickTarget::ProfileDownloadDirectory,
+                                        colors,
+                                        cx,
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap_2()
+                                    .child(
+                                        Button::new(
+                                            "apply-profile-editor",
+                                            self.t("settings-profile-apply"),
+                                        )
+                                        .aria_label(self.t("settings-profile-apply-aria"))
+                                        .style(ButtonStyle::Primary)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.apply_profile_editor(cx);
+                                        }))
+                                        .render(colors),
+                                    )
+                                    .child(
+                                        Button::new(
+                                            "cancel-profile-editor",
+                                            self.t("button-cancel"),
+                                        )
+                                        .aria_label(self.t("settings-profile-cancel-aria"))
+                                        .style(ButtonStyle::Secondary)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.close_profile_editor(cx);
+                                        }))
+                                        .render(colors),
+                                    ),
+                            ),
+                    )
+                },
+            )
+            .child(
+                div()
+                    .mt_3()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
                     .child(
+                        Button::new("add-local-profile", self.t("settings-profile-add-local"))
+                            .aria_label(self.t("settings-profile-add-local-aria"))
+                            .style(ButtonStyle::Secondary)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.add_draft_local_profile(cx);
+                            }))
+                            .render(colors),
+                    )
+                    .child(
+                        Button::new("add-remote-profile", self.t("settings-profile-add-remote"))
+                            .aria_label(self.t("settings-profile-add-remote-aria"))
+                            .style(ButtonStyle::Secondary)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.add_draft_remote_profile(cx);
+                            }))
+                            .render(colors),
+                    )
+                    .child(
+                        Button::new("save-profile-catalog", self.t("settings-profile-save"))
+                            .aria_label(self.t("settings-profile-save-aria"))
+                            .style(ButtonStyle::Primary)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let catalog = this.profiles.clone();
+                                this.request_save_profile_catalog(catalog, cx);
+                            }))
+                            .render(colors),
+                    ),
+            )
+            .when_some(
+                self.settings_page
+                    .pending_profile_delete
+                    .as_ref()
+                    .map(|pending| (pending.profile_id.clone(), pending.name.clone())),
+                |section, (delete_id, delete_name)| {
+                    let is_active = delete_id == self.profiles.active_profile_id;
+                    section.child(
                         div()
                             .mt_3()
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .children(profiles.profiles.into_iter().map(|profile| {
-                                let is_active = profile.profile_id == active_id;
-                                let profile_id = profile.profile_id.clone();
-                                let switch_id = profile_id.clone();
-                                let edit_id = profile_id.clone();
-                                let remove_id = profile_id.clone();
-                                let can_remove = profiles_count > 1;
-                                let summary = match profile.kind {
-                                    ProfileKindView::LocalManaged => {
-                                        if profile.executable.is_empty() {
-                                            "Local · uses managed core".to_owned()
-                                        } else {
-                                            format!("Local · pinned {}", profile.executable)
-                                        }
-                                    }
-                                    ProfileKindView::RemoteRpc => {
-                                        let endpoint = if profile.endpoint.is_empty() {
-                                            "no endpoint".to_owned()
-                                        } else {
-                                            profile.endpoint.clone()
-                                        };
-                                        if profile.has_secret {
-                                            format!("Remote · {endpoint} · secret saved")
-                                        } else {
-                                            format!("Remote · {endpoint}")
-                                        }
-                                    }
-                                };
+                            .px_3()
+                            .py_3()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(colors.danger)
+                            .bg(with_alpha(colors.danger, 0.08))
+                            .child(
                                 div()
-                                    .id(SharedString::from(format!(
-                                        "profile-row-{}",
-                                        profile.profile_id
-                                    )))
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .px_3()
-                                    .py_2()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(if is_active {
-                                        colors.accent
-                                    } else {
-                                        colors.border
-                                    })
-                                    .bg(if is_active {
-                                        with_alpha(colors.accent, 0.08)
-                                    } else {
-                                        colors.surface
-                                    })
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .flex()
-                                            .flex_col()
-                                            .gap_0p5()
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .text_color(colors.text_primary)
-                                                    .child(profile.name.clone()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(colors.text_muted)
-                                                    .child(summary),
-                                            ),
-                                    )
-                                    .child(
-                                        Button::new(
-                                            SharedString::from(format!(
-                                                "activate-profile-{}",
-                                                profile_id
-                                            )),
-                                            if is_active { "Active" } else { "Activate" },
-                                        )
-                                        .aria_label(if is_active {
-                                            format!("{} is active", profile.name)
-                                        } else {
-                                            format!("Activate {}", profile.name)
-                                        })
-                                        .style(if is_active {
-                                            ButtonStyle::Secondary
-                                        } else {
-                                            ButtonStyle::Primary
-                                        })
-                                        .disabled(is_active)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.request_switch_profile(
-                                                switch_id.clone(),
-                                                cx,
-                                            );
-                                        }))
-                                        .render(colors),
-                                    )
-                                    .child(
-                                        Button::new(
-                                            SharedString::from(format!(
-                                                "edit-profile-{}",
-                                                edit_id
-                                            )),
-                                            "Edit",
-                                        )
-                                        .aria_label(format!("Edit {}", profile.name))
-                                        .style(ButtonStyle::Secondary)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.open_profile_editor(edit_id.clone(), cx);
-                                        }))
-                                        .render(colors),
-                                    )
-                                    .child(
-                                        Button::new(
-                                            SharedString::from(format!(
-                                                "remove-profile-{}",
-                                                remove_id
-                                            )),
-                                            "Delete",
-                                        )
-                                        .aria_label(format!("Delete {}", profile.name))
-                                        .style(ButtonStyle::Secondary)
-                                        .disabled(!can_remove)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.request_remove_profile(
-                                                remove_id.clone(),
-                                                cx,
-                                            );
-                                        }))
-                                        .render(colors),
-                                    )
-                            })),
-                    )
-                    .when_some(
-                        self.settings_page.editing_profile_id.clone(),
-                        |section, editing_id| {
-                            let kind = self.settings_page.draft_profile_kind;
-                            let is_local = kind == ProfileKindView::LocalManaged;
-                            let kind_shell = cx.entity().downgrade();
-                            let kind_control = SegmentedControl::new(
-                                "settings-profile-kind",
-                                [Segment::new("Local"), Segment::new("Remote")],
-                                usize::from(!is_local),
-                                self.theme,
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(colors.text_primary)
+                                    .child(self.t_args(
+                                        "settings-profile-delete-title",
+                                        &[("name", FluentValue::from(delete_name.as_str()))],
+                                    )),
                             )
-                            .aria_label("Profile kind")
-                            .on_select(move |index, _window, cx| {
-                                let kind = if index == 0 {
-                                    ProfileKindView::LocalManaged
+                            .child(div().text_xs().text_color(colors.text_muted).child(
+                                if is_active {
+                                    self.t("settings-profile-delete-active-hint")
                                 } else {
-                                    ProfileKindView::RemoteRpc
-                                };
-                                kind_shell
-                                    .update(cx, |shell, cx| {
-                                        shell.select_profile_editor_kind(kind, cx);
-                                    })
-                                    .ok();
-                            });
-                            section.child(
+                                    self.t("settings-profile-delete-hint")
+                                },
+                            ))
+                            .child(
                                 div()
-                                    .mt_3()
                                     .flex()
-                                    .flex_col()
-                                    .gap_3()
-                                    .px_3()
-                                    .py_3()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(colors.border)
-                                    .bg(colors.surface)
+                                    .flex_wrap()
+                                    .gap_2()
                                     .child(
-                                        div()
-                                            .text_sm()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(colors.text_primary)
-                                            .child(format!("Edit profile ({editing_id})")),
+                                        Button::new(
+                                            "confirm-delete-profile",
+                                            self.t("settings-profile-delete-confirm"),
+                                        )
+                                        .aria_label(self.t_args(
+                                            "settings-profile-delete-confirm-aria",
+                                            &[("name", FluentValue::from(delete_name.as_str()))],
+                                        ))
+                                        .style(ButtonStyle::Primary)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.confirm_remove_profile(cx);
+                                        }))
+                                        .render(colors),
                                     )
                                     .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(colors.text_muted)
-                                            .child(
-                                                "Apply writes the draft catalog only. Save profiles persists to disk.",
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap_1()
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(colors.text_muted)
-                                                    .child(self.t("ui-profile-name")),
-                                            )
-                                            .child(self.settings_inputs.profile_name.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap_1()
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(colors.text_muted)
-                                                    .child(self.t("ui-profile-kind")),
-                                            )
-                                            .child(kind_control),
-                                    )
-                                    .child(if is_local {
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap_1()
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(colors.text_muted)
-                                                    .child(
-                                                        "Executable (optional — empty uses managed core)",
-                                                    ),
-                                            )
-                                            .child(settings_path_field_row(
-                                                self.settings_inputs.profile_executable
-                                                    .clone(),
-                                                "browse-profile-executable",
-                                                "Browse",
-                                                "Choose pinned aria2c executable",
-                                                PathPickTarget::ProfileExecutable,
-                                                colors,
-                                                cx,
-                                            ))
-                                            .into_any_element()
-                                    } else {
-                                        let has_secret = self
-                                            .profiles
-                                            .profiles
-                                            .iter()
-                                            .find(|profile| {
-                                                profile.profile_id == editing_id
-                                            })
-                                            .is_some_and(|profile| profile.has_secret);
-                                        let secret_cleared =
-                                            self.settings_page.clear_profile_rpc_secret;
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap_2()
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .flex_col()
-                                                    .gap_1()
-                                                    .child(
-                                                        div()
-                                                            .text_xs()
-                                                            .text_color(colors.text_muted)
-                                                            .child(self.t("ui-profile-endpoint")),
-                                                    )
-                                                    .child(
-                                                        self.settings_inputs.profile_endpoint
-                                                            .clone(),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .flex_col()
-                                                    .gap_1()
-                                                    .child(
-                                                        div()
-                                                            .text_xs()
-                                                            .text_color(colors.text_muted)
-                                                            .child(if secret_cleared {
-                                                                "RPC secret (will clear on Apply)"
-                                                                    .to_owned()
-                                                            } else if has_secret {
-                                                                "RPC secret (saved — enter a new value to replace)"
-                                                                    .to_owned()
-                                                            } else {
-                                                                "RPC secret (optional)"
-                                                                    .to_owned()
-                                                            }),
-                                                    )
-                                                    .child(
-                                                        self.settings_inputs.profile_secret
-                                                            .clone(),
-                                                    ),
-                                            )
-                                            .child(
-                                                Button::new(
-                                                    "toggle-clear-profile-secret",
-                                                    if secret_cleared {
-                                                        "Keep saved secret"
-                                                    } else if has_secret {
-                                                        "Clear saved secret"
-                                                    } else {
-                                                        "No saved secret"
-                                                    },
-                                                )
-                                                .aria_label(
-                                                    "Toggle clearing the saved RPC secret",
-                                                )
-                                                .style(ButtonStyle::Secondary)
-                                                .disabled(!has_secret && !secret_cleared)
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.toggle_clear_profile_rpc_secret(cx);
-                                                }))
-                                                .render(colors),
-                                            )
-                                            .into_any_element()
-                                    })
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap_1()
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(colors.text_muted)
-                                                    .child(self.t("ui-profile-download-dir")),
-                                            )
-                                            .child(settings_path_field_row(
-                                                self.settings_inputs.profile_download
-                                                    .clone(),
-                                                "browse-profile-download",
-                                                "Browse",
-                                                "Choose profile download directory",
-                                                PathPickTarget::ProfileDownloadDirectory,
-                                                colors,
-                                                cx,
-                                            )),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_wrap()
-                                            .gap_2()
-                                            .child(
-                                                Button::new(
-                                                    "apply-profile-editor",
-                                                    "Apply changes",
-                                                )
-                                                .aria_label("Apply profile editor changes")
-                                                .style(ButtonStyle::Primary)
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.apply_profile_editor(cx);
-                                                }))
-                                                .render(colors),
-                                            )
-                                            .child(
-                                                Button::new(
-                                                    "cancel-profile-editor",
-                                                    "Cancel",
-                                                )
-                                                .aria_label("Cancel profile editor")
-                                                .style(ButtonStyle::Secondary)
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.close_profile_editor(cx);
-                                                }))
-                                                .render(colors),
-                                            ),
+                                        Button::new(
+                                            "cancel-delete-profile",
+                                            self.t("button-cancel"),
+                                        )
+                                        .aria_label(self.t("settings-profile-delete-cancel-aria"))
+                                        .style(ButtonStyle::Secondary)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.cancel_remove_profile(cx);
+                                        }))
+                                        .render(colors),
                                     ),
-                            )
-                        },
-                    )
-                    .child(
-                        div()
-                            .mt_3()
-                            .flex()
-                            .flex_wrap()
-                            .gap_2()
-                            .child(
-                                Button::new("add-local-profile", "Add local profile")
-                                    .aria_label("Add a local managed aria2 profile")
-                                    .style(ButtonStyle::Secondary)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.add_draft_local_profile(cx);
-                                    }))
-                                    .render(colors),
-                            )
-                            .child(
-                                Button::new("add-remote-profile", "Add remote profile")
-                                    .aria_label("Add a remote RPC aria2 profile")
-                                    .style(ButtonStyle::Secondary)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.add_draft_remote_profile(cx);
-                                    }))
-                                    .render(colors),
-                            )
-                            .child(
-                                Button::new("save-profile-catalog", "Save profiles")
-                                    .aria_label("Save the profile catalog")
-                                    .style(ButtonStyle::Primary)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        let catalog = this.profiles.clone();
-                                        this.request_save_profile_catalog(catalog, cx);
-                                    }))
-                                    .render(colors),
                             ),
                     )
-                    .when_some(
-                        self.settings_page.pending_profile_delete.as_ref().map(
-                            |pending| (pending.profile_id.clone(), pending.name.clone()),
-                        ),
-                        |section, (delete_id, delete_name)| {
-                            let is_active = delete_id
-                                == self.profiles.active_profile_id;
-                            section.child(
-                                div()
-                                    .mt_3()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_2()
-                                    .px_3()
-                                    .py_3()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(colors.danger)
-                                    .bg(with_alpha(colors.danger, 0.08))
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(colors.text_primary)
-                                            .child(format!(
-                                                "Delete profile “{delete_name}”?"
-                                            )),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(colors.text_muted)
-                                            .child(if is_active {
-                                                "This is the active profile. Another profile will become active. Local session data is not deleted from disk."
-                                                    .to_owned()
-                                            } else {
-                                                "Local session data is not deleted from disk. This saves the catalog immediately."
-                                                    .to_owned()
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_wrap()
-                                            .gap_2()
-                                            .child(
-                                                Button::new(
-                                                    "confirm-delete-profile",
-                                                    "Delete profile",
-                                                )
-                                                .aria_label(format!(
-                                                    "Confirm delete {delete_name}"
-                                                ))
-                                                .style(ButtonStyle::Primary)
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.confirm_remove_profile(cx);
-                                                }))
-                                                .render(colors),
-                                            )
-                                            .child(
-                                                Button::new(
-                                                    "cancel-delete-profile",
-                                                    "Cancel",
-                                                )
-                                                .aria_label("Cancel profile delete")
-                                                .style(ButtonStyle::Secondary)
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.cancel_remove_profile(cx);
-                                                }))
-                                                .render(colors),
-                                            ),
-                                    ),
-                            )
-                        },
-                    )
+                },
+            )
     }
 
     pub(crate) fn render_settings_engine(&mut self, cx: &mut Context<Self>) -> Div {
@@ -1972,7 +1954,7 @@ impl AppShell {
             .last_working_id
             .as_ref()
             .is_some_and(|id| cores.active_id.as_ref() != Some(id));
-        settings_card("Engine", colors)
+        settings_section_owned(self.t("settings-engine-cores"), colors)
             .child(
                 div()
                     .mt_3()
@@ -1981,16 +1963,24 @@ impl AppShell {
                     .gap_2()
                     .child(div().text_xs().text_color(colors.text_muted).child(
                         if cores.installations.is_empty() {
-                            "No managed cores yet. Import or link an aria2c executable below."
-                                .to_owned()
+                            self.t("settings-core-empty")
                         } else {
-                            format!(
-                                "{} installed · active {}",
-                                cores.installations.len(),
-                                cores
-                                    .active()
-                                    .map(|core| core.version.as_str())
-                                    .unwrap_or("none")
+                            let active = cores.active().map_or_else(
+                                || self.t("settings-core-none"),
+                                |core| core.version.clone(),
+                            );
+                            self.t_args(
+                                "settings-core-summary",
+                                &[
+                                    (
+                                        "count",
+                                        FluentValue::from(
+                                            i64::try_from(cores.installations.len())
+                                                .unwrap_or(i64::MAX),
+                                        ),
+                                    ),
+                                    ("active", FluentValue::from(active.as_str())),
+                                ],
                             )
                         },
                     ))
@@ -2032,25 +2022,36 @@ impl AppShell {
                                                 .text_sm()
                                                 .font_weight(FontWeight::MEDIUM)
                                                 .text_color(colors.text_primary)
-                                                .child(format!("aria2 {}", core.version)),
+                                                .child(self.t_args(
+                                                    "settings-core-version-label",
+                                                    &[(
+                                                        "version",
+                                                        FluentValue::from(core.version.as_str()),
+                                                    )],
+                                                )),
                                         )
-                                        .child(div().text_xs().text_color(colors.text_muted).child(
-                                            format!(
-                                                "{} · {} · {}{}",
-                                                core.source.label(),
+                                        .child({
+                                            let mut meta = format!(
+                                                "{} · {} · {}",
+                                                self.t(core.source.message_key()),
                                                 core.target,
-                                                core.status.label(),
-                                                if core.is_last_working {
-                                                    " · last working"
-                                                } else {
-                                                    ""
-                                                }
-                                            ),
-                                        ))
+                                                self.t(core.status.message_key()),
+                                            );
+                                            if core.is_last_working {
+                                                meta.push_str(" · ");
+                                                meta.push_str(
+                                                    &self.t("settings-core-last-working"),
+                                                );
+                                            }
+                                            div()
+                                                .text_xs()
+                                                .text_color(colors.text_muted)
+                                                .child(meta)
+                                        })
                                         .child(
                                             div().text_xs().text_color(colors.text_muted).child(
                                                 if core.executable.is_empty() {
-                                                    "executable missing".into()
+                                                    self.t("settings-core-executable-missing")
                                                 } else {
                                                     core.executable.clone()
                                                 },
@@ -2069,12 +2070,28 @@ impl AppShell {
                                                 "activate-core-{}",
                                                 activate_id
                                             )),
-                                            if is_active { "Active" } else { "Activate" },
+                                            if is_active {
+                                                self.t("settings-item-active")
+                                            } else {
+                                                self.t("settings-item-activate")
+                                            },
                                         )
                                         .aria_label(if is_active {
-                                            format!("aria2 {} is active", core.version)
+                                            self.t_args(
+                                                "settings-core-active-aria",
+                                                &[(
+                                                    "version",
+                                                    FluentValue::from(core.version.as_str()),
+                                                )],
+                                            )
                                         } else {
-                                            format!("Activate aria2 {}", core.version)
+                                            self.t_args(
+                                                "settings-core-activate-aria",
+                                                &[(
+                                                    "version",
+                                                    FluentValue::from(core.version.as_str()),
+                                                )],
+                                            )
                                         })
                                         .style(if is_active {
                                             ButtonStyle::Secondary
@@ -2098,9 +2115,15 @@ impl AppShell {
                                                 "verify-core-{}",
                                                 verify_id
                                             )),
-                                            "Verify",
+                                            self.t("settings-core-verify"),
                                         )
-                                        .aria_label(format!("Verify aria2 {}", core.version))
+                                        .aria_label(self.t_args(
+                                            "settings-core-verify-aria",
+                                            &[(
+                                                "version",
+                                                FluentValue::from(core.version.as_str()),
+                                            )],
+                                        ))
                                         .style(ButtonStyle::Secondary)
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.request_core_command(
@@ -2118,9 +2141,15 @@ impl AppShell {
                                                 "remove-core-{}",
                                                 remove_id
                                             )),
-                                            "Remove",
+                                            self.t("settings-core-remove"),
                                         )
-                                        .aria_label(format!("Remove aria2 {}", core.version))
+                                        .aria_label(self.t_args(
+                                            "settings-core-remove-aria",
+                                            &[(
+                                                "version",
+                                                FluentValue::from(core.version.as_str()),
+                                            )],
+                                        ))
                                         .style(ButtonStyle::Secondary)
                                         .disabled(is_active)
                                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -2152,8 +2181,8 @@ impl AppShell {
                     .child(settings_path_field_row(
                         self.settings_inputs.core_path.clone(),
                         "browse-core-path",
-                        "Browse",
-                        "Choose aria2c executable to import or link",
+                        self.t("button-browse"),
+                        self.t("settings-core-browse-aria"),
                         PathPickTarget::CoreExecutable,
                         colors,
                         cx,
@@ -2164,10 +2193,8 @@ impl AppShell {
                             .flex_wrap()
                             .gap_2()
                             .child(
-                                Button::new("import-core", "Import copy")
-                                    .aria_label(
-                                        "Import a copy of the aria2c path into managed cores",
-                                    )
+                                Button::new("import-core", self.t("settings-core-import"))
+                                    .aria_label(self.t("settings-core-import-aria"))
                                     .style(ButtonStyle::Primary)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.request_import_core_from_input(cx);
@@ -2175,8 +2202,8 @@ impl AppShell {
                                     .render(colors),
                             )
                             .child(
-                                Button::new("link-core", "Link path")
-                                    .aria_label("Register the aria2c path without copying")
+                                Button::new("link-core", self.t("settings-core-link"))
+                                    .aria_label(self.t("settings-core-link-aria"))
                                     .style(ButtonStyle::Secondary)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.request_link_core_from_input(cx);
@@ -2184,8 +2211,8 @@ impl AppShell {
                                     .render(colors),
                             )
                             .child(
-                                Button::new("rollback-core", "Rollback")
-                                    .aria_label("Activate the last working managed aria2 core")
+                                Button::new("rollback-core", self.t("settings-core-rollback"))
+                                    .aria_label(self.t("settings-core-rollback-aria"))
                                     .style(ButtonStyle::Secondary)
                                     .disabled(!can_rollback)
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -2256,9 +2283,9 @@ impl AppShell {
         let system_proxy = proxy_draft.mode == ProxyModeView::System;
         let draft_check_certificate = self.settings_page.draft_check_certificate;
         let password_button_label = if password_cleared {
-            "Keep saved proxy password"
+            self.t("settings-proxy-password-keep")
         } else {
-            "Clear saved proxy password"
+            self.t("settings-proxy-password-clear")
         };
         let password_button_icon = if password_cleared {
             IconName::RotateCcw
@@ -2285,20 +2312,22 @@ impl AppShell {
                 .ok();
         });
         let cert_shell = cx.entity().downgrade();
-        settings_card("Network proxy", colors)
-            .child(div().mt_3().flex().items_start().child(proxy_mode_control))
+        settings_section_owned(self.t("settings-network-proxy"), colors)
             .child(
-                div().mt_4().max_w(px(620.0)).child(settings_row(
-                    "Verify HTTPS certificates",
-                    Some(
-                        "Maps to aria2 check-certificate. Leave on unless diagnosing TLS handshake failures through a local proxy or MITM CA.",
-                    ),
+                div()
+                    .py_3()
+                    .border_b_1()
+                    .border_color(colors.border)
+                    .flex()
+                    .items_start()
+                    .child(proxy_mode_control),
+            )
+            .child(
+                div().max_w(px(760.0)).child(settings_section_row_owned(
+                    self.t("settings-proxy-check-certificate"),
+                    Some(self.t("settings-proxy-check-certificate-desc")),
                     Toggle::new("toggle-check-certificate", draft_check_certificate)
-                        .aria_label(if draft_check_certificate {
-                            "Disable HTTPS certificate verification"
-                        } else {
-                            "Enable HTTPS certificate verification"
-                        })
+                        .aria_label(self.t("settings-proxy-check-certificate-aria"))
                         .disabled(pending)
                         .on_click(move |_, _, cx| {
                             cert_shell
@@ -2312,8 +2341,8 @@ impl AppShell {
             .when(system_proxy, |section| {
                 section.child(
                     div()
-                        .mt_4()
-                        .max_w(px(620.0))
+                        .py_3()
+                        .max_w(px(760.0))
                         .text_xs()
                         .text_color(colors.text_muted)
                         .child(self.t("settings-proxy-system-hint")),
@@ -2322,13 +2351,13 @@ impl AppShell {
             .when(manual_proxy, |section| {
                 section.child(
                     div()
-                        .mt_4()
-                        .max_w(px(620.0))
+                        .pt_4()
+                        .max_w(px(760.0))
                         .flex()
                         .flex_col()
                         .gap_3()
                         .child(settings_labeled_input(
-                            "All protocols",
+                            self.t("settings-proxy-all"),
                             self.settings_inputs.all_proxy.clone(),
                             colors,
                         ))
@@ -2338,7 +2367,7 @@ impl AppShell {
                                 .gap_3()
                                 .child(
                                     settings_labeled_input(
-                                        "HTTP",
+                                        self.t("settings-proxy-http"),
                                         self.settings_inputs.http_proxy.clone(),
                                         colors,
                                     )
@@ -2347,7 +2376,7 @@ impl AppShell {
                                 )
                                 .child(
                                     settings_labeled_input(
-                                        "HTTPS",
+                                        self.t("settings-proxy-https"),
                                         self.settings_inputs.https_proxy.clone(),
                                         colors,
                                     )
@@ -2356,12 +2385,12 @@ impl AppShell {
                                 ),
                         )
                         .child(settings_labeled_input(
-                            "FTP",
+                            self.t("settings-proxy-ftp"),
                             self.settings_inputs.ftp_proxy.clone(),
                             colors,
                         ))
                         .child(settings_labeled_input(
-                            "Bypass hosts",
+                            self.t("settings-proxy-bypass"),
                             self.settings_inputs.no_proxy.clone(),
                             colors,
                         ))
@@ -2372,7 +2401,7 @@ impl AppShell {
                                 .items_end()
                                 .child(
                                     settings_labeled_input(
-                                        "Username",
+                                        self.t("settings-proxy-username"),
                                         self.settings_inputs.proxy_username.clone(),
                                         colors,
                                     )
@@ -2381,7 +2410,7 @@ impl AppShell {
                                 )
                                 .child(
                                     settings_labeled_input(
-                                        "Password",
+                                        self.t("settings-proxy-password"),
                                         self.settings_inputs.proxy_password.clone(),
                                         colors,
                                     )
@@ -2394,9 +2423,9 @@ impl AppShell {
                                             "clear-proxy-password",
                                             password_button_icon,
                                         )
-                                        .aria_label(password_button_label)
+                                        .aria_label(password_button_label.clone())
                                         .disabled(pending)
-                                        .tooltip(Tooltip::new(password_button_label))
+                                        .tooltip(Tooltip::new(password_button_label.clone()))
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.clear_saved_proxy_password(cx);
                                         }))
@@ -2406,9 +2435,10 @@ impl AppShell {
                         )
                         .when(proxy_has_password, |form| {
                             form.child(
-                                div().text_xs().text_color(colors.text_muted).child(
-                                    "A proxy password is saved in the system credential store.",
-                                ),
+                                div()
+                                    .text_xs()
+                                    .text_color(colors.text_muted)
+                                    .child(self.t("settings-proxy-password-saved")),
                             )
                         }),
                 )
@@ -2418,26 +2448,26 @@ impl AppShell {
                 |section| {
                     section.child(
                         div()
-                            .mt_4()
-                            .max_w(px(620.0))
+                            .py_3()
+                            .max_w(px(760.0))
                             .flex()
                             .items_center()
                             .gap_2()
                             .text_xs()
                             .text_color(colors.text_muted)
                             .child(if password_cleared {
-                                "The saved proxy password will be removed."
+                                self.t("settings-proxy-password-remove-hint")
                             } else {
-                                "A proxy password is saved in the system credential store."
+                                self.t("settings-proxy-password-saved")
                             })
                             .child(
                                 IconButton::new(
                                     "clear-disabled-proxy-password",
                                     password_button_icon,
                                 )
-                                .aria_label(password_button_label)
+                                .aria_label(password_button_label.clone())
                                 .disabled(pending)
-                                .tooltip(Tooltip::new(password_button_label))
+                                .tooltip(Tooltip::new(password_button_label.clone()))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.clear_saved_proxy_password(cx);
                                 }))
@@ -2458,11 +2488,18 @@ impl AppShell {
         let allocation_shell = cx.entity().downgrade();
         let allocation_control = SegmentedControl::new(
             "settings-file-allocation",
-            FileAllocationView::all().map(|method| Segment::new(method.label())),
+            FileAllocationView::all().map(|method| {
+                Segment::new(self.t(match method {
+                    FileAllocationView::None => "settings-file-allocation-none",
+                    FileAllocationView::Prealloc => "settings-file-allocation-prealloc",
+                    FileAllocationView::Trunc => "settings-file-allocation-trunc",
+                    FileAllocationView::Falloc => "settings-file-allocation-falloc",
+                }))
+            }),
             allocation_selected,
             self.theme,
         )
-        .aria_label("File allocation method")
+        .aria_label(self.t("settings-file-allocation-aria"))
         .disabled(pending)
         .on_select(move |index, _window, cx| {
             let method = FileAllocationView::all()
@@ -2478,127 +2515,121 @@ impl AppShell {
         div()
             .flex()
             .flex_col()
-            .gap_5()
+            .gap_6()
             .child(
-                    settings_card("Speed limits", colors)
-                    .child(
-                        div()
-                            .mt_4()
-                            .max_w(px(620.0))
-                            .flex()
-                            .gap_3()
-                            .child(
-                                settings_labeled_input(
-                                    "Download limit",
-                                    self.settings_inputs.download_limit.clone(),
-                                    colors,
-                                )
-                                .flex_1()
-                                .min_w_0(),
+                settings_section_owned(self.t("settings-speed-limits"), colors).child(
+                    div()
+                        .py_4()
+                        .max_w(px(760.0))
+                        .flex()
+                        .gap_3()
+                        .child(
+                            settings_labeled_input(
+                                self.t("settings-download-limit"),
+                                self.settings_inputs.download_limit.clone(),
+                                colors,
                             )
-                            .child(
-                                settings_labeled_input(
-                                    "Upload limit",
-                                    self.settings_inputs.upload_limit.clone(),
-                                    colors,
-                                )
-                                .flex_1()
-                                .min_w_0(),
-                            ),
-                    )
+                            .flex_1()
+                            .min_w_0(),
+                        )
+                        .child(
+                            settings_labeled_input(
+                                self.t("settings-upload-limit"),
+                                self.settings_inputs.upload_limit.clone(),
+                                colors,
+                            )
+                            .flex_1()
+                            .min_w_0(),
+                        ),
+                ),
             )
             .child(
-                    settings_card("Transfer policy", colors)
-                    .child(
-                        div()
-                            .mt_4()
-                            .max_w(px(620.0))
-                            .flex()
-                            .flex_col()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap_3()
-                                    .child(
-                                        settings_labeled_input(
-                                            "Max concurrent downloads",
-                                            self.settings_inputs.max_concurrent.clone(),
-                                            colors,
-                                        )
-                                        .flex_1()
-                                        .min_w_0(),
+                settings_section_owned(self.t("settings-transfer-policy"), colors).child(
+                    div()
+                        .pt_4()
+                        .max_w(px(760.0))
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex()
+                                .gap_3()
+                                .child(
+                                    settings_labeled_input(
+                                        self.t("settings-max-concurrent"),
+                                        self.settings_inputs.max_concurrent.clone(),
+                                        colors,
                                     )
-                                    .child(
-                                        settings_labeled_input(
-                                            "Connections per server",
-                                            self.settings_inputs.max_connection.clone(),
-                                            colors,
-                                        )
-                                        .flex_1()
-                                        .min_w_0(),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap_3()
-                                    .child(
-                                        settings_labeled_input(
-                                            "Split",
-                                            self.settings_inputs.split.clone(),
-                                            colors,
-                                        )
-                                        .flex_1()
-                                        .min_w_0(),
+                                    .flex_1()
+                                    .min_w_0(),
+                                )
+                                .child(
+                                    settings_labeled_input(
+                                        self.t("settings-connections-per-server"),
+                                        self.settings_inputs.max_connection.clone(),
+                                        colors,
                                     )
-                                    .child(
-                                        settings_labeled_input(
-                                            "Min split size",
-                                            self.settings_inputs.min_split_size.clone(),
-                                            colors,
-                                        )
-                                        .flex_1()
-                                        .min_w_0(),
-                                    ),
-                            )
-                            .child(settings_row(
-                                "File allocation",
-                                Some("How aria2 reserves disk space for new downloads."),
-                                allocation_control,
-                                colors,
-                            ))
-                            .child(settings_row(
-                                "Integrity check",
-                                Some(
-                                    "Verify checksums for new downloads by default when the engine supports it.",
+                                    .flex_1()
+                                    .min_w_0(),
                                 ),
-                                Toggle::new("toggle-check-integrity", draft_check_integrity)
-                                    .aria_label(if draft_check_integrity {
-                                        "Disable integrity check for new downloads"
-                                    } else {
-                                        "Enable integrity check for new downloads"
-                                    })
-                                    .disabled(pending)
-                                    .on_click(move |_, _, cx| {
-                                        integrity_shell
-                                            .update(cx, |shell, cx| {
-                                                shell.toggle_check_integrity(cx);
-                                            })
-                                            .ok();
-                                    })
-                                    .render(colors),
-                                colors,
-                            ))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(colors.text_muted)
-                                    .child(
-                                        "Concurrent downloads: all current and future downloads. Connections/split/allocation/integrity: new downloads by default.",
-                                    ),
-                            ),
-                    )
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .gap_3()
+                                .child(
+                                    settings_labeled_input(
+                                        self.t("settings-split"),
+                                        self.settings_inputs.split.clone(),
+                                        colors,
+                                    )
+                                    .flex_1()
+                                    .min_w_0(),
+                                )
+                                .child(
+                                    settings_labeled_input(
+                                        self.t("settings-min-split-size"),
+                                        self.settings_inputs.min_split_size.clone(),
+                                        colors,
+                                    )
+                                    .flex_1()
+                                    .min_w_0(),
+                                ),
+                        )
+                        .child(settings_section_row_owned(
+                            self.t("settings-file-allocation"),
+                            Some(self.t("settings-file-allocation-desc")),
+                            allocation_control,
+                            colors,
+                        ))
+                        .child(settings_section_row_owned(
+                            self.t("settings-integrity-check"),
+                            Some(self.t("settings-integrity-check-desc")),
+                            Toggle::new("toggle-check-integrity", draft_check_integrity)
+                                .aria_label(if draft_check_integrity {
+                                    self.t("settings-integrity-check-disable")
+                                } else {
+                                    self.t("settings-integrity-check-enable")
+                                })
+                                .disabled(pending)
+                                .on_click(move |_, _, cx| {
+                                    integrity_shell
+                                        .update(cx, |shell, cx| {
+                                            shell.toggle_check_integrity(cx);
+                                        })
+                                        .ok();
+                                })
+                                .render(colors),
+                            colors,
+                        ))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(colors.text_muted)
+                                .child(self.t("settings-transfer-policy-hint")),
+                        ),
+                ),
             )
     }
 
@@ -2612,11 +2643,17 @@ impl AppShell {
         let volume_shell = cx.entity().downgrade();
         let volume_control = SegmentedControl::new(
             "settings-notification-volume",
-            NotificationVolumeView::all().map(|volume| Segment::new(volume.label())),
+            NotificationVolumeView::all().map(|volume| {
+                Segment::new(self.t(match volume {
+                    NotificationVolumeView::Normal => "settings-volume-normal",
+                    NotificationVolumeView::Quiet => "settings-volume-quiet",
+                    NotificationVolumeView::Silent => "settings-volume-silent",
+                }))
+            }),
             volume_selected,
             self.theme,
         )
-        .aria_label("Notification volume")
+        .aria_label(self.t("settings-volume-aria"))
         .disabled(pending)
         .on_select(move |index, _window, cx| {
             let volume = NotificationVolumeView::all()
@@ -2637,69 +2674,74 @@ impl AppShell {
         let s3 = cx.entity().downgrade();
         let s4 = cx.entity().downgrade();
         let s5 = cx.entity().downgrade();
-        settings_card("Notifications", colors)
-            .child(settings_row(
-                "Volume",
-                Some("Grouped completion and error surfaces stay in-app. Quiet keeps command feedback but hides automatic toasts; Silent suppresses all toasts."),
+        settings_section_owned(self.t("settings-notifications"), colors)
+            .child(settings_section_row_owned(
+                self.t("settings-volume"),
+                Some(self.t("settings-volume-desc")),
                 volume_control,
                 colors,
             ))
-            .child(settings_row(
-                "On completion",
-                Some("Notify when a download completes."),
+            .child(settings_section_row_owned(
+                self.t("settings-notify-completion"),
+                Some(self.t("settings-notify-completion-desc")),
                 Toggle::new("toggle-notify-completion", draft_completion)
-                    .aria_label(if draft_completion { "Disable completion notices" } else { "Enable completion notices" })
+                    .aria_label(self.t("settings-notify-completion"))
                     .disabled(pending)
                     .on_click(move |_, _, cx| {
-                        s1.update(cx, |shell, cx| shell.toggle_notify_on_completion(cx)).ok();
+                        s1.update(cx, |shell, cx| shell.toggle_notify_on_completion(cx))
+                            .ok();
                     })
                     .render(colors),
                 colors,
             ))
-            .child(settings_row(
-                "On error",
-                Some("Notify when a download fails."),
+            .child(settings_section_row_owned(
+                self.t("settings-notify-error"),
+                Some(self.t("settings-notify-error-desc")),
                 Toggle::new("toggle-notify-error", draft_error)
-                    .aria_label(if draft_error { "Disable error notices" } else { "Enable error notices" })
+                    .aria_label(self.t("settings-notify-error"))
                     .disabled(pending)
                     .on_click(move |_, _, cx| {
-                        s2.update(cx, |shell, cx| shell.toggle_notify_on_error(cx)).ok();
+                        s2.update(cx, |shell, cx| shell.toggle_notify_on_error(cx))
+                            .ok();
                     })
                     .render(colors),
                 colors,
             ))
-            .child(settings_row(
-                "Engine events",
-                Some("Notify on engine start, stop, and errors."),
+            .child(settings_section_row_owned(
+                self.t("settings-notify-engine"),
+                Some(self.t("settings-notify-engine-desc")),
                 Toggle::new("toggle-notify-engine", draft_engine)
-                    .aria_label(if draft_engine { "Disable engine event notices" } else { "Enable engine event notices" })
+                    .aria_label(self.t("settings-notify-engine"))
                     .disabled(pending)
                     .on_click(move |_, _, cx| {
-                        s3.update(cx, |shell, cx| shell.toggle_notify_on_engine_events(cx)).ok();
+                        s3.update(cx, |shell, cx| shell.toggle_notify_on_engine_events(cx))
+                            .ok();
                     })
                     .render(colors),
                 colors,
             ))
-            .child(settings_row(
-                "OS desktop notifications",
-                Some("Send system-level notifications in addition to in-app toasts."),
+            .child(settings_section_row_owned(
+                self.t("settings-notify-os"),
+                Some(self.t("settings-notify-os-desc")),
                 Toggle::new("toggle-os-notifications", draft_os)
-                    .aria_label(if draft_os { "Disable OS desktop notifications" } else { "Enable OS desktop notifications" })
+                    .aria_label(self.t("settings-notify-os"))
                     .disabled(pending)
                     .on_click(move |_, _, cx| {
-                        s4.update(cx, |shell, cx| shell.toggle_os_notifications(cx)).ok();
+                        s4.update(cx, |shell, cx| shell.toggle_os_notifications(cx))
+                            .ok();
                     })
                     .render(colors),
                 colors,
             ))
-            .child(settings_row(
-                "Low disk space warnings",
-                Some("Warn when available disk space drops below the threshold."),
+            .child(settings_section_row_owned(
+                self.t("settings-notify-low-disk"),
+                Some(self.t("settings-notify-low-disk-desc")),
                 Toggle::new("toggle-notify-low-disk", draft_low_disk)
-                    .aria_label(if draft_low_disk { "Disable low disk space warnings" } else { "Enable low disk space warnings" })
+                    .aria_label(self.t("settings-notify-low-disk"))
                     .disabled(pending)
                     .on_click(move |_, _, cx| {
-                        s5.update(cx, |shell, cx| shell.toggle_notify_on_low_disk(cx)).ok();
+                        s5.update(cx, |shell, cx| shell.toggle_notify_on_low_disk(cx))
+                            .ok();
                     })
                     .render(colors),
                 colors,
@@ -2718,11 +2760,16 @@ impl AppShell {
         let close_shell = cx.entity().downgrade();
         let close_control = SegmentedControl::new(
             "settings-close-behavior",
-            CloseBehaviorView::all().map(|behavior| Segment::new(behavior.label())),
+            CloseBehaviorView::all().map(|behavior| {
+                Segment::new(self.t(match behavior {
+                    CloseBehaviorView::MinimizeToTray => "settings-close-minimize",
+                    CloseBehaviorView::Quit => "settings-close-quit",
+                }))
+            }),
             close_behavior_selected,
             self.theme,
         )
-        .aria_label("Window close behavior")
+        .aria_label(self.t("settings-close-behavior-aria"))
         .disabled(pending || !draft_show_tray)
         .on_select(move |index, _window, cx| {
             let behavior = CloseBehaviorView::all()
@@ -2735,34 +2782,36 @@ impl AppShell {
         });
         let s1 = cx.entity().downgrade();
         let s2 = cx.entity().downgrade();
-        settings_card("Window and tray", colors)
-            .child(settings_row(
-                "System tray icon",
-                Some("Show AriaDeck in the system tray."),
+        settings_section_owned(self.t("settings-window-tray"), colors)
+            .child(settings_section_row_owned(
+                self.t("settings-tray-icon"),
+                Some(self.t("settings-tray-icon-desc")),
                 Toggle::new("toggle-show-tray", draft_show_tray)
-                    .aria_label(if draft_show_tray { "Hide system tray icon" } else { "Show system tray icon" })
+                    .aria_label(self.t("settings-tray-icon"))
                     .disabled(pending)
                     .on_click(move |_, _, cx| {
-                        s1.update(cx, |shell, cx| shell.toggle_show_tray_icon(cx)).ok();
+                        s1.update(cx, |shell, cx| shell.toggle_show_tray_icon(cx))
+                            .ok();
                     })
                     .render(colors),
                 colors,
             ))
-            .child(settings_row(
-                "Start minimized to tray",
-                Some("Launch AriaDeck minimized to the tray."),
+            .child(settings_section_row_owned(
+                self.t("settings-start-minimized"),
+                Some(self.t("settings-start-minimized-desc")),
                 Toggle::new("toggle-start-minimized", draft_start_minimized)
-                    .aria_label(if draft_start_minimized { "Disable start minimized to tray" } else { "Enable start minimized to tray" })
+                    .aria_label(self.t("settings-start-minimized"))
                     .disabled(pending || !draft_show_tray)
                     .on_click(move |_, _, cx| {
-                        s2.update(cx, |shell, cx| shell.toggle_start_minimized_to_tray(cx)).ok();
+                        s2.update(cx, |shell, cx| shell.toggle_start_minimized_to_tray(cx))
+                            .ok();
                     })
                     .render(colors),
                 colors,
             ))
-            .child(settings_row(
-                "When I close the window",
-                Some("Closing the window can hide AriaDeck to the tray while downloads continue."),
+            .child(settings_section_row_owned(
+                self.t("settings-close-behavior"),
+                Some(self.t("settings-close-behavior-desc")),
                 close_control,
                 colors,
             ))
@@ -2770,9 +2819,7 @@ impl AppShell {
                 div()
                     .text_xs()
                     .text_color(colors.text_muted)
-                    .child(
-                        "Tray menu: Show AriaDeck, Pause all, Resume all, Quit. Managed aria2 is owned by this process and stops on quit; remote profiles keep their engines running.",
-                    ),
+                    .child(self.t("settings-tray-hint")),
             )
     }
 
@@ -2849,47 +2896,111 @@ impl AppShell {
             .flex_col()
             .gap_4()
             .child(
-                settings_card_owned(app_title, colors)
-                    .child(settings_info_row_owned(name_label, "AriaDeck", colors))
-                    .child(settings_info_row_owned(
+                settings_section_owned(app_title, colors)
+                    .child(settings_section_info_row_owned(
+                        name_label, "AriaDeck", colors,
+                    ))
+                    .child(settings_section_info_row_owned(
                         version_label,
                         env!("CARGO_PKG_VERSION"),
                         colors,
                     ))
-                    .child(settings_info_row_owned(
+                    .child(settings_section_info_row_owned(
                         description_label,
                         description_value,
                         colors,
                     ))
-                    .child(settings_info_row_owned(authors_label, authors, colors)),
+                    .child(settings_section_info_row_owned(
+                        authors_label,
+                        authors,
+                        colors,
+                    )),
             )
             .child(
-                settings_card_owned(runtime_title, colors)
-                    .child(settings_info_row_owned(platform_label, platform, colors))
-                    .child(settings_info_row_owned(aria2_label, aria2_version, colors)),
+                settings_section_owned(runtime_title, colors)
+                    .child(settings_section_info_row_owned(
+                        platform_label,
+                        platform,
+                        colors,
+                    ))
+                    .child(settings_section_info_row_owned(
+                        aria2_label,
+                        aria2_version,
+                        colors,
+                    )),
             )
             .child(
-                settings_card_owned(transfer_title, colors)
-                    .child(settings_row_owned(
+                settings_section_owned(transfer_title, colors)
+                    .child(settings_section_row_owned(
                         settings_export_label,
                         Some(settings_export_description),
                         settings_export_button.render(colors),
                         colors,
                     ))
-                    .child(settings_row_owned(
+                    .child(settings_section_row_owned(
                         settings_import_label,
                         Some(settings_import_description),
                         settings_import_button.render(colors),
                         colors,
                     )),
             )
-            .child(
-                settings_card_owned(diagnostics_title, colors).child(settings_row_owned(
+            .child(settings_section_owned(diagnostics_title, colors).child(
+                settings_section_row_owned(
                     diagnostics_label,
                     Some(diagnostics_description),
                     diagnostic_button.render(colors),
                     colors,
-                )),
-            )
+                ),
+            ))
     }
+}
+
+/// An unframed settings group. The heading divider provides hierarchy without
+/// turning each section into a decorative card.
+fn settings_section_owned(title: impl Into<SharedString>, colors: crate::ThemeColors) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .child(settings_section_heading(title, colors))
+}
+
+fn settings_section_heading(title: impl Into<SharedString>, colors: crate::ThemeColors) -> Div {
+    div()
+        .min_h(px(40.0))
+        .pb_3()
+        .flex()
+        .items_end()
+        .border_b_1()
+        .border_color(colors.border)
+        .text_sm()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(colors.text_primary)
+        .child(title.into())
+}
+
+fn settings_section_row_owned(
+    label: impl Into<SharedString>,
+    description: Option<impl Into<SharedString>>,
+    control: impl IntoElement,
+    colors: crate::ThemeColors,
+) -> Div {
+    div()
+        .min_h(px(64.0))
+        .py_3()
+        .border_b_1()
+        .border_color(colors.border)
+        .child(settings_row_owned(label, description, control, colors))
+}
+
+fn settings_section_info_row_owned(
+    label: impl Into<SharedString>,
+    value: impl Into<SharedString>,
+    colors: crate::ThemeColors,
+) -> Div {
+    div()
+        .min_h(px(48.0))
+        .py_3()
+        .border_b_1()
+        .border_color(colors.border)
+        .child(settings_info_row_owned(label, value, colors))
 }

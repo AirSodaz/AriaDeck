@@ -1842,6 +1842,15 @@ impl CoreSourceView {
             Self::Managed => "Managed",
         }
     }
+
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::Imported => "settings-core-source-imported",
+            Self::Linked => "settings-core-source-linked",
+            Self::Managed => "settings-core-source-managed",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1859,6 +1868,15 @@ impl CoreInstallStatusView {
             Self::Ready => "Ready",
             Self::MissingExecutable => "Missing executable",
             Self::MissingManifest => "Missing manifest",
+        }
+    }
+
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::Ready => "settings-core-status-ready",
+            Self::MissingExecutable => "settings-core-status-missing-executable",
+            Self::MissingManifest => "settings-core-status-missing-manifest",
         }
     }
 }

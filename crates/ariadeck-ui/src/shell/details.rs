@@ -384,7 +384,7 @@ impl AppShell {
                         .flex_col()
                         .gap_2()
                         .child(detail_line_with_action(
-                            "GID",
+                            self.t("dialog-details-gid"),
                             gid.clone(),
                             IconButton::new("copy-task-gid", IconName::Copy)
                                 .aria_label(self.t("dialog-details-copy-gid-aria"))
@@ -516,14 +516,24 @@ impl AppShell {
                         .when(piece_length.is_some() || piece_count.is_some(), |element| {
                             element.child(detail_line(
                                 self.t("dialog-details-pieces"),
-                                format!(
-                                    "{} x {}",
-                                    piece_count
-                                        .map_or_else(|| "?".into(), |value| value.to_string()),
-                                    piece_length.map_or_else(
-                                        || self.t("dialog-details-not-reported"),
-                                        format_bytes,
-                                    )
+                                self.t_args(
+                                    "dialog-details-piece-layout",
+                                    &[
+                                        (
+                                            "count",
+                                            FluentValue::from(piece_count.map_or_else(
+                                                || self.t("dialog-details-not-reported"),
+                                                |value| value.to_string(),
+                                            )),
+                                        ),
+                                        (
+                                            "size",
+                                            FluentValue::from(piece_length.map_or_else(
+                                                || self.t("dialog-details-not-reported"),
+                                                format_bytes,
+                                            )),
+                                        ),
+                                    ],
                                 ),
                                 colors,
                             ))
@@ -860,7 +870,7 @@ impl AppShell {
                                     .gap_2()
                                     .text_xs()
                                     .text_color(colors.text_muted)
-                                    .child(overview.status.label())
+                                    .child(self.t(overview.status.message_key()))
                                     .child(format_percent(overview_progress)),
                             ),
                     )

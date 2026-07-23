@@ -73,6 +73,7 @@ button-save = 保存
 button-close = 关闭
 button-delete = 删除
 button-apply = 应用
+button-clear = 清除
 
 language-system = 跟随系统
 language-english = English

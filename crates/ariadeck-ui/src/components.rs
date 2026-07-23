@@ -1,15 +1,21 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, AnyView, App, AppContext as _, ClickEvent, CursorStyle, ElementId, FocusHandle,
-    Hsla, IntoElement, Render, RenderOnce, Role, SharedString, Stateful, Toggled, Window, div,
-    prelude::*, px, svg,
+    AnyElement, AnyView, App, AppContext as _, BoxShadow, ClickEvent, CursorStyle, ElementId,
+    FocusHandle, Hsla, IntoElement, Render, RenderOnce, Role, SharedString, Stateful, Toggled,
+    Window, div, prelude::*, px, svg,
 };
 
 use crate::{Theme, ThemeColors};
 
 type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 type SelectionHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+
+const CONTROL_RADIUS: f32 = 4.0;
+const OVERLAY_RADIUS: f32 = 6.0;
+const FOCUS_RING_WIDTH: f32 = 2.0;
+const DISABLED_OPACITY: f32 = 0.48;
+const LOADING_OPACITY: f32 = 0.72;
 
 /// The supported embedded Lucide icons.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -248,7 +254,7 @@ impl Render for Tooltip {
             .max_w(px(280.0))
             .px_2()
             .py_1()
-            .rounded_md()
+            .rounded(px(OVERLAY_RADIUS))
             .border_1()
             .border_color(colors.border_strong)
             .bg(colors.elevated_surface)
@@ -393,8 +399,8 @@ impl Button {
                 colors.danger,
                 colors.text_inverse,
                 colors.danger,
-                with_alpha(colors.danger, 0.86),
-                with_alpha(colors.danger, 0.72),
+                emphasized(colors.danger, colors.text_inverse, 0.06),
+                emphasized(colors.danger, colors.text_inverse, 0.1),
             ),
         };
         let tooltip = self.tooltip;
@@ -405,7 +411,7 @@ impl Button {
             .aria_label(aria_label)
             .focusable()
             .tab_stop(enabled)
-            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
+            .focus_visible(move |style| focus_ring(style, colors.focus_ring))
             .h(px(32.0))
             .min_w(px(32.0))
             .flex()
@@ -413,7 +419,7 @@ impl Button {
             .justify_center()
             .gap_2()
             .px_3()
-            .rounded_md()
+            .rounded(px(CONTROL_RADIUS))
             .border_1()
             .border_color(border)
             .bg(background)
@@ -425,7 +431,12 @@ impl Button {
                     .hover(move |style| style.bg(hover))
                     .active(move |style| style.bg(active))
             })
-            .when(!enabled, |button| button.opacity(0.45));
+            .when(self.disabled, |button| {
+                button
+                    .cursor(CursorStyle::OperationNotAllowed)
+                    .opacity(DISABLED_OPACITY)
+            })
+            .when(self.loading, |button| button.opacity(LOADING_OPACITY));
         if let Some(focus) = self.focus {
             button = button.track_focus(&focus);
         }
@@ -585,13 +596,13 @@ impl IconButton {
             .aria_label(label.clone())
             .focusable()
             .tab_stop(enabled)
-            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
+            .focus_visible(move |style| focus_ring(style, colors.focus_ring))
             .size(px(32.0))
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
-            .rounded_md()
+            .rounded(px(CONTROL_RADIUS))
             .border_1()
             .border_color(border)
             .bg(background)
@@ -602,7 +613,12 @@ impl IconButton {
                     .hover(move |style| style.bg(hover))
                     .active(move |style| style.bg(active))
             })
-            .when(!enabled, |button| button.opacity(0.45));
+            .when(self.disabled, |button| {
+                button
+                    .cursor(CursorStyle::OperationNotAllowed)
+                    .opacity(DISABLED_OPACITY)
+            })
+            .when(self.loading, |button| button.opacity(LOADING_OPACITY));
         if let Some(focus) = self.focus {
             button = button.track_focus(&focus);
         }
@@ -789,7 +805,7 @@ impl RenderOnce for SegmentedControl {
             .items_center()
             .gap_0p5()
             .p_0p5()
-            .rounded_lg()
+            .rounded(px(CONTROL_RADIUS))
             .border_1()
             .border_color(colors.border)
             .bg(colors.surface)
@@ -819,7 +835,7 @@ impl RenderOnce for SegmentedControl {
                             .aria_selected(is_selected)
                             .focusable()
                             .tab_stop(!disabled)
-                            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
+                            .focus_visible(move |style| focus_ring(style, colors.focus_ring))
                             .h(px(28.0))
                             .min_w(px(28.0))
                             .flex()
@@ -827,7 +843,7 @@ impl RenderOnce for SegmentedControl {
                             .justify_center()
                             .gap_1p5()
                             .px_2()
-                            .rounded_md()
+                            .rounded(px(CONTROL_RADIUS))
                             .text_xs()
                             .text_color(foreground)
                             .when(is_selected, |button| button.bg(colors.elevated_surface))
@@ -836,7 +852,11 @@ impl RenderOnce for SegmentedControl {
                                     .cursor(CursorStyle::PointingHand)
                                     .hover(move |style| style.bg(colors.surface_hover))
                             })
-                            .when(disabled, |button| button.opacity(0.45))
+                            .when(disabled, |button| {
+                                button
+                                    .cursor(CursorStyle::OperationNotAllowed)
+                                    .opacity(DISABLED_OPACITY)
+                            })
                             .when_some(segment.icon, |button, icon| {
                                 button
                                     .child(Icon::new(icon).size(IconSize::Small).color(foreground))
@@ -875,7 +895,7 @@ impl Dialog {
             description: None,
             body: Vec::new(),
             actions: Vec::new(),
-            width: 440.0,
+            width: 480.0,
             theme,
             key_context: None,
             focus: None,
@@ -929,7 +949,7 @@ impl RenderOnce for Dialog {
             .flex()
             .items_center()
             .justify_center()
-            .bg(with_alpha(colors.background, 0.72))
+            .bg(scrim(colors.background))
             .occlude()
             .child(
                 div()
@@ -944,7 +964,7 @@ impl RenderOnce for Dialog {
                     .max_w_full()
                     .flex()
                     .flex_col()
-                    .rounded_lg()
+                    .rounded(px(OVERLAY_RADIUS))
                     .border_1()
                     .border_color(colors.border_strong)
                     .bg(colors.elevated_surface)
@@ -1002,6 +1022,7 @@ pub struct Toast {
     message: SharedString,
     kind: ToastKind,
     theme: Theme,
+    close_label: SharedString,
     on_close: Option<ClickHandler>,
 }
 
@@ -1018,8 +1039,15 @@ impl Toast {
             message: message.into(),
             kind,
             theme,
+            close_label: "Dismiss notification".into(),
             on_close: None,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn close_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.close_label = label.into();
+        self
     }
 
     #[must_use]
@@ -1044,18 +1072,19 @@ impl RenderOnce for Toast {
         let mut close = div()
             .id(close_id)
             .role(Role::Button)
-            .aria_label("Dismiss notification")
+            .aria_label(self.close_label)
             .focusable()
             .tab_stop(true)
-            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
+            .focus_visible(move |style| focus_ring(style, colors.focus_ring))
             .size(px(26.0))
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
-            .rounded_md()
+            .rounded(px(CONTROL_RADIUS))
             .cursor(CursorStyle::PointingHand)
             .hover(move |style| style.bg(colors.surface_hover))
+            .active(move |style| style.bg(colors.surface_active))
             .child(
                 Icon::new(IconName::X)
                     .size(IconSize::Small)
@@ -1074,7 +1103,7 @@ impl RenderOnce for Toast {
             .items_center()
             .gap_3()
             .p_3()
-            .rounded_lg()
+            .rounded(px(OVERLAY_RADIUS))
             .border_1()
             .border_color(colors.border_strong)
             .bg(colors.elevated_surface)
@@ -1216,7 +1245,7 @@ impl Toggle {
             .aria_toggled(if on { Toggled::True } else { Toggled::False })
             .focusable()
             .tab_stop(enabled)
-            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
+            .focus_visible(move |style| focus_ring(style, colors.focus_ring))
             .min_h(px(32.0))
             .min_w(px(44.0))
             .flex_none()
@@ -1225,12 +1254,16 @@ impl Toggle {
             .justify_center()
             .px_1()
             .py_1()
-            .rounded_md()
+            .rounded(px(CONTROL_RADIUS))
             .when(enabled, |t| {
                 t.cursor(CursorStyle::PointingHand)
                     .hover(move |style| style.bg(with_alpha(hover_bg, 0.35)))
+                    .active(move |style| style.bg(with_alpha(hover_bg, 0.5)))
             })
-            .when(!enabled, |t| t.opacity(0.45))
+            .when(!enabled, |t| {
+                t.cursor(CursorStyle::OperationNotAllowed)
+                    .opacity(DISABLED_OPACITY)
+            })
             .child(
                 div()
                     .w(px(36.0))
@@ -1262,6 +1295,26 @@ fn transparent() -> Hsla {
 fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
     color.a = alpha;
     color
+}
+
+fn emphasized(mut color: Hsla, foreground: Hsla, amount: f32) -> Hsla {
+    color.l = if foreground.l > 0.5 {
+        (color.l - amount).max(0.0)
+    } else {
+        (color.l + amount).min(1.0)
+    };
+    color
+}
+
+fn focus_ring(style: gpui::StyleRefinement, color: Hsla) -> gpui::StyleRefinement {
+    style.shadow(vec![
+        BoxShadow::new(px(0.0), px(0.0), color).spread_radius(px(FOCUS_RING_WIDTH)),
+    ])
+}
+
+fn scrim(background: Hsla) -> Hsla {
+    let alpha = if background.l < 0.5 { 0.68 } else { 0.42 };
+    with_alpha(gpui::rgb(0x000000).into(), alpha)
 }
 
 #[cfg(test)]

@@ -70,14 +70,16 @@ mod task_list;
 use helpers::*;
 
 const SPEED_CHART_SAMPLES: usize = 120;
-const TITLEBAR_HEIGHT: f32 = 56.0;
+const TITLEBAR_HEIGHT: f32 = 52.0;
 const TITLEBAR_SIDE_WIDTH: f32 = 240.0;
 const TITLEBAR_HORIZONTAL_PADDING: f32 = 12.0;
+const SEARCH_MIN_WIDTH: f32 = 300.0;
 const SEARCH_WIDTH: f32 = 460.0;
 const SIDEBAR_WIDTH: f32 = 208.0;
-const DETAILS_DRAWER_WIDTH: f32 = 360.0;
-const TASK_LAYOUT_WIDE_MIN_WIDTH: f32 = 820.0;
-const TASK_ROW_HEIGHT: f32 = 68.0;
+const COMPACT_SIDEBAR_WIDTH: f32 = 184.0;
+const DETAILS_DRAWER_WIDTH: f32 = 380.0;
+const WIDE_SHELL_MIN_WIDTH: f32 = 1280.0;
+const TASK_ROW_HEIGHT: f32 = 64.0;
 const ACTIVITY_HISTORY_LIMIT: usize = 100;
 const ACTIVITY_PANEL_WIDTH: f32 = 360.0;
 /// Minimum gap between revision-driven details re-fetches while the drawer is open (PERF-001).
@@ -94,24 +96,56 @@ pub(crate) enum TaskLayoutMode {
     Wide,
 }
 
-fn task_layout_mode(viewport_width: f32, details_open: bool) -> TaskLayoutMode {
-    let details_width = if details_open {
-        DETAILS_DRAWER_WIDTH
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DetailsPresentation {
+    Inline,
+    Overlay,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ShellLayout {
+    sidebar_width: f32,
+    task_layout: TaskLayoutMode,
+    details_presentation: DetailsPresentation,
+}
+
+fn shell_layout(viewport_width: f32) -> ShellLayout {
+    let wide_shell = viewport_width >= WIDE_SHELL_MIN_WIDTH;
+    let sidebar_width = if wide_shell {
+        SIDEBAR_WIDTH
     } else {
-        0.0
+        COMPACT_SIDEBAR_WIDTH
     };
-    let main_width = viewport_width - SIDEBAR_WIDTH - details_width;
-    if main_width >= TASK_LAYOUT_WIDE_MIN_WIDTH {
+    let details_presentation = if wide_shell {
+        DetailsPresentation::Inline
+    } else {
+        DetailsPresentation::Overlay
+    };
+    let task_layout = if wide_shell {
         TaskLayoutMode::Wide
     } else {
         TaskLayoutMode::Compact
+    };
+    ShellLayout {
+        sidebar_width,
+        task_layout,
+        details_presentation,
     }
+}
+
+// Kept as a small compatibility seam for layout tests and callers that only
+// need the table mode. The full shell uses `shell_layout` for all dimensions.
+#[cfg(test)]
+fn task_layout_mode(viewport_width: f32) -> TaskLayoutMode {
+    shell_layout(viewport_width).task_layout
 }
 
 fn centered_search_bounds(viewport_width: f32) -> (f32, f32) {
     let available_width =
         (viewport_width - 2.0 * (TITLEBAR_SIDE_WIDTH + TITLEBAR_HORIZONTAL_PADDING)).max(0.0);
-    let width = available_width.min(SEARCH_WIDTH);
+    let width = available_width
+        .min(SEARCH_WIDTH)
+        .max(SEARCH_MIN_WIDTH.min(available_width));
     let left = (viewport_width - width) / 2.0;
     (left, left + width)
 }
@@ -2571,14 +2605,14 @@ impl AppShell {
             self.close_remove_confirmation(window, cx);
         } else if self.page == AppPage::Settings {
             self.close_settings(window, cx);
+        } else if self.details_drawer.is_some() {
+            // Overlay and inline drawers both dismiss before clearing search/selection.
+            self.close_task_details(window, cx);
         } else if !self.search_input.read(cx).text().is_empty() {
             self.search_input
                 .update(cx, |input, cx| input.set_text("", cx));
         } else if !self.selected_tasks.is_empty() {
             self.clear_task_selection();
-            cx.notify();
-        } else if self.details_drawer.take().is_some() {
-            window.focus(&self.focus_handle, cx);
             cx.notify();
         } else {
             window.focus(&self.focus_handle, cx);
@@ -3024,15 +3058,12 @@ impl Render for AppShell {
         let colors = self.theme.colors;
         let metadata_drop_enabled =
             self.add_dialog.pending.is_none() && self.add_dialog.preview_pending.is_none();
-        let task_layout = task_layout_mode(
-            f32::from(window.viewport_size().width),
-            self.details_drawer.is_some(),
-        );
+        let shell_layout = shell_layout(f32::from(window.viewport_size().width));
         div()
             .id("download-workspace")
             .key_context("DownloadWorkspace")
             .role(Role::Application)
-            .aria_label("AriaDeck download workspace")
+            .aria_label(self.t("workspace-aria"))
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::focus_search))
             .on_action(cx.listener(Self::select_all_tasks))
@@ -3085,9 +3116,15 @@ impl Render for AppShell {
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(self.render_sidebar(cx))
+                    .child(self.render_sidebar(shell_layout.sidebar_width, cx))
                     .child(match self.page {
-                        AppPage::Downloads => self.render_main(task_layout, cx).into_any_element(),
+                        AppPage::Downloads => self
+                            .render_main(
+                                shell_layout.task_layout,
+                                shell_layout.details_presentation,
+                                cx,
+                            )
+                            .into_any_element(),
                         AppPage::Settings => self.render_settings_page(cx).into_any_element(),
                     }),
             )

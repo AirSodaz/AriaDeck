@@ -182,7 +182,7 @@ pub(crate) fn speed_chart_window(history: &[SpeedSampleView]) -> &[SpeedSampleVi
 }
 
 pub(crate) fn speed_chart_legend(
-    label: &'static str,
+    label: impl Into<SharedString>,
     color: Hsla,
     colors: crate::ThemeColors,
 ) -> Div {
@@ -191,7 +191,7 @@ pub(crate) fn speed_chart_legend(
         .items_center()
         .gap_1()
         .child(div().size(px(6.0)).rounded_sm().bg(color))
-        .child(div().text_color(colors.text_muted).child(label))
+        .child(div().text_color(colors.text_muted).child(label.into()))
 }
 
 pub(crate) fn toolbar_icon_button(
@@ -231,7 +231,7 @@ pub(crate) fn toolbar_icon_button(
 pub(crate) fn queue_move_button(
     id: &'static str,
     icon: IconName,
-    label: &'static str,
+    label: impl Into<SharedString>,
     command: TaskCommandView,
     enabled: bool,
     pending_command: Option<&TaskCommandView>,
@@ -285,19 +285,44 @@ pub(crate) enum ContextMenuAction {
     Remove,
 }
 
+impl ContextMenuAction {
+    pub(crate) const fn element_id(self) -> &'static str {
+        match self {
+            Self::Details => "ctx-menu-details",
+            Self::OpenDownload => "ctx-menu-open-download",
+            Self::OpenFolder => "ctx-menu-open-folder",
+            Self::CopySource => "ctx-menu-copy-source",
+            Self::CopyGid => "ctx-menu-copy-gid",
+            Self::Pause => "ctx-menu-pause",
+            Self::ForcePause => "ctx-menu-force-pause",
+            Self::Resume => "ctx-menu-resume",
+            Self::Retry => "ctx-menu-retry",
+            Self::MoveTop => "ctx-menu-move-top",
+            Self::MoveUp => "ctx-menu-move-up",
+            Self::MoveDown => "ctx-menu-move-down",
+            Self::MoveBottom => "ctx-menu-move-bottom",
+            Self::OutputName => "ctx-menu-output-name",
+            Self::SpeedLimit => "ctx-menu-speed-limit",
+            Self::TaskOptions => "ctx-menu-task-options",
+            Self::Remove => "ctx-menu-remove",
+        }
+    }
+}
+
 pub(crate) fn context_menu_item(
     action: ContextMenuAction,
-    label: &'static str,
+    label: impl Into<SharedString>,
     shortcut: Option<&'static str>,
     enabled: bool,
     destructive: bool,
     colors: crate::ThemeColors,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
+    let label = label.into();
     div()
-        .id(SharedString::from(format!("ctx-menu-{label}")))
+        .id(action.element_id())
         .role(Role::MenuItem)
-        .aria_label(label)
+        .aria_label(label.clone())
         .focusable()
         .tab_stop(enabled)
         .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
@@ -481,53 +506,6 @@ pub(crate) fn settings_path_field_row(
 
 /// A titled card used as the visual container for one settings group.
 /// Children are appended with `.child()` on the returned `Div`.
-pub(crate) fn settings_card(title: &'static str, colors: crate::ThemeColors) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .px_4()
-        .py_4()
-        .rounded_lg()
-        .border_1()
-        .border_color(colors.border)
-        .bg(colors.elevated_surface)
-        .child(
-            div()
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(colors.text_primary)
-                .child(title),
-        )
-}
-
-/// A settings row with a label (+ optional muted description) on the left
-/// and an arbitrary control (`toggle`, `Button`, `SegmentedControl`, …) on the right.
-pub(crate) fn settings_row(
-    label: &'static str,
-    description: Option<&'static str>,
-    control: impl IntoElement,
-    colors: crate::ThemeColors,
-) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap_4()
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap_0p5()
-                .child(div().text_sm().text_color(colors.text_primary).child(label))
-                .when_some(description, |col, desc| {
-                    col.child(div().text_xs().text_color(colors.text_muted).child(desc))
-                }),
-        )
-        .child(div().flex_none().child(control))
-}
-
 pub(crate) fn filter_icon(filter: WorkspaceFilter) -> IconName {
     match filter {
         WorkspaceFilter::All => IconName::List,
@@ -1149,31 +1127,6 @@ pub(crate) fn task_status_badge(
 pub(crate) fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
     color.a = alpha;
     color
-}
-
-/// Owned-string variant of [`settings_card`] for translated titles.
-pub(crate) fn settings_card_owned(
-    title: impl Into<SharedString>,
-    colors: crate::ThemeColors,
-) -> Div {
-    let title = title.into();
-    div()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .px_4()
-        .py_4()
-        .rounded_lg()
-        .border_1()
-        .border_color(colors.border)
-        .bg(colors.elevated_surface)
-        .child(
-            div()
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(colors.text_primary)
-                .child(title),
-        )
 }
 
 /// Owned-string variant of [`settings_row`] for translated labels.

@@ -139,7 +139,7 @@ impl AppShell {
             .render(colors)
     }
 
-    pub(crate) fn render_sidebar(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn render_sidebar(&mut self, sidebar_width: f32, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
         let mut filters = Vec::with_capacity(WorkspaceFilter::ALL.len());
         for filter in WorkspaceFilter::ALL {
@@ -185,7 +185,7 @@ impl AppShell {
                     } else {
                         colors.text_muted
                     }))
-                    .child(div().flex_1().child(filter.short_label()))
+                    .child(div().flex_1().child(self.t(filter.message_key())))
                     .child(
                         div()
                             .h(px(22.0))
@@ -218,15 +218,36 @@ impl AppShell {
             .active()
             .map(|profile| profile.name.clone())
             .unwrap_or_else(|| self.t("no-profile"));
-        let active_profile_kind = self
-            .profiles
-            .active()
-            .map(|profile| profile.kind.label())
-            .unwrap_or("—");
+        let active_profile_kind = self.profiles.active().map_or_else(
+            || "—".to_owned(),
+            |profile| {
+                self.t(match profile.kind {
+                    ProfileKindView::LocalManaged => "profile-kind-local-managed",
+                    ProfileKindView::RemoteRpc => "profile-kind-remote-rpc",
+                })
+            },
+        );
         let profile_count = self.profiles.profiles.len();
+        let active_profile_aria = self.t_args(
+            "active-profile-aria",
+            &[
+                ("name", FluentValue::from(active_profile_name.as_str())),
+                ("kind", FluentValue::from(active_profile_kind.as_str())),
+            ],
+        );
+        let profile_summary = self.t_args(
+            "active-profile-summary",
+            &[
+                ("kind", FluentValue::from(active_profile_kind.as_str())),
+                (
+                    "count",
+                    FluentValue::from(i64::try_from(profile_count).unwrap_or(i64::MAX)),
+                ),
+            ],
+        );
 
         div()
-            .w(px(SIDEBAR_WIDTH))
+            .w(px(sidebar_width))
             .flex_none()
             .flex()
             .flex_col()
@@ -244,9 +265,7 @@ impl AppShell {
                         div()
                             .id("active-profile-banner")
                             .role(Role::Status)
-                            .aria_label(format!(
-                                "Active profile {active_profile_name}, {active_profile_kind}"
-                            ))
+                            .aria_label(active_profile_aria)
                             .px_3()
                             .py_2()
                             .rounded_md()
@@ -258,10 +277,12 @@ impl AppShell {
                                     .text_color(colors.text_primary)
                                     .child(active_profile_name),
                             )
-                            .child(div().text_xs().text_color(colors.text_muted).child(format!(
-                                "{active_profile_kind} · {profile_count} profile{}",
-                                if profile_count == 1 { "" } else { "s" }
-                            ))),
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(colors.text_muted)
+                                    .child(profile_summary),
+                            ),
                     )
                     .child(div().flex().flex_col().gap_1().children(filters)),
             )
@@ -330,20 +351,28 @@ impl AppShell {
         div()
             .id("speed-history-chart")
             .role(Role::Group)
-            .aria_label(format!(
-                "Transfer speed for the last minute, current download {}, current upload {}, peak {}",
-                format_rate(self.snapshot.download_rate),
-                format_rate(self.snapshot.upload_rate),
-                format_rate(max_rate)
+            .aria_label(self.t_args(
+                "speed-chart-aria",
+                &[
+                    (
+                        "download",
+                        FluentValue::from(format_rate(self.snapshot.download_rate)),
+                    ),
+                    (
+                        "upload",
+                        FluentValue::from(format_rate(self.snapshot.upload_rate)),
+                    ),
+                    ("peak", FluentValue::from(format_rate(max_rate))),
+                ],
             ))
             .h(px(144.0))
             .w(px(280.0))
             .flex_none()
             .flex()
             .flex_col()
-                    .gap_2()
-                    .p_3()
-                    .rounded_md()
+            .gap_2()
+            .p_3()
+            .rounded_md()
             .border_1()
             .border_color(colors.border_strong)
             .bg(colors.elevated_surface)
@@ -383,8 +412,16 @@ impl AppShell {
                     .gap_3()
                     .text_xs()
                     .text_color(colors.text_muted)
-                    .child(speed_chart_legend("Down", colors.progress_download, colors))
-                    .child(speed_chart_legend("Up", colors.progress_upload, colors)),
+                    .child(speed_chart_legend(
+                        self.t("speed-download"),
+                        colors.progress_download,
+                        colors,
+                    ))
+                    .child(speed_chart_legend(
+                        self.t("speed-upload"),
+                        colors.progress_upload,
+                        colors,
+                    )),
             )
     }
 
@@ -501,7 +538,10 @@ impl AppShell {
                             .id("stopped-history-status")
                             .role(if can_load { Role::Button } else { Role::Status })
                             .aria_label(if can_load {
-                                format!("{label}. Load more stopped results.")
+                                self.t_args(
+                                    "stopped-history-load-more-aria",
+                                    &[("summary", FluentValue::from(label.as_str()))],
+                                )
                             } else {
                                 label.clone()
                             })
@@ -571,9 +611,9 @@ impl AppShell {
                         },
                     ))
                     .child(if activity_count == 0 {
-                        "Activity".to_owned()
+                        self.t("activity-title")
                     } else {
-                        format!("Activity · {activity_count}")
+                        self.t_count("activity-count", activity_count as u64)
                     })
             })
             .child(
@@ -582,10 +622,18 @@ impl AppShell {
                     .focusable()
                     .tab_stop(true)
                     .role(Role::Button)
-                    .aria_label(format!(
-                        "Transfer speed, download {}, upload {}; show last minute chart",
-                        format_rate(self.snapshot.download_rate),
-                        format_rate(self.snapshot.upload_rate)
+                    .aria_label(self.t_args(
+                        "transfer-speed-aria",
+                        &[
+                            (
+                                "download",
+                                FluentValue::from(format_rate(self.snapshot.download_rate)),
+                            ),
+                            (
+                                "upload",
+                                FluentValue::from(format_rate(self.snapshot.upload_rate)),
+                            ),
+                        ],
                     ))
                     .aria_expanded(self.speed_popover_open)
                     .h_full()
@@ -657,7 +705,7 @@ impl AppShell {
         let left = f32::from(position.x).max(8.0);
         let top = f32::from(position.y).max(8.0);
 
-        let item = |action: TextFieldContextAction, label: &'static str, enabled: bool| {
+        let item = |action: TextFieldContextAction, label: String, enabled: bool| {
             let id = match action {
                 TextFieldContextAction::Cut => "shell-text-ctx-cut",
                 TextFieldContextAction::Copy => "shell-text-ctx-copy",
@@ -667,7 +715,7 @@ impl AppShell {
             div()
                 .id(id)
                 .role(Role::MenuItem)
-                .aria_label(label)
+                .aria_label(label.clone())
                 .focusable()
                 .tab_stop(enabled)
                 .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
@@ -738,12 +786,24 @@ impl AppShell {
                     .gap_0p5()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                    .child(item(TextFieldContextAction::Cut, "Cut", can_cut))
-                    .child(item(TextFieldContextAction::Copy, "Copy", can_copy))
-                    .child(item(TextFieldContextAction::Paste, "Paste", can_paste))
+                    .child(item(
+                        TextFieldContextAction::Cut,
+                        self.t("text-cut"),
+                        can_cut,
+                    ))
+                    .child(item(
+                        TextFieldContextAction::Copy,
+                        self.t("text-copy"),
+                        can_copy,
+                    ))
+                    .child(item(
+                        TextFieldContextAction::Paste,
+                        self.t("text-paste"),
+                        can_paste,
+                    ))
                     .child(item(
                         TextFieldContextAction::SelectAll,
-                        "Select all",
+                        self.t("select-all"),
                         can_select_all,
                     )),
             )
@@ -812,7 +872,7 @@ impl AppShell {
                                     .items_center()
                                     .gap_1()
                                     .child(
-                                        Button::new("clear-activity-log", "Clear")
+                                        Button::new("clear-activity-log", self.t("button-clear"))
                                             .aria_label(self.t("action-clear-activity"))
                                             .style(ButtonStyle::Secondary)
                                             .disabled(entries.is_empty())
@@ -835,9 +895,7 @@ impl AppShell {
                         div()
                             .text_xs()
                             .text_color(colors.text_muted)
-                            .child(
-                                "Recent completion, error, and engine events for this session. Grouped when many finish together.",
-                            ),
+                            .child(self.t("activity-description")),
                     )
                     .child(if entries.is_empty() {
                         div()
@@ -869,10 +927,7 @@ impl AppShell {
                                     ActivityKindView::Info => colors.text_muted,
                                 };
                                 div()
-                                    .id(SharedString::from(format!(
-                                        "activity-entry-{}",
-                                        entry.id
-                                    )))
+                                    .id(SharedString::from(format!("activity-entry-{}", entry.id)))
                                     .flex()
                                     .flex_col()
                                     .gap_1()
@@ -886,36 +941,51 @@ impl AppShell {
                                             .flex()
                                             .items_center()
                                             .gap_2()
-                                            .child(
-                                                StatusIndicator::new(kind_color).icon(
-                                                    match entry.kind {
-                                                        ActivityKindView::Completion => {
-                                                            IconName::CircleCheck
-                                                        }
-                                                        ActivityKindView::Error => IconName::CircleX,
-                                                        ActivityKindView::Engine => {
-                                                            IconName::TriangleAlert
-                                                        }
-                                                        ActivityKindView::Command => {
-                                                            IconName::Activity
-                                                        }
-                                                        ActivityKindView::Info => IconName::Info,
-                                                    },
-                                                ),
-                                            )
+                                            .child(StatusIndicator::new(kind_color).icon(
+                                                match entry.kind {
+                                                    ActivityKindView::Completion => {
+                                                        IconName::CircleCheck
+                                                    }
+                                                    ActivityKindView::Error => IconName::CircleX,
+                                                    ActivityKindView::Engine => {
+                                                        IconName::TriangleAlert
+                                                    }
+                                                    ActivityKindView::Command => IconName::Activity,
+                                                    ActivityKindView::Info => IconName::Info,
+                                                },
+                                            ))
                                             .child(
                                                 div()
                                                     .text_xs()
                                                     .font_weight(FontWeight::MEDIUM)
                                                     .text_color(colors.text_muted)
-                                                    .child(entry.kind.label()),
+                                                    .child(self.t(match entry.kind {
+                                                        ActivityKindView::Completion => {
+                                                            "activity-kind-completion"
+                                                        }
+                                                        ActivityKindView::Error => {
+                                                            "activity-kind-error"
+                                                        }
+                                                        ActivityKindView::Engine => {
+                                                            "activity-kind-engine"
+                                                        }
+                                                        ActivityKindView::Command => {
+                                                            "activity-kind-command"
+                                                        }
+                                                        ActivityKindView::Info => {
+                                                            "activity-kind-info"
+                                                        }
+                                                    })),
                                             )
                                             .when(entry.count > 1, |element| {
                                                 element.child(
                                                     div()
                                                         .text_xs()
                                                         .text_color(colors.text_muted)
-                                                        .child(format!("x{}", entry.count)),
+                                                        .child(self.t_count(
+                                                            "activity-repeated-count",
+                                                            u64::from(entry.count),
+                                                        )),
                                                 )
                                             }),
                                     )
@@ -955,6 +1025,7 @@ impl AppShell {
             .bottom(px(44.0))
             .child(
                 Toast::new("operation-toast", notice.message.clone(), kind, self.theme)
+                    .close_label(self.t("dismiss-notification"))
                     .on_close(cx.listener(|this, _, _, cx| this.dismiss_notice(cx))),
             )
             .into_any_element()

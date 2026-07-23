@@ -80,6 +80,7 @@ button-save = Save
 button-close = Close
 button-delete = Delete
 button-apply = Apply
+button-clear = Clear
 
 # Language preference labels
 language-system = System

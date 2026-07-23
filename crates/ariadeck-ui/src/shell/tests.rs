@@ -122,11 +122,23 @@ fn metadata_preview(
 }
 
 #[test]
-fn task_layout_uses_the_remaining_main_pane_width() {
-    assert_eq!(task_layout_mode(1_180.0, false), TaskLayoutMode::Wide);
-    assert_eq!(task_layout_mode(1_180.0, true), TaskLayoutMode::Compact);
-    assert_eq!(task_layout_mode(960.0, false), TaskLayoutMode::Compact);
-    assert_eq!(task_layout_mode(1_400.0, true), TaskLayoutMode::Wide);
+fn task_layout_follows_viewport_shell_breakpoint() {
+    assert_eq!(task_layout_mode(1_180.0), TaskLayoutMode::Compact);
+    assert_eq!(task_layout_mode(960.0), TaskLayoutMode::Compact);
+    assert_eq!(task_layout_mode(1_400.0), TaskLayoutMode::Wide);
+}
+
+#[test]
+fn shell_breakpoints_select_sidebar_and_details_presentation() {
+    let compact = shell_layout(1_279.0);
+    assert_eq!(compact.sidebar_width, COMPACT_SIDEBAR_WIDTH);
+    assert_eq!(compact.details_presentation, DetailsPresentation::Overlay);
+    assert_eq!(compact.task_layout, TaskLayoutMode::Compact);
+
+    let wide = shell_layout(1_280.0);
+    assert_eq!(wide.sidebar_width, SIDEBAR_WIDTH);
+    assert_eq!(wide.details_presentation, DetailsPresentation::Inline);
+    assert_eq!(wide.task_layout, TaskLayoutMode::Wide);
 }
 
 #[test]

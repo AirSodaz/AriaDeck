@@ -23,7 +23,7 @@ impl AppShell {
             Toggled::Mixed => IconName::SquareMinus,
         };
         let header = div()
-            .h(px(36.0))
+            .h(px(32.0))
             .flex_none()
             .flex()
             .items_center()
@@ -40,8 +40,8 @@ impl AppShell {
                     .id("select-all-tasks")
                     .role(Role::CheckBox)
                     .aria_label(match selection_state {
-                        Toggled::True => "Clear selection",
-                        Toggled::False | Toggled::Mixed => "Select all visible tasks",
+                        Toggled::True => self.t("action-clear-selection"),
+                        Toggled::False | Toggled::Mixed => self.t("action-select-all-visible"),
                     })
                     .aria_toggled(selection_state)
                     .focusable()
@@ -83,7 +83,12 @@ impl AppShell {
                         .child(self.t("ui-col-down-up")),
                 )
                 .child(div().w(px(124.0)).flex_none().child(self.t("ui-col-size")))
-                .child(div().w(px(72.0)).flex_none().child("ETA / seed"))
+                .child(
+                    div()
+                        .w(px(72.0))
+                        .flex_none()
+                        .child(self.t("ui-col-eta-seed")),
+                )
                 .child(
                     div()
                         .w(px(86.0))
@@ -109,7 +114,12 @@ impl AppShell {
         }
     }
 
-    pub(crate) fn render_main(&mut self, layout: TaskLayoutMode, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn render_main(
+        &mut self,
+        layout: TaskLayoutMode,
+        details_presentation: DetailsPresentation,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let colors = self.theme.colors;
         let task_count = self.snapshot.tasks.len();
         let selected_count = self.visible_selected_task_count();
@@ -121,7 +131,10 @@ impl AppShell {
                 div()
                     .id("download-task-list")
                     .role(Role::List)
-                    .aria_label(format!("Downloads, {task_count} visible tasks"))
+                    .aria_label(self.t_count(
+                        "download-list-aria",
+                        u64::try_from(task_count).unwrap_or(u64::MAX),
+                    ))
                     .size_full()
                     .child(
                         uniform_list(
@@ -154,7 +167,7 @@ impl AppShell {
             .bg(colors.background)
             .child(
                 div()
-                    .h(px(52.0))
+                    .h(px(48.0))
                     .flex_none()
                     .flex()
                     .items_center()
@@ -170,14 +183,17 @@ impl AppShell {
                                 div()
                                     .text_base()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(self.query.filter.label()),
+                                    .child(self.t(self.query.filter.message_key())),
                             )
                             .child(
                                 div()
                                     .font_features(tabular_numbers())
                                     .text_xs()
                                     .text_color(colors.text_muted)
-                                    .child(format!("{task_count} visible")),
+                                    .child(self.t_count(
+                                        "visible-task-count",
+                                        u64::try_from(task_count).unwrap_or(u64::MAX),
+                                    )),
                             )
                             .when(selected_count > 0 || hidden_selected_count > 0, |element| {
                                 element.child(
@@ -186,11 +202,30 @@ impl AppShell {
                                         .text_xs()
                                         .text_color(colors.text_secondary)
                                         .child(if hidden_selected_count > 0 {
-                                            format!(
-                                                "{selected_count} selected, {hidden_selected_count} hidden"
+                                            self.t_args(
+                                                "selected-task-count-with-hidden",
+                                                &[
+                                                    (
+                                                        "selected",
+                                                        FluentValue::from(
+                                                            i64::try_from(selected_count)
+                                                                .unwrap_or(i64::MAX),
+                                                        ),
+                                                    ),
+                                                    (
+                                                        "hidden",
+                                                        FluentValue::from(
+                                                            i64::try_from(hidden_selected_count)
+                                                                .unwrap_or(i64::MAX),
+                                                        ),
+                                                    ),
+                                                ],
                                             )
                                         } else {
-                                            format!("{selected_count} selected")
+                                            self.t_count(
+                                                "selected-task-count",
+                                                u64::try_from(selected_count).unwrap_or(u64::MAX),
+                                            )
                                         }),
                                 )
                             })
@@ -201,15 +236,39 @@ impl AppShell {
             .child(self.render_task_header(layout, cx))
             .child(div().flex_1().min_h_0().child(content));
 
-        div()
+        let pane = div()
+            .relative()
             .flex_1()
             .min_w_0()
             .min_h_0()
             .flex()
-            .child(center)
-            .when(self.details_drawer.is_some(), |element| {
-                element.child(self.render_task_details_drawer(cx))
-            })
+            .child(center);
+
+        match (self.details_drawer.is_some(), details_presentation) {
+            (true, DetailsPresentation::Inline) => pane.child(self.render_task_details_drawer(cx)),
+            (true, DetailsPresentation::Overlay) => pane.child(
+                div()
+                    .id("task-details-overlay")
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .justify_end()
+                    .bg(with_alpha(colors.background, 0.48))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            this.close_task_details(window, cx);
+                        }),
+                    )
+                    .child(
+                        div()
+                            .h_full()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(self.render_task_details_drawer(cx)),
+                    ),
+            ),
+            (false, _) => pane,
+        }
     }
 
     pub(crate) fn render_task_context_menu(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -253,54 +312,54 @@ impl AppShell {
             .as_deref()
             .is_some_and(|value| !value.is_empty());
 
-        let mut entries: Vec<(
-            ContextMenuAction,
-            &'static str,
-            Option<&'static str>,
-            bool,
-            bool,
-        )> = vec![
+        let mut entries: Vec<(ContextMenuAction, String, Option<&'static str>, bool, bool)> = vec![
             (
                 ContextMenuAction::Details,
-                "Details",
+                self.t("action-details"),
                 Some("Enter"),
                 true,
                 false,
             ),
             (
                 ContextMenuAction::OpenDownload,
-                "Open download",
+                self.t("action-open-file"),
                 None,
                 path_actions,
                 false,
             ),
             (
                 ContextMenuAction::OpenFolder,
-                "Open folder",
+                self.t("action-open-folder"),
                 None,
                 path_actions,
                 false,
             ),
             (
                 ContextMenuAction::CopySource,
-                "Copy source",
+                self.t("action-copy-source"),
                 None,
                 has_source,
                 false,
             ),
-            (ContextMenuAction::CopyGid, "Copy GID", None, true, false),
+            (
+                ContextMenuAction::CopyGid,
+                self.t("action-copy-gid"),
+                None,
+                true,
+                false,
+            ),
         ];
         if task.status.can_pause() {
             entries.push((
                 ContextMenuAction::Pause,
-                "Pause",
+                self.t("action-pause"),
                 Some("Cmd+Shift+P"),
                 can_pause,
                 false,
             ));
             entries.push((
                 ContextMenuAction::ForcePause,
-                "Force pause",
+                self.t("action-force-pause"),
                 None,
                 can_force_pause,
                 false,
@@ -309,7 +368,7 @@ impl AppShell {
         if task.status.can_resume() {
             entries.push((
                 ContextMenuAction::Resume,
-                "Resume",
+                self.t("action-resume"),
                 Some("Cmd+Shift+R"),
                 can_resume,
                 false,
@@ -318,7 +377,7 @@ impl AppShell {
         if task.status.can_retry() {
             entries.push((
                 ContextMenuAction::Retry,
-                "Retry",
+                self.t("action-retry"),
                 Some("Cmd+Alt+R"),
                 can_retry,
                 false,
@@ -327,28 +386,28 @@ impl AppShell {
         if task.status.can_move_in_queue() {
             entries.push((
                 ContextMenuAction::MoveTop,
-                "Move to top",
+                self.t("action-move-queue-top"),
                 Some("Cmd+Shift+Home"),
                 can_queue,
                 false,
             ));
             entries.push((
                 ContextMenuAction::MoveUp,
-                "Move up",
+                self.t("action-move-queue-up"),
                 Some("Cmd+Shift+Up"),
                 can_queue,
                 false,
             ));
             entries.push((
                 ContextMenuAction::MoveDown,
-                "Move down",
+                self.t("action-move-queue-down"),
                 Some("Cmd+Shift+Down"),
                 can_queue,
                 false,
             ));
             entries.push((
                 ContextMenuAction::MoveBottom,
-                "Move to bottom",
+                self.t("action-move-queue-bottom"),
                 Some("Cmd+Shift+End"),
                 can_queue,
                 false,
@@ -357,7 +416,7 @@ impl AppShell {
         if task.can_set_output_name() {
             entries.push((
                 ContextMenuAction::OutputName,
-                "Change output name",
+                self.t("action-change-output-name"),
                 Some("F2"),
                 can_output,
                 false,
@@ -366,14 +425,14 @@ impl AppShell {
         if task.status.can_set_speed_limit() {
             entries.push((
                 ContextMenuAction::SpeedLimit,
-                "Set speed limits",
+                self.t("action-set-speed-limits"),
                 None,
                 can_speed,
                 false,
             ));
             entries.push((
                 ContextMenuAction::TaskOptions,
-                "Edit task options",
+                self.t("action-edit-task-options"),
                 None,
                 can_speed,
                 false,
@@ -381,7 +440,7 @@ impl AppShell {
         }
         entries.push((
             ContextMenuAction::Remove,
-            "Remove",
+            self.t("action-remove"),
             Some("Delete"),
             can_remove,
             true,
@@ -419,7 +478,10 @@ impl AppShell {
                     .bg(colors.elevated_surface)
                     .shadow_md()
                     .role(Role::Menu)
-                    .aria_label(format!("Actions for {display_name}"))
+                    .aria_label(self.t_args(
+                        "task-actions-aria",
+                        &[("name", FluentValue::from(display_name.as_str()))],
+                    ))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                     .flex()
@@ -516,7 +578,7 @@ impl AppShell {
             .pending_global_task_command
             .as_ref()
             .map(|pending| pending.command);
-        let sort_label = self.query.sort_key.label();
+        let sort_label = self.t(sort_key_message_key(self.query.sort_key));
 
         div()
             .ml_2()
@@ -525,11 +587,11 @@ impl AppShell {
             .gap_1()
             .child(
                 IconButton::new("pause-all-action", IconName::Pause)
-                    .aria_label("Pause all tasks")
+                    .aria_label(self.t("action-pause-all-aria"))
                     .style(ButtonStyle::Ghost)
                     .disabled(!commands_available)
                     .loading(pending_global == Some(GlobalTaskCommandView::PauseAll))
-                    .tooltip(Tooltip::new("Pause all"))
+                    .tooltip(Tooltip::new(self.t("action-pause-all")))
                     .render(colors)
                     .when(commands_available, |button| {
                         button.on_click(cx.listener(|this, _, _, cx| {
@@ -539,17 +601,18 @@ impl AppShell {
             )
             .child(
                 IconButton::new("force-pause-all-action", IconName::Square)
-                    .aria_label("Force pause all tasks")
+                    .aria_label(self.t("action-force-pause-all-aria"))
                     .style(ButtonStyle::Ghost)
                     .disabled(!commands_available || !self.snapshot.capabilities.force_pause_all)
                     .loading(pending_global == Some(GlobalTaskCommandView::ForcePauseAll))
                     .tooltip(Tooltip::new(
                         if self.snapshot.capabilities.force_pause_all {
-                            "Force pause all"
+                            self.t("action-force-pause-all")
                         } else {
                             self.snapshot
                                 .capabilities
                                 .unsupported_force_pause_all_message()
+                                .to_owned()
                         },
                     ))
                     .render(colors)
@@ -567,11 +630,11 @@ impl AppShell {
             )
             .child(
                 IconButton::new("resume-all-action", IconName::Play)
-                    .aria_label("Resume all tasks")
+                    .aria_label(self.t("action-resume-all-aria"))
                     .style(ButtonStyle::Ghost)
                     .disabled(!commands_available)
                     .loading(pending_global == Some(GlobalTaskCommandView::ResumeAll))
-                    .tooltip(Tooltip::new("Resume all"))
+                    .tooltip(Tooltip::new(self.t("action-resume-all")))
                     .render(colors)
                     .when(commands_available, |button| {
                         button.on_click(cx.listener(|this, _, _, cx| {
@@ -585,7 +648,10 @@ impl AppShell {
                     .focusable()
                     .tab_stop(true)
                     .role(Role::Button)
-                    .aria_label(format!("Sort by {sort_label}"))
+                    .aria_label(self.t_args(
+                        "sort-by-aria",
+                        &[("key", FluentValue::from(sort_label.as_str()))],
+                    ))
                     .aria_expanded(self.sort_popover_open)
                     .h(px(28.0))
                     .px_2()
@@ -618,7 +684,7 @@ impl AppShell {
         let mut menu = div()
             .id("sort-menu")
             .role(Role::Menu)
-            .aria_label("Sort downloads")
+            .aria_label(self.t("sort-downloads-aria"))
             .absolute()
             .right(px(12.0))
             .top(px(96.0))
@@ -644,11 +710,15 @@ impl AppShell {
 
         for key in WorkspaceSortKey::ALL {
             let selected = key == current_key;
+            let key_label = self.t(sort_key_message_key(key));
             menu = menu.child(
                 div()
                     .id(SharedString::from(format!("sort-key-{}", key.key())))
                     .role(Role::Button)
-                    .aria_label(format!("Sort by {}", key.label()))
+                    .aria_label(self.t_args(
+                        "sort-by-aria",
+                        &[("key", FluentValue::from(key_label.as_str()))],
+                    ))
                     .focusable()
                     .tab_stop(true)
                     .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
@@ -676,7 +746,7 @@ impl AppShell {
                                 .color(colors.accent),
                         )
                     }))
-                    .child(div().flex_1().child(key.label())),
+                    .child(div().flex_1().child(key_label)),
             );
         }
 
@@ -695,6 +765,7 @@ impl AppShell {
             WorkspaceSortDirection::Descending,
         ] {
             let selected = direction == current_direction;
+            let direction_label = self.t(sort_direction_message_key(direction));
             let icon = match direction {
                 WorkspaceSortDirection::Ascending => IconName::ArrowUp,
                 WorkspaceSortDirection::Descending => IconName::ArrowDown,
@@ -706,7 +777,10 @@ impl AppShell {
                         WorkspaceSortDirection::Descending => "sort-direction-descending",
                     }))
                     .role(Role::Button)
-                    .aria_label(format!("{} order", direction.label()))
+                    .aria_label(self.t_args(
+                        "sort-direction-aria",
+                        &[("direction", FluentValue::from(direction_label.as_str()))],
+                    ))
                     .aria_toggled(if selected {
                         Toggled::True
                     } else {
@@ -739,7 +813,7 @@ impl AppShell {
                             colors.text_muted
                         }),
                     ))
-                    .child(div().flex_1().child(direction.label())),
+                    .child(div().flex_1().child(direction_label)),
             );
         }
 
@@ -790,7 +864,7 @@ impl AppShell {
                 toolbar_icon_button(
                     "task-details-action",
                     IconName::PanelRight,
-                    "Details",
+                    self.t("action-details"),
                     ToolbarButtonState::from_flags(details_enabled, false),
                     false,
                     Some("Enter"),
@@ -810,7 +884,7 @@ impl AppShell {
                         toolbar_icon_button(
                             "pause-task-action",
                             IconName::Pause,
-                            "Pause",
+                            self.t("action-pause"),
                             ToolbarButtonState::from_flags(
                                 pause_enabled,
                                 pending_command == Some(TaskCommandView::Pause),
@@ -830,9 +904,12 @@ impl AppShell {
                             "force-pause-task-action",
                             IconName::Square,
                             if self.snapshot.capabilities.force_pause {
-                                "Force pause"
+                                self.t("action-force-pause")
                             } else {
-                                self.snapshot.capabilities.unsupported_force_pause_message()
+                                self.snapshot
+                                    .capabilities
+                                    .unsupported_force_pause_message()
+                                    .to_owned()
                             },
                             ToolbarButtonState::from_flags(
                                 force_pause_enabled,
@@ -854,7 +931,7 @@ impl AppShell {
                     toolbar_icon_button(
                         "resume-task-action",
                         IconName::Play,
-                        "Resume",
+                        self.t("action-resume"),
                         ToolbarButtonState::from_flags(
                             resume_enabled,
                             pending_command == Some(TaskCommandView::Resume),
@@ -878,7 +955,7 @@ impl AppShell {
                         queue_move_button(
                             "queue-move-top-action",
                             IconName::ChevronsUp,
-                            "Move to top",
+                            self.t("action-move-queue-top"),
                             TaskCommandView::MoveToQueueTop,
                             queue_enabled,
                             pending_command.as_ref(),
@@ -889,7 +966,7 @@ impl AppShell {
                         queue_move_button(
                             "queue-move-up-action",
                             IconName::ChevronUp,
-                            "Move up",
+                            self.t("action-move-queue-up"),
                             TaskCommandView::MoveUpInQueue,
                             queue_enabled,
                             pending_command.as_ref(),
@@ -900,7 +977,7 @@ impl AppShell {
                         queue_move_button(
                             "queue-move-down-action",
                             IconName::ChevronDown,
-                            "Move down",
+                            self.t("action-move-queue-down"),
                             TaskCommandView::MoveDownInQueue,
                             queue_enabled,
                             pending_command.as_ref(),
@@ -911,7 +988,7 @@ impl AppShell {
                         queue_move_button(
                             "queue-move-bottom-action",
                             IconName::ChevronsDown,
-                            "Move to bottom",
+                            self.t("action-move-queue-bottom"),
                             TaskCommandView::MoveToQueueBottom,
                             queue_enabled,
                             pending_command.as_ref(),
@@ -927,7 +1004,7 @@ impl AppShell {
                     toolbar_icon_button(
                         "retry-task-action",
                         IconName::RotateCcw,
-                        "Retry",
+                        self.t("action-retry"),
                         ToolbarButtonState::from_flags(
                             retry_enabled,
                             pending_command == Some(TaskCommandView::Retry),
@@ -948,7 +1025,7 @@ impl AppShell {
                     toolbar_icon_button(
                         "task-output-name-action",
                         IconName::Pencil,
-                        "Change output name",
+                        self.t("action-change-output-name"),
                         ToolbarButtonState::from_flags(commands_available, false),
                         false,
                         Some("F2"),
@@ -967,7 +1044,7 @@ impl AppShell {
                         toolbar_icon_button(
                             "task-speed-limit-action",
                             IconName::ArrowUpDown,
-                            "Set speed limits",
+                            self.t("action-set-speed-limits"),
                             ToolbarButtonState::from_flags(commands_available, false),
                             false,
                             None,
@@ -983,7 +1060,7 @@ impl AppShell {
                         toolbar_icon_button(
                             "task-options-action",
                             IconName::Settings,
-                            "Edit task options",
+                            self.t("action-edit-task-options"),
                             ToolbarButtonState::from_flags(commands_available, false),
                             false,
                             None,
@@ -1000,7 +1077,7 @@ impl AppShell {
                 toolbar_icon_button(
                     "remove-task-action",
                     IconName::Trash2,
-                    "Remove",
+                    self.t("action-remove"),
                     ToolbarButtonState::from_flags(
                         remove_enabled,
                         matches!(
@@ -1056,13 +1133,16 @@ impl AppShell {
                     .font_features(tabular_numbers())
                     .text_xs()
                     .text_color(colors.text_secondary)
-                    .child(format!("{} selected", selected.len())),
+                    .child(self.t_count(
+                        "selected-task-count",
+                        u64::try_from(selected.len()).unwrap_or(u64::MAX),
+                    )),
             )
             .child(
                 toolbar_icon_button(
                     "batch-pause-action",
                     IconName::Pause,
-                    "Pause selected",
+                    self.t("action-pause-selected"),
                     ToolbarButtonState::from_flags(
                         commands_available && can_pause,
                         pending == Some(BatchTaskCommandView::Pause),
@@ -1082,9 +1162,12 @@ impl AppShell {
                     "batch-force-pause-action",
                     IconName::Square,
                     if self.snapshot.capabilities.force_pause {
-                        "Force pause selected"
+                        self.t("action-force-pause-selected")
                     } else {
-                        self.snapshot.capabilities.unsupported_force_pause_message()
+                        self.snapshot
+                            .capabilities
+                            .unsupported_force_pause_message()
+                            .to_owned()
                     },
                     ToolbarButtonState::from_flags(
                         commands_available && can_force_pause,
@@ -1104,7 +1187,7 @@ impl AppShell {
                 toolbar_icon_button(
                     "batch-resume-action",
                     IconName::Play,
-                    "Resume selected",
+                    self.t("action-resume-selected"),
                     ToolbarButtonState::from_flags(
                         commands_available && can_resume,
                         pending == Some(BatchTaskCommandView::Resume),
@@ -1123,7 +1206,7 @@ impl AppShell {
                 toolbar_icon_button(
                     "batch-retry-action",
                     IconName::RotateCcw,
-                    "Retry selected",
+                    self.t("action-retry-selected"),
                     ToolbarButtonState::from_flags(
                         commands_available && can_retry,
                         pending == Some(BatchTaskCommandView::Retry),
@@ -1142,7 +1225,7 @@ impl AppShell {
                 toolbar_icon_button(
                     "batch-remove-action",
                     IconName::Trash2,
-                    "Remove selected",
+                    self.t("action-remove-selected"),
                     ToolbarButtonState::from_flags(
                         commands_available && can_remove,
                         matches!(
@@ -1168,7 +1251,7 @@ impl AppShell {
                 toolbar_icon_button(
                     "clear-task-selection",
                     IconName::X,
-                    "Clear selection",
+                    self.t("action-clear-selection"),
                     ToolbarButtonState::from_flags(idle, false),
                     false,
                     Some("Escape"),
@@ -1196,13 +1279,25 @@ impl AppShell {
                     .font_features(tabular_numbers())
                     .text_xs()
                     .text_color(colors.text_secondary)
-                    .child(format!("{visible} visible, {hidden} hidden selected")),
+                    .child(self.t_args(
+                        "hidden-selection-counts",
+                        &[
+                            (
+                                "visible",
+                                FluentValue::from(i64::try_from(visible).unwrap_or(i64::MAX)),
+                            ),
+                            (
+                                "hidden",
+                                FluentValue::from(i64::try_from(hidden).unwrap_or(i64::MAX)),
+                            ),
+                        ],
+                    )),
             )
             .child(
                 toolbar_icon_button(
                     "clear-hidden-task-selection",
                     IconName::X,
-                    "Clear selection",
+                    self.t("action-clear-selection"),
                     ToolbarButtonState::Enabled,
                     false,
                     Some("Escape"),
@@ -1249,48 +1344,85 @@ impl AppShell {
         let task_error_label = task.error.as_ref().map(|error| {
             error.code.map_or_else(
                 || error.summary.clone(),
-                |code| format!("Error {code}: {}", error.summary),
+                |code| {
+                    self.t_args(
+                        "task-error-with-code",
+                        &[
+                            ("code", FluentValue::from(i64::from(code))),
+                            ("summary", FluentValue::from(error.summary.as_str())),
+                        ],
+                    )
+                },
             )
         });
-        let mut aria_label = if seeding {
-            format!(
-                "{}, Seeding, share ratio {}, uploaded {}, upload speed {}, observed seeding time {} in this session",
-                display_name.as_str(),
-                share_ratio,
-                format_bytes(task.uploaded_bytes),
-                format_rate(task.upload_rate),
-                observed_seeding
+        let aria_label = if seeding {
+            self.t_args(
+                "task-seeding-aria",
+                &[
+                    ("name", FluentValue::from(display_name.as_str())),
+                    ("status", FluentValue::from(self.t("task-status-seeding"))),
+                    ("ratio", FluentValue::from(share_ratio.as_str())),
+                    (
+                        "uploaded",
+                        FluentValue::from(format_bytes(task.uploaded_bytes)),
+                    ),
+                    ("rate", FluentValue::from(format_rate(task.upload_rate))),
+                    ("time", FluentValue::from(observed_seeding.as_str())),
+                ],
             )
         } else {
-            format!(
-                "{}, {}, {}, download speed {}, ETA {}",
-                display_name.as_str(),
-                task.status.label(),
-                format_percent(basis_points),
-                format_rate(task.download_rate),
-                format_eta(task.eta_seconds)
+            self.t_args(
+                "task-row-aria",
+                &[
+                    ("name", FluentValue::from(display_name.as_str())),
+                    (
+                        "status",
+                        FluentValue::from(self.t(task.status.message_key())),
+                    ),
+                    ("progress", FluentValue::from(format_percent(basis_points))),
+                    ("rate", FluentValue::from(format_rate(task.download_rate))),
+                    ("eta", FluentValue::from(format_eta(task.eta_seconds))),
+                ],
             )
         };
-        if let Some(error) = &task_error_label {
-            aria_label.push_str(", ");
-            aria_label.push_str(error);
-        }
-        let wide_secondary_label = task_error_label
-            .clone()
-            .unwrap_or_else(|| format!("GID {}", task.identity.gid));
+        let aria_label = task_error_label
+            .as_ref()
+            .map_or(aria_label.clone(), |error| {
+                self.t_args(
+                    "task-row-with-error-aria",
+                    &[
+                        ("task", FluentValue::from(aria_label.as_str())),
+                        ("error", FluentValue::from(error.as_str())),
+                    ],
+                )
+            });
+        let wide_secondary_label = task_error_label.clone().unwrap_or_else(|| {
+            self.t_args(
+                "task-gid-label",
+                &[("gid", FluentValue::from(task.identity.gid.as_str()))],
+            )
+        });
         let compact_secondary_label = task_error_label.clone().unwrap_or_else(|| {
             if seeding {
-                format!(
-                    "Uploaded {} · Up {} · {}",
-                    format_bytes(task.uploaded_bytes),
-                    format_rate(task.upload_rate),
-                    observed_seeding
+                self.t_args(
+                    "task-seeding-secondary",
+                    &[
+                        (
+                            "uploaded",
+                            FluentValue::from(format_bytes(task.uploaded_bytes)),
+                        ),
+                        ("rate", FluentValue::from(format_rate(task.upload_rate))),
+                        ("time", FluentValue::from(observed_seeding.as_str())),
+                    ],
                 )
             } else {
-                format!(
-                    "{size_label} · {} · {}",
-                    format_rate(task.download_rate),
-                    format_eta(task.eta_seconds)
+                self.t_args(
+                    "task-download-secondary",
+                    &[
+                        ("size", FluentValue::from(size_label.as_str())),
+                        ("rate", FluentValue::from(format_rate(task.download_rate))),
+                        ("eta", FluentValue::from(format_eta(task.eta_seconds))),
+                    ],
                 )
             }
         });
@@ -1300,12 +1432,18 @@ impl AppShell {
             colors.text_muted
         };
         let progress_label = if seeding {
-            format!("Ratio {share_ratio}")
+            self.t_args(
+                "task-ratio-label",
+                &[("ratio", FluentValue::from(share_ratio.as_str()))],
+            )
         } else {
             format_percent(basis_points)
         };
         let rate_label = if seeding {
-            format!("Up {}", format_rate(task.upload_rate))
+            self.t_args(
+                "task-upload-rate-label",
+                &[("rate", FluentValue::from(format_rate(task.upload_rate)))],
+            )
         } else {
             format_rate(task.download_rate)
         };
@@ -1368,9 +1506,15 @@ impl AppShell {
                     )))
                     .role(Role::CheckBox)
                     .aria_label(if selected {
-                        format!("Deselect {display_name}")
+                        self.t_args(
+                            "deselect-task-aria",
+                            &[("name", FluentValue::from(display_name.as_str()))],
+                        )
                     } else {
-                        format!("Select {display_name}")
+                        self.t_args(
+                            "select-task-aria",
+                            &[("name", FluentValue::from(display_name.as_str()))],
+                        )
                     })
                     .aria_toggled(if selected {
                         Toggled::True
@@ -1518,5 +1662,23 @@ impl AppShell {
                         .child(status_badge),
                 ),
         }
+    }
+}
+
+fn sort_key_message_key(key: WorkspaceSortKey) -> &'static str {
+    match key {
+        WorkspaceSortKey::Queue => "sort-queue",
+        WorkspaceSortKey::Name => "sort-name",
+        WorkspaceSortKey::Status => "sort-status",
+        WorkspaceSortKey::Progress => "sort-progress",
+        WorkspaceSortKey::DownloadSpeed => "sort-download-speed",
+        WorkspaceSortKey::Size => "sort-size",
+    }
+}
+
+fn sort_direction_message_key(direction: WorkspaceSortDirection) -> &'static str {
+    match direction {
+        WorkspaceSortDirection::Ascending => "sort-ascending",
+        WorkspaceSortDirection::Descending => "sort-descending",
     }
 }
