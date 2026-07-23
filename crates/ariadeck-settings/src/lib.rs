@@ -19,7 +19,7 @@ use thiserror::Error;
 use url::Url;
 pub use uuid::Uuid;
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 11;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 12;
 /// Version of the user-facing settings transfer document.
 pub const SETTINGS_EXPORT_FORMAT_VERSION: u32 = 1;
 
@@ -91,13 +91,30 @@ pub struct UiPreferences {
     pub list_sort_direction: ListSortDirectionPreference,
 }
 
-/// Named favorite output folder used as a download category (C1 / D-040).
+/// Soft cap so settings UI and export stay manageable.
+pub const MAX_DOWNLOAD_CATEGORIES: usize = 32;
+/// Soft cap for extension tokens per category.
+pub const MAX_CATEGORY_EXTENSIONS: usize = 128;
+/// Soft cap for a single extension token length.
+pub const MAX_CATEGORY_EXTENSION_LEN: usize = 32;
+
+/// Named output folder used as a download category (C1 / D-040 / D-042).
+///
+/// Routing is extension-based (IDM-style). Exactly one category must be
+/// `is_fallback` for unmatched names. `download_directory` mirrors the
+/// fallback category path for engine/profile defaults.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DownloadCategory {
     pub id: Uuid,
     pub name: String,
     pub directory: PathBuf,
+    /// Lowercase extensions without a leading dot (e.g. `mp4`). Empty = no auto-match.
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    /// Unmatched / no-filename downloads land here. Exactly one category is fallback.
+    #[serde(default)]
+    pub is_fallback: bool,
 }
 
 impl DownloadCategory {
@@ -107,12 +124,145 @@ impl DownloadCategory {
             id: Uuid::new_v4(),
             name: name.into(),
             directory: directory.into(),
+            extensions: Vec::new(),
+            is_fallback: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_extensions(
+        mut self,
+        extensions: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.extensions = normalize_category_extensions(extensions.into_iter().map(Into::into));
+        self
+    }
+
+    #[must_use]
+    pub fn fallback(mut self) -> Self {
+        self.is_fallback = true;
+        self
     }
 }
 
-/// Soft cap so settings UI and export stay manageable.
-pub const MAX_DOWNLOAD_CATEGORIES: usize = 32;
+/// Normalize extension tokens for storage: trim, strip dots, lowercase, drop empties/dupes.
+#[must_use]
+pub fn normalize_category_extensions(
+    raw: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for item in raw {
+        let Some(norm) = ariadeck_domain::normalize_extension(item.as_ref()) else {
+            continue;
+        };
+        if norm.len() > MAX_CATEGORY_EXTENSION_LEN {
+            continue;
+        }
+        if seen.insert(norm.clone()) {
+            out.push(norm);
+        }
+    }
+    out
+}
+
+/// Parse a user-edited extension list (`mp4, mkv; zip` or whitespace).
+#[must_use]
+pub fn parse_category_extensions_text(text: &str) -> Vec<String> {
+    normalize_category_extensions(
+        text.split(|c: char| c == ',' || c == ';' || c == '|' || c.is_whitespace()),
+    )
+}
+
+/// Format extensions for a settings text field.
+#[must_use]
+pub fn format_category_extensions(extensions: &[String]) -> String {
+    extensions.join(", ")
+}
+
+/// Default categories under `root` (General is the fixed fallback).
+///
+/// Presets share the same directory by default; users set paths manually.
+#[must_use]
+pub fn default_download_categories(root: impl AsRef<Path>) -> Vec<DownloadCategory> {
+    let root = root.as_ref().to_path_buf();
+    vec![
+        DownloadCategory::new("General", root.clone()).fallback(),
+        DownloadCategory::new("Compressed", root.clone())
+            .with_extensions(["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso", "tgz"]),
+        DownloadCategory::new("Documents", root.clone()).with_extensions([
+            "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "epub", "mobi", "rtf", "odt",
+        ]),
+        DownloadCategory::new("Music", root.clone())
+            .with_extensions(["mp3", "flac", "aac", "wav", "ogg", "m4a", "wma", "opus"]),
+        DownloadCategory::new("Video", root.clone()).with_extensions([
+            "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "ts",
+        ]),
+        DownloadCategory::new("Programs", root.clone())
+            .with_extensions(["exe", "msi", "dmg", "pkg", "deb", "rpm", "apk", "appimage"]),
+        DownloadCategory::new("Images", root).with_extensions([
+            "jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "heic", "raw",
+        ]),
+    ]
+}
+
+/// Resolve category for a filename hint using extension rules (D-042).
+#[must_use]
+pub fn resolve_download_category<'a>(
+    categories: &'a [DownloadCategory],
+    filename_hint: Option<&str>,
+) -> Option<&'a DownloadCategory> {
+    if categories.is_empty() {
+        return None;
+    }
+    let ext = filename_hint.and_then(ariadeck_domain::extension_from_filename);
+    if let Some(ext) = ext.as_deref() {
+        for category in categories {
+            if category.extensions.iter().any(|candidate| {
+                ariadeck_domain::normalize_extension(candidate).as_deref() == Some(ext)
+            }) {
+                return Some(category);
+            }
+        }
+    }
+    categories
+        .iter()
+        .find(|category| category.is_fallback)
+        .or_else(|| categories.first())
+}
+
+/// Keep `download_directory` aligned with the fallback category path.
+pub fn sync_download_directory_from_fallback(settings: &mut AppSettings) {
+    if let Some(fallback) = settings.categories.iter().find(|c| c.is_fallback) {
+        settings.download_directory = fallback.directory.clone();
+    } else if let Some(first) = settings.categories.first() {
+        settings.download_directory = first.directory.clone();
+    }
+}
+
+/// Migrate legacy manual categories + optional default id into fallback-aware model.
+fn migrate_categories_to_v12(
+    mut categories: Vec<DownloadCategory>,
+    default_category_id: Option<Uuid>,
+    download_directory: &Path,
+) -> Vec<DownloadCategory> {
+    if categories.is_empty() {
+        return default_download_categories(download_directory);
+    }
+    for category in &mut categories {
+        category.extensions =
+            normalize_category_extensions(std::mem::take(&mut category.extensions));
+        category.is_fallback = false;
+    }
+    if let Some(default_id) = default_category_id
+        && let Some(category) = categories.iter_mut().find(|c| c.id == default_id)
+    {
+        category.is_fallback = true;
+    } else if let Some(first) = categories.first_mut() {
+        first.is_fallback = true;
+    }
+    categories
+}
 
 /// Soft cap for persisted tracker list text (characters).
 pub const MAX_TRACKER_LIST_TEXT_CHARS: usize = 2 * 1024 * 1024;
@@ -162,7 +312,11 @@ impl TrackerListSettings {
             return Err(SettingsError::TrackerListTextTooLarge);
         }
         if self.source == TrackerListSource::Custom {
-            let Some(url) = self.custom_url.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            let Some(url) = self
+                .custom_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
             else {
                 return Err(SettingsError::MissingCustomTrackerListUrl);
             };
@@ -596,10 +750,8 @@ pub struct AppSettings {
     pub notifications: NotificationSettings,
     pub platform: PlatformSettings,
     pub ui: UiPreferences,
-    /// Favorite output folders used as download categories (C1).
+    /// Output folders + extension rules (C1 / D-042). Exactly one is_fallback.
     pub categories: Vec<DownloadCategory>,
-    /// Optional default category for new downloads; None uses `download_directory`.
-    pub default_category_id: Option<Uuid>,
     /// Extra BitTorrent trackers for aria2 `bt-tracker` (D1).
     pub tracker_list: TrackerListSettings,
 }
@@ -623,7 +775,6 @@ struct SettingsExportDocument {
     platform: PlatformSettings,
     ui: UiPreferences,
     categories: Vec<DownloadCategory>,
-    default_category_id: Option<Uuid>,
     tracker_list: TrackerListSettings,
 }
 
@@ -670,7 +821,6 @@ impl SettingsExportDocument {
             platform: settings.platform,
             ui: settings.ui,
             categories: settings.categories.clone(),
-            default_category_id: settings.default_category_id,
             tracker_list: settings.tracker_list.clone(),
         }
     }
@@ -719,7 +869,6 @@ impl SettingsExportDocument {
             platform: self.platform,
             ui: self.ui,
             categories: self.categories,
-            default_category_id: self.default_category_id,
             tracker_list: self.tracker_list,
         };
         settings.validate()?;
@@ -804,18 +953,18 @@ pub fn import_settings_from_path(
 impl AppSettings {
     #[must_use]
     pub fn new(download_directory: impl Into<PathBuf>) -> Self {
+        let download_directory = download_directory.into();
         Self {
             color_scheme: ColorScheme::default(),
             language: LanguagePreference::default(),
-            download_directory: download_directory.into(),
+            download_directory: download_directory.clone(),
             download_proxy: DownloadProxySettings::default(),
             speed_limits: SpeedLimitSettings::default(),
             transfer_policy: TransferPolicySettings::default(),
             notifications: NotificationSettings::default(),
             platform: PlatformSettings::default(),
             ui: UiPreferences::default(),
-            categories: Vec::new(),
-            default_category_id: None,
+            categories: default_download_categories(&download_directory),
             tracker_list: TrackerListSettings::default(),
         }
     }
@@ -826,7 +975,7 @@ impl AppSettings {
         }
         self.download_proxy.validate()?;
         self.transfer_policy.validate()?;
-        validate_categories(&self.categories, self.default_category_id)?;
+        validate_categories(&self.categories)?;
         self.tracker_list.validate()?;
         Ok(())
     }
@@ -858,8 +1007,16 @@ pub enum SettingsError {
     DuplicateCategoryName,
     #[error("too many download categories (max {MAX_DOWNLOAD_CATEGORIES})")]
     TooManyCategories,
-    #[error("default download category id is not present in categories")]
-    UnknownDefaultCategory,
+    #[error("download categories must include exactly one fallback category")]
+    MissingFallbackCategory,
+    #[error("download categories must not include more than one fallback category")]
+    MultipleFallbackCategories,
+    #[error("download categories must not be empty")]
+    EmptyCategories,
+    #[error("too many extensions on a download category (max {MAX_CATEGORY_EXTENSIONS})")]
+    TooManyCategoryExtensions,
+    #[error("invalid download category extension {extension:?}")]
+    InvalidCategoryExtension { extension: String },
     #[error("custom tracker list source requires an HTTPS URL")]
     MissingCustomTrackerListUrl,
     #[error("tracker list URL is too long")]
@@ -897,15 +1054,16 @@ pub enum SettingsError {
     },
 }
 
-fn validate_categories(
-    categories: &[DownloadCategory],
-    default_category_id: Option<Uuid>,
-) -> Result<(), SettingsError> {
+fn validate_categories(categories: &[DownloadCategory]) -> Result<(), SettingsError> {
+    if categories.is_empty() {
+        return Err(SettingsError::EmptyCategories);
+    }
     if categories.len() > MAX_DOWNLOAD_CATEGORIES {
         return Err(SettingsError::TooManyCategories);
     }
     let mut seen_names = std::collections::HashSet::new();
     let mut seen_ids = std::collections::HashSet::new();
+    let mut fallbacks = 0usize;
     for category in categories {
         let name = category.name.trim();
         if name.is_empty() {
@@ -914,6 +1072,21 @@ fn validate_categories(
         if category.directory.as_os_str().is_empty() {
             return Err(SettingsError::EmptyCategoryDirectory);
         }
+        if category.extensions.len() > MAX_CATEGORY_EXTENSIONS {
+            return Err(SettingsError::TooManyCategoryExtensions);
+        }
+        for ext in &category.extensions {
+            let Some(norm) = ariadeck_domain::normalize_extension(ext) else {
+                return Err(SettingsError::InvalidCategoryExtension {
+                    extension: ext.clone(),
+                });
+            };
+            if norm.len() > MAX_CATEGORY_EXTENSION_LEN || norm != *ext {
+                return Err(SettingsError::InvalidCategoryExtension {
+                    extension: ext.clone(),
+                });
+            }
+        }
         let key = name.to_ascii_lowercase();
         if !seen_names.insert(key) {
             return Err(SettingsError::DuplicateCategoryName);
@@ -921,13 +1094,15 @@ fn validate_categories(
         if !seen_ids.insert(category.id) {
             return Err(SettingsError::DuplicateCategoryName);
         }
+        if category.is_fallback {
+            fallbacks += 1;
+        }
     }
-    if let Some(default_id) = default_category_id
-        && !categories.iter().any(|category| category.id == default_id)
-    {
-        return Err(SettingsError::UnknownDefaultCategory);
+    match fallbacks {
+        0 => Err(SettingsError::MissingFallbackCategory),
+        1 => Ok(()),
+        _ => Err(SettingsError::MultipleFallbackCategories),
     }
-    Ok(())
 }
 
 fn validate_proxy_endpoint(label: &'static str, endpoint: &str) -> Result<(), SettingsError> {
@@ -1163,8 +1338,48 @@ struct SettingsDocumentV10 {
     notifications: NotificationSettings,
     platform: PlatformSettings,
     ui: UiPreferences,
-    categories: Vec<DownloadCategory>,
+    categories: Vec<LegacyDownloadCategoryV11>,
     default_category_id: Option<Uuid>,
+}
+
+/// Schema v11 used manual default_category_id without extension routing (D-042).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsDocumentV11 {
+    schema_version: u32,
+    color_scheme: ColorScheme,
+    language: LanguagePreference,
+    download_directory: PathBuf,
+    download_proxy: DownloadProxySettings,
+    speed_limits: SpeedLimitSettings,
+    transfer_policy: TransferPolicySettings,
+    notifications: NotificationSettings,
+    platform: PlatformSettings,
+    ui: UiPreferences,
+    categories: Vec<LegacyDownloadCategoryV11>,
+    default_category_id: Option<Uuid>,
+    tracker_list: TrackerListSettings,
+}
+
+/// Pre-v12 category rows (name + directory only).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyDownloadCategoryV11 {
+    id: Uuid,
+    name: String,
+    directory: PathBuf,
+}
+
+impl From<LegacyDownloadCategoryV11> for DownloadCategory {
+    fn from(value: LegacyDownloadCategoryV11) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            directory: value.directory,
+            extensions: Vec::new(),
+            is_fallback: false,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1181,7 +1396,6 @@ struct SettingsDocument {
     platform: PlatformSettings,
     ui: UiPreferences,
     categories: Vec<DownloadCategory>,
-    default_category_id: Option<Uuid>,
     tracker_list: TrackerListSettings,
 }
 
@@ -1199,7 +1413,6 @@ impl From<&AppSettings> for SettingsDocument {
             platform: settings.platform,
             ui: settings.ui,
             categories: settings.categories.clone(),
-            default_category_id: settings.default_category_id,
             tracker_list: settings.tracker_list.clone(),
         }
     }
@@ -1215,7 +1428,7 @@ impl TryFrom<SettingsDocument> for AppSettings {
                 supported: CURRENT_SETTINGS_SCHEMA_VERSION,
             });
         }
-        let settings = Self {
+        let mut settings = Self {
             color_scheme: document.color_scheme,
             language: document.language,
             download_directory: document.download_directory,
@@ -1226,9 +1439,9 @@ impl TryFrom<SettingsDocument> for AppSettings {
             platform: document.platform,
             ui: document.ui,
             categories: document.categories,
-            default_category_id: document.default_category_id,
             tracker_list: document.tracker_list,
         };
+        sync_download_directory_from_fallback(&mut settings);
         settings.validate()?;
         Ok(settings)
     }
@@ -1272,6 +1485,7 @@ impl JsonSettingsStore {
                         supported: CURRENT_SETTINGS_SCHEMA_VERSION,
                     });
                 }
+                let categories = default_download_categories(&document.download_directory);
                 let settings = AppSettings {
                     color_scheme: document.color_scheme,
                     language: LanguagePreference::default(),
@@ -1282,8 +1496,7 @@ impl JsonSettingsStore {
                     notifications: NotificationSettings::default(),
                     platform: PlatformSettings::default(),
                     ui: UiPreferences::default(),
-                    categories: Vec::new(),
-                    default_category_id: None,
+                    categories,
                     tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
@@ -1298,6 +1511,7 @@ impl JsonSettingsStore {
                         supported: CURRENT_SETTINGS_SCHEMA_VERSION,
                     });
                 }
+                let categories = default_download_categories(&document.download_directory);
                 let settings = AppSettings {
                     color_scheme: document.color_scheme,
                     language: LanguagePreference::default(),
@@ -1308,8 +1522,7 @@ impl JsonSettingsStore {
                     notifications: NotificationSettings::default(),
                     platform: PlatformSettings::default(),
                     ui: UiPreferences::default(),
-                    categories: Vec::new(),
-                    default_category_id: None,
+                    categories,
                     tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
@@ -1324,6 +1537,7 @@ impl JsonSettingsStore {
                         supported: CURRENT_SETTINGS_SCHEMA_VERSION,
                     });
                 }
+                let categories = default_download_categories(&document.download_directory);
                 let settings = AppSettings {
                     color_scheme: document.color_scheme,
                     language: LanguagePreference::default(),
@@ -1334,8 +1548,7 @@ impl JsonSettingsStore {
                     notifications: NotificationSettings::default(),
                     platform: PlatformSettings::default(),
                     ui: UiPreferences::default(),
-                    categories: Vec::new(),
-                    default_category_id: None,
+                    categories,
                     tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
@@ -1350,6 +1563,7 @@ impl JsonSettingsStore {
                         supported: CURRENT_SETTINGS_SCHEMA_VERSION,
                     });
                 }
+                let categories = default_download_categories(&document.download_directory);
                 let settings = AppSettings {
                     color_scheme: document.color_scheme,
                     language: LanguagePreference::default(),
@@ -1360,8 +1574,7 @@ impl JsonSettingsStore {
                     notifications: NotificationSettings::default(),
                     platform: PlatformSettings::default(),
                     ui: UiPreferences::default(),
-                    categories: Vec::new(),
-                    default_category_id: None,
+                    categories,
                     tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
@@ -1376,6 +1589,7 @@ impl JsonSettingsStore {
                         supported: CURRENT_SETTINGS_SCHEMA_VERSION,
                     });
                 }
+                let categories = default_download_categories(&document.download_directory);
                 let settings = AppSettings {
                     color_scheme: document.color_scheme,
                     language: LanguagePreference::default(),
@@ -1386,8 +1600,7 @@ impl JsonSettingsStore {
                     notifications: document.notifications.into(),
                     platform: PlatformSettings::default(),
                     ui: UiPreferences::default(),
-                    categories: Vec::new(),
-                    default_category_id: None,
+                    categories,
                     tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
@@ -1402,6 +1615,7 @@ impl JsonSettingsStore {
                         supported: CURRENT_SETTINGS_SCHEMA_VERSION,
                     });
                 }
+                let categories = default_download_categories(&document.download_directory);
                 let settings = AppSettings {
                     color_scheme: document.color_scheme,
                     language: LanguagePreference::default(),
@@ -1412,8 +1626,7 @@ impl JsonSettingsStore {
                     notifications: document.notifications,
                     platform: document.platform,
                     ui: UiPreferences::default(),
-                    categories: Vec::new(),
-                    default_category_id: None,
+                    categories,
                     tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
@@ -1428,6 +1641,7 @@ impl JsonSettingsStore {
                         supported: CURRENT_SETTINGS_SCHEMA_VERSION,
                     });
                 }
+                let categories = default_download_categories(&document.download_directory);
                 let settings = AppSettings {
                     color_scheme: document.color_scheme,
                     language: LanguagePreference::default(),
@@ -1438,8 +1652,7 @@ impl JsonSettingsStore {
                     notifications: document.notifications,
                     platform: document.platform,
                     ui: document.ui,
-                    categories: Vec::new(),
-                    default_category_id: None,
+                    categories,
                     tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
@@ -1455,6 +1668,7 @@ impl JsonSettingsStore {
                     });
                 }
                 // `check_certificate` is #[serde(default = true)] on DownloadProxySettings.
+                let categories = default_download_categories(&document.download_directory);
                 let settings = AppSettings {
                     color_scheme: document.color_scheme,
                     language: document.language,
@@ -1465,8 +1679,7 @@ impl JsonSettingsStore {
                     notifications: document.notifications,
                     platform: document.platform,
                     ui: document.ui,
-                    categories: Vec::new(),
-                    default_category_id: None,
+                    categories,
                     tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
@@ -1481,6 +1694,7 @@ impl JsonSettingsStore {
                         supported: CURRENT_SETTINGS_SCHEMA_VERSION,
                     });
                 }
+                let categories = default_download_categories(&document.download_directory);
                 let settings = AppSettings {
                     color_scheme: document.color_scheme,
                     language: document.language,
@@ -1491,8 +1705,7 @@ impl JsonSettingsStore {
                     notifications: document.notifications,
                     platform: document.platform,
                     ui: document.ui,
-                    categories: Vec::new(),
-                    default_category_id: None,
+                    categories,
                     tracker_list: TrackerListSettings::default(),
                 };
                 settings.validate()?;
@@ -1507,7 +1720,16 @@ impl JsonSettingsStore {
                         supported: CURRENT_SETTINGS_SCHEMA_VERSION,
                     });
                 }
-                let settings = AppSettings {
+                let categories = migrate_categories_to_v12(
+                    document
+                        .categories
+                        .into_iter()
+                        .map(DownloadCategory::from)
+                        .collect(),
+                    document.default_category_id,
+                    &document.download_directory,
+                );
+                let mut settings = AppSettings {
                     color_scheme: document.color_scheme,
                     language: document.language,
                     download_directory: document.download_directory,
@@ -1517,10 +1739,45 @@ impl JsonSettingsStore {
                     notifications: document.notifications,
                     platform: document.platform,
                     ui: document.ui,
-                    categories: document.categories,
-                    default_category_id: document.default_category_id,
+                    categories,
                     tracker_list: TrackerListSettings::default(),
                 };
+                sync_download_directory_from_fallback(&mut settings);
+                settings.validate()?;
+                Ok((settings, true))
+            }
+            11 => {
+                let document: SettingsDocumentV11 =
+                    serde_json::from_slice(&bytes).map_err(malformed)?;
+                if document.schema_version != 11 {
+                    return Err(SettingsError::UnsupportedSchemaVersion {
+                        found: document.schema_version,
+                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
+                    });
+                }
+                let categories = migrate_categories_to_v12(
+                    document
+                        .categories
+                        .into_iter()
+                        .map(DownloadCategory::from)
+                        .collect(),
+                    document.default_category_id,
+                    &document.download_directory,
+                );
+                let mut settings = AppSettings {
+                    color_scheme: document.color_scheme,
+                    language: document.language,
+                    download_directory: document.download_directory,
+                    download_proxy: document.download_proxy,
+                    speed_limits: document.speed_limits,
+                    transfer_policy: document.transfer_policy,
+                    notifications: document.notifications,
+                    platform: document.platform,
+                    ui: document.ui,
+                    categories,
+                    tracker_list: document.tracker_list,
+                };
+                sync_download_directory_from_fallback(&mut settings);
                 settings.validate()?;
                 Ok((settings, true))
             }
@@ -1829,8 +2086,7 @@ mod tests {
             notifications: NotificationSettings::default(),
             platform: PlatformSettings::default(),
             ui: UiPreferences::default(),
-            categories: Vec::new(),
-            default_category_id: None,
+            categories: default_download_categories(root.join("downloads")),
             tracker_list: TrackerListSettings::default(),
         }
     }
@@ -2388,22 +2644,50 @@ mod tests {
     fn download_categories_validate_and_round_trip() {
         let root = tempfile::tempdir().expect("temporary directory");
         let mut expected = settings(root.path());
-        let movies = DownloadCategory::new("Movies", root.path().join("movies"));
-        let music = DownloadCategory::new("Music", root.path().join("music"));
-        expected.default_category_id = Some(movies.id);
+        let movies = DownloadCategory::new("Movies", root.path().join("movies"))
+            .with_extensions(["mp4", "mkv"])
+            .fallback();
+        let music =
+            DownloadCategory::new("Music", root.path().join("music")).with_extensions(["mp3"]);
         expected.categories = vec![movies.clone(), music];
+        expected.download_directory = movies.directory.clone();
         let store = JsonSettingsStore::new(root.path().join("settings.json"));
         store.save(&expected).expect("save");
         let loaded = store.load().expect("load");
         assert_eq!(loaded.categories.len(), 2);
-        assert_eq!(loaded.default_category_id, Some(movies.id));
+        assert!(loaded.categories[0].is_fallback);
         assert_eq!(loaded.categories[0].name, "Movies");
+        assert_eq!(loaded.categories[0].extensions, vec!["mp4", "mkv"]);
+        assert_eq!(
+            resolve_download_category(&loaded.categories, Some("clip.mp4"))
+                .map(|c| c.name.as_str()),
+            Some("Movies")
+        );
 
         expected.categories[0].name = " ".into();
         assert!(matches!(
             expected.validate(),
             Err(SettingsError::EmptyCategoryName)
         ));
+    }
+
+    #[test]
+    fn categories_migrate_from_v11_manual_default() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        let movies_id = Uuid::new_v4();
+        let payload = format!(
+            r#"{{"schema_version":11,"color_scheme":"light","language":"system","download_directory":"downloads","download_proxy":{{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null,"check_certificate":true}},"speed_limits":{{"download_limit":0,"upload_limit":0}},"transfer_policy":{{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false}},"notifications":{{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":false,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824}},"platform":{{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false}},"ui":{{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"}},"categories":[{{"id":"{movies_id}","name":"Movies","directory":"downloads/movies"}}],"default_category_id":"{movies_id}","tracker_list":{{"enabled":false,"source":"curated","custom_url":null,"auto_refresh":false,"last_refreshed_at":null,"list_text":""}}}}"#
+        );
+        fs::write(store.path(), payload).expect("seed v11");
+        let loaded = store
+            .load_or_initialize(&settings(root.path()))
+            .expect("migrate v11");
+        assert_eq!(loaded.settings.categories.len(), 1);
+        assert!(loaded.settings.categories[0].is_fallback);
+        assert_eq!(loaded.settings.categories[0].id, movies_id);
+        let saved = fs::read_to_string(store.path()).expect("read");
+        assert!(saved.contains("is_fallback"), "saved={saved}");
     }
 
     #[test]
@@ -2478,9 +2762,11 @@ mod tests {
             .load_or_initialize(&settings(root.path()))
             .expect("migrate v10");
         assert_eq!(loaded.settings.tracker_list, TrackerListSettings::default());
-        assert!(fs::read_to_string(store.path())
-            .expect("read")
-            .contains("\"tracker_list\""));
+        assert!(
+            fs::read_to_string(store.path())
+                .expect("read")
+                .contains("\"tracker_list\"")
+        );
 
         let mut invalid = TrackerListSettings {
             source: TrackerListSource::Custom,

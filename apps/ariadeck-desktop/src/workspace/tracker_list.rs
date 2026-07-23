@@ -5,9 +5,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ariadeck_domain::{
-    MAX_TRACKER_LIST_BODY_BYTES, format_tracker_list_text, parse_tracker_list,
-};
+use ariadeck_domain::{MAX_TRACKER_LIST_BODY_BYTES, format_tracker_list_text, parse_tracker_list};
 use ariadeck_settings::{AppSettings, JsonSettingsStore, TrackerListSettings};
 
 use super::settings_bridge::{map_bt_tracker_list, spawn_proxy_settings_load};

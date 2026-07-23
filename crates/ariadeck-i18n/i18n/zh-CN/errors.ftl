@@ -29,6 +29,7 @@ error-application-internal = 发生内部应用错误。
 error-sync-unavailable = 同步协调器不可用。
 error-command-no-result = 命令未返回结果。
 error-settings-invalid-download-directory = 请选择非空的下载目录。
+error-settings-empty-categories = 请至少添加一个下载分类。
 error-settings-invalid-speed-limit = 请输入字节/秒或带 K/M/G 后缀的速度，留空表示不限速。
 error-settings-invalid-transfer-policy = 请输入有效的正数传输策略参数。
 error-settings-path-picker-failed = 系统路径选择器启动失败。

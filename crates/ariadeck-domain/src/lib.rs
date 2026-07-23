@@ -3,6 +3,7 @@
 //! This crate intentionally has no dependency on GPUI, Tokio, SQLite, or aria2
 //! JSON-RPC wire models.
 
+mod category_route;
 mod engine;
 mod ids;
 mod privacy;
@@ -10,6 +11,9 @@ mod task;
 mod tracker_list;
 mod transfer;
 
+pub use category_route::{
+    extension_from_filename, filename_hint_from_source, normalize_extension, resolve_category_id,
+};
 pub use engine::{
     ConnectionFailure, ConnectionState, EngineSession, EngineSource, ProcessOwnership,
 };

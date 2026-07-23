@@ -73,9 +73,8 @@ use ariadeck_ui::{
     TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
     TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
     TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TrackerListSettingsView,
-    TrackerListSourceView, TransferPolicySettingsView,
-    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
-    format_speed_limit_field,
+    TrackerListSourceView, TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery,
+    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, format_speed_limit_field,
 };
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
 #[cfg(target_os = "windows")]
@@ -229,6 +228,13 @@ impl DesktopRoot {
             };
         if let Some(download_directory) = env::var_os("ARIADECK_DOWNLOAD_DIR") {
             settings.download_directory = PathBuf::from(download_directory);
+            // Env root wins for fallback / empty-extension routing base.
+            if let Some(fallback) = settings.categories.iter_mut().find(|c| c.is_fallback) {
+                fallback.directory = settings.download_directory.clone();
+            } else if settings.categories.is_empty() {
+                settings.categories =
+                    ariadeck_settings::default_download_categories(&settings.download_directory);
+            }
         }
 
         let profile_store = JsonProfileStore::new(data_dir.join("profiles.json"));

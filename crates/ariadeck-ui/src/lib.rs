@@ -60,9 +60,9 @@ pub use model::{
     TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
     TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TrackerListSettingsView,
     TrackerListSourceView, TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery,
-    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
-    active_format_options, format_bytes, format_bytes_with, format_eta, format_eta_with,
-    format_percent, format_percent_with, format_rate, format_rate_with, format_relative_time,
+    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, active_format_options,
+    format_bytes, format_bytes_with, format_eta, format_eta_with, format_percent,
+    format_percent_with, format_rate, format_rate_with, format_relative_time,
     format_relative_time_with, format_share_ratio, format_share_ratio_with,
     format_speed_limit_field, parse_speed_limit_field, set_active_format_options,
 };

@@ -2005,18 +2005,22 @@ pub struct CoreCommandResultView {
     pub outcome: CoreCommandOutcomeView,
 }
 
-/// Favorite output folder used as a download category (C1 / D-040).
+/// Output folder + extension rules (C1 / D-040 / D-042).
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DownloadCategoryView {
     pub id: String,
     pub name: String,
     pub directory: String,
+    /// Comma-separated extensions for the settings editor (e.g. `mp4, mkv`).
+    pub extensions: String,
+    pub is_fallback: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SettingsView {
     pub color_scheme: ColorSchemeView,
     pub language: LanguagePreferenceView,
+    /// Mirror of the fallback category directory (engine/profile default root).
     pub download_directory: String,
     pub download_proxy: DownloadProxySettingsView,
     pub speed_limits: SpeedLimitSettingsView,
@@ -2024,7 +2028,6 @@ pub struct SettingsView {
     pub notifications: NotificationSettingsView,
     pub platform: PlatformSettingsView,
     pub categories: Vec<DownloadCategoryView>,
-    pub default_category_id: Option<String>,
     pub tracker_list: TrackerListSettingsView,
 }
 

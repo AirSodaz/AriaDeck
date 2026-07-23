@@ -337,9 +337,10 @@ pub(crate) struct SettingsPage {
     draft_close_behavior: CloseBehaviorView,
     draft_show_tray_icon: bool,
     draft_start_minimized_to_tray: bool,
-    /// Working copy of download categories (C1); saved with Directory/General.
+    /// Working copy of download categories (C1 / D-042); saved with Directory/General.
     draft_categories: Vec<crate::DownloadCategoryView>,
-    draft_default_category_id: Option<String>,
+    /// Which draft category row is bound to the shared name/extensions fields.
+    draft_category_edit_index: Option<usize>,
     /// Tracker list drafts (D1); saved with Transfers.
     draft_tracker_enabled: bool,
     draft_tracker_source: crate::TrackerListSourceView,
@@ -365,10 +366,8 @@ pub(crate) struct PendingProfileDelete {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PathPickTarget {
-    DownloadDirectory,
     CoreExecutable,
     ProfileExecutable,
-    ProfileDownloadDirectory,
     /// Browse path for a draft category by index.
     CategoryDirectory {
         index: usize,
@@ -378,7 +377,7 @@ pub(crate) enum PathPickTarget {
 /// Top-level navigation categories for the settings two-pane layout.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum SettingsCategory {
-    /// Appearance (theme) + Downloads (default directory).
+    /// Appearance (theme) + download categories.
     #[default]
     General,
     /// Multi-profile catalog management.
@@ -543,10 +542,12 @@ pub(crate) struct SettingsInputs {
     pub(crate) min_split_size: Entity<TextField>,
     pub(crate) tracker_custom_url: Entity<TextField>,
     pub(crate) tracker_list_text: Entity<TextField>,
+    pub(crate) category_name: Entity<TextField>,
+    pub(crate) category_extensions: Entity<TextField>,
 }
 
 impl SettingsInputs {
-    pub(crate) fn all(&self) -> [&Entity<TextField>; 22] {
+    pub(crate) fn all(&self) -> [&Entity<TextField>; 24] {
         [
             &self.directory,
             &self.core_path,
@@ -570,6 +571,8 @@ impl SettingsInputs {
             &self.min_split_size,
             &self.tracker_custom_url,
             &self.tracker_list_text,
+            &self.category_name,
+            &self.category_extensions,
         ]
     }
 }
@@ -1385,6 +1388,33 @@ impl AppShell {
             config.allow_newlines = true;
             TextField::new_with_config(config, theme, cx)
         });
+        let settings_category_name_input = cx.new(|cx| {
+            TextField::new_with_config(
+                settings_input_config(
+                    "settings-category-name",
+                    "Category name",
+                    "General",
+                    None,
+                    false,
+                ),
+                theme,
+                cx,
+            )
+        });
+        let settings_category_extensions_input = cx.new(|cx| {
+            TextField::new_with_config(
+                settings_input_config(
+                    "settings-category-extensions",
+                    "Extensions",
+                    "mp4, mkv, zip",
+                    None,
+                    false,
+                ),
+                theme,
+                cx,
+            )
+        });
+
         let mut settings_subscriptions = [
             &settings_directory_input,
             &settings_core_path_input,
@@ -1407,6 +1437,8 @@ impl AppShell {
             &settings_min_split_size_input,
             &settings_tracker_custom_url_input,
             &settings_tracker_list_text_input,
+            &settings_category_name_input,
+            &settings_category_extensions_input,
         ]
         .into_iter()
         .map(|input| {
@@ -1465,7 +1497,7 @@ impl AppShell {
         Self {
             theme,
             translator: translator_for_language(settings.language),
-            settings,
+            settings: settings.clone(),
             profiles: ProfileCatalogView::default(),
             cores: CoreRegistryView::default(),
             page: AppPage::Downloads,
@@ -1510,12 +1542,35 @@ impl AppShell {
                 min_split_size: settings_min_split_size_input,
                 tracker_custom_url: settings_tracker_custom_url_input,
                 tracker_list_text: settings_tracker_list_text_input,
+                category_name: settings_category_name_input,
+                category_extensions: settings_category_extensions_input,
             },
             add_dialog: AddDownloadDialog::default(),
             add_dialog_focus: cx.focus_handle(),
             add_cancel_focus: cx.focus_handle().tab_stop(true),
             add_submit_focus: cx.focus_handle().tab_stop(true),
-            settings_page: SettingsPage::default(),
+            settings_page: SettingsPage {
+                draft_color_scheme: settings.color_scheme,
+                draft_language: settings.language,
+                draft_proxy_mode: settings.download_proxy.mode,
+                draft_check_certificate: settings.download_proxy.check_certificate,
+                draft_file_allocation: settings.transfer_policy.file_allocation,
+                draft_check_integrity: settings.transfer_policy.check_integrity,
+                draft_notification_volume: settings.notifications.volume,
+                draft_notify_on_completion: settings.notifications.notify_on_completion,
+                draft_notify_on_error: settings.notifications.notify_on_error,
+                draft_notify_on_engine_events: settings.notifications.notify_on_engine_events,
+                draft_os_notifications: settings.notifications.os_notifications,
+                draft_notify_on_low_disk: settings.notifications.notify_on_low_disk,
+                draft_close_behavior: settings.platform.close_behavior,
+                draft_show_tray_icon: settings.platform.show_tray_icon,
+                draft_start_minimized_to_tray: settings.platform.start_minimized_to_tray,
+                draft_categories: settings.categories.clone(),
+                draft_tracker_enabled: settings.tracker_list.enabled,
+                draft_tracker_source: settings.tracker_list.source,
+                draft_tracker_auto_refresh: settings.tracker_list.auto_refresh,
+                ..SettingsPage::default()
+            },
             pending_settings_save: None,
             pending_task_command: None,
             pending_global_task_command: None,

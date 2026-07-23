@@ -1063,20 +1063,17 @@ pub(crate) fn map_settings(settings: &AppSettings) -> SettingsView {
                 id: category.id.to_string(),
                 name: category.name.clone(),
                 directory: category.directory.to_string_lossy().into_owned(),
+                extensions: ariadeck_settings::format_category_extensions(&category.extensions),
+                is_fallback: category.is_fallback,
             })
             .collect(),
-        default_category_id: settings.default_category_id.map(|id| id.to_string()),
         tracker_list: TrackerListSettingsView {
             enabled: settings.tracker_list.enabled,
             source: match settings.tracker_list.source {
                 ariadeck_settings::TrackerListSource::Curated => TrackerListSourceView::Curated,
                 ariadeck_settings::TrackerListSource::Custom => TrackerListSourceView::Custom,
             },
-            custom_url: settings
-                .tracker_list
-                .custom_url
-                .clone()
-                .unwrap_or_default(),
+            custom_url: settings.tracker_list.custom_url.clone().unwrap_or_default(),
             auto_refresh: settings.tracker_list.auto_refresh,
             last_refreshed_at: settings.tracker_list.last_refreshed_at,
             list_text: settings.tracker_list.list_text.clone(),
@@ -1205,7 +1202,6 @@ pub(crate) fn map_settings_request(
         // settings form. Preserve whatever is currently persisted.
         ui: current.ui,
         categories: Vec::new(),
-        default_category_id: None,
         tracker_list: ariadeck_settings::TrackerListSettings {
             enabled: settings.tracker_list.enabled,
             source: match settings.tracker_list.source {
@@ -1228,16 +1224,32 @@ pub(crate) fn map_settings_request(
             id,
             name: category.name.trim().to_owned(),
             directory: std::path::PathBuf::from(category.directory.trim()),
+            extensions: ariadeck_settings::parse_category_extensions_text(&category.extensions),
+            is_fallback: category.is_fallback,
         });
     }
     mapped.categories = categories;
-    mapped.default_category_id = match settings.default_category_id.as_deref() {
-        None | Some("") => None,
-        Some(id) => Some(
-            id.parse()
-                .map_err(|_| "Invalid default download category id.".to_owned())?,
-        ),
-    };
+    // General is the fixed fallback category (D-042); name match wins.
+    for category in &mut mapped.categories {
+        category.is_fallback = category.name.eq_ignore_ascii_case("General");
+    }
+    if !mapped.categories.iter().any(|c| c.is_fallback) {
+        if let Some(first) = mapped.categories.first_mut() {
+            first.is_fallback = true;
+        }
+    } else {
+        let mut seen = false;
+        for category in &mut mapped.categories {
+            if category.is_fallback {
+                if seen {
+                    category.is_fallback = false;
+                } else {
+                    seen = true;
+                }
+            }
+        }
+    }
+    ariadeck_settings::sync_download_directory_from_fallback(&mut mapped);
     mapped.validate().map_err(|error| error.to_string())?;
     Ok((mapped, password))
 }
@@ -1299,9 +1311,7 @@ pub(crate) async fn persist_settings_request(
     // engine options change we still push them to the running engine before
     // persisting, then persist and roll the engine back on a save failure so
     // disk and engine stay consistent.
-    if (request.apply_speed_limit
-        || request.apply_transfer_policy
-        || request.apply_bt_tracker)
+    if (request.apply_speed_limit || request.apply_transfer_policy || request.apply_bt_tracker)
         && !request.apply_proxy
     {
         return apply_engine_policy_only(store, sync, request).await;

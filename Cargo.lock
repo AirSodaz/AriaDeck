@@ -353,6 +353,7 @@ dependencies = [
 name = "ariadeck-settings"
 version = "0.1.0"
 dependencies = [
+ "ariadeck-domain",
  "keyring",
  "secrecy",
  "serde",

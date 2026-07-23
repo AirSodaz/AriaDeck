@@ -8,6 +8,73 @@ fn fluent_number(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
+fn filename_hint_for_add(
+    sources: &[AddDownloadSourceView],
+    metadata_name: Option<&str>,
+) -> Option<String> {
+    if let Some(name) = metadata_name.map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(name.to_owned());
+    }
+    sources.iter().find_map(|source| match source {
+        AddDownloadSourceView::Uri { uri, .. } => ariadeck_domain::filename_hint_from_source(uri),
+        AddDownloadSourceView::MetadataFile { path, .. } => path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned()),
+    })
+}
+
+fn resolve_add_category_id(
+    categories: &[crate::DownloadCategoryView],
+    manual: Option<&str>,
+    filename_hint: Option<&str>,
+) -> Option<String> {
+    if let Some(id) = manual.map(str::trim).filter(|s| !s.is_empty())
+        && categories.iter().any(|c| c.id == id)
+    {
+        return Some(id.to_owned());
+    }
+    let pairs: Vec<(String, bool, Vec<String>)> = categories
+        .iter()
+        .map(|c| {
+            let extensions = c
+                .extensions
+                .split(|ch: char| ch == ',' || ch == ';' || ch == '|' || ch.is_whitespace())
+                .filter_map(ariadeck_domain::normalize_extension)
+                .collect::<Vec<_>>();
+            (c.id.clone(), c.is_fallback, extensions)
+        })
+        .collect();
+    let id = ariadeck_domain::resolve_category_id(
+        pairs.iter().map(|(id, is_fallback, extensions)| {
+            (id.as_str(), *is_fallback, extensions.as_slice())
+        }),
+        filename_hint,
+    )?;
+    Some(id.to_owned())
+}
+
+fn category_directory(
+    categories: &[crate::DownloadCategoryView],
+    category_id: Option<&str>,
+    fallback_dir: &str,
+) -> Option<String> {
+    if let Some(id) = category_id
+        && let Some(dir) = categories
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.directory.clone())
+            .filter(|d| !d.is_empty())
+    {
+        return Some(dir);
+    }
+    categories
+        .iter()
+        .find(|c| c.is_fallback)
+        .map(|c| c.directory.clone())
+        .filter(|d| !d.is_empty())
+        .or_else(|| (!fallback_dir.is_empty()).then(|| fallback_dir.to_owned()))
+}
+
 impl AppShell {
     pub(crate) fn open_add_download(
         &mut self,
@@ -53,7 +120,7 @@ impl AppShell {
             input_mode: AddDownloadInputModeView::Links,
             mode: AddDownloadModeView::SeparateTasks,
             file_conflict: FileConflictPolicyView::AutoRename,
-            category_id: self.settings.default_category_id.clone(),
+            category_id: None, // None = auto-route by extension (D-042)
             advanced_open: false,
             metadata_files: Vec::new(),
             active_metadata_file: None,
@@ -213,32 +280,40 @@ impl AppShell {
                     AddDownloadModeView::SeparateTasks
                 },
                 destination: {
-                    let category_id = self
-                        .add_dialog
-                        .category_id
-                        .clone()
-                        .or_else(|| self.settings.default_category_id.clone());
-                    if let Some(id) = category_id.as_deref() {
-                        self.settings
-                            .categories
-                            .iter()
-                            .find(|category| category.id == id)
-                            .map(|category| category.directory.clone())
-                            .filter(|path| !path.is_empty())
-                            .or_else(|| {
-                                (!self.settings.download_directory.is_empty())
-                                    .then(|| self.settings.download_directory.clone())
-                            })
-                    } else {
-                        (!self.settings.download_directory.is_empty())
-                            .then(|| self.settings.download_directory.clone())
-                    }
+                    let metadata_name = self.add_dialog.metadata_files.first().and_then(|file| {
+                        file.path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                    });
+                    let metadata_name = metadata_name.as_deref();
+                    let links = parse_add_download_sources(self.add_input.read(cx).text());
+                    let hint = filename_hint_for_add(&links, metadata_name);
+                    let category_id = resolve_add_category_id(
+                        &self.settings.categories,
+                        self.add_dialog.category_id.as_deref(),
+                        hint.as_deref(),
+                    );
+                    category_directory(
+                        &self.settings.categories,
+                        category_id.as_deref(),
+                        &self.settings.download_directory,
+                    )
                 },
-                category_id: self
-                    .add_dialog
-                    .category_id
-                    .clone()
-                    .or_else(|| self.settings.default_category_id.clone()),
+                category_id: {
+                    let metadata_name = self.add_dialog.metadata_files.first().and_then(|file| {
+                        file.path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                    });
+                    let metadata_name = metadata_name.as_deref();
+                    let links = parse_add_download_sources(self.add_input.read(cx).text());
+                    let hint = filename_hint_for_add(&links, metadata_name);
+                    resolve_add_category_id(
+                        &self.settings.categories,
+                        self.add_dialog.category_id.as_deref(),
+                        hint.as_deref(),
+                    )
+                },
                 required_bytes,
                 file_conflict: if self.add_dialog.input_mode == AddDownloadInputModeView::Links {
                     self.add_dialog.file_conflict
@@ -591,13 +666,30 @@ impl AppShell {
         if categories.is_empty() {
             return div();
         }
-        let selected = self
-            .add_dialog
-            .category_id
-            .clone()
-            .or_else(|| self.settings.default_category_id.clone());
+        let links = parse_add_download_sources(self.add_input.read(cx).text());
+        let metadata_name = self.add_dialog.metadata_files.first().and_then(|file| {
+            file.path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        });
+        let metadata_name = metadata_name.as_deref();
+        let hint = filename_hint_for_add(&links, metadata_name);
+        let auto_id = resolve_add_category_id(&categories, None, hint.as_deref());
+        let auto_name = auto_id
+            .as_deref()
+            .and_then(|id| {
+                categories
+                    .iter()
+                    .find(|c| c.id == id)
+                    .map(|c| c.name.clone())
+            })
+            .unwrap_or_else(|| self.t("dialog-add-category-auto").to_string());
+        let selected = self.add_dialog.category_id.clone();
         let label = self.t("dialog-add-category");
-        let default_label = self.t("dialog-add-category-default");
+        let auto_label = self.t_args(
+            "dialog-add-category-auto-named",
+            &[("name", ariadeck_i18n::FluentValue::from(auto_name.as_str()))],
+        );
         let mut row = div()
             .flex()
             .flex_wrap()
@@ -605,7 +697,7 @@ impl AppShell {
             .gap_2()
             .child(div().text_xs().text_color(colors.text_muted).child(label))
             .child(
-                Button::new("add-category-none", default_label)
+                Button::new("add-category-auto", auto_label)
                     .style(if selected.is_none() {
                         ButtonStyle::Primary
                     } else {

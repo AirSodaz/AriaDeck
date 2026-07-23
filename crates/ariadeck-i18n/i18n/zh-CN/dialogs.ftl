@@ -163,3 +163,5 @@ dialog-details-seed-ratio-value = 分享率 { $ratio }
 dialog-details-seed-stop-rules = 先达到任一限制即停止：{ $ratio } · 时间 { $time } 分钟
 dialog-add-category = 分类
 dialog-add-category-default = 默认目录
+dialog-add-category-auto = 自动
+dialog-add-category-auto-named = 自动 · { $name }

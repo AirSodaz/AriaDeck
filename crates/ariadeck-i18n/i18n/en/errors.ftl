@@ -29,6 +29,7 @@ error-application-internal = An internal application error occurred.
 error-sync-unavailable = The synchronization coordinator is unavailable.
 error-command-no-result = The command returned no result.
 error-settings-invalid-download-directory = Choose a non-empty download directory.
+error-settings-empty-categories = Add at least one download category.
 error-settings-invalid-speed-limit = Enter a speed as bytes/second or a K/M/G value, or leave it blank for unlimited.
 error-settings-invalid-transfer-policy = Enter valid positive transfer-policy values.
 error-settings-path-picker-failed = The system path picker failed.

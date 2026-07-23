@@ -26,7 +26,7 @@ impl AppShell {
                 let message = match source {
                     SettingsSaveSource::Theme => self.t("notice-settings-appearance"),
                     SettingsSaveSource::Language => self.t("settings-language-saved"),
-                    SettingsSaveSource::Directory => self.t("notice-settings-directory"),
+                    SettingsSaveSource::Directory => self.t("notice-settings-categories"),
                     SettingsSaveSource::Proxy => {
                         self.settings_inputs
                             .proxy_password
@@ -142,7 +142,7 @@ impl AppShell {
         self.settings = settings.clone();
         self.settings_page.draft_color_scheme = settings.color_scheme;
         self.settings_page.draft_categories = settings.categories.clone();
-        self.settings_page.draft_default_category_id = settings.default_category_id.clone();
+        self.settings_page.draft_category_edit_index = None;
         self.settings_page.draft_language = settings.language;
         self.set_language_runtime(settings.language);
         self.settings_page.draft_file_allocation = settings.transfer_policy.file_allocation;
@@ -174,7 +174,7 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         if self.page == AppPage::Settings {
-            window.focus(&self.settings_inputs.directory.focus_handle(cx), cx);
+            window.focus(&self.focus_handle, cx);
             return;
         }
         if self.add_dialog.open
@@ -264,7 +264,7 @@ impl AppShell {
             draft_show_tray_icon: self.settings.platform.show_tray_icon,
             draft_start_minimized_to_tray: self.settings.platform.start_minimized_to_tray,
             draft_categories: self.settings.categories.clone(),
-            draft_default_category_id: self.settings.default_category_id.clone(),
+            draft_category_edit_index: None,
             draft_tracker_enabled: self.settings.tracker_list.enabled,
             draft_tracker_source: self.settings.tracker_list.source,
             draft_tracker_auto_refresh: self.settings.tracker_list.auto_refresh,
@@ -316,13 +316,44 @@ impl AppShell {
         if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
             return;
         }
-        let download_directory = self
-            .settings_inputs
-            .directory
-            .read(cx)
-            .text()
-            .trim()
-            .to_owned();
+        self.flush_category_editor(cx);
+        let mut categories = self.settings_page.draft_categories.clone();
+        if categories.is_empty() {
+            self.settings_page.error = Some(OperationErrorView {
+                code: "settings.empty_categories".into(),
+                summary: self.t("error-settings-empty-categories"),
+                retryable: false,
+            });
+            cx.notify();
+            return;
+        }
+        // General is the fixed fallback category (no UI toggle).
+        for category in &mut categories {
+            category.is_fallback = category.name.eq_ignore_ascii_case("General");
+        }
+        if !categories.iter().any(|c| c.is_fallback)
+            && let Some(first) = categories.first_mut()
+        {
+            first.is_fallback = true;
+        } else {
+            // Exactly one fallback if multiple "General" names somehow exist.
+            let mut seen = false;
+            for category in &mut categories {
+                if category.is_fallback {
+                    if seen {
+                        category.is_fallback = false;
+                    } else {
+                        seen = true;
+                    }
+                }
+            }
+        }
+        let download_directory = categories
+            .iter()
+            .find(|c| c.is_fallback)
+            .map(|c| c.directory.clone())
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| self.settings.download_directory.clone());
         if download_directory.is_empty() {
             self.settings_page.error = Some(OperationErrorView {
                 code: "settings.invalid_download_directory".into(),
@@ -334,8 +365,7 @@ impl AppShell {
         }
         let mut settings = self.settings.clone();
         settings.download_directory = download_directory;
-        settings.categories = self.settings_page.draft_categories.clone();
-        settings.default_category_id = self.settings_page.draft_default_category_id.clone();
+        settings.categories = categories;
         self.request_settings_save(
             settings,
             ProxyPasswordUpdateView::Unchanged,
@@ -1104,9 +1134,7 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         let (files, directories, prompt) = match target {
-            PathPickTarget::DownloadDirectory
-            | PathPickTarget::ProfileDownloadDirectory
-            | PathPickTarget::CategoryDirectory { .. } => {
+            PathPickTarget::CategoryDirectory { .. } => {
                 (false, true, self.t("settings-pick-download-directory"))
             }
             PathPickTarget::CoreExecutable | PathPickTarget::ProfileExecutable => (
@@ -1165,18 +1193,23 @@ impl AppShell {
         let display = path.to_string_lossy().into_owned();
         if let PathPickTarget::CategoryDirectory { index } = target {
             if let Some(category) = self.settings_page.draft_categories.get_mut(index) {
-                category.directory = display;
+                category.directory = display.clone();
+            }
+            // Keep the edit-panel path field in sync when browsing while editing.
+            if self.settings_page.draft_category_edit_index == Some(index) {
+                self.settings_inputs.directory.update(cx, |input, cx| {
+                    input.set_text(display, cx);
+                });
+            }
+            if self.page == AppPage::Settings {
+                self.settings_page.error = None;
             }
             cx.notify();
             return;
         }
         let field = match target {
-            PathPickTarget::DownloadDirectory => self.settings_inputs.directory.clone(),
             PathPickTarget::CoreExecutable => self.settings_inputs.core_path.clone(),
             PathPickTarget::ProfileExecutable => self.settings_inputs.profile_executable.clone(),
-            PathPickTarget::ProfileDownloadDirectory => {
-                self.settings_inputs.profile_download.clone()
-            }
             PathPickTarget::CategoryDirectory { .. } => unreachable!(),
         };
         field.update(cx, |input, cx| input.set_text(display, cx));
@@ -1365,13 +1398,7 @@ impl AppShell {
 
         let (dirty, saving) = match active_category {
             SettingsCategory::General => {
-                let dir_dirty = self.settings_inputs.directory.read(cx).text().trim()
-                    != self.settings.download_directory;
-                let categories_dirty = self.settings_page.draft_categories
-                    != self.settings.categories
-                    || self.settings_page.draft_default_category_id
-                        != self.settings.default_category_id;
-                let dirty = dir_dirty || categories_dirty;
+                let dirty = self.settings_page.draft_categories != self.settings.categories;
                 let saving = self
                     .pending_settings_save
                     .as_ref()
@@ -1552,7 +1579,65 @@ impl AppShell {
             .into_any_element()
     }
 
+    pub(crate) fn flush_category_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.settings_page.draft_category_edit_index else {
+            return;
+        };
+        if index >= self.settings_page.draft_categories.len() {
+            self.settings_page.draft_category_edit_index = None;
+            return;
+        }
+        let name = self
+            .settings_inputs
+            .category_name
+            .read(cx)
+            .text()
+            .trim()
+            .to_owned();
+        let extensions = self
+            .settings_inputs
+            .category_extensions
+            .read(cx)
+            .text()
+            .to_owned();
+        let directory = self
+            .settings_inputs
+            .directory
+            .read(cx)
+            .text()
+            .trim()
+            .to_owned();
+        let category = &mut self.settings_page.draft_categories[index];
+        if !name.is_empty() {
+            category.name = name;
+        }
+        category.extensions = extensions;
+        category.directory = directory;
+    }
+
+    pub(crate) fn select_category_editor(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.settings_page.draft_categories.len() {
+            return;
+        }
+        self.flush_category_editor(cx);
+        self.settings_page.draft_category_edit_index = Some(index);
+        let category = self.settings_page.draft_categories[index].clone();
+        self.settings_inputs.category_name.update(cx, |input, cx| {
+            input.set_text(category.name.clone(), cx);
+        });
+        self.settings_inputs
+            .category_extensions
+            .update(cx, |input, cx| {
+                input.set_text(category.extensions.clone(), cx);
+            });
+        self.settings_inputs.directory.update(cx, |input, cx| {
+            input.set_text(category.directory.clone(), cx);
+        });
+        cx.notify();
+    }
+
     pub(crate) fn add_download_category(&mut self, cx: &mut Context<Self>) {
+        self.flush_category_editor(cx);
         let n = self.settings_page.draft_categories.len() + 1;
         let name = format!("Category {n}");
         self.settings_page
@@ -1567,30 +1652,54 @@ impl AppShell {
                 ),
                 name,
                 directory: self.settings.download_directory.clone(),
+                extensions: String::new(),
+                is_fallback: false,
             });
-        cx.notify();
+        let index = self.settings_page.draft_categories.len() - 1;
+        self.select_category_editor(index, cx);
     }
 
     pub(crate) fn remove_download_category(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.settings_page.draft_categories.len() {
             return;
         }
+        if self.settings_page.draft_categories.len() <= 1 {
+            return;
+        }
+        self.flush_category_editor(cx);
+        let removed = &self.settings_page.draft_categories[index];
+        // General (fixed fallback) cannot be removed.
+        if removed.is_fallback {
+            return;
+        }
         let removed = self.settings_page.draft_categories.remove(index);
-        if self.settings_page.draft_default_category_id.as_deref() == Some(removed.id.as_str()) {
-            self.settings_page.draft_default_category_id = None;
+        if let Some(edit) = self.settings_page.draft_category_edit_index {
+            if edit == index {
+                self.settings_page.draft_category_edit_index = None;
+            } else if edit > index {
+                self.settings_page.draft_category_edit_index = Some(edit - 1);
+            }
+        }
+        // Keep exactly one fallback (General).
+        if !self
+            .settings_page
+            .draft_categories
+            .iter()
+            .any(|c| c.is_fallback)
+        {
+            let general_idx = self
+                .settings_page
+                .draft_categories
+                .iter()
+                .position(|c| c.name.eq_ignore_ascii_case("General"))
+                .unwrap_or(0);
+            if let Some(general) = self.settings_page.draft_categories.get_mut(general_idx) {
+                general.is_fallback = true;
+            }
         }
         if self.add_dialog.category_id.as_deref() == Some(removed.id.as_str()) {
-            self.add_dialog.category_id = self.settings_page.draft_default_category_id.clone();
+            self.add_dialog.category_id = None;
         }
-        cx.notify();
-    }
-
-    pub(crate) fn set_default_download_category(
-        &mut self,
-        category_id: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
-        self.settings_page.draft_default_category_id = category_id;
         cx.notify();
     }
 
@@ -1654,11 +1763,6 @@ impl AppShell {
         let theme_label = self.t("settings-theme");
         let language_label = self.t("settings-language");
         let language_desc = self.t("settings-language-description");
-        let downloads_title = self.t("settings-downloads");
-        let default_dir_label = self.t("settings-default-directory");
-        let default_dir_desc = self.t("settings-default-directory-desc");
-        let browse_label = self.t("button-browse");
-        let browse_aria = self.t("settings-default-directory-browse-aria");
         div()
             .flex()
             .flex_col()
@@ -1678,22 +1782,6 @@ impl AppShell {
                         colors,
                     )),
             )
-            .child(settings_section_owned(downloads_title, colors).child(
-                settings_section_row_owned(
-                    default_dir_label,
-                    Some(default_dir_desc),
-                    settings_path_field_row(
-                        self.settings_inputs.directory.clone(),
-                        "browse-download-directory",
-                        browse_label,
-                        browse_aria,
-                        PathPickTarget::DownloadDirectory,
-                        colors,
-                        cx,
-                    ),
-                    colors,
-                ),
-            ))
             .child(self.render_settings_categories(cx))
     }
 
@@ -1701,16 +1789,18 @@ impl AppShell {
         let colors = self.theme.colors;
         let pending = self.pending_settings_save.is_some();
         let categories = self.settings_page.draft_categories.clone();
-        let default_id = self.settings_page.draft_default_category_id.clone();
+        let edit_index = self.settings_page.draft_category_edit_index;
         let title = self.t("settings-categories");
         let desc = self.t("settings-categories-desc");
         let add_label = self.t("settings-category-add");
         let browse_label = self.t("button-browse");
-        let default_label = self.t("settings-category-default");
-        let is_default_label = self.t("settings-category-is-default");
         let remove_label = self.t("settings-category-remove");
         let empty_label = self.t("settings-categories-empty");
         let no_dir = self.t("settings-category-no-directory");
+        let edit_label = self.t("settings-category-edit");
+        let extensions_hint = self.t("settings-category-extensions-hint");
+        let extensions_prefix = self.t("settings-category-extensions");
+        let fallback_badge = self.t("settings-category-is-fallback");
 
         let mut list = div().flex().flex_col().gap_2();
         if categories.is_empty() {
@@ -1722,10 +1812,16 @@ impl AppShell {
             );
         }
         for (index, category) in categories.iter().enumerate() {
-            let is_default = default_id.as_deref() == Some(category.id.as_str());
-            let cat_id = category.id.clone();
+            let is_fallback = category.is_fallback;
+            let is_editing = edit_index == Some(index);
             let name = category.name.clone();
             let directory = category.directory.clone();
+            let extensions = category.extensions.clone();
+            let ext_line = if extensions.trim().is_empty() {
+                extensions_hint.clone()
+            } else {
+                format!("{extensions_prefix}: {extensions}")
+            };
             list = list.child(
                 div()
                     .id(SharedString::from(format!("category-row-{index}")))
@@ -1736,7 +1832,7 @@ impl AppShell {
                     .py_2()
                     .rounded_md()
                     .border_1()
-                    .border_color(if is_default {
+                    .border_color(if is_fallback || is_editing {
                         colors.accent
                     } else {
                         colors.border
@@ -1755,19 +1851,27 @@ impl AppShell {
                                     .text_color(colors.text_primary)
                                     .child(name),
                             )
+                            .when(is_fallback, |row| {
+                                row.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(colors.accent)
+                                        .child(fallback_badge.clone()),
+                                )
+                            })
                             .child(
                                 Button::new(
-                                    SharedString::from(format!("category-default-{index}")),
-                                    if is_default {
-                                        is_default_label.clone()
-                                    } else {
-                                        default_label.clone()
-                                    },
+                                    SharedString::from(format!("category-edit-{index}")),
+                                    edit_label.clone(),
                                 )
-                                .style(ButtonStyle::Secondary)
-                                .disabled(pending || is_default)
+                                .style(if is_editing {
+                                    ButtonStyle::Primary
+                                } else {
+                                    ButtonStyle::Secondary
+                                })
+                                .disabled(pending)
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.set_default_download_category(Some(cat_id.clone()), cx);
+                                    this.select_category_editor(index, cx);
                                 }))
                                 .render(colors),
                             )
@@ -1777,47 +1881,68 @@ impl AppShell {
                                     remove_label.clone(),
                                 )
                                 .style(ButtonStyle::Secondary)
-                                .disabled(pending)
+                                .disabled(pending || is_fallback || categories.len() <= 1)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.remove_download_category(index, cx);
                                 }))
                                 .render(colors),
                             ),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_xs()
-                                    .text_color(colors.text_muted)
-                                    .child(if directory.is_empty() {
-                                        no_dir.clone()
-                                    } else {
-                                        directory
-                                    }),
-                            )
-                            .child(
-                                Button::new(
-                                    SharedString::from(format!("category-browse-{index}")),
-                                    browse_label.clone(),
-                                )
-                                .style(ButtonStyle::Secondary)
-                                .disabled(pending)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.pick_path_for_field(
-                                        PathPickTarget::CategoryDirectory { index },
-                                        window,
-                                        cx,
-                                    );
-                                }))
-                                .render(colors),
-                            ),
-                    ),
+                    .when(!is_editing, |row| {
+                        row.child(div().text_xs().text_color(colors.text_muted).child(
+                            if directory.is_empty() {
+                                no_dir.clone()
+                            } else {
+                                directory
+                            },
+                        ))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(colors.text_muted)
+                                .child(ext_line),
+                        )
+                    })
+                    .when(is_editing, |row| {
+                        row.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .pt_1()
+                                .child(settings_labeled_input(
+                                    self.t("settings-category-name"),
+                                    self.settings_inputs.category_name.clone(),
+                                    colors,
+                                ))
+                                .child(settings_labeled_input(
+                                    self.t("settings-category-extensions"),
+                                    self.settings_inputs.category_extensions.clone(),
+                                    colors,
+                                ))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(colors.text_muted)
+                                                .child(self.t("settings-category-directory")),
+                                        )
+                                        .child(settings_path_field_row(
+                                            self.settings_inputs.directory.clone(),
+                                            "browse-category-directory",
+                                            browse_label.clone(),
+                                            self.t("settings-category-directory-browse-aria"),
+                                            PathPickTarget::CategoryDirectory { index },
+                                            colors,
+                                            cx,
+                                        )),
+                                ),
+                        )
+                    }),
             );
         }
 
@@ -2153,27 +2278,6 @@ impl AppShell {
                                     )
                                     .into_any_element()
                             })
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(colors.text_muted)
-                                            .child(self.t("ui-profile-download-dir")),
-                                    )
-                                    .child(settings_path_field_row(
-                                        self.settings_inputs.profile_download.clone(),
-                                        "browse-profile-download",
-                                        self.t("button-browse"),
-                                        self.t("settings-profile-download-browse-aria"),
-                                        PathPickTarget::ProfileDownloadDirectory,
-                                        colors,
-                                        cx,
-                                    )),
-                            )
                             .child(
                                 div()
                                     .flex()
@@ -3043,79 +3147,71 @@ impl AppShell {
         let enable_shell = cx.entity().downgrade();
         let auto_shell = cx.entity().downgrade();
         let refresh_shell = cx.entity().downgrade();
-        settings_section_owned(self.t("settings-tracker-list"), colors)
-            .child(
-                div()
-                    .pt_4()
-                    .max_w(px(760.0))
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(colors.text_muted)
-                            .child(self.t("settings-tracker-list-desc")),
-                    )
-                    .child(settings_section_row_owned(
-                        self.t("settings-tracker-enabled"),
-                        Some(self.t("settings-tracker-enabled-desc")),
-                        Toggle::new("toggle-tracker-enabled", enabled)
-                            .aria_label(self.t("settings-tracker-enabled-aria"))
-                            .disabled(pending)
-                            .on_click(move |_, _, cx| {
-                                enable_shell
-                                    .update(cx, |shell, cx| shell.toggle_tracker_list_enabled(cx))
-                                    .ok();
-                            })
-                            .render(colors),
+        settings_section_owned(self.t("settings-tracker-list"), colors).child(
+            div()
+                .pt_4()
+                .max_w(px(760.0))
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(colors.text_muted)
+                        .child(self.t("settings-tracker-list-desc")),
+                )
+                .child(settings_section_row_owned(
+                    self.t("settings-tracker-enabled"),
+                    Some(self.t("settings-tracker-enabled-desc")),
+                    Toggle::new("toggle-tracker-enabled", enabled)
+                        .aria_label(self.t("settings-tracker-enabled-aria"))
+                        .disabled(pending)
+                        .on_click(move |_, _, cx| {
+                            enable_shell
+                                .update(cx, |shell, cx| shell.toggle_tracker_list_enabled(cx))
+                                .ok();
+                        })
+                        .render(colors),
+                    colors,
+                ))
+                .child(settings_section_row_owned(
+                    self.t("settings-tracker-source"),
+                    Some(self.t("settings-tracker-source-desc")),
+                    source_control,
+                    colors,
+                ))
+                .when(custom, |section| {
+                    section.child(settings_labeled_input(
+                        self.t("settings-tracker-custom-url"),
+                        self.settings_inputs.tracker_custom_url.clone(),
                         colors,
                     ))
-                    .child(settings_section_row_owned(
-                        self.t("settings-tracker-source"),
-                        Some(self.t("settings-tracker-source-desc")),
-                        source_control,
-                        colors,
-                    ))
-                    .when(custom, |section| {
-                        section.child(settings_labeled_input(
-                            self.t("settings-tracker-custom-url"),
-                            self.settings_inputs.tracker_custom_url.clone(),
-                            colors,
-                        ))
-                    })
-                    .child(settings_section_row_owned(
-                        self.t("settings-tracker-auto-refresh"),
-                        Some(self.t("settings-tracker-auto-refresh-desc")),
-                        Toggle::new("toggle-tracker-auto-refresh", auto_refresh)
-                            .aria_label(self.t("settings-tracker-auto-refresh-aria"))
-                            .disabled(pending)
-                            .on_click(move |_, _, cx| {
-                                auto_shell
-                                    .update(cx, |shell, cx| {
-                                        shell.toggle_tracker_list_auto_refresh(cx)
-                                    })
-                                    .ok();
-                            })
-                            .render(colors),
-                        colors,
-                    ))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                Button::new(
-                                    "refresh-tracker-list",
-                                    self.t("settings-tracker-refresh"),
-                                )
+                })
+                .child(settings_section_row_owned(
+                    self.t("settings-tracker-auto-refresh"),
+                    Some(self.t("settings-tracker-auto-refresh-desc")),
+                    Toggle::new("toggle-tracker-auto-refresh", auto_refresh)
+                        .aria_label(self.t("settings-tracker-auto-refresh-aria"))
+                        .disabled(pending)
+                        .on_click(move |_, _, cx| {
+                            auto_shell
+                                .update(cx, |shell, cx| shell.toggle_tracker_list_auto_refresh(cx))
+                                .ok();
+                        })
+                        .render(colors),
+                    colors,
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            Button::new("refresh-tracker-list", self.t("settings-tracker-refresh"))
                                 .aria_label(self.t("settings-tracker-refresh-aria"))
                                 .style(ButtonStyle::Secondary)
                                 .disabled(pending)
-                                .loading(
-                                    self.settings_page.pending_tracker_refresh.is_some(),
-                                )
+                                .loading(self.settings_page.pending_tracker_refresh.is_some())
                                 .on_click(move |_, _, cx| {
                                     refresh_shell
                                         .update(cx, |shell, cx| {
@@ -3124,38 +3220,35 @@ impl AppShell {
                                         .ok();
                                 })
                                 .render(colors),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(colors.text_muted)
-                                    .child(match last_refreshed {
-                                        Some(ts) => self.t_args(
-                                            "settings-tracker-last-refreshed",
-                                            &[
-                                                ("count", FluentValue::from(tracker_count as i64)),
-                                                ("when", FluentValue::from(ts)),
-                                            ],
-                                        ),
-                                        None => self.t_args(
-                                            "settings-tracker-never-refreshed",
-                                            &[("count", FluentValue::from(tracker_count as i64))],
-                                        ),
-                                    }),
-                            ),
-                    )
-                    .child(settings_labeled_input(
-                        self.t("settings-tracker-list-text"),
-                        self.settings_inputs.tracker_list_text.clone(),
-                        colors,
-                    ))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(colors.text_muted)
-                            .child(self.t("settings-tracker-list-hint")),
-                    ),
-            )
+                        )
+                        .child(div().text_xs().text_color(colors.text_muted).child(
+                            match last_refreshed {
+                                Some(ts) => self.t_args(
+                                    "settings-tracker-last-refreshed",
+                                    &[
+                                        ("count", FluentValue::from(tracker_count as i64)),
+                                        ("when", FluentValue::from(ts)),
+                                    ],
+                                ),
+                                None => self.t_args(
+                                    "settings-tracker-never-refreshed",
+                                    &[("count", FluentValue::from(tracker_count as i64))],
+                                ),
+                            },
+                        )),
+                )
+                .child(settings_labeled_input(
+                    self.t("settings-tracker-list-text"),
+                    self.settings_inputs.tracker_list_text.clone(),
+                    colors,
+                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(colors.text_muted)
+                        .child(self.t("settings-tracker-list-hint")),
+                ),
+        )
     }
 
     pub(crate) fn render_settings_notifications(&mut self, cx: &mut Context<Self>) -> Div {

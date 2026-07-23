@@ -1871,10 +1871,18 @@ async fn run_file_removal(
 
 #[test]
 fn settings_mapping_preserves_theme_and_download_directory() {
+    let general_id = ariadeck_settings::Uuid::new_v4().to_string();
     let settings = SettingsView {
         color_scheme: ColorSchemeView::Light,
         language: LanguagePreferenceView::default(),
         download_directory: "D:/Transfers".into(),
+        categories: vec![DownloadCategoryView {
+            id: general_id,
+            name: "General".into(),
+            directory: "D:/Transfers".into(),
+            extensions: String::new(),
+            is_fallback: true,
+        }],
         ..SettingsView::default()
     };
 
@@ -1993,9 +2001,14 @@ fn settings_mapping_allocates_a_credential_reference_without_exposing_the_passwo
         transfer_policy: TransferPolicySettingsView::default(),
         notifications: NotificationSettingsView::default(),
         platform: PlatformSettingsView::default(),
-        categories: Vec::new(),
-        default_category_id: None,
-    tracker_list: Default::default(),
+        categories: vec![DownloadCategoryView {
+            id: ariadeck_settings::Uuid::new_v4().to_string(),
+            name: "General".into(),
+            directory: "D:/Downloads".into(),
+            extensions: String::new(),
+            is_fallback: true,
+        }],
+        tracker_list: Default::default(),
     };
 
     let (mapped, password) = map_settings_request(
@@ -2177,9 +2190,8 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
         notifications: NotificationSettings::default(),
         platform: PlatformSettings::default(),
         ui: UiPreferences::default(),
-        categories: Vec::new(),
-        default_category_id: None,
-    tracker_list: Default::default(),
+        categories: ariadeck_settings::default_download_categories(root.path().join("first")),
+        tracker_list: Default::default(),
     };
     let second = AppSettings {
         color_scheme: ColorScheme::Light,
@@ -2191,9 +2203,8 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
         notifications: NotificationSettings::default(),
         platform: PlatformSettings::default(),
         ui: UiPreferences::default(),
-        categories: Vec::new(),
-        default_category_id: None,
-    tracker_list: Default::default(),
+        categories: ariadeck_settings::default_download_categories(root.path().join("second")),
+        tracker_list: Default::default(),
     };
     sender
         .send(SettingsPersistenceRequest {
@@ -2204,7 +2215,7 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
             apply_proxy: false,
             apply_speed_limit: false,
             apply_transfer_policy: false,
-        apply_bt_tracker: false,
+            apply_bt_tracker: false,
         })
         .expect("queue first settings");
     sender
@@ -2216,7 +2227,7 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
             apply_proxy: false,
             apply_speed_limit: false,
             apply_transfer_policy: false,
-        apply_bt_tracker: false,
+            apply_bt_tracker: false,
         })
         .expect("queue second settings");
     drop(sender);
@@ -2259,9 +2270,8 @@ fn external_engine_settings_do_not_touch_the_desktop_filesystem() {
         notifications: NotificationSettings::default(),
         platform: PlatformSettings::default(),
         ui: UiPreferences::default(),
-        categories: Vec::new(),
-        default_category_id: None,
-    tracker_list: Default::default(),
+        categories: ariadeck_settings::default_download_categories(&remote_path),
+        tracker_list: Default::default(),
     };
 
     persist_settings(&store, &settings, None).expect("persist external engine path");

@@ -188,11 +188,6 @@ impl AppShell {
             .update(cx, |input, cx| {
                 input.set_text(profile.endpoint, cx);
             });
-        self.settings_inputs
-            .profile_download
-            .update(cx, |input, cx| {
-                input.set_text(profile.download_dir, cx);
-            });
         self.settings_inputs.profile_secret.update(cx, |input, cx| {
             input.set_text(String::new(), cx);
         });
@@ -240,13 +235,6 @@ impl AppShell {
             .text()
             .trim()
             .to_owned();
-        let download_dir = self
-            .settings_inputs
-            .profile_download
-            .read(cx)
-            .text()
-            .trim()
-            .to_owned();
         if kind == ProfileKindView::RemoteRpc && endpoint.is_empty() {
             self.show_notice(self.t("notice-profile-remote-endpoint"), true, cx);
             return;
@@ -274,11 +262,8 @@ impl AppShell {
         } else {
             String::new()
         };
-        profile.download_dir = if download_dir.is_empty() {
-            self.settings.download_directory.clone()
-        } else {
-            download_dir
-        };
+        // Download paths are owned by categories (D-042); profiles share the fallback root.
+        profile.download_dir = self.settings.download_directory.clone();
         if kind == ProfileKindView::RemoteRpc {
             let secret_text = self
                 .settings_inputs

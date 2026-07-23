@@ -216,25 +216,36 @@ pub(crate) fn preflight_settings(
 ) -> Result<(), String> {
     settings.validate().map_err(|error| error.to_string())?;
     if let Some(gateway) = destination_gateway {
-        if !settings.download_directory.is_absolute() {
-            return Err(format!(
-                "Local download directory must be absolute: {}",
-                settings.download_directory.display()
-            ));
+        // Authorize every category directory (D-042); download_directory mirrors fallback.
+        let mut dirs: Vec<&std::path::Path> = settings
+            .categories
+            .iter()
+            .map(|c| c.directory.as_path())
+            .collect();
+        if dirs.is_empty() {
+            dirs.push(settings.download_directory.as_path());
         }
-        fs::create_dir_all(&settings.download_directory).map_err(|error| {
-            format!(
-                "Failed to create download directory {}: {error}",
-                settings.download_directory.display()
-            )
-        })?;
-        gateway
-            .preflight(&DownloadDestinationRequest {
-                directory: EnginePath::new(settings.download_directory.to_string_lossy()),
-                required_bytes: None,
-                files: Vec::new(),
-            })
-            .map_err(|error| error.message)?;
+        for directory in dirs {
+            if !directory.is_absolute() {
+                return Err(format!(
+                    "Local download directory must be absolute: {}",
+                    directory.display()
+                ));
+            }
+            fs::create_dir_all(directory).map_err(|error| {
+                format!(
+                    "Failed to create download directory {}: {error}",
+                    directory.display()
+                )
+            })?;
+            gateway
+                .preflight(&DownloadDestinationRequest {
+                    directory: EnginePath::new(directory.to_string_lossy()),
+                    required_bytes: None,
+                    files: Vec::new(),
+                })
+                .map_err(|error| error.message)?;
+        }
     }
     Ok(())
 }

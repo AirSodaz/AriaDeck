@@ -57,7 +57,7 @@ Legend: **Have** · **Partial** · **Missing** · **Won’t** (non-goal)
 | Bundled aria2 | Partial (import) | Have | N/A | Optional offline pack later; no forced network channel |
 | Browser extension / intercept | Missing | Have (Next strong) | 3rd party | High user expectation |
 | Protocol handlers / file associations | Have (`.torrent`/Metalink + `magnet:`) | Have | N/A | Browser capture remains B3 |
-| Tags / categories / folders | Have (folder categories) | Next: categories | Filters | D-040; freeform multi-tags later |
+| Tags / categories / folders | Have (ext auto-route) | Next: categories | Filters | D-040/D-042; freeform multi-tags later |
 | Download scheduling | Missing | Next: time windows | Weak | Persepolis-class |
 | Queue named groups | Partial (aria2 wait order) | Have | Partial | Productize queues |
 | SQLite history beyond aria2 memory | Have | Next: Have | N/A | D-039; D-021 still engine paging |
@@ -115,7 +115,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 
 | ID | Work | Why |
 | --- | --- | --- |
-| C1 | **Done** — favorite output folders as download categories; add-time selection, list filter, SQLite task affiliation | Motrix Next / FDM organization; D-040 |
+| C1 | **Done** — download categories as output folders with IDM-style extension auto-route + fallback; add-time Auto/manual override, list filter, SQLite affiliation | Motrix Next / IDM organization; D-040 / D-042 |
 | C2 | Named queues + simple schedule (start/pause windows) | Persepolis / Next scheduling |
 | C3 | Stale history cleanup policies | Storage hygiene |
 

@@ -1814,9 +1814,14 @@ fn proxy_settings_build_a_manual_draft_with_a_masked_password(cx: &mut TestAppCo
         transfer_policy: TransferPolicySettingsView::default(),
         notifications: NotificationSettingsView::default(),
         platform: PlatformSettingsView::default(),
-        categories: Vec::new(),
-        default_category_id: None,
-    tracker_list: Default::default(),
+        categories: vec![crate::DownloadCategoryView {
+            id: "00000000-0000-4000-8000-000000000001".into(),
+            name: "General".into(),
+            directory: "C:/Downloads".into(),
+            extensions: String::new(),
+            is_fallback: true,
+        }],
+        tracker_list: Default::default(),
     };
     let (view, cx) =
         cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
@@ -2315,15 +2320,20 @@ fn failed_directory_save_keeps_the_draft(cx: &mut TestAppContext) {
         color_scheme: ColorSchemeView::Dark,
         language: LanguagePreferenceView::default(),
         download_directory: "C:/Downloads".into(),
+        categories: vec![crate::DownloadCategoryView {
+            id: "00000000-0000-4000-8000-000000000001".into(),
+            name: "General".into(),
+            directory: "C:/Downloads".into(),
+            extensions: String::new(),
+            is_fallback: true,
+        }],
         ..SettingsView::default()
     };
     let (view, cx) =
         cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
     let (request_id, requested) = view.update(cx, |shell, cx| {
         shell.page = AppPage::Settings;
-        shell.settings_inputs.directory.update(cx, |input, cx| {
-            input.set_text("D:/Transfers", cx);
-        });
+        shell.settings_page.draft_categories[0].directory = "D:/Transfers".into();
         shell.submit_settings(cx);
         let pending = shell
             .pending_settings_save
@@ -2347,10 +2357,10 @@ fn failed_directory_save_keeps_the_draft(cx: &mut TestAppContext) {
             cx,
         );
     });
-    view.read_with(cx, |shell, cx| {
+    view.read_with(cx, |shell, _cx| {
         assert_eq!(shell.settings.download_directory, "C:/Downloads");
         assert_eq!(
-            shell.settings_inputs.directory.read(cx).text(),
+            shell.settings_page.draft_categories[0].directory,
             "D:/Transfers"
         );
         assert_eq!(shell.page, AppPage::Settings);
