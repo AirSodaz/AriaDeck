@@ -128,6 +128,8 @@ pub enum EngineError {
     },
     #[error("cannot remove the last remaining profile")]
     CannotRemoveLastProfile,
+    #[error("unsupported profile catalog schema version {found}; this build supports {supported}")]
+    UnsupportedSchemaVersion { found: u32, supported: u32 },
 }
 
 fn io_error(operation: &'static str, path: &Path, source: io::Error) -> EngineError {
@@ -2114,8 +2116,10 @@ fn validate_remote_endpoint(endpoint: &str) -> Result<(), EngineError> {
     Ok(())
 }
 
-/// Versioned multi-profile catalog (PROFILE-001). Schema 1 was a single
-/// ExternalEngineProfile object; schema 2 is this catalog.
+/// Versioned multi-profile catalog (PROFILE-001).
+///
+/// Only the current schema is accepted in-tree. When a release tag needs a
+/// migration, add a single previous-tag path; dev configs are maintained manually.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileCatalog {
@@ -2124,7 +2128,7 @@ pub struct ProfileCatalog {
     pub profiles: Vec<ProfileEntry>,
 }
 
-pub const PROFILE_CATALOG_SCHEMA_VERSION: u32 = 2;
+pub const PROFILE_CATALOG_SCHEMA_VERSION: u32 = 1;
 
 impl ProfileCatalog {
     #[must_use]
@@ -2144,6 +2148,12 @@ impl ProfileCatalog {
     }
 
     pub fn validate(&self) -> Result<(), EngineError> {
+        if self.schema_version != PROFILE_CATALOG_SCHEMA_VERSION {
+            return Err(EngineError::UnsupportedSchemaVersion {
+                found: self.schema_version,
+                supported: PROFILE_CATALOG_SCHEMA_VERSION,
+            });
+        }
         if self.profiles.is_empty() {
             return Err(EngineError::EmptyProfileCatalog);
         }
@@ -2391,7 +2401,12 @@ impl JsonProfileStore {
         }
     }
 
-    /// Load the multi-profile catalog, migrating a legacy single-profile document.
+    /// Load the multi-profile catalog for the current schema only.
+    ///
+    /// Unsupported schema versions are rejected without replacing the file
+    /// (same policy as settings). Malformed current-schema documents recover
+    /// with a backup. Historical single-profile documents are not migrated
+    /// in-tree—rewrite to schema 1 manually or reset.
     pub fn load_catalog_or_recover(
         &self,
         defaults: &ExternalEngineProfile,
@@ -2409,53 +2424,78 @@ impl JsonProfileStore {
         let bytes = fs::read(&self.path)
             .map_err(|error| io_error("read the profile catalog", &self.path, error))?;
 
-        if let Ok(catalog) = serde_json::from_slice::<ProfileCatalog>(&bytes) {
-            catalog.validate()?;
-            return Ok(LoadedCatalog {
-                catalog,
-                migrated: false,
-                recovery: None,
-            });
+        #[derive(Deserialize)]
+        struct SchemaProbe {
+            schema_version: u32,
         }
 
-        if let Ok(profile) = serde_json::from_slice::<ExternalEngineProfile>(&bytes) {
-            let catalog = ProfileCatalog::from_single(profile);
-            self.save_catalog(&catalog)?;
-            return Ok(LoadedCatalog {
-                catalog,
-                migrated: true,
-                recovery: None,
-            });
+        // Probe version before full decode so unsupported schemas are not
+        // mistaken for malformed documents (which would silently reset).
+        match serde_json::from_slice::<SchemaProbe>(&bytes) {
+            Ok(probe) if probe.schema_version != PROFILE_CATALOG_SCHEMA_VERSION => {
+                return Err(EngineError::UnsupportedSchemaVersion {
+                    found: probe.schema_version,
+                    supported: PROFILE_CATALOG_SCHEMA_VERSION,
+                });
+            }
+            Ok(_) => {}
+            Err(_) => {
+                // Missing/unreadable schema_version → treat as malformed recovery.
+            }
         }
 
-        let reason = "profile catalog JSON is malformed".to_owned();
-        let recovered_id = serde_json::from_slice::<serde_json::Value>(&bytes)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("active_profile_id")
-                    .or_else(|| value.get("profile_id"))
-                    .and_then(|id| id.as_str())
-                    .and_then(|id| id.parse::<ProfileId>().ok())
-            });
-        let backup_path = self.preserve_corrupt_document_bytes(&bytes)?;
-        let mut defaults = defaults.clone();
-        if let Some(profile_id) = recovered_id {
-            defaults.profile_id = profile_id;
+        match serde_json::from_slice::<ProfileCatalog>(&bytes) {
+            Ok(catalog) => {
+                if catalog.schema_version != PROFILE_CATALOG_SCHEMA_VERSION {
+                    return Err(EngineError::UnsupportedSchemaVersion {
+                        found: catalog.schema_version,
+                        supported: PROFILE_CATALOG_SCHEMA_VERSION,
+                    });
+                }
+                catalog.validate()?;
+                Ok(LoadedCatalog {
+                    catalog,
+                    migrated: false,
+                    recovery: None,
+                })
+            }
+            Err(error) => {
+                // Only recover when the probe looked like the current schema or
+                // schema_version was absent; wrong versions already returned above.
+                let reason = format!("profile catalog JSON is malformed: {error}");
+                let recovered_id = serde_json::from_slice::<serde_json::Value>(&bytes)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("active_profile_id")
+                            .or_else(|| value.get("profile_id"))
+                            .and_then(|id| id.as_str())
+                            .and_then(|id| id.parse::<ProfileId>().ok())
+                    });
+                let backup_path = self.preserve_corrupt_document_bytes(&bytes)?;
+                let mut defaults = defaults.clone();
+                if let Some(profile_id) = recovered_id {
+                    defaults.profile_id = profile_id;
+                }
+                let catalog = ProfileCatalog::from_single(defaults);
+                self.save_catalog(&catalog)?;
+                Ok(LoadedCatalog {
+                    catalog,
+                    migrated: true,
+                    recovery: Some(ProfileStoreRecovery {
+                        backup_path,
+                        reason,
+                    }),
+                })
+            }
         }
-        let catalog = ProfileCatalog::from_single(defaults);
-        self.save_catalog(&catalog)?;
-        Ok(LoadedCatalog {
-            catalog,
-            migrated: true,
-            recovery: Some(ProfileStoreRecovery {
-                backup_path,
-                reason,
-            }),
-        })
     }
 
     pub fn save_catalog(&self, catalog: &ProfileCatalog) -> Result<(), EngineError> {
+        // Always persist as the current schema; callers may still carry an older
+        // in-memory version during a transition.
+        let mut catalog = catalog.clone();
+        catalog.schema_version = PROFILE_CATALOG_SCHEMA_VERSION;
         catalog.validate()?;
         let parent = self
             .path
@@ -2470,7 +2510,7 @@ impl JsonProfileStore {
         fs::create_dir_all(parent)
             .map_err(|error| io_error("create the profile store directory", parent, error))?;
 
-        let payload = serde_json::to_vec_pretty(catalog)
+        let payload = serde_json::to_vec_pretty(&catalog)
             .map_err(|source| EngineError::Serialize { source })?;
         let temp_path = parent.join(format!(
             ".{}.{}.tmp",
@@ -3343,22 +3383,12 @@ mod tests {
     }
 
     #[test]
-    fn profile_catalog_migrates_legacy_single_profile_and_round_trips() {
+    fn profile_catalog_round_trips_current_schema() {
         let root = temporary_directory();
-        let legacy = sample_profile(&root);
+        let defaults = sample_profile(&root);
         let store = JsonProfileStore::new(root.join("profiles.json"));
-        store.save(&legacy).expect("save legacy");
-
-        let loaded = store
-            .load_catalog_or_recover(&legacy)
-            .expect("migrate catalog");
-        assert!(loaded.migrated);
-        assert_eq!(loaded.catalog.profiles.len(), 1);
-        assert_eq!(loaded.catalog.active_profile_id, legacy.profile_id);
-        assert_eq!(
-            loaded.catalog.active().map(|p| p.name.as_str()),
-            Some(legacy.name.as_str())
-        );
+        let mut catalog = ProfileCatalog::from_single(defaults.clone());
+        assert_eq!(catalog.schema_version, PROFILE_CATALOG_SCHEMA_VERSION);
 
         let remote = ProfileEntry::remote_rpc(
             ProfileId::new(),
@@ -3368,7 +3398,6 @@ mod tests {
             None,
         )
         .expect("remote entry");
-        let mut catalog = loaded.catalog;
         catalog.upsert(remote.clone()).expect("upsert remote");
         catalog
             .set_active(remote.profile_id)
@@ -3376,15 +3405,45 @@ mod tests {
         store.save_catalog(&catalog).expect("save catalog");
 
         let reloaded = store
-            .load_catalog_or_recover(&legacy)
+            .load_catalog_or_recover(&defaults)
             .expect("reload catalog");
         assert!(!reloaded.migrated);
+        assert_eq!(
+            reloaded.catalog.schema_version,
+            PROFILE_CATALOG_SCHEMA_VERSION
+        );
         assert_eq!(reloaded.catalog.profiles.len(), 2);
         assert_eq!(reloaded.catalog.active_profile_id, remote.profile_id);
         assert_eq!(
             reloaded.catalog.active().map(|p| p.kind),
             Some(ProfileKind::RemoteRpc)
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unsupported_profile_catalog_schema_is_rejected_without_replace() {
+        let root = temporary_directory();
+        let defaults = sample_profile(&root);
+        let path = root.join("profiles.json");
+        let store = JsonProfileStore::new(&path);
+        fs::write(
+            &path,
+            r#"{"schema_version":99,"active_profile_id":"00000000-0000-4000-8000-000000000001","profiles":[]}"#,
+        )
+        .expect("seed unsupported schema");
+        let err = store
+            .load_catalog_or_recover(&defaults)
+            .expect_err("unsupported schema");
+        assert!(matches!(
+            err,
+            EngineError::UnsupportedSchemaVersion {
+                found: 99,
+                supported: PROFILE_CATALOG_SCHEMA_VERSION
+            }
+        ));
+        let on_disk = fs::read_to_string(&path).expect("read");
+        assert!(on_disk.contains("\"schema_version\":99"));
         let _ = fs::remove_dir_all(root);
     }
 

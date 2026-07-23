@@ -55,6 +55,7 @@ notice-profile-name-empty = 配置名称不能为空。
 notice-profile-remote-endpoint = 远程配置需要 ws/wss 端点。
 notice-profile-at-least-remain = 至少需要保留一个配置。
 notice-profile-enter-aria2c = 请先输入 aria2c 可执行文件路径。
+notice-profile-activated = 当前配置已设为 { $name }。分类、代理、速度限制、传输策略与 Tracker 列表已切换到该配置。请重启 AriaDeck 以重新连接引擎。
 notice-connect-before-add = 请先连接并完成同步后再添加下载。
 notice-enter-url = 请至少输入一个 URL 或磁力链接。
 notice-choose-metadata = 请至少选择一个 Torrent 或 Metalink 文件。

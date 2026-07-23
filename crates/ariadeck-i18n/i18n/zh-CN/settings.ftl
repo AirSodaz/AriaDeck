@@ -25,7 +25,7 @@ settings-language-description = AriaDeck 的界面语言。选择「跟随系统
 settings-language-aria = 界面语言
 
 settings-categories = 分类
-settings-categories-desc = 按文件类型自动分流。扩展名命中对应分类，未命中进入 General。各分类目录请手动设置。
+settings-categories-desc = 按文件类型自动分流。扩展名命中对应分类，未命中进入 General。目录属于当前配置的引擎环境——远程 aria2 请填写主机上的路径。
 settings-categories-empty = 暂无分类。添加目录与扩展名后即可自动分流。
 settings-category-add = 添加分类
 settings-category-is-fallback = 兜底
@@ -135,6 +135,11 @@ settings-proxy-password-saved = 代理密码已保存在系统凭据存储中。
 settings-proxy-password-remove-hint = 已保存的代理密码将在保存时移除。
 
 settings-profiles = 配置
+settings-profile-env-scope = 按配置保存的引擎环境
+settings-profile-env-scope-desc = 分类（下载目录）、下载代理、速度限制、传输策略与 Tracker 列表按配置单独保存；激活另一配置时会一并切换。主题、语言、通知与托盘仍为客户端全局设置。
+settings-profile-env-local-note = 本地配置：分类目录是本机路径。AriaDeck 会创建目录，并可为已完成任务打开文件夹。
+settings-profile-env-remote-note = 远程配置：分类目录是 aria2 所在主机上的路径（不是本机）。请按远端路径风格填写（例如 /data/downloads）。AriaDeck 不会在远端创建目录，也不会在本机打开这些路径。
+settings-profile-env-switch-hint = 激活配置会将其环境加载到设置中。之后请重启 AriaDeck，以便引擎按新配置重新连接。
 settings-engine-cores = 托管的 aria2 核心
 settings-language-saved = 语言偏好已保存。
 settings-profile-kind-local = 本地

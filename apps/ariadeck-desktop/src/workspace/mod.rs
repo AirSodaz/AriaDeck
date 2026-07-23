@@ -40,9 +40,9 @@ use ariadeck_settings::{
     AppSettings, CloseBehavior, ColorScheme, DownloadProxyMode, DownloadProxySettings,
     FileAllocationSetting, JsonSettingsStore, JsonWindowGeometryStore, LanguagePreference,
     ListFilterPreference, ListSortDirectionPreference, ListSortKeyPreference, NotificationSettings,
-    NotificationVolume, PlatformSettings, ProxyCredentialRef, ProxyCredentialStore,
-    SpeedLimitSettings, SystemProxyCredentialStore, TransferPolicySettings, UiPreferences,
-    WindowGeometry, resolve_system_proxy,
+    NotificationVolume, PlatformSettings, ProfileEnvironment, ProfileEnvironmentStore,
+    ProxyCredentialRef, ProxyCredentialStore, SpeedLimitSettings, SystemProxyCredentialStore,
+    TransferPolicySettings, UiPreferences, WindowGeometry, resolve_system_proxy,
 };
 use ariadeck_ui::{
     AddDownloadAdvancedOptionsView, AddDownloadItemResultView, AddDownloadMetadataFileView,
@@ -132,6 +132,7 @@ pub struct DesktopRoot {
     settings: AppSettings,
     data_dir: PathBuf,
     profile_store: JsonProfileStore,
+    profile_env_store: ProfileEnvironmentStore,
     profile_catalog: ProfileCatalog,
     core_store: CoreStore,
     tray: Option<SystemTray>,
@@ -156,6 +157,8 @@ pub(crate) struct SettingsPersistenceRequest {
     pub(crate) apply_speed_limit: bool,
     pub(crate) apply_transfer_policy: bool,
     pub(crate) apply_bt_tracker: bool,
+    /// Active profile bag to update alongside `settings.json` (engine-env fields).
+    pub(crate) active_profile_id: Option<ProfileId>,
 }
 
 #[derive(Clone)]
@@ -222,17 +225,10 @@ impl DesktopRoot {
                     )
                 }
             };
-        if let Some(download_directory) = env::var_os("ARIADECK_DOWNLOAD_DIR") {
-            settings.download_directory = PathBuf::from(download_directory);
-            // Env root wins for fallback / empty-extension routing base.
-            if let Some(fallback) = settings.categories.iter_mut().find(|c| c.is_fallback) {
-                fallback.directory = settings.download_directory.clone();
-            } else if settings.categories.is_empty() {
-                settings.categories =
-                    ariadeck_settings::default_download_categories(&settings.download_directory);
-            }
-        }
 
+        // D-043: catalog first, then active profile env bag, then optional
+        // ARIADECK_DOWNLOAD_DIR override (dev/smoke; not persisted into the bag
+        // until the user saves settings).
         let profile_store = JsonProfileStore::new(data_dir.join("profiles.json"));
         let core_store = CoreStore::new(&data_dir);
         let managed_executable = core_store.resolve_active_executable().ok().flatten();
@@ -248,48 +244,82 @@ impl DesktopRoot {
             data_dir.clone(),
             settings.download_directory.clone(),
         );
-        let (profile_catalog, mut profile_notice) = match profile_store
-            .load_catalog_or_recover(&default_profile)
-        {
-            Ok(loaded) => {
-                let mut notice = loaded.recovery.map(|recovery| {
-                    format!(
-                        "Invalid profile catalog was reset; the original was preserved at {}.",
-                        recovery.backup_path.display()
-                    )
-                });
-                if loaded.migrated && notice.is_none() {
-                    notice = Some("Profile catalog was upgraded to multi-profile format.".into());
-                }
-                // Keep active local profile download dir aligned with settings.
-                if let Some(active) = loaded.catalog.active().cloned() {
-                    if active.kind == ProfileKind::LocalManaged {
-                        let mut catalog = loaded.catalog;
-                        if let Some(entry) = catalog.active_mut() {
-                            entry.download_dir = settings.download_directory.clone();
-                            if entry.data_dir.is_none() {
+        let (mut profile_catalog, mut profile_notice) =
+            match profile_store.load_catalog_or_recover(&default_profile) {
+                Ok(loaded) => {
+                    let mut notice = loaded.recovery.map(|recovery| {
+                        format!(
+                            "Invalid profile catalog was reset; the original was preserved at {}.",
+                            recovery.backup_path.display()
+                        )
+                    });
+                    if loaded.migrated && notice.is_none() {
+                        // Malformed current-schema recovery only (no historical migrators).
+                        notice = Some("Profile catalog was recovered from a backup.".into());
+                    }
+                    // Ensure local managed entries have a data_dir; download_dir is
+                    // aligned after the active env bag is applied below.
+                    if let Some(active) = loaded.catalog.active().cloned() {
+                        if active.kind == ProfileKind::LocalManaged {
+                            let mut catalog = loaded.catalog;
+                            if let Some(entry) = catalog.active_mut()
+                                && entry.data_dir.is_none()
+                            {
                                 entry.data_dir = Some(data_dir.clone());
                             }
-                            // Leave empty executable as managed-core opt-in;
-                            // resolve_local_executable handles spawn-time path.
+                            let _ = profile_store.save_catalog(&catalog);
+                            (catalog, notice)
+                        } else {
+                            (loaded.catalog, notice)
                         }
-                        let _ = profile_store.save_catalog(&catalog);
-                        (catalog, notice)
                     } else {
                         (loaded.catalog, notice)
                     }
-                } else {
-                    (loaded.catalog, notice)
+                }
+                Err(error) => {
+                    tracing::error!(%error, "failed to load profile catalog");
+                    (
+                        ProfileCatalog::from_single(default_profile),
+                        Some(format!("Profile catalog could not be loaded: {error}")),
+                    )
+                }
+            };
+
+        let profile_env_store = ProfileEnvironmentStore::new(&data_dir);
+        let mut profile_env_notice = None;
+        if let Some(active) = profile_catalog.active() {
+            match profile_env_store.load_or_initialize(active.profile_id.as_uuid(), &settings) {
+                Ok(env) => {
+                    env.apply_to(&mut settings);
+                }
+                Err(error) => {
+                    tracing::error!(%error, "failed to load profile environment");
+                    profile_env_notice = Some(format!(
+                        "Profile environment could not be loaded ({error}); using shared settings until fixed."
+                    ));
                 }
             }
-            Err(error) => {
-                tracing::error!(%error, "failed to load profile catalog");
-                (
-                    ProfileCatalog::from_single(default_profile),
-                    Some(format!("Profile catalog could not be loaded: {error}")),
-                )
+        }
+
+        // Dev/smoke override after bag load so it wins for this process only.
+        if let Some(download_directory) = env::var_os("ARIADECK_DOWNLOAD_DIR") {
+            settings.download_directory = PathBuf::from(download_directory);
+            if let Some(fallback) = settings.categories.iter_mut().find(|c| c.is_fallback) {
+                fallback.directory = settings.download_directory.clone();
+            } else if settings.categories.is_empty() {
+                settings.categories =
+                    ariadeck_settings::default_download_categories(&settings.download_directory);
             }
-        };
+        }
+
+        // Catalog download_dir mirrors active fallback (local spawn --dir / profile field).
+        if let Some(entry) = profile_catalog.active_mut() {
+            entry.download_dir = settings.download_directory.clone();
+            if entry.kind == ProfileKind::LocalManaged && entry.data_dir.is_none() {
+                entry.data_dir = Some(data_dir.clone());
+            }
+            let _ = profile_store.save_catalog(&profile_catalog);
+        }
 
         let (sync, local_engine, mut initial_snapshot, engine_startup_notice) =
             match create_sync_handle(&runtime, &data_dir, &settings, &profile_catalog) {
@@ -335,6 +365,7 @@ impl DesktopRoot {
                 let (sender, task, results) = spawn_settings_persistence(
                     runtime.clone(),
                     store,
+                    profile_env_store.clone(),
                     download_destination_gateway.clone(),
                     sync.clone(),
                     credential_store.clone(),
@@ -359,6 +390,8 @@ impl DesktopRoot {
             if let Some(message) = startup_notice {
                 shell.set_startup_notice(message, true, cx);
             } else if let Some(message) = profile_notice.take() {
+                shell.set_startup_notice(message, true, cx);
+            } else if let Some(message) = profile_env_notice.take() {
                 shell.set_startup_notice(message, true, cx);
             } else if let Some(message) = engine_startup_notice {
                 shell.set_startup_notice(message, true, cx);
@@ -541,6 +574,7 @@ impl DesktopRoot {
             settings,
             data_dir: data_dir.clone(),
             profile_store,
+            profile_env_store,
             profile_catalog,
             core_store,
             tray,
@@ -764,6 +798,7 @@ impl DesktopRoot {
                 apply_speed_limit: false,
                 apply_transfer_policy: false,
                 apply_bt_tracker: false,
+                active_profile_id: self.profile_catalog.active().map(|p| p.profile_id),
             };
             if sender.send(request).is_ok() {
                 self.settings = next;
@@ -1009,6 +1044,7 @@ impl DesktopRoot {
                 apply_speed_limit,
                 apply_transfer_policy,
                 apply_bt_tracker,
+                active_profile_id: self.profile_catalog.active().map(|p| p.profile_id),
             })
             .is_err()
         {
@@ -1314,9 +1350,44 @@ impl DesktopRoot {
                 return;
             }
         };
+        let previous_id = self.profile_catalog.active_profile_id;
+        // Snapshot current engine-env into the profile being left.
+        if previous_id != profile_id {
+            let env = ProfileEnvironment::from_settings(&self.settings);
+            if let Err(error) = self.profile_env_store.save(previous_id.as_uuid(), &env) {
+                self.deliver_switch_profile_error(
+                    &request,
+                    format!("Failed to save environment for the current profile: {error}"),
+                    window,
+                    cx,
+                );
+                return;
+            }
+        }
         if let Err(error) = self.profile_catalog.set_active(profile_id) {
             self.deliver_switch_profile_error(&request, error.to_string(), window, cx);
             return;
+        }
+        // Load (or seed) the activated profile's engine environment into live settings.
+        let mut next_settings = self.settings.clone();
+        match self
+            .profile_env_store
+            .load_or_initialize(profile_id.as_uuid(), &next_settings)
+        {
+            Ok(env) => env.apply_to(&mut next_settings),
+            Err(error) => {
+                self.deliver_switch_profile_error(
+                    &request,
+                    format!("Failed to load environment for the selected profile: {error}"),
+                    window,
+                    cx,
+                );
+                let _ = self.profile_catalog.set_active(previous_id);
+                return;
+            }
+        }
+        if let Some(entry) = self.profile_catalog.active_mut() {
+            entry.download_dir = next_settings.download_directory.clone();
         }
         if let Err(error) = self.profile_store.save_catalog(&self.profile_catalog) {
             self.deliver_switch_profile_error(
@@ -1325,14 +1396,41 @@ impl DesktopRoot {
                 window,
                 cx,
             );
+            let _ = self.profile_catalog.set_active(previous_id);
             return;
         }
+        // Dual-write: settings.json env slice mirrors the active bag (D-043).
+        let settings_path = self.data_dir.join("settings.json");
+        if let Err(error) = JsonSettingsStore::new(settings_path).save(&next_settings) {
+            self.deliver_switch_profile_error(
+                &request,
+                format!("Failed to mirror profile environment into settings: {error}"),
+                window,
+                cx,
+            );
+            let _ = self.profile_catalog.set_active(previous_id);
+            let _ = self.profile_store.save_catalog(&self.profile_catalog);
+            return;
+        }
+        // Ensure the activated bag is persisted even if it was just seeded.
+        let env = ProfileEnvironment::from_settings(&next_settings);
+        if let Err(error) = self.profile_env_store.save(profile_id.as_uuid(), &env) {
+            self.deliver_switch_profile_error(
+                &request,
+                format!("Failed to save environment for the selected profile: {error}"),
+                window,
+                cx,
+            );
+            let _ = self.profile_catalog.set_active(previous_id);
+            let _ = self.profile_store.save_catalog(&self.profile_catalog);
+            return;
+        }
+        self.settings = next_settings;
         let catalog = map_profile_catalog(&self.profile_catalog);
-        let name = catalog
-            .active()
-            .map(|profile| profile.name.clone())
-            .unwrap_or_else(|| "selected profile".into());
+        let settings_view = map_settings(&self.settings);
         self.workspace.update(cx, |shell, cx| {
+            // Apply env bag into drafts first; switch result notice covers restart.
+            shell.apply_settings(settings_view, cx);
             shell.set_switch_profile_result(
                 SwitchProfileResultView {
                     request_id: request.request_id,
@@ -1340,13 +1438,6 @@ impl DesktopRoot {
                     catalog,
                     outcome: SwitchProfileOutcomeView::Success,
                 },
-                cx,
-            );
-            shell.set_startup_notice(
-                format!(
-                    "Active profile set to {name}. Restart AriaDeck to connect with the new profile."
-                ),
-                false,
                 cx,
             );
         });
@@ -1411,8 +1502,19 @@ impl DesktopRoot {
                     );
                     return;
                 }
-                // Drop secrets for profiles removed from the catalog.
+                // Drop secrets and per-profile environment bags for removed profiles.
                 cleanup_removed_profile_secrets(&self.profile_catalog, &catalog);
+                cleanup_removed_profile_environments(
+                    &self.profile_env_store,
+                    &self.profile_catalog,
+                    &catalog,
+                );
+                // Ensure every profile has an environment bag (seed new drafts from current).
+                for entry in &catalog.profiles {
+                    let _ = self
+                        .profile_env_store
+                        .load_or_initialize(entry.profile_id.as_uuid(), &self.settings);
+                }
                 self.profile_catalog = catalog;
                 let view = map_profile_catalog(&self.profile_catalog);
                 self.workspace.update(cx, |shell, cx| {

@@ -1,7 +1,11 @@
 //! Typed, versioned application settings and their persistence boundary.
 
+mod profile_env;
 mod system_proxy;
 
+pub use profile_env::{
+    PROFILE_ENVIRONMENT_SCHEMA_VERSION, ProfileEnvironment, ProfileEnvironmentStore,
+};
 pub use system_proxy::{
     ResolvedSystemProxy, SystemProxyError, parse_windows_proxy_server, resolve_from_env_map,
     resolve_system_proxy,
@@ -1030,7 +1034,7 @@ pub enum SettingsError {
     },
 }
 
-fn validate_categories(categories: &[DownloadCategory]) -> Result<(), SettingsError> {
+pub fn validate_categories(categories: &[DownloadCategory]) -> Result<(), SettingsError> {
     if categories.is_empty() {
         return Err(SettingsError::EmptyCategories);
     }

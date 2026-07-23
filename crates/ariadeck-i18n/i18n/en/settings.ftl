@@ -25,7 +25,7 @@ settings-language-description = Display language for AriaDeck. System follows th
 settings-language-aria = Display language
 
 settings-categories = Categories
-settings-categories-desc = Organize downloads by file type. Extensions match automatically; unmatched files use General. Set each category directory manually.
+settings-categories-desc = Organize downloads by file type. Extensions match automatically; unmatched files use General. Directories belong to the active profile's engine environment—use host paths for remote aria2.
 settings-categories-empty = No categories yet. Add folders and file extensions to auto-route downloads.
 settings-category-add = Add category
 settings-category-is-fallback = Fallback
@@ -135,6 +135,11 @@ settings-proxy-password-saved = A proxy password is saved in the system credenti
 settings-proxy-password-remove-hint = The saved proxy password will be removed.
 
 settings-profiles = Profiles
+settings-profile-env-scope = Per-profile engine environment
+settings-profile-env-scope-desc = Categories (download directories), download proxy, speed limits, transfer policy, and tracker list are stored per profile and switch when you activate a different profile. Theme, language, notifications, and tray stay client-wide.
+settings-profile-env-local-note = Local profiles: category directories are paths on this computer. AriaDeck creates them and can open folders for completed tasks.
+settings-profile-env-remote-note = Remote profiles: category directories are paths on the aria2 host (not this PC). Use that machine's path style (for example /data/downloads). AriaDeck does not create remote folders or open them locally.
+settings-profile-env-switch-hint = Activating a profile reloads its environment into Settings. Restart AriaDeck afterward so the engine reconnects with the new profile.
 settings-engine-cores = Managed aria2 cores
 settings-language-saved = Language preference saved.
 settings-profile-kind-local = Local

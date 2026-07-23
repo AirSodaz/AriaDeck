@@ -1262,6 +1262,7 @@ pub(crate) fn trimmed_value(value: &str) -> Option<String> {
 pub(crate) fn spawn_settings_persistence(
     runtime: Arc<Runtime>,
     store: JsonSettingsStore,
+    profile_env_store: ProfileEnvironmentStore,
     destination_gateway: Option<Arc<dyn DownloadDestinationGateway>>,
     sync: Option<SyncHandle>,
     credential_store: Arc<dyn ProxyCredentialStore>,
@@ -1276,6 +1277,7 @@ pub(crate) fn spawn_settings_persistence(
         while let Some(request) = request_receiver.recv().await {
             let result = persist_settings_request(
                 store.clone(),
+                profile_env_store.clone(),
                 destination_gateway.clone(),
                 sync.clone(),
                 credential_store.clone(),
@@ -1294,6 +1296,7 @@ pub(crate) fn spawn_settings_persistence(
 
 pub(crate) async fn persist_settings_request(
     store: JsonSettingsStore,
+    profile_env_store: ProfileEnvironmentStore,
     destination_gateway: Option<Arc<dyn DownloadDestinationGateway>>,
     sync: Option<SyncHandle>,
     credential_store: Arc<dyn ProxyCredentialStore>,
@@ -1314,13 +1317,14 @@ pub(crate) async fn persist_settings_request(
     if (request.apply_speed_limit || request.apply_transfer_policy || request.apply_bt_tracker)
         && !request.apply_proxy
     {
-        return apply_engine_policy_only(store, sync, request).await;
+        return apply_engine_policy_only(store, profile_env_store, sync, request).await;
     }
 
     if !request.apply_proxy {
         let settings = request.settings;
+        let profile_id = request.active_profile_id;
         return tokio::task::spawn_blocking(move || {
-            store.save(&settings).map_err(|error| error.to_string())
+            save_settings_and_profile_env(&store, &profile_env_store, profile_id, &settings)
         })
         .await
         .map_err(|error| format!("settings persistence task failed: {error}"))?;
@@ -1497,10 +1501,10 @@ pub(crate) async fn persist_settings_request(
 
     let settings_to_save = request.settings.clone();
     let save_store = store.clone();
+    let env_store = profile_env_store.clone();
+    let profile_id = request.active_profile_id;
     if let Err(error) = tokio::task::spawn_blocking(move || {
-        save_store
-            .save(&settings_to_save)
-            .map_err(|error| error.to_string())
+        save_settings_and_profile_env(&save_store, &env_store, profile_id, &settings_to_save)
     })
     .await
     .map_err(|error| format!("settings persistence task failed: {error}"))?
@@ -1569,6 +1573,22 @@ pub(crate) async fn persist_settings_request(
     Ok(())
 }
 
+pub(crate) fn save_settings_and_profile_env(
+    store: &JsonSettingsStore,
+    profile_env_store: &ProfileEnvironmentStore,
+    profile_id: Option<ProfileId>,
+    settings: &AppSettings,
+) -> Result<(), String> {
+    store.save(settings).map_err(|error| error.to_string())?;
+    if let Some(profile_id) = profile_id {
+        let env = ProfileEnvironment::from_settings(settings);
+        profile_env_store
+            .save(profile_id.as_uuid(), &env)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 /// Apply and persist a speed-limit and/or transfer-policy settings change.
 ///
 /// Pushes the new options to the running engine first, then persists to disk
@@ -1576,6 +1596,7 @@ pub(crate) async fn persist_settings_request(
 /// diverges from the source-of-truth settings file.
 pub(crate) async fn apply_engine_policy_only(
     store: JsonSettingsStore,
+    profile_env_store: ProfileEnvironmentStore,
     sync: Option<SyncHandle>,
     request: SettingsPersistenceRequest,
 ) -> Result<(), String> {
@@ -1641,10 +1662,10 @@ pub(crate) async fn apply_engine_policy_only(
 
     let settings_to_save = request.settings.clone();
     let save_store = store.clone();
+    let env_store = profile_env_store.clone();
+    let profile_id = request.active_profile_id;
     if let Err(error) = tokio::task::spawn_blocking(move || {
-        save_store
-            .save(&settings_to_save)
-            .map_err(|error| error.to_string())
+        save_settings_and_profile_env(&save_store, &env_store, profile_id, &settings_to_save)
     })
     .await
     .map_err(|error| format!("settings persistence task failed: {error}"))?

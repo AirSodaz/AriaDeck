@@ -21,6 +21,8 @@ Native Rust desktop client for **aria2**. Does not embed aria2 as a library. Man
 
 Multiple **profiles** (activate = restart-bound). Multiple **managed cores** (import/link/verify/activate/rollback; no network install channel).
 
+**Per-profile engine environment (D-043 / F3):** each profile owns categories/dirs, download proxy, speed limits, transfer policy, and tracker list (`profiles/<id>/environment.json`). Activating a profile swaps that bag into live settings (and mirrors into `settings.json`); theme/language/notifications/platform/list UI stay client-wide. Remote category paths are on the **aria2 host**, not the client FS (D-007). Engine reconnect after activate still requires restart (F2 deferred).
+
 **Feel:** keyboard-first download manager (dense lists, batch ops)—not a browser admin panel for aria2.
 
 ### Non-goals
@@ -46,7 +48,7 @@ GPUI → ariadeck-ui → ariadeck-desktop (composition, tray, bridges)
 | `ariadeck-application` | Store, sync, commands, ports, derived views |
 | `ariadeck-rpc` | WS transport, auth, typed adapter; notifications = refresh hints |
 | `ariadeck-engine` | Process lifecycle, profile lock, core registry |
-| `ariadeck-settings` | Versioned JSON settings, migrate, atomic save |
+| `ariadeck-settings` | Versioned JSON settings + per-profile engine env bags; atomic save (schema v1 only in-tree) |
 | `ariadeck-ui` | Tokens, themes, GPUI components (pages use only this + app ports) |
 | `ariadeck-i18n` | Fluent catalogs (en, zh-CN) |
 | `ariadeck-telemetry` | Tracing setup |
@@ -116,7 +118,7 @@ Env knobs: see root `README.md` (`ARIADECK_RPC_*`).
 | D-024 | Context menu = toolbar parity; no second undo stack |
 | D-025 | Grouped toasts; Normal/Quiet/Silent; activity panel |
 | D-026 | Profile exclusive lock; corrupt session → backup + notice |
-| D-028 | Multi-profile catalog schema 2; activate → restart |
+| D-028 | Multi-profile catalog; activate → restart. Catalog schema is v1 (same policy as settings: no historical in-tree migrations; previous-tag path only when a release needs it) |
 | D-029 | Core registry under `data/cores/aria2`; activate → restart |
 | D-030 | Tray + close-to-tray; OS notifications; low-disk warnings |
 | D-031 | Theme System/Light/Dark; debounced window geometry |
@@ -131,11 +133,43 @@ Env knobs: see root `README.md` (`ARIADECK_RPC_*`).
 | D-040 | **C1 download categories (evolved D-042):** categories are output folders with optional extension lists. **General** is the fixed fallback category for unmatched / no-filename tasks. Global `download_directory` mirrors the fallback path for engine/profile defaults only—settings UI edits categories, not a separate default-dir control. List filter + SQLite `task_category` affiliation unchanged; not freeform multi-tags; remote open-folder rules D-007; URI privacy D-032 |
 | D-041 | **D1 tracker list:** opt-in extra BitTorrent announce URLs in settings (`tracker_list`). Sources: curated public list or user HTTPS URL (no credentials in URL). Network fetch only on **Refresh now** or when **auto-refresh** is enabled (at most daily while running). Last successful list is persisted and reapplied as aria2 global `bt-tracker` on connect/save when enabled; disable clears the option. No silent first-run fetch. Full list not dumped into diagnostics. Tracker fetch is direct HTTPS (download-proxy not required for MVP) |
 | D-042 | **C1b extension auto-route:** new downloads resolve category by last file extension (case-insensitive; first matching category wins). No match / magnet / no name → **General** (fixed fallback). Add dialog defaults to **Auto** with optional manual override. Default presets (General/Compressed/Documents/Music/Video/Programs/Images) seeded on first run. Settings schema is v1; historical migrations are not kept in-tree (dev configs maintained manually). |
+| D-043 | **Per-profile engine environment (F3).** Frozen product contract — see §5.1 below |
+| D-044 | **Default download root:** new installs seed category dirs from the system Downloads folder (`USERPROFILE`/`HOME` + `Downloads`), overridable by `ARIADECK_DOWNLOAD_DIR`; not under app data |
 
 **SEC inventory (boundary):** raw URIs/options may live in domain for RPC/retry; list/details/clipboard/tracker/server URIs and option secrets must be redacted or keychain-only.  
 **PERF guards:** 10k stopped stress, light snapshot short-circuit, ActivityMode tray intervals, reconnect backoff.
 
-Settings: versioned JSON (`ariadeck-settings`); separate `window.json`, `profiles.json`, `cores.json`.
+Settings: versioned JSON schema **v1** (`settings.json`); `window.json`; `profiles.json` catalog schema **v1**; per-profile `profiles/<id>/environment.json` schema **v1** (engine env). No historical migrations in-tree for any of these until a release tag needs previous → current.
+
+### 5.1 D-043 — Per-profile engine environment (frozen)
+
+**Problem:** Download directories and other aria2-host settings are shared across profiles, so switching local ↔ remote (or two remotes) reuses the wrong paths/proxy/limits.
+
+**Decision:** Store an **engine environment bag** per profile; client-wide prefs stay global.
+
+| Layer | Path | Schema | Owns |
+| --- | --- | --- | --- |
+| Client prefs | `settings.json` | v1 | `color_scheme`, `language`, `notifications`, `platform`, `ui` |
+| Catalog | `profiles.json` | v1 | identity, kind, endpoint/executable/data_dir, `download_dir` **mirror only** |
+| Engine env bag | `profiles/<uuid>/environment.json` | v1 | `categories` (+ dirs), `download_directory` (= fallback mirror), `download_proxy`, `speed_limits`, `transfer_policy`, `tracker_list` |
+
+**Runtime SOT:** live `AppSettings`. On save of env fields: dual-write active bag + env slice of `settings.json`.
+
+**Lifecycle**
+
+1. **Startup:** load `settings.json` → load/seed active bag → optional `ARIADECK_DOWNLOAD_DIR` (process-only; not written to bag until user saves) → align catalog `download_dir` → spawn/connect.
+2. **Activate:** save previous bag from live settings → set active → load/seed next bag → mirror into `settings.json` + UI drafts → notice to restart (engine rebind deferred to F2).
+3. **Save settings:** `settings.json` + active bag (when env fields change).
+4. **Delete profile:** remove bag directory; seed bags for new catalog entries on save.
+
+**Local vs remote paths**
+
+- **Local managed:** category dirs are absolute paths on this machine; preflight may `create_dir_all`; open-folder/Trash allowed (D-007).
+- **Remote RPC:** category dirs are paths on the **aria2 host** (not the client FS); no local create/open; Add still sends `dir` via RPC. Profiles UI must state this explicitly.
+
+**Out of scope for D-043:** hot engine rebind without restart (F2); remote path mapping; exporting all profile bags (export/import remains active-env slice only, D-036).
+
+**Schema policy:** bag schema v1 only; unsupported version fails closed without overwrite (same as settings/catalog).
 
 ---
 
@@ -143,7 +177,7 @@ Settings: versioned JSON (`ariadeck-settings`); separate `window.json`, `profile
 
 ### Done
 
-Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, add/pause/resume/retry/remove, details, local supervision, settings, settings transfer (credential-free JSON), themes, multi-select/batch, multiline/mirrors, Trash, proxy+keychain, torrent/metalink+file select, Windows metadata file associations, Windows `magnet:` protocol handling, local SQLite task history (completed/failed), queue ops, rate limits, seeding, opt-in BT tracker list refresh (`bt-tracker`), extension-based download categories (fallback + auto-route), duplicates, stopped pagination, advanced add, context menu, notifications/activity, multi-profile, capabilities, core registry, tray, window prefs, i18n en/zh-CN (including dialogs/details and stable error codes), a11y baseline, privacy redaction, redacted diagnostic ZIP export, perf hardening, Windows portable/installer packaging, CI matrix (fmt/test/clippy/release-build on Windows, macOS, Linux).
+Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, add/pause/resume/retry/remove, details, local supervision, settings, settings transfer (credential-free JSON), themes, multi-select/batch, multiline/mirrors, Trash, proxy+keychain, torrent/metalink+file select, Windows metadata file associations, Windows `magnet:` protocol handling, local SQLite task history (completed/failed), queue ops, rate limits, seeding, opt-in BT tracker list refresh (`bt-tracker`), extension-based download categories (fallback + auto-route), per-profile engine environment bags (categories/proxy/limits/trackers; activate swaps; restart to reconnect), duplicates, stopped pagination, advanced add, context menu, notifications/activity, multi-profile, capabilities, core registry, tray, window prefs, i18n en/zh-CN (including dialogs/details and stable error codes), a11y baseline, privacy redaction, redacted diagnostic ZIP export, perf hardening, Windows portable/installer packaging, CI matrix (fmt/test/clippy/release-build on Windows, macOS, Linux).
 
 ### Residual (polish, not blockers for Windows ship)
 
@@ -157,7 +191,7 @@ Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, ad
 
 ### Explicitly deferred
 
-Network aria2 package channels · History retention/analytics policies (C3) · Per-profile proxy/limit bags · Hot profile switch without restart · HTTP JSON-RPC as first-class transport · Pause/resume **scheduling** · Freeform multi-tags (beyond folder categories) · Browser capture · Extra locales · Remote path mapping · In-app auto-update productization
+Network aria2 package channels · History retention/analytics policies (C3) · Hot profile switch without restart (engine rebind) · HTTP JSON-RPC as first-class transport · Pause/resume **scheduling** · Freeform multi-tags (beyond folder categories) · Browser capture · Extra locales · Remote path mapping · In-app auto-update productization
 
 
 → Prioritized product roadmap: [`docs/roadmap.md`](roadmap.md)
@@ -198,8 +232,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 | Commands | `application/src/commands.rs`, `ports.rs` |
 | Wire / multicall | `crates/ariadeck-rpc/` |
 | Process / cores | `crates/ariadeck-engine/` |
-| Settings migrate | `crates/ariadeck-settings/` |
-| Workspace / dialogs | `apps/ariadeck-desktop/src/workspace.rs` |
+| Settings / profile env | `crates/ariadeck-settings/` (`lib.rs`, `profile_env.rs`) |
+| Workspace / dialogs | `apps/ariadeck-desktop/src/workspace/` |
 | UI shell | `crates/ariadeck-ui/src/` |
 | i18n | `crates/ariadeck-i18n/` · `docs/i18n.md` |
 
@@ -238,4 +272,5 @@ cargo clippy --workspace --all-targets -- -D warnings
 ## 10. History
 
 `design.md`, `implementation-progress.md`, and `post-mvp-progress.md` were consolidated here on 2026-07-22. Long verification tables live in git history.  
-2026-07-22 (later): compressed this file; product gap plan moved to `docs/roadmap.md`.
+2026-07-22 (later): compressed this file; product gap plan moved to `docs/roadmap.md`.  
+2026-07-23: D-043 per-profile engine env; settings/profiles/env schema v1-only (no historical migrators in-tree); system Downloads default root (D-044).

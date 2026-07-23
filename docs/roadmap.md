@@ -47,7 +47,7 @@ Legend: **Have** · **Partial** · **Missing** · **Won’t** (non-goal)
 | HTTP/FTP/BT/Magnet/Metalink | Have | Have | Have | Core done |
 | Selective BT files | Have | Have | Have | Preview at add; live per-file later = P2 |
 | Speed limit global/task | Have | Have | Have | Done |
-| Multi-RPC / profiles | Have | Partial | Have | Strength |
+| Multi-RPC / profiles | Have | Partial | Have | Strength; per-profile env bags (dirs/proxy/limits) F3/D-043 |
 | Capability gating | Have | Weak | Weak | Strength |
 | Virtualized large list | Have | Partial | Weak | Strength |
 | Privacy redaction | Have | Weak | Weak | Strength |
@@ -152,7 +152,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | --- | --- | --- |
 | F1 | In-app auto-update | Explicit product decision; signing required |
 | F2 | Hot profile switch without restart | Hard; needs session rebind design |
-| F3 | Per-profile proxy/limit bags | After C/history model stable |
+| F3 | **Done** — D-043 frozen: bag schema v1 at `profiles/<id>/environment.json` (categories/dirs, proxy, speed/transfer, trackers); client-wide prefs in `settings.json`; activate dual-writes previous/next bag + settings mirror; save settings dual-writes active bag; Profiles UI local vs remote host paths | Engine reconnect still restart-bound (F2); export/import is active-env only |
 | — | **System download proxy mode** (OS/env static; no PAC) | **Done** (settings + apply path; Manual/Disabled retained) |
 | F4 | HTTP JSON-RPC transport | Only if remote ops demand; WS remains default |
 | F5 | More locales (zh-TW, ja, …) | After A2 string freeze |
@@ -175,10 +175,10 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 ## 6. Suggested sequence (next 2–3 milestones)
 
 ```text
-M1  Ship trust     → A1–A6 (+ roadmap doc hygiene)
-M2  OS hooks       → B1–B2, B4–B6  then B3a–B3c (extension)
-M3  Org/cleanup    → C1–C2  (C3 if demand)
-M4  BT depth / dist → D1–D2, E1 or E2 as capacity allows
+M1  Ship trust     → A1, A3, A6 residual (+ signing / manual QA)
+M2  OS hooks       → B4–B5, then B3a–B3c (extension); B1/B2/B6 done
+M3  Org/cleanup    → C2 (C1 done; C3 if demand); F3/D-043 done
+M4  BT depth / dist → D2–D5, E1 or E2 as capacity allows; D1 done
 ```
 
 Each milestone should land with: tests or live-check notes for engine paths, `project-context` contract updates when user-visible rules change, and release notes under `docs/release.md` when packaging changes.

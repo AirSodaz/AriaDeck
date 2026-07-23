@@ -2164,6 +2164,25 @@ fn proxy_settings_load_uses_the_explicit_runtime_outside_a_tokio_context() {
 }
 
 #[test]
+fn save_settings_and_profile_env_dual_writes_active_bag() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let store = JsonSettingsStore::new(root.path().join("settings.json"));
+    let env_store = ProfileEnvironmentStore::new(root.path());
+    let profile_id = ProfileId::new();
+    let mut settings = AppSettings::new(root.path().join("downloads"));
+    settings.speed_limits.download_limit = 4_096;
+    save_settings_and_profile_env(&store, &env_store, Some(profile_id), &settings)
+        .expect("dual write");
+    let reloaded = store.load().expect("reload settings");
+    assert_eq!(reloaded.speed_limits.download_limit, 4_096);
+    let env = env_store
+        .load(profile_id.as_uuid())
+        .expect("reload env bag");
+    assert_eq!(env.speed_limits.download_limit, 4_096);
+    assert_eq!(env.download_directory, settings.download_directory);
+}
+
+#[test]
 fn settings_worker_persists_requests_in_order_and_drains_on_close() {
     let root = tempfile::tempdir().expect("temporary directory");
     let store = JsonSettingsStore::new(root.path().join("settings.json"));
@@ -2173,9 +2192,11 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
             .build()
             .expect("test runtime"),
     );
+    let profile_env_store = ProfileEnvironmentStore::new(root.path());
     let (sender, task, mut results) = spawn_settings_persistence(
         runtime.clone(),
         store.clone(),
+        profile_env_store,
         Some(Arc::new(LocalDownloadDestinationGateway::new())),
         None,
         Arc::new(SystemProxyCredentialStore::new("AriaDeck test")),
@@ -2216,6 +2237,7 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
             apply_speed_limit: false,
             apply_transfer_policy: false,
             apply_bt_tracker: false,
+            active_profile_id: None,
         })
         .expect("queue first settings");
     sender
@@ -2228,6 +2250,7 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
             apply_speed_limit: false,
             apply_transfer_policy: false,
             apply_bt_tracker: false,
+            active_profile_id: None,
         })
         .expect("queue second settings");
     drop(sender);
@@ -2448,4 +2471,3 @@ fn resolve_download_dir_prefers_env_then_userprofile_downloads() {
     let fallback = resolve_download_dir(|_| None, data.clone());
     assert_eq!(fallback, data.join("downloads"));
 }
-

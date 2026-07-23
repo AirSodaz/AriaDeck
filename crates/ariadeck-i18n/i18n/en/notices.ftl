@@ -56,6 +56,7 @@ notice-profile-name-empty = Profile name cannot be empty.
 notice-profile-remote-endpoint = Remote profiles need a ws/wss endpoint.
 notice-profile-at-least-remain = At least one profile must remain.
 notice-profile-enter-aria2c = Enter a path to an aria2c executable first.
+notice-profile-activated = Active profile set to { $name }. Categories, proxy, speed limits, transfer policy, and tracker list now match this profile. Restart AriaDeck to reconnect the engine.
 notice-connect-before-add = Connect and finish synchronization before adding a download.
 notice-enter-url = Enter at least one URL or magnet link.
 notice-choose-metadata = Choose at least one Torrent or Metalink file.

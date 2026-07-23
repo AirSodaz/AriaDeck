@@ -54,8 +54,16 @@ impl AppShell {
         match result.outcome {
             SwitchProfileOutcomeView::Success => {
                 self.profiles = result.catalog;
+                let name = self
+                    .profiles
+                    .active()
+                    .map(|profile| profile.name.clone())
+                    .unwrap_or_else(|| result.profile_id.clone());
                 self.show_notice(
-                    "Active profile updated. Restart AriaDeck to reconnect.",
+                    self.t_args(
+                        "notice-profile-activated",
+                        &[("name", FluentValue::from(name.as_str()))],
+                    ),
                     false,
                     cx,
                 );

@@ -133,7 +133,7 @@ impl AppShell {
     }
 
     // --- apply_settings..apply_settings ---
-    pub(crate) fn apply_settings(&mut self, settings: SettingsView, cx: &mut Context<Self>) {
+    pub fn apply_settings(&mut self, settings: SettingsView, cx: &mut Context<Self>) {
         // System scheme resolution needs a Window; callers that only have Context
         // keep the previously resolved palette until the next appearance event.
         if settings.color_scheme != ColorSchemeView::System {
@@ -162,7 +162,66 @@ impl AppShell {
         self.settings_page.draft_tracker_enabled = settings.tracker_list.enabled;
         self.settings_page.draft_tracker_source = settings.tracker_list.source;
         self.settings_page.draft_tracker_auto_refresh = settings.tracker_list.auto_refresh;
+        // Refresh bound text fields so a profile switch shows the new env immediately.
+        let download_directory = settings.download_directory.clone();
+        self.settings_inputs
+            .directory
+            .update(cx, |input, cx| input.set_text(download_directory, cx));
+        let proxy = settings.download_proxy.clone();
+        self.settings_inputs.all_proxy.update(cx, |input, cx| {
+            input.set_text(proxy.all_proxy.clone(), cx);
+        });
+        self.settings_inputs.http_proxy.update(cx, |input, cx| {
+            input.set_text(proxy.http_proxy.clone(), cx);
+        });
+        self.settings_inputs.https_proxy.update(cx, |input, cx| {
+            input.set_text(proxy.https_proxy.clone(), cx);
+        });
+        self.settings_inputs.ftp_proxy.update(cx, |input, cx| {
+            input.set_text(proxy.ftp_proxy.clone(), cx);
+        });
+        self.settings_inputs.no_proxy.update(cx, |input, cx| {
+            input.set_text(proxy.no_proxy.join(", "), cx);
+        });
+        self.settings_inputs.proxy_username.update(cx, |input, cx| {
+            input.set_text(proxy.username.clone(), cx);
+        });
+        self.settings_inputs
+            .proxy_password
+            .update(cx, |input, cx| input.set_text("", cx));
+        let speed_limits = settings.speed_limits.clone();
+        self.settings_inputs.download_limit.update(cx, |input, cx| {
+            input.set_text(speed_limits.download_limit.clone(), cx);
+        });
+        self.settings_inputs.upload_limit.update(cx, |input, cx| {
+            input.set_text(speed_limits.upload_limit.clone(), cx);
+        });
+        let transfer_policy = settings.transfer_policy.clone();
+        self.settings_inputs.max_concurrent.update(cx, |input, cx| {
+            input.set_text(transfer_policy.max_concurrent_downloads.clone(), cx);
+        });
+        self.settings_inputs.max_connection.update(cx, |input, cx| {
+            input.set_text(transfer_policy.max_connection_per_server.clone(), cx);
+        });
+        self.settings_inputs.split.update(cx, |input, cx| {
+            input.set_text(transfer_policy.split.clone(), cx);
+        });
+        self.settings_inputs.min_split_size.update(cx, |input, cx| {
+            input.set_text(transfer_policy.min_split_size.clone(), cx);
+        });
+        let tracker = settings.tracker_list.clone();
+        self.settings_inputs
+            .tracker_custom_url
+            .update(cx, |input, cx| {
+                input.set_text(tracker.custom_url.clone(), cx);
+            });
+        self.settings_inputs
+            .tracker_list_text
+            .update(cx, |input, cx| {
+                input.set_text(tracker.list_text.clone(), cx);
+            });
         self.apply_theme_to_text_fields(cx);
+        cx.notify();
     }
 
     /// Push the current shell theme into every TextField so light/dark chrome stays in sync.
@@ -1968,6 +2027,44 @@ impl AppShell {
         let active_id = profiles.active_profile_id.clone();
         let profiles_count = profiles.profiles.len();
         settings_section_owned(self.t("settings-profiles"), colors)
+            .child(
+                div()
+                    .mt_3()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(colors.text_primary)
+                            .child(self.t("settings-profile-env-scope")),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(self.t("settings-profile-env-scope-desc")),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(self.t("settings-profile-env-local-note")),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(self.t("settings-profile-env-remote-note")),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(self.t("settings-profile-env-switch-hint")),
+                    ),
+            )
             .child(div().mt_3().flex().flex_col().gap_2().children(
                 profiles.profiles.into_iter().map(|profile| {
                     let is_active = profile.profile_id == active_id;

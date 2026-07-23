@@ -212,6 +212,23 @@ pub(crate) fn apply_profile_secret_updates(
     Ok(())
 }
 
+pub(crate) fn cleanup_removed_profile_environments(
+    store: &ProfileEnvironmentStore,
+    previous: &ProfileCatalog,
+    next: &ProfileCatalog,
+) {
+    let remaining: std::collections::HashSet<_> = next
+        .profiles
+        .iter()
+        .map(|profile| profile.profile_id)
+        .collect();
+    for profile in &previous.profiles {
+        if !remaining.contains(&profile.profile_id) {
+            store.remove(profile.profile_id.as_uuid());
+        }
+    }
+}
+
 pub(crate) fn cleanup_removed_profile_secrets(previous: &ProfileCatalog, next: &ProfileCatalog) {
     let store = rpc_secret_store();
     let remaining: std::collections::HashSet<_> = next
