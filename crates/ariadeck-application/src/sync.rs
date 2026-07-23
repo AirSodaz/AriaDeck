@@ -18,9 +18,9 @@ use tokio::{
 
 use crate::{
     AppCommand, ApplicationError, ApplicationErrorCode, CommandOutcome, CommandService,
-    DownloadEngineGateway, DownloadProxyConfig, DownloadStore, StoppedHistoryState, StoreError,
-    StorePatch, TaskCommandContext, TaskConnectionDetailsGateway, TaskCounts, TaskDetailsGateway,
-    TaskListQuery, TaskListView,
+    DownloadEngineGateway, DownloadProxyConfig, DownloadStore, HistoryRecord, NullHistoryStore,
+    StoppedHistoryState, StoreError, StorePatch, TaskCommandContext, TaskConnectionDetailsGateway,
+    TaskCounts, TaskDetailsGateway, TaskHistoryStore, TaskListQuery, TaskListView,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -363,12 +363,14 @@ impl Default for ReconnectPolicy {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CoordinatorConfig {
     pub profile_id: ProfileId,
     pub refresh: RefreshPolicy,
     pub reconnect: ReconnectPolicy,
     pub stopped_page_size: u32,
+    /// Optional durable history (B6). Failures never break sync.
+    pub history: Arc<dyn TaskHistoryStore>,
 }
 
 impl CoordinatorConfig {
@@ -379,7 +381,20 @@ impl CoordinatorConfig {
             refresh: RefreshPolicy::default(),
             reconnect: ReconnectPolicy::default(),
             stopped_page_size: 100,
+            history: Arc::new(NullHistoryStore),
         }
+    }
+}
+
+impl std::fmt::Debug for CoordinatorConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CoordinatorConfig")
+            .field("profile_id", &self.profile_id)
+            .field("refresh", &self.refresh)
+            .field("reconnect", &self.reconnect)
+            .field("stopped_page_size", &self.stopped_page_size)
+            .field("history", &"TaskHistoryStore")
+            .finish()
     }
 }
 
@@ -740,6 +755,14 @@ async fn run_coordinator(
         EngineSessionId::new(),
         generation,
     ));
+    // Seed durable history before connect so Completed/Failed remain visible offline.
+    match config.history.list(config.profile_id, 10_000) {
+        Ok(records) => match store.seed_local_history(generation, records) {
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "failed to seed local history at startup"),
+        },
+        Err(error) => tracing::warn!(%error, "failed to load local task history at startup"),
+    }
     let mut state = ConnectionState::Disconnected;
     let mut activity = ActivityMode::Foreground;
     let mut backoff = ReconnectBackoff::new(config.reconnect, backoff_seed());
@@ -946,7 +969,14 @@ async fn run_coordinator(
         };
 
         set_state(&events, &mut state, ConnectionState::Synchronizing);
-        let capabilities = match apply_initial_snapshot(&mut store, generation, initial, &events) {
+        let capabilities = match apply_initial_snapshot(
+            &mut store,
+            generation,
+            initial,
+            &events,
+            config.history.as_ref(),
+            config.profile_id,
+        ) {
             Ok(capabilities) => capabilities,
             Err(error) => {
                 session.close().await;
@@ -1097,6 +1127,8 @@ async fn run_connected(
                                 generation,
                                 config.stopped_page_size,
                                 events,
+                                config.history.as_ref(),
+                                config.profile_id,
                             ) => result,
                         };
                         if let Err(error) = result {
@@ -1118,6 +1150,11 @@ async fn run_connected(
                         };
                         match result {
                             Ok(page) => {
+                                persist_terminal_snapshots(
+                                    config.history.as_ref(),
+                                    config.profile_id,
+                                    page.tasks.iter().cloned(),
+                                );
                                 match store.apply_stopped_page(
                                     generation,
                                     page.offset,
@@ -1126,6 +1163,13 @@ async fn run_connected(
                                 ) {
                                     Ok(patch) => {
                                         emit_patch(events, patch);
+                                        seed_history_into_store(
+                                            store,
+                                            generation,
+                                            config.history.as_ref(),
+                                            config.profile_id,
+                                            events,
+                                        );
                                         let _ = sender.send(store.stopped_history());
                                     }
                                     Err(error) => {
@@ -1223,6 +1267,16 @@ async fn run_connected(
                             }
                             _ => None,
                         };
+                        let remove_gids = match &command {
+                            AppCommand::RemoveTasks(request)
+                            | AppCommand::ForceRemoveTasks(request) => request
+                                .tasks
+                                .iter()
+                                .filter(|identity| identity.profile_id == config.profile_id)
+                                .map(|identity| identity.gid)
+                                .collect::<Vec<_>>(),
+                            _ => Vec::new(),
+                        };
                         let outcome = tokio::select! {
                             biased;
                             () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
@@ -1237,6 +1291,33 @@ async fn run_connected(
                                 Ok(patch) => emit_patch(events, patch),
                                 Err(error) => {
                                     return ConnectedExit::Retry(SyncError::store(error));
+                                }
+                            }
+                        }
+                        if outcome.has_successes() && !remove_gids.is_empty() {
+                            let succeeded_gids = outcome
+                                .succeeded_tasks()
+                                .into_iter()
+                                .map(|identity| identity.gid)
+                                .collect::<HashSet<_>>();
+                            let deleted = remove_gids
+                                .into_iter()
+                                .filter(|gid| succeeded_gids.contains(gid))
+                                .collect::<Vec<_>>();
+                            if !deleted.is_empty() {
+                                delete_history_for_gids(
+                                    config.history.as_ref(),
+                                    config.profile_id,
+                                    deleted.iter().copied(),
+                                );
+                                match store.remove_history_only(generation, &deleted) {
+                                    Ok(patch) => emit_patch(events, patch),
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            %error,
+                                            "failed to drop history-only rows after remove"
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1402,10 +1483,20 @@ async fn run_connected(
                                 generation,
                                 config.stopped_page_size,
                                 events,
+                                config.history.as_ref(),
+                                config.profile_id,
                             ).await
                         } else {
                             let gids = pending_tasks.drain().collect::<Vec<_>>();
-                            refresh_targeted(session, store, generation, &gids, events).await
+                            refresh_targeted(
+                                session,
+                                store,
+                                generation,
+                                &gids,
+                                events,
+                                config.history.as_ref(),
+                                config.profile_id,
+                            ).await
                         }
                     };
                     let result = tokio::select! {
@@ -1468,6 +1559,11 @@ async fn run_connected(
                     match result {
                         Ok(page) => {
                             let total = page.total;
+                            persist_terminal_snapshots(
+                                config.history.as_ref(),
+                                config.profile_id,
+                                page.tasks.iter().cloned(),
+                            );
                             match store.apply_stopped_page(
                                 generation,
                                 page.offset,
@@ -1496,6 +1592,8 @@ async fn refresh_all(
     generation: SessionGeneration,
     stopped_page_size: u32,
     events: &broadcast::Sender<SyncEvent>,
+    history: &dyn TaskHistoryStore,
+    profile_id: ProfileId,
 ) -> Result<(), SyncError> {
     let global = session.refresh_global_stat().await?;
     let live = session.refresh_live().await?;
@@ -1505,13 +1603,23 @@ async fn refresh_all(
             .update_global_stat(generation, global)
             .map_err(SyncError::store)?,
     );
-    refresh_loaded_stopped_pages(session, store, generation, stopped_page_size, events).await?;
+    refresh_loaded_stopped_pages(
+        session,
+        store,
+        generation,
+        stopped_page_size,
+        events,
+        history,
+        profile_id,
+    )
+    .await?;
     emit_patch(
         events,
         store
             .reconcile_live(generation, live.active, live.waiting)
             .map_err(SyncError::store)?,
     );
+    seed_history_into_store(store, generation, history, profile_id, events);
     Ok(())
 }
 
@@ -1521,6 +1629,8 @@ async fn refresh_loaded_stopped_pages(
     generation: SessionGeneration,
     stopped_page_size: u32,
     events: &broadcast::Sender<SyncEvent>,
+    history: &dyn TaskHistoryStore,
+    profile_id: ProfileId,
 ) -> Result<(), SyncError> {
     let page_size = stopped_page_size.max(1);
     let mut offset = 0usize;
@@ -1528,6 +1638,7 @@ async fn refresh_loaded_stopped_pages(
     loop {
         let page = session.refresh_stopped_page(offset, page_size).await?;
         let total = page.total;
+        persist_terminal_snapshots(history, profile_id, page.tasks.iter().cloned());
         emit_patch(
             events,
             store
@@ -1548,8 +1659,13 @@ async fn refresh_targeted(
     generation: SessionGeneration,
     gids: &[Gid],
     events: &broadcast::Sender<SyncEvent>,
+    history: &dyn TaskHistoryStore,
+    profile_id: ProfileId,
 ) -> Result<(), SyncError> {
     for (gid, snapshot) in session.refresh_tasks(gids).await? {
+        if let Some(snapshot) = snapshot.as_ref() {
+            persist_terminal_snapshots(history, profile_id, [snapshot.clone()]);
+        }
         emit_patch(
             events,
             store
@@ -1560,11 +1676,91 @@ async fn refresh_targeted(
     Ok(())
 }
 
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn persist_terminal_snapshots(
+    history: &dyn TaskHistoryStore,
+    profile_id: ProfileId,
+    tasks: impl IntoIterator<Item = TaskSnapshot>,
+) {
+    let now = now_unix_ms();
+    for snapshot in tasks {
+        if !matches!(
+            snapshot.status,
+            ariadeck_domain::DownloadStatus::Complete | ariadeck_domain::DownloadStatus::Error
+        ) {
+            continue;
+        }
+        let record = HistoryRecord {
+            profile_id,
+            gid: snapshot.gid,
+            status: snapshot.status,
+            display_name: snapshot.display_name,
+            directory: snapshot.metadata.directory,
+            info_hash: snapshot.metadata.info_hash,
+            source_kind: snapshot.metadata.source_kind,
+            total_length: snapshot.total_length,
+            completed_length: snapshot.completed_length,
+            error: snapshot.error,
+            primary_uri_redacted: snapshot
+                .metadata
+                .primary_uri
+                .as_deref()
+                .map(ariadeck_domain::redact_source_uri)
+                .filter(|uri| !uri.is_empty()),
+            recorded_at_ms: now,
+            updated_at_ms: now,
+        };
+        if let Err(error) = history.upsert(&record) {
+            tracing::warn!(%error, gid = %record.gid, "failed to persist task history");
+        }
+    }
+}
+
+fn seed_history_into_store(
+    store: &mut DownloadStore,
+    generation: SessionGeneration,
+    history: &dyn TaskHistoryStore,
+    profile_id: ProfileId,
+    events: &broadcast::Sender<SyncEvent>,
+) {
+    match history.list(profile_id, 10_000) {
+        Ok(records) => match store.seed_local_history(generation, records) {
+            Ok(patch) => emit_patch(events, patch),
+            Err(error) => {
+                tracing::warn!(%error, "failed to seed local history into store");
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "failed to load local task history");
+        }
+    }
+}
+
+fn delete_history_for_gids(
+    history: &dyn TaskHistoryStore,
+    profile_id: ProfileId,
+    gids: impl IntoIterator<Item = Gid>,
+) {
+    for gid in gids {
+        if let Err(error) = history.remove(profile_id, gid) {
+            tracing::warn!(%error, %gid, "failed to remove task history row");
+        }
+    }
+}
+
 fn apply_initial_snapshot(
     store: &mut DownloadStore,
     generation: SessionGeneration,
     initial: InitialSyncSnapshot,
     events: &broadcast::Sender<SyncEvent>,
+    history: &dyn TaskHistoryStore,
+    profile_id: ProfileId,
 ) -> Result<EngineCapabilities, SyncError> {
     validate_capabilities(&initial.capabilities)?;
     let capabilities = initial.capabilities.clone();
@@ -1578,6 +1774,7 @@ fn apply_initial_snapshot(
             .update_global_stat(generation, initial.global_stat)
             .map_err(SyncError::store)?,
     );
+    persist_terminal_snapshots(history, profile_id, initial.stopped.tasks.iter().cloned());
     emit_patch(
         events,
         store
@@ -1595,6 +1792,7 @@ fn apply_initial_snapshot(
             .reconcile_live(generation, initial.live.active, initial.live.waiting)
             .map_err(SyncError::store)?,
     );
+    seed_history_into_store(store, generation, history, profile_id, events);
     emit_patch(
         events,
         store
@@ -2264,6 +2462,7 @@ mod tests {
                 reset_after: Duration::from_secs(60),
             },
             stopped_page_size: 10,
+            history: Arc::new(NullHistoryStore),
         }
     }
 
@@ -2851,7 +3050,18 @@ mod tests {
         };
         let (events, mut receiver) = broadcast::channel(16);
 
-        if let Err(error) = refresh_all(&session, &mut store, generation, 10, &events).await {
+        let profile_id = store.session().profile_id;
+        if let Err(error) = refresh_all(
+            &session,
+            &mut store,
+            generation,
+            10,
+            &events,
+            &NullHistoryStore,
+            profile_id,
+        )
+        .await
+        {
             panic!("full refresh failed: {error}");
         }
 

@@ -60,7 +60,7 @@ Legend: **Have** · **Partial** · **Missing** · **Won’t** (non-goal)
 | Tags / categories / folders | Missing | Next: categories | Filters | Organization |
 | Download scheduling | Missing | Next: time windows | Weak | Persepolis-class |
 | Queue named groups | Partial (aria2 wait order) | Have | Partial | Productize queues |
-| SQLite history beyond aria2 memory | Missing | Next: Have | N/A | D-021 still aria2-owned |
+| SQLite history beyond aria2 memory | Have | Next: Have | N/A | D-039; D-021 still engine paging |
 | Auto tracker list update | Missing | Have | Manual | BT quality of life |
 | UPnP / port map UI | Missing | Have | Options raw | Gate on capabilities |
 | Keep-awake / shutdown after done | Missing | Next | N/A | Power integration |
@@ -105,7 +105,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | B3c | Reference browser extension (Chrome/Edge); community can fork for Firefox | Validate contract end-to-end |
 | B4 | First-run: discover/import aria2 or guided core import | Onboarding; still no mandatory network install |
 | B5 | Tray speed meter (at least Windows + optional) | Motrix-class glanceability |
-| B6 | SQLite (or equivalent) **local history** of completed/failed (paths, hashes, times) | Heavy users exhaust aria2 memory fast; ADR-007 deferred storage |
+| B6 | **Done** — SQLite **local history** of completed/failed (paths, hashes, times) in `history.sqlite`; merges with engine stopped pages; Remove clears history rows | Heavy users exhaust aria2 memory fast; D-039 |
 
 **Exit:** User can set AriaDeck as magnet/torrent handler, push links from a browser add-on, and history survives aria2 restarts.
 

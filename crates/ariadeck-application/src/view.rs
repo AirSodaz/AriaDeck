@@ -40,6 +40,7 @@ impl DownloadStore {
             .iter()
             .chain(&self.waiting_order)
             .chain(&self.stopped_order)
+            .chain(&self.history_order)
             .copied()
             .filter(|gid| seen.insert(*gid))
             .filter(|gid| {
@@ -87,6 +88,7 @@ impl DownloadStore {
             .iter()
             .chain(&self.waiting_order)
             .chain(&self.stopped_order)
+            .chain(&self.history_order)
             .copied()
             .filter(|gid| seen.insert(*gid))
         {

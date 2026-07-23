@@ -1,6 +1,7 @@
 //! Split from workspace.rs — mapping.
 
 use super::*;
+use ariadeck_history::SqliteHistoryStore;
 
 pub(crate) fn add_sources_are_uris(sources: &[AddDownloadSourceView]) -> bool {
     !sources.is_empty()
@@ -752,6 +753,14 @@ pub(crate) fn create_sync_handle(
     let connector = Arc::new(RpcSyncConnector::new(websocket, secret));
     let mut coordinator = CoordinatorConfig::new(profile_id);
     coordinator.reconnect = rpc_runtime.reconnect;
+    match SqliteHistoryStore::open(data_dir.join("history.sqlite")) {
+        Ok(store) => {
+            coordinator.history = std::sync::Arc::new(store);
+        }
+        Err(error) => {
+            tracing::warn!(%error, "local task history is unavailable");
+        }
+    }
     tracing::info!(
         scheme = endpoint.scheme(),
         host = endpoint.host_str().unwrap_or("unknown"),
@@ -1599,6 +1608,7 @@ pub(crate) fn map_snapshot(
             loaded: snapshot.stopped_history.loaded,
             total: snapshot.stopped_history.total,
             can_load_more: snapshot.stopped_history.can_load_more,
+            local_saved: snapshot.stopped_history.local_saved,
         },
         tasks: snapshot
             .tasks

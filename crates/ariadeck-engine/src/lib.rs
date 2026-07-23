@@ -1328,8 +1328,9 @@ fn local_engine_arguments(
         format!("--save-session={}", session_path.to_string_lossy()),
         "--save-session-interval=60".to_owned(),
         // Keep more completed/error/removed results in memory so the UI can
-        // page history without a separate SQLite store (HISTORY-001). aria2's
-        // default is 1000; raise the managed-local budget to 5000.
+        // page recent stopped results in-session (HISTORY-001 / D-021). Durable
+        // completed/failed summaries also live in local SQLite history (B6 / D-039).
+        // aria2's default is 1000; raise the managed-local budget to 5000.
         "--max-download-result=5000".to_owned(),
         "--rpc-save-upload-metadata=true".to_owned(),
         "--rpc-max-request-size=32M".to_owned(),

@@ -10,6 +10,7 @@ license.workspace = true
 ariadeck-application = { path = "../../crates/ariadeck-application" }
 ariadeck-domain = { path = "../../crates/ariadeck-domain" }
 ariadeck-engine = { path = "../../crates/ariadeck-engine" }
+ariadeck-history = { path = "../../crates/ariadeck-history" }
 ariadeck-i18n = { path = "../../crates/ariadeck-i18n" }
 ariadeck-rpc = { path = "../../crates/ariadeck-rpc" }
 ariadeck-settings = { path = "../../crates/ariadeck-settings" }

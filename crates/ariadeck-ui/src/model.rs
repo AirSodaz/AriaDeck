@@ -242,27 +242,35 @@ pub struct TaskCountsView {
     pub failed: usize,
 }
 
-/// Stopped-result page progress for completed/failed history (HISTORY-001).
+/// Stopped-result page progress for completed/failed history (HISTORY-001 / B6).
 ///
 /// `total` is aria2's in-memory result count and may be lower than lifetime
-/// history once `--max-download-result` is exceeded. Before SQLite history
-/// exists, only engine-held results and the managed session file survive a
-/// restart.
+/// history once `--max-download-result` is exceeded. `local_saved` counts
+/// durable rows held only in SQLite (survives engine restarts and result purge).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StoppedHistoryView {
     pub loaded: usize,
     pub total: Option<usize>,
     pub can_load_more: bool,
+    pub local_saved: usize,
 }
 
 impl StoppedHistoryView {
     #[must_use]
     pub fn summary_label(self) -> Option<String> {
-        let total = self.total?;
-        if total == 0 {
-            return None;
+        let engine = self.total.map(|total| {
+            if total == 0 {
+                None
+            } else {
+                Some(format!("Engine {}/{total}", self.loaded.min(total)))
+            }
+        });
+        match (engine.flatten(), self.local_saved > 0) {
+            (Some(engine), true) => Some(format!("{engine} · Saved {}", self.local_saved)),
+            (Some(engine), false) => Some(engine),
+            (None, true) => Some(format!("Saved {}", self.local_saved)),
+            (None, false) => None,
         }
-        Some(format!("History {}/{total}", self.loaded.min(total)))
     }
 }
 

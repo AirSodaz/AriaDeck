@@ -4,12 +4,12 @@ use std::{
 };
 
 use ariadeck_domain::{
-    DownloadTask, EngineSession, Gid, GlobalStat, SessionGeneration, TaskFields, TaskSnapshot,
-    TaskUpdateError,
+    DownloadStatus, DownloadTask, EngineSession, Gid, GlobalStat, SessionGeneration, TaskFields,
+    TaskMetadata, TaskNameState, TaskSnapshot, TaskUpdateError,
 };
 use thiserror::Error;
 
-use crate::{SpeedHistory, SpeedSample};
+use crate::{HistoryRecord, SpeedHistory, SpeedSample};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TaskCollection {
@@ -21,15 +21,17 @@ pub enum TaskCollection {
 /// Progress of stopped-result pages loaded from aria2 into the local cache.
 ///
 /// `total` is aria2's in-memory result count (`numStoppedTotal`), which is
-/// itself bounded by the engine's `--max-download-result` setting. AriaDeck
-/// does not invent a second history store; it pages what the engine still
-/// holds and discloses when more pages remain.
+/// itself bounded by the engine's `--max-download-result` setting. Durable
+/// completed/failed rows may also live in local history (B6 / D-039) and are
+/// merged for list/count views when the engine no longer holds the result.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StoppedHistoryState {
     pub loaded: usize,
     pub total: Option<usize>,
     pub next_offset: usize,
     pub can_load_more: bool,
+    /// Distinct durable history rows loaded for this profile (local SQLite).
+    pub local_saved: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -101,6 +103,9 @@ pub struct DownloadStore {
     pub(crate) active_order: Vec<Gid>,
     pub(crate) waiting_order: Vec<Gid>,
     pub(crate) stopped_order: Vec<Gid>,
+    /// GIDs present only in durable local history (not in engine stopped pages).
+    pub(crate) history_order: Vec<Gid>,
+    history_only: HashSet<Gid>,
     stopped_pages: BTreeMap<usize, Vec<Gid>>,
     stopped_total: Option<usize>,
     pub(crate) search_index: HashMap<Gid, String>,
@@ -121,6 +126,8 @@ impl DownloadStore {
             active_order: Vec::new(),
             waiting_order: Vec::new(),
             stopped_order: Vec::new(),
+            history_order: Vec::new(),
+            history_only: HashSet::new(),
             stopped_pages: BTreeMap::new(),
             stopped_total: None,
             search_index: HashMap::new(),
@@ -225,7 +232,105 @@ impl DownloadStore {
             total: self.stopped_total,
             next_offset: self.next_stopped_offset(),
             can_load_more: self.can_load_more_stopped(),
+            local_saved: self.history_order.len(),
         }
+    }
+
+    /// Whether this GID is present only via durable local history.
+    #[must_use]
+    pub fn is_history_only(&self, gid: Gid) -> bool {
+        self.history_only.contains(&gid)
+    }
+
+    /// Seeds durable local history into the in-memory store.
+    ///
+    /// Engine-owned tasks (live or stopped pages) win over history for the same
+    /// GID. History-only rows appear in Completed/Failed filters after restarts
+    /// or when aria2 has already purged the result.
+    pub fn seed_local_history(
+        &mut self,
+        generation: SessionGeneration,
+        records: Vec<HistoryRecord>,
+    ) -> Result<StorePatch, StoreError> {
+        self.ensure_generation(generation)?;
+        let mut patch = StorePatch::new(generation, self.revision);
+        let live: HashSet<Gid> = self
+            .active_order
+            .iter()
+            .chain(&self.waiting_order)
+            .copied()
+            .collect();
+        let engine_stopped: HashSet<Gid> = self.stopped_order.iter().copied().collect();
+
+        let previous_history = self.history_order.clone();
+        self.history_order.clear();
+        self.history_only.clear();
+
+        for record in records {
+            if record.profile_id != self.session.profile_id {
+                continue;
+            }
+            if !matches!(
+                record.status,
+                DownloadStatus::Complete | DownloadStatus::Error
+            ) {
+                continue;
+            }
+            if live.contains(&record.gid) || engine_stopped.contains(&record.gid) {
+                // Engine is authoritative for this GID; keep a search hint if missing.
+                if !self.tasks.contains_key(&record.gid) {
+                    let task = download_task_from_history(&record);
+                    self.search_index
+                        .insert(record.gid, task.display_name.to_lowercase());
+                    self.tasks.insert(record.gid, task);
+                    patch.inserted.push(record.gid);
+                }
+                continue;
+            }
+            if self.history_only.insert(record.gid) {
+                self.history_order.push(record.gid);
+            }
+            let task = download_task_from_history(&record);
+            let search_name = task.display_name.to_lowercase();
+            if self.tasks.insert(record.gid, task).is_none() {
+                patch.inserted.push(record.gid);
+            } else if !patch.updated.iter().any(|item| item.gid == record.gid) {
+                patch.updated.push(TaskFieldPatch {
+                    gid: record.gid,
+                    fields: TaskFields::all(),
+                    task_revision: 1,
+                });
+            }
+            self.search_index.insert(record.gid, search_name);
+        }
+
+        if previous_history != self.history_order {
+            patch.record_order(TaskCollection::Stopped);
+        }
+        Ok(self.finish_patch(patch))
+    }
+
+    /// Removes durable-history-only rows after a user Remove (or explicit purge).
+    pub fn remove_history_only(
+        &mut self,
+        generation: SessionGeneration,
+        gids: &[Gid],
+    ) -> Result<StorePatch, StoreError> {
+        self.ensure_generation(generation)?;
+        let remove_set: HashSet<Gid> = gids.iter().copied().collect();
+        let mut patch = StorePatch::new(generation, self.revision);
+        let previous_history = self.history_order.clone();
+        for gid in &remove_set {
+            if self.history_only.remove(gid) && self.tasks.remove(gid).is_some() {
+                self.search_index.remove(gid);
+                patch.removed.push(*gid);
+            }
+        }
+        self.history_order.retain(|gid| !remove_set.contains(gid));
+        if previous_history != self.history_order {
+            patch.record_order(TaskCollection::Stopped);
+        }
+        Ok(self.finish_patch(patch))
     }
 
     /// Application-observed seeding duration for the current engine session.
@@ -469,17 +574,23 @@ impl DownloadStore {
                 self.seeding_started_at.remove(gid);
                 patch.removed.push(*gid);
             }
+            self.history_only.remove(gid);
         }
 
         let previous_active = self.active_order.clone();
         let previous_waiting = self.waiting_order.clone();
         let previous_stopped = self.stopped_order.clone();
+        let previous_history = self.history_order.clone();
         self.active_order.retain(|gid| !remove_set.contains(gid));
         self.waiting_order.retain(|gid| !remove_set.contains(gid));
+        self.history_order.retain(|gid| !remove_set.contains(gid));
         for page in self.stopped_pages.values_mut() {
             page.retain(|gid| !remove_set.contains(gid));
         }
         self.rebuild_stopped_order();
+        if previous_history != self.history_order {
+            patch.record_order(TaskCollection::Stopped);
+        }
 
         if previous_active != self.active_order {
             patch.record_order(TaskCollection::Active);
@@ -533,6 +644,10 @@ impl DownloadStore {
             self.update_seeding_observation(gid, status);
             patch.inserted.push(gid);
         }
+        // Engine snapshot is authoritative: drop history-only ownership for this GID.
+        if self.history_only.remove(&gid) {
+            self.history_order.retain(|item| *item != gid);
+        }
         Ok(())
     }
 
@@ -555,6 +670,14 @@ impl DownloadStore {
             .copied()
             .filter(|gid| seen.insert(*gid) && self.tasks.contains_key(gid))
             .collect();
+        // Engine stopped pages win over durable history for the same GID.
+        if !self.history_only.is_empty() {
+            for gid in &self.stopped_order {
+                self.history_only.remove(gid);
+            }
+            self.history_order
+                .retain(|gid| self.history_only.contains(gid));
+        }
     }
 
     fn finish_patch(&mut self, mut patch: StorePatch) -> StorePatch {
@@ -563,6 +686,33 @@ impl DownloadStore {
         }
         patch.store_revision = self.revision;
         patch
+    }
+}
+
+fn download_task_from_history(record: &HistoryRecord) -> DownloadTask {
+    let metadata = TaskMetadata {
+        directory: record.directory.clone(),
+        primary_uri: record.primary_uri_redacted.clone(),
+        info_hash: record.info_hash.clone(),
+        file_count: 0,
+        followed_by: Vec::new(),
+        belongs_to: None,
+        source_kind: record.source_kind,
+    };
+    DownloadTask {
+        gid: record.gid,
+        status: record.status,
+        display_name: record.display_name.clone(),
+        name_state: TaskNameState::Resolved,
+        total_length: record.total_length,
+        completed_length: record.completed_length,
+        upload_length: ariadeck_domain::ByteCount::default(),
+        download_speed: ariadeck_domain::ByteRate::default(),
+        upload_speed: ariadeck_domain::ByteRate::default(),
+        connections: 0,
+        error: record.error.clone(),
+        metadata,
+        revision: 1,
     }
 }
 
@@ -716,6 +866,49 @@ mod tests {
     }
 
     #[test]
+    fn local_history_merges_when_engine_purged() {
+        use crate::HistoryRecord;
+        use ariadeck_domain::{ByteCount, TaskSourceKind};
+
+        let mut store = store();
+        let profile = store.session().profile_id;
+        let record = HistoryRecord {
+            profile_id: profile,
+            gid: Gid::from_u64(99),
+            status: DownloadStatus::Complete,
+            display_name: "saved.bin".into(),
+            directory: None,
+            info_hash: None,
+            source_kind: TaskSourceKind::DirectUri,
+            total_length: ByteCount::new(10),
+            completed_length: ByteCount::new(10),
+            error: None,
+            primary_uri_redacted: Some("https://cdn.example/file".into()),
+            recorded_at_ms: 100,
+            updated_at_ms: 100,
+        };
+        store
+            .seed_local_history(generation(), vec![record])
+            .expect("seed");
+        assert!(store.is_history_only(Gid::from_u64(99)));
+        assert_eq!(store.stopped_history().local_saved, 1);
+        assert_eq!(store.counts().completed, 1);
+
+        // Engine page for same GID demotes history-only ownership.
+        store
+            .apply_stopped_page(
+                generation(),
+                0,
+                Some(1),
+                vec![task(99, DownloadStatus::Complete, "saved.bin")],
+            )
+            .expect("engine page");
+        assert!(!store.is_history_only(Gid::from_u64(99)));
+        assert_eq!(store.stopped_history().local_saved, 0);
+        assert_eq!(store.counts().completed, 1);
+    }
+
+    #[test]
     fn stopped_history_tracks_loaded_total_and_next_page_offset() {
         let mut store = store();
         assert_eq!(
@@ -725,6 +918,7 @@ mod tests {
                 total: None,
                 next_offset: 0,
                 can_load_more: true,
+                local_saved: 0,
             }
         );
 
@@ -742,6 +936,7 @@ mod tests {
                 total: Some(5),
                 next_offset: 2,
                 can_load_more: true,
+                local_saved: 0,
             }
         );
 
@@ -760,6 +955,7 @@ mod tests {
                 total: Some(5),
                 next_offset: 5,
                 can_load_more: false,
+                local_saved: 0,
             }
         );
     }

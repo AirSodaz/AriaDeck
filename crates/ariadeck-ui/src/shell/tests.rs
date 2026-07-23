@@ -54,6 +54,7 @@ fn snapshot(count: usize) -> WorkspaceSnapshot {
             loaded: count,
             total: Some(count),
             can_load_more: false,
+            local_saved: 0,
         },
         tasks: (0..count).map(task).collect(),
         capabilities: crate::EngineCapabilitiesView::unknown(),
@@ -737,6 +738,7 @@ fn load_more_stopped_history_is_single_flight_and_gated(cx: &mut TestAppContext)
             loaded: 2,
             total: Some(5),
             can_load_more: true,
+            local_saved: 0,
         };
         shell
     });

@@ -19,9 +19,9 @@ pub use history::{DEFAULT_SPEED_HISTORY_CAPACITY, SpeedHistory, SpeedHistoryErro
 pub use ports::{
     DownloadDestinationFile, DownloadDestinationGateway, DownloadDestinationReport,
     DownloadDestinationRequest, DownloadEngineGateway, GatewayError, GatewayErrorKind,
-    TaskConnectionDetailsGateway, TaskDetailsGateway, TaskFileGateway, TaskFileRemovalPreview,
-    TaskFileRemovalReport, TaskFileRemovalRequest, TaskOpenRequest, TaskOpenTarget,
-    TaskRemovalTarget,
+    HistoryRecord, HistoryStoreError, NullHistoryStore, TaskConnectionDetailsGateway,
+    TaskDetailsGateway, TaskFileGateway, TaskFileRemovalPreview, TaskFileRemovalReport,
+    TaskFileRemovalRequest, TaskHistoryStore, TaskOpenRequest, TaskOpenTarget, TaskRemovalTarget,
 };
 pub use store::{
     DownloadStore, OrderPatch, StoppedHistoryState, StoreError, StorePatch, TaskCollection,

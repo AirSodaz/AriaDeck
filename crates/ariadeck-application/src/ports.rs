@@ -1,5 +1,6 @@
 use ariadeck_domain::{
-    EnginePath, Gid, SpeedLimitConfig, TaskConnectionDetails, TaskDetails, TransferPolicyConfig,
+    ByteCount, DownloadStatus, EnginePath, Gid, ProfileId, SpeedLimitConfig, TaskConnectionDetails,
+    TaskDetails, TaskError, TaskSourceKind, TransferPolicyConfig,
 };
 use async_trait::async_trait;
 use thiserror::Error;
@@ -243,5 +244,77 @@ impl GatewayError {
             message: message.into(),
             retryable,
         }
+    }
+}
+
+/// Durable completed/failed task summary (B6). Stored outside aria2 memory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoryRecord {
+    pub profile_id: ProfileId,
+    pub gid: Gid,
+    pub status: DownloadStatus,
+    pub display_name: String,
+    pub directory: Option<EnginePath>,
+    pub info_hash: Option<String>,
+    pub source_kind: TaskSourceKind,
+    pub total_length: ByteCount,
+    pub completed_length: ByteCount,
+    pub error: Option<TaskError>,
+    /// Source URI already redacted for storage (D-032).
+    pub primary_uri_redacted: Option<String>,
+    pub recorded_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+#[error("{message}")]
+pub struct HistoryStoreError {
+    pub message: String,
+}
+
+impl HistoryStoreError {
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+/// Local history persistence port. Implementations live outside this crate (ADR-001).
+pub trait TaskHistoryStore: Send + Sync {
+    fn upsert(&self, record: &HistoryRecord) -> Result<(), HistoryStoreError>;
+    fn remove(&self, profile_id: ProfileId, gid: Gid) -> Result<(), HistoryStoreError>;
+    fn list(
+        &self,
+        profile_id: ProfileId,
+        limit: usize,
+    ) -> Result<Vec<HistoryRecord>, HistoryStoreError>;
+    fn count(&self, profile_id: ProfileId) -> Result<usize, HistoryStoreError>;
+}
+
+/// No-op history store used when SQLite is unavailable or in unit tests.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NullHistoryStore;
+
+impl TaskHistoryStore for NullHistoryStore {
+    fn upsert(&self, _record: &HistoryRecord) -> Result<(), HistoryStoreError> {
+        Ok(())
+    }
+
+    fn remove(&self, _profile_id: ProfileId, _gid: Gid) -> Result<(), HistoryStoreError> {
+        Ok(())
+    }
+
+    fn list(
+        &self,
+        _profile_id: ProfileId,
+        _limit: usize,
+    ) -> Result<Vec<HistoryRecord>, HistoryStoreError> {
+        Ok(Vec::new())
+    }
+
+    fn count(&self, _profile_id: ProfileId) -> Result<usize, HistoryStoreError> {
+        Ok(0)
     }
 }

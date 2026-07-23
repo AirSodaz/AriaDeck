@@ -789,6 +789,21 @@ impl CommandOutcome {
             .iter()
             .any(|failure| failure.error.code == ApplicationErrorCode::OutcomeUnknown)
     }
+
+    /// Task identities that completed successfully in this outcome.
+    #[must_use]
+    pub fn succeeded_tasks(&self) -> Vec<TaskIdentity> {
+        let succeeded = match self {
+            Self::Success { succeeded } | Self::PartialSuccess { succeeded, .. } => succeeded,
+            Self::Failure { .. } => return Vec::new(),
+        };
+        succeeded
+            .iter()
+            .map(|item| match item {
+                CommandItem::Task(identity) => *identity,
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

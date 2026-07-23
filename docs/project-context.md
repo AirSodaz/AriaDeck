@@ -52,7 +52,7 @@ GPUI → ariadeck-ui → ariadeck-desktop (composition, tray, bridges)
 | `ariadeck-telemetry` | Tracing setup |
 | `ariadeck-desktop` | Bootstrap, composition root, platform |
 
-**Not separate crates yet:** core-manager (in engine), storage/SQLite (deferred), platform (partially desktop).
+**Not separate crates yet:** core-manager (in engine), platform (partially desktop). History: `ariadeck-history` (SQLite adapter).
 
 ### Dependency rules
 
@@ -111,7 +111,7 @@ Env knobs: see root `README.md` (`ARIADECK_RPC_*`).
 | D-018 | Seeding ≠ completed (`seeder=true`); stays in Active |
 | D-019 | Post-metadata output conflicts surfaced |
 | D-020 | Duplicates by URI/info-hash; open path local-only |
-| D-021 | Stopped history = aria2 memory; paginated Load more |
+| D-021 | Engine stopped history = aria2 memory; paginated Load more (session truth) |
 | D-022 | Advanced add URI-only; secrets redacted |
 | D-024 | Context menu = toolbar parity; no second undo stack |
 | D-025 | Grouped toasts; Normal/Quiet/Silent; activity panel |
@@ -127,6 +127,7 @@ Env knobs: see root `README.md` (`ARIADECK_RPC_*`).
 | D-036 | Settings transfer uses a separate versioned JSON format with no password or credential reference; import is strictly validated, preserves local keychain secrets, and applies through the normal settings transaction |
 | D-037 | Windows metadata associations are explicit installer opt-ins. `.torrent`, `.metalink`, and `.meta4` launch `--open-metadata <path>` into the existing preview/confirmation flow; a bounded, versioned per-data-directory local socket forwards to and activates the running instance without lossy path conversion |
 | D-038 | Windows `magnet:` handling is an explicit installer opt-in. `--open-magnet <uri>` validates a BitTorrent info hash, forwards through the same bounded per-data-directory broker, and fills the Add Download links input without submitting it; the optional `ariadeck:` scheme remains out of scope |
+| D-039 | **B6 local history:** completed/failed task summaries persist in `history.sqlite` under the app data dir (profile-scoped). Engine `tellStopped` remains session memory truth; durable rows merge into Completed/Failed when the engine no longer holds the GID. URI stored only after `redact_source_uri`. User Remove deletes the matching history row. Diagnostic ZIP does not include history by default |
 
 **SEC inventory (boundary):** raw URIs/options may live in domain for RPC/retry; list/details/clipboard/tracker/server URIs and option secrets must be redacted or keychain-only.  
 **PERF guards:** 10k stopped stress, light snapshot short-circuit, ActivityMode tray intervals, reconnect backoff.
@@ -139,7 +140,7 @@ Settings: versioned JSON (`ariadeck-settings`); separate `window.json`, `profile
 
 ### Done
 
-Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, add/pause/resume/retry/remove, details, local supervision, settings, settings transfer (credential-free JSON), themes, multi-select/batch, multiline/mirrors, Trash, proxy+keychain, torrent/metalink+file select, Windows metadata file associations, Windows `magnet:` protocol handling, queue ops, rate limits, seeding, duplicates, stopped pagination, advanced add, context menu, notifications/activity, multi-profile, capabilities, core registry, tray, window prefs, i18n en/zh-CN (including dialogs/details and stable error codes), a11y baseline, privacy redaction, redacted diagnostic ZIP export, perf hardening, Windows portable/installer packaging, CI matrix (fmt/test/clippy/release-build on Windows, macOS, Linux).
+Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, add/pause/resume/retry/remove, details, local supervision, settings, settings transfer (credential-free JSON), themes, multi-select/batch, multiline/mirrors, Trash, proxy+keychain, torrent/metalink+file select, Windows metadata file associations, Windows `magnet:` protocol handling, local SQLite task history (completed/failed), queue ops, rate limits, seeding, duplicates, stopped pagination, advanced add, context menu, notifications/activity, multi-profile, capabilities, core registry, tray, window prefs, i18n en/zh-CN (including dialogs/details and stable error codes), a11y baseline, privacy redaction, redacted diagnostic ZIP export, perf hardening, Windows portable/installer packaging, CI matrix (fmt/test/clippy/release-build on Windows, macOS, Linux).
 
 ### Residual (polish, not blockers for Windows ship)
 
@@ -153,7 +154,7 @@ Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, ad
 
 ### Explicitly deferred
 
-Network aria2 package channels · SQLite history/analytics · Per-profile proxy/limit bags · Hot profile switch without restart · HTTP JSON-RPC as first-class transport · Pause/resume **scheduling** · Tags/categories · Browser capture · Extra locales · Remote path mapping · In-app auto-update productization
+Network aria2 package channels · History retention/analytics policies (C3) · Per-profile proxy/limit bags · Hot profile switch without restart · HTTP JSON-RPC as first-class transport · Pause/resume **scheduling** · Tags/categories · Browser capture · Extra locales · Remote path mapping · In-app auto-update productization
 
 
 → Prioritized product roadmap: [`docs/roadmap.md`](roadmap.md)
@@ -170,7 +171,7 @@ Network aria2 package channels · SQLite history/analytics · Per-profile proxy/
 | 004 | Mutable state scoped to engine session generation |
 | 005 | One actor per WebSocket; auth as transport decorator |
 | 006 | Sync serialized & cancellation-aware |
-| 007 | Typed JSON settings now; SQLite later for multi-entity |
+| 007 | Typed JSON settings now; SQLite for multi-entity task history (B6 / D-039) |
 | 008 | Download proxy ≠ RPC; credentials in OS keychain; System mode resolves static OS/env proxy in desktop layer |
 | 009 | Uncertain mutations reconciled from engine |
 | 010 | Remote RPC WebSocket-only; fail closed |
