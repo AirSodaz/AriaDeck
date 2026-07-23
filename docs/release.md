@@ -46,6 +46,8 @@ Root `Cargo.toml` `workspace.package.version` · About uses `CARGO_PKG_VERSION` 
 
 ## Commands
 
+Local build (mirrors CI packaging steps):
+
 ```powershell
 python scripts/gen_third_party_notices.py
 powershell -ExecutionPolicy Bypass -File scripts/package-windows-portable.ps1
@@ -54,9 +56,25 @@ powershell -ExecutionPolicy Bypass -File scripts/package-windows-portable.ps1
 $env:ARIADECK_SIGN_CERT_THUMBPRINT = "<thumbprint>"
 powershell -ExecutionPolicy Bypass -File scripts/package-windows-portable.ps1 -Sign
 
-# Installer (Inno Setup 6+)
+# Installer (Inno Setup 6+). -SkipStage reuses dist staging from the portable step (CI does this).
+powershell -ExecutionPolicy Bypass -File scripts/package-windows-installer.ps1 -SkipStage
+# Or restage without rebuild:
 powershell -ExecutionPolicy Bypass -File scripts/package-windows-installer.ps1 -SkipBuild
 ```
+
+Expected outputs under `dist/`:
+
+- `AriaDeck-<ver>-windows-x64-portable/` + `.zip`
+- `AriaDeck-<ver>-windows-x64-setup.exe`
+
+## GitHub Actions
+
+| Workflow | When | What |
+| --- | --- | --- |
+| `.github/workflows/ci.yml` → job `Windows packages (portable + installer)` | Push to `main` / `master` (after `verify`) | Notices → portable → `choco install innosetup` → installer `-SkipStage` → assert zip + setup.exe → artifact `ariadeck-windows-x64` (`dist/*`) |
+| `.github/workflows/release.yml` | Tag `v*` | Same packaging (optional Authenticode via secrets) → artifact + GitHub Release files `dist/*.zip` and `dist/*-setup.exe` |
+
+PR / non-main branches run **verify only** (fmt/test/clippy/release build); they do not produce installers.
 
 ### Signing env
 

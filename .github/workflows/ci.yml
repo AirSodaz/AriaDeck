@@ -75,8 +75,8 @@ jobs:
       - name: Release build (desktop)
         run: cargo build -p ariadeck-desktop --release
 
-  portable:
-    name: portable package
+  windows-packages:
+    name: Windows packages (portable + installer)
     runs-on: windows-latest
     needs: verify
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
@@ -102,11 +102,39 @@ jobs:
         run: ./scripts/package-windows-portable.ps1
 
       - name: Install Inno Setup
-        run: choco install innosetup --no-progress -y
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install innosetup --no-progress -y
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "choco install innosetup failed (exit $LASTEXITCODE); retrying once..."
+            choco install innosetup --no-progress -y --force
+          }
+          if ($LASTEXITCODE -ne 0) { throw "choco install innosetup failed (exit $LASTEXITCODE)" }
+          $iscc = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+          if (-not $iscc) { throw "ISCC.exe not found after installing Inno Setup" }
+          Write-Host "ISCC: $iscc"
 
       - name: Package installer
         shell: pwsh
         run: ./scripts/package-windows-installer.ps1 -SkipStage
+
+      - name: Verify Windows package artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = Get-ChildItem -Path dist -Filter "*-windows-x64-portable.zip" -ErrorAction SilentlyContinue
+          $setup = Get-ChildItem -Path dist -Filter "*-windows-x64-setup.exe" -ErrorAction SilentlyContinue
+          if (-not $zip) { throw "Missing portable zip under dist/" }
+          if (-not $setup) { throw "Missing Inno setup.exe under dist/" }
+          foreach ($f in @($zip[0], $setup[0])) {
+            $mb = [math]::Round($f.Length / 1MB, 2)
+            Write-Host "OK $($f.Name) ($mb MB)"
+          }
 
       - name: Upload Windows artifacts
         # v5 still targets Node 20; v6+ is node24-native.

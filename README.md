@@ -11,7 +11,7 @@ Native Rust desktop client for [aria2](https://aria2.github.io/). GPUI UI; indep
 
 - Rust 1.96.0 (`rust-toolchain.toml`)
 - Windows (primary, packaged) / macOS / Linux — all three CI-verified (fmt/test/clippy/build)
-- CI (`.github/workflows/ci.yml`): verify on Windows, macOS, and Ubuntu; portable package still Windows-only on `main`
+- CI (`.github/workflows/ci.yml`): verify on Windows, macOS, and Ubuntu; on `main` push, also build Windows portable zip + Inno installer (artifact `ariadeck-windows-x64`)
 
 ```sh
 cargo run -p ariadeck-desktop
@@ -37,16 +37,23 @@ Plain `ws://` defaults to loopback; remote plaintext needs `ARIADECK_RPC_ALLOW_I
 | `ARIADECK_RPC_RECONNECT_RESET_AFTER_MS` | `10000` |
 | `ARIADECK_RPC_RECONNECT_MAX_ATTEMPTS` | unlimited when unset |
 
-## Releases (Windows portable)
+## Releases (Windows)
 
-Portable zip + optional Inno installer. **No** bundled aria2—import a core in Settings or use `ARIADECK_RPC_URL`.
+Portable zip + Inno installer. **No** bundled aria2—import a core in Settings or use `ARIADECK_RPC_URL`.
 
 ```powershell
 python scripts/gen_third_party_notices.py
 powershell -ExecutionPolicy Bypass -File scripts/package-windows-portable.ps1
+# Inno Setup 6+ required for the installer:
+powershell -ExecutionPolicy Bypass -File scripts/package-windows-installer.ps1 -SkipStage
 ```
 
 `ariadeck.portable` next to the exe → data under `./data`. Installed builds use `%LOCALAPPDATA%\AriaDeck` (kept on uninstall by default).
+
+| Trigger | Artifacts |
+| --- | --- |
+| Push to `main` | CI artifact `ariadeck-windows-x64` (`*.zip` + `*-setup.exe`) |
+| Tag `v*` | GitHub Release attaches the same files |
 
 Details: [`docs/release.md`](docs/release.md).
 
