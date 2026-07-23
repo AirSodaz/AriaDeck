@@ -85,10 +85,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $zip = Get-ChildItem -Path dist -Filter "*-windows-x64-portable.zip" -ErrorAction SilentlyContinue
-          $setup = Get-ChildItem -Path dist -Filter "*-windows-x64-setup.exe" -ErrorAction SilentlyContinue
+          $zip = Get-ChildItem -Path dist -Filter "*-windows-x64-portable.zip" -File -ErrorAction SilentlyContinue
+          $setup = Get-ChildItem -Path dist -Filter "*-windows-x64-setup.exe" -File -ErrorAction SilentlyContinue
           if (-not $zip) { throw "Missing portable zip under dist/" }
           if (-not $setup) { throw "Missing Inno setup.exe under dist/" }
+          # Staging dir is only an Inno input; ship zip + setup.exe only.
+          Get-ChildItem -Path dist -Directory -Filter "*-windows-x64-portable" -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force
           foreach ($f in @($zip[0], $setup[0])) {
             $mb = [math]::Round($f.Length / 1MB, 2)
             Write-Host "OK $($f.Name) ($mb MB)"
@@ -99,7 +102,9 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ariadeck-windows-x64
-          path: dist/*
+          path: |
+            dist/*-windows-x64-portable.zip
+            dist/*-windows-x64-setup.exe
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

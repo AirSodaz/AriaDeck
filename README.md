@@ -52,7 +52,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package-windows-installer.ps1 -
 
 | Trigger | Artifacts |
 | --- | --- |
-| Push to `main` | CI artifact `ariadeck-windows-x64` (`*.zip` + `*-setup.exe`) |
+| Push to `main` | CI artifact `ariadeck-windows-x64` (portable `*.zip` + `*-setup.exe` only) |
 | Tag `v*` | GitHub Release attaches the same files |
 
 Details: [`docs/release.md`](docs/release.md).
