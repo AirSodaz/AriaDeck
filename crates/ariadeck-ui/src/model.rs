@@ -184,6 +184,7 @@ pub struct DownloadRowView {
     pub source_kind: TaskSourceKindView,
     pub primary_source: Option<String>,
     pub directory: Option<String>,
+    pub category_id: Option<String>,
     pub followed_by: Vec<String>,
     pub belongs_to: Option<String>,
     pub status: TaskStatusView,
@@ -970,6 +971,8 @@ pub struct AddDownloadRequestView {
     pub sources: Vec<AddDownloadSourceView>,
     pub mode: AddDownloadModeView,
     pub destination: Option<String>,
+    /// Optional category id from settings; desktop persists affiliation after add.
+    pub category_id: Option<String>,
     pub required_bytes: Option<u64>,
     pub file_conflict: FileConflictPolicyView,
     pub advanced: AddDownloadAdvancedOptionsView,
@@ -1961,6 +1964,14 @@ pub struct CoreCommandResultView {
     pub outcome: CoreCommandOutcomeView,
 }
 
+/// Favorite output folder used as a download category (C1 / D-040).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DownloadCategoryView {
+    pub id: String,
+    pub name: String,
+    pub directory: String,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SettingsView {
     pub color_scheme: ColorSchemeView,
@@ -1971,6 +1982,8 @@ pub struct SettingsView {
     pub transfer_policy: TransferPolicySettingsView,
     pub notifications: NotificationSettingsView,
     pub platform: PlatformSettingsView,
+    pub categories: Vec<DownloadCategoryView>,
+    pub default_category_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2203,6 +2216,8 @@ pub struct WorkspaceQuery {
     pub search: String,
     pub sort_key: WorkspaceSortKey,
     pub sort_direction: WorkspaceSortDirection,
+    /// When set, only tasks affiliated with this category id are shown.
+    pub category_id: Option<String>,
 }
 
 /// Locale-aware formatting options for sizes, rates, and durations (ACCESS-001).
@@ -2516,6 +2531,7 @@ mod tests {
             source_kind: TaskSourceKindView::DirectUri,
             primary_source: None,
             directory: None,
+            category_id: None,
             followed_by: Vec::new(),
             belongs_to: None,
             status: TaskStatusView::Active,

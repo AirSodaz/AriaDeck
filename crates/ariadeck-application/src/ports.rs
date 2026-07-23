@@ -291,6 +291,43 @@ pub trait TaskHistoryStore: Send + Sync {
         limit: usize,
     ) -> Result<Vec<HistoryRecord>, HistoryStoreError>;
     fn count(&self, profile_id: ProfileId) -> Result<usize, HistoryStoreError>;
+
+    /// Associate a task with a download category id (C1). Empty id clears affiliation.
+    fn set_task_category(
+        &self,
+        profile_id: ProfileId,
+        gid: Gid,
+        category_id: Option<&str>,
+    ) -> Result<(), HistoryStoreError> {
+        let _ = (profile_id, gid, category_id);
+        Ok(())
+    }
+
+    fn task_category(
+        &self,
+        profile_id: ProfileId,
+        gid: Gid,
+    ) -> Result<Option<String>, HistoryStoreError> {
+        let _ = (profile_id, gid);
+        Ok(None)
+    }
+
+    /// All category affiliations for a profile: (gid hex, category_id).
+    fn list_task_categories(
+        &self,
+        profile_id: ProfileId,
+    ) -> Result<Vec<(Gid, String)>, HistoryStoreError> {
+        let _ = profile_id;
+        Ok(Vec::new())
+    }
+
+    fn remove_task_category(
+        &self,
+        profile_id: ProfileId,
+        gid: Gid,
+    ) -> Result<(), HistoryStoreError> {
+        self.set_task_category(profile_id, gid, None)
+    }
 }
 
 /// No-op history store used when SQLite is unavailable or in unit tests.

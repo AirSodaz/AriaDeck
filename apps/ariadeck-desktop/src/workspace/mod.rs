@@ -55,25 +55,26 @@ use ariadeck_ui::{
     CommandOutcomeView, ConnectionView, CoreCommandOutcomeView, CoreCommandRequestView,
     CoreCommandResultView, CoreCommandView, CoreInstallStatusView, CoreInstallationView,
     CoreRegistryView, CoreSourceView, DiagnosticExportOutcomeView, DiagnosticExportRequestView,
-    DiagnosticExportResultView, DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView,
-    EngineHealthView, EngineSessionView, FileAllocationView, FileConflictPolicyView,
-    GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView,
-    LanguagePreferenceView, NotificationSettingsView, NotificationVolumeView, OperationErrorView,
-    PlatformSettingsView, ProfileCatalogView, ProfileEntryView, ProfileKindView,
-    ProfileRpcSecretUpdateView, ProxyModeView, ProxyPasswordUpdateView,
-    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
-    SettingsExportOutcomeView, SettingsExportRequestView, SettingsExportResultView,
-    SettingsImportOutcomeView, SettingsImportRequestView, SettingsImportResultView,
-    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView, SwitchProfileOutcomeView,
-    SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
-    TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
-    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
-    TaskIdentity, TaskNameStateView, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
-    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
-    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
-    TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
-    WorkspaceSortDirection, WorkspaceSortKey, format_speed_limit_field,
+    DiagnosticExportResultView, DownloadCategoryView, DownloadProxySettingsView, DownloadRowView,
+    EngineCapabilitiesView, EngineHealthView, EngineSessionView, FileAllocationView,
+    FileConflictPolicyView, GlobalTaskCommandRequestView, GlobalTaskCommandResultView,
+    GlobalTaskCommandView, LanguagePreferenceView, NotificationSettingsView,
+    NotificationVolumeView, OperationErrorView, PlatformSettingsView, ProfileCatalogView,
+    ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView,
+    ProxyPasswordUpdateView, SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView,
+    SaveProfileCatalogResultView, SettingsExportOutcomeView, SettingsExportRequestView,
+    SettingsExportResultView, SettingsImportOutcomeView, SettingsImportRequestView,
+    SettingsImportResultView, SettingsSaveOutcomeView, SettingsSaveRequestView,
+    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView,
+    StoppedHistoryView, SwitchProfileOutcomeView, SwitchProfileRequestView,
+    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
+    TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
+    TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
+    TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
+    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TransferPolicySettingsView,
+    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    format_speed_limit_field,
 };
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
 #[cfg(target_os = "windows")]
@@ -1500,6 +1501,7 @@ async fn execute_add_download(
         sources,
         mode,
         destination,
+        category_id,
         required_bytes,
         file_conflict,
         advanced,
@@ -1678,6 +1680,23 @@ async fn execute_add_download(
     }
     if has_successes && let Some(handle) = sync {
         handle.force_refresh().await;
+        if let Some(category_id) = category_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            for item in &items {
+                if let CommandOutcomeView::Success { tasks } = &item.outcome {
+                    for task in tasks {
+                        if let Ok(identity) = map_task_identity(task) {
+                            handle
+                                .set_task_category(identity.gid, Some(category_id.to_owned()))
+                                .await;
+                        }
+                    }
+                }
+            }
+        }
     }
     AddDownloadResultView {
         request_id,

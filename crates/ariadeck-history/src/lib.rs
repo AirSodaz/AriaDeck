@@ -13,10 +13,10 @@ use ariadeck_domain::{
     ByteCount, DownloadStatus, EnginePath, Gid, ProfileId, TaskError, TaskSourceKind,
     redact_source_uri,
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use thiserror::Error;
 
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 const DEFAULT_LIST_LIMIT: usize = 10_000;
 const MAX_ERROR_MESSAGE_CHARS: usize = 512;
 
@@ -99,7 +99,87 @@ impl TaskHistoryStore for SqliteHistoryStore {
                 "DELETE FROM task_history WHERE profile_id = ?1 AND gid = ?2",
                 params![profile_id.to_string(), gid.to_string()],
             )?;
+            connection.execute(
+                "DELETE FROM task_category WHERE profile_id = ?1 AND gid = ?2",
+                params![profile_id.to_string(), gid.to_string()],
+            )?;
             Ok(())
+        })
+        .map_err(Into::into)
+    }
+
+    fn set_task_category(
+        &self,
+        profile_id: ProfileId,
+        gid: Gid,
+        category_id: Option<&str>,
+    ) -> Result<(), ariadeck_application::HistoryStoreError> {
+        self.with_connection(|connection| {
+            match category_id.map(str::trim).filter(|id| !id.is_empty()) {
+                Some(category_id) => {
+                    connection.execute(
+                        "
+                        INSERT INTO task_category (profile_id, gid, category_id, updated_at)
+                        VALUES (?1, ?2, ?3, strftime('%s','now') * 1000)
+                        ON CONFLICT(profile_id, gid) DO UPDATE SET
+                            category_id = excluded.category_id,
+                            updated_at = excluded.updated_at
+                        ",
+                        params![profile_id.to_string(), gid.to_string(), category_id,],
+                    )?;
+                }
+                None => {
+                    connection.execute(
+                        "DELETE FROM task_category WHERE profile_id = ?1 AND gid = ?2",
+                        params![profile_id.to_string(), gid.to_string()],
+                    )?;
+                }
+            }
+            Ok(())
+        })
+        .map_err(Into::into)
+    }
+
+    fn task_category(
+        &self,
+        profile_id: ProfileId,
+        gid: Gid,
+    ) -> Result<Option<String>, ariadeck_application::HistoryStoreError> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT category_id FROM task_category WHERE profile_id = ?1 AND gid = ?2",
+            )?;
+            let value = statement
+                .query_row(params![profile_id.to_string(), gid.to_string()], |row| {
+                    row.get::<_, String>(0)
+                })
+                .optional()?;
+            Ok(value)
+        })
+        .map_err(Into::into)
+    }
+
+    fn list_task_categories(
+        &self,
+        profile_id: ProfileId,
+    ) -> Result<Vec<(Gid, String)>, ariadeck_application::HistoryStoreError> {
+        self.with_connection(|connection| {
+            let mut statement = connection
+                .prepare("SELECT gid, category_id FROM task_category WHERE profile_id = ?1")?;
+            let rows = statement.query_map(params![profile_id.to_string()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (gid_s, category_id) = row?;
+                let gid = gid_s
+                    .parse()
+                    .map_err(|_| HistoryError::InvalidGid(gid_s.clone()))?;
+                if !category_id.is_empty() {
+                    out.push((gid, category_id));
+                }
+            }
+            Ok(out)
         })
         .map_err(Into::into)
     }
@@ -174,6 +254,22 @@ fn migrate(connection: &Connection) -> Result<(), HistoryError> {
                 ON task_history (profile_id, recorded_at DESC);
             CREATE INDEX IF NOT EXISTS idx_task_history_profile_status
                 ON task_history (profile_id, status, recorded_at DESC);
+            ",
+        )?;
+        connection.pragma_update(None, "user_version", 1)?;
+    }
+    if version < 2 {
+        connection.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS task_category (
+                profile_id TEXT NOT NULL,
+                gid TEXT NOT NULL,
+                category_id TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (profile_id, gid)
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_category_profile_category
+                ON task_category (profile_id, category_id);
             ",
         )?;
         connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -553,5 +649,23 @@ mod tests {
         let store = SqliteHistoryStore::open(&path).expect("open");
         assert_eq!(store.path(), path.as_path());
         assert_eq!(store.count(ProfileId::new()).expect("count"), 0);
+    }
+    #[test]
+    fn task_category_affiliation_round_trips() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = SqliteHistoryStore::open(dir.path().join("history.sqlite")).expect("open");
+        let profile = ProfileId::new();
+        let gid = Gid::from_u64(42);
+        store
+            .set_task_category(profile, gid, Some("cat-movies"))
+            .expect("set");
+        assert_eq!(
+            store.task_category(profile, gid).expect("get").as_deref(),
+            Some("cat-movies")
+        );
+        let listed = store.list_task_categories(profile).expect("list");
+        assert_eq!(listed, vec![(gid, "cat-movies".into())]);
+        store.set_task_category(profile, gid, None).expect("clear");
+        assert!(store.task_category(profile, gid).expect("get").is_none());
     }
 }

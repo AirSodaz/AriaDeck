@@ -124,3 +124,4 @@ ui-external-engine-files-kept = This is an external engine; files on the engine 
 ui-output-name-restart = Changing an active task's output name may restart its transfer.
 ui-reconnect-refresh-details = Reconnect to refresh files for the current engine session.
 ui-requesting-details = Requesting file metadata from this aria2 session.
+filter-category-all = All categories

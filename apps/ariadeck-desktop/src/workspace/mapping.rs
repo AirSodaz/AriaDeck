@@ -1056,6 +1056,16 @@ pub(crate) fn map_settings(settings: &AppSettings) -> SettingsView {
             show_tray_icon: settings.platform.show_tray_icon,
             start_minimized_to_tray: settings.platform.start_minimized_to_tray,
         },
+        categories: settings
+            .categories
+            .iter()
+            .map(|category| DownloadCategoryView {
+                id: category.id.to_string(),
+                name: category.name.clone(),
+                directory: category.directory.to_string_lossy().into_owned(),
+            })
+            .collect(),
+        default_category_id: settings.default_category_id.map(|id| id.to_string()),
     }
 }
 
@@ -1082,7 +1092,7 @@ pub(crate) fn map_settings_request(
         ProxyPasswordUpdate::Clear => None,
         ProxyPasswordUpdate::Set(_) => Some(current.download_proxy.credential.unwrap_or_default()),
     };
-    let mapped = AppSettings {
+    let mut mapped = AppSettings {
         color_scheme: match settings.color_scheme {
             ColorSchemeView::System => ColorScheme::System,
             ColorSchemeView::Light => ColorScheme::Light,
@@ -1179,6 +1189,28 @@ pub(crate) fn map_settings_request(
         // List preferences are owned by the shell query path (UI-001), not the
         // settings form. Preserve whatever is currently persisted.
         ui: current.ui,
+        categories: Vec::new(),
+        default_category_id: None,
+    };
+    let mut categories = Vec::with_capacity(settings.categories.len());
+    for category in &settings.categories {
+        let id = category
+            .id
+            .parse()
+            .map_err(|_| "Invalid download category id.".to_owned())?;
+        categories.push(ariadeck_settings::DownloadCategory {
+            id,
+            name: category.name.trim().to_owned(),
+            directory: std::path::PathBuf::from(category.directory.trim()),
+        });
+    }
+    mapped.categories = categories;
+    mapped.default_category_id = match settings.default_category_id.as_deref() {
+        None | Some("") => None,
+        Some(id) => Some(
+            id.parse()
+                .map_err(|_| "Invalid default download category id.".to_owned())?,
+        ),
     };
     mapped.validate().map_err(|error| error.to_string())?;
     Ok((mapped, password))
@@ -1540,6 +1572,7 @@ pub(crate) fn map_ui_preferences_to_query(ui: &UiPreferences) -> WorkspaceQuery 
             ListSortDirectionPreference::Ascending => WorkspaceSortDirection::Ascending,
             ListSortDirectionPreference::Descending => WorkspaceSortDirection::Descending,
         },
+        category_id: None,
     }
 }
 
@@ -1568,6 +1601,7 @@ pub(crate) fn map_query(query: &WorkspaceQuery) -> TaskListQuery {
                 WorkspaceSortDirection::Descending => SortDirection::Descending,
             },
         },
+        category_id: query.category_id.clone(),
     }
 }
 
@@ -1577,6 +1611,7 @@ pub(crate) fn map_snapshot(
 ) -> WorkspaceSnapshot {
     let profile_id = snapshot.session.profile_id.to_string();
     let observed_seeding_seconds = snapshot.observed_seeding_seconds;
+    let category_by_gid = snapshot.category_by_gid;
     WorkspaceSnapshot {
         profile_id: profile_id.clone(),
         session_id: snapshot.session.session_id.to_string(),
@@ -1615,7 +1650,10 @@ pub(crate) fn map_snapshot(
             .into_iter()
             .map(|task| {
                 let observed = observed_seeding_seconds.get(&task.gid).copied();
-                map_task(&profile_id, task, observed)
+                {
+                    let category_id = category_by_gid.get(&task.gid).cloned();
+                    map_task(&profile_id, task, observed, category_id)
+                }
             })
             .collect(),
         capabilities: map_capabilities(&snapshot.capabilities),
@@ -1665,6 +1703,7 @@ pub(crate) fn map_task(
     profile_id: &str,
     task: DownloadTask,
     observed_seeding_seconds: Option<u64>,
+    category_id: Option<String>,
 ) -> DownloadRowView {
     let eta_seconds = (task.status != DownloadStatus::Seeding)
         .then(|| {
@@ -1699,6 +1738,7 @@ pub(crate) fn map_task(
         },
         primary_source,
         directory,
+        category_id,
         followed_by: task
             .metadata
             .followed_by

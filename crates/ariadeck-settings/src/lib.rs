@@ -17,9 +17,9 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
-use uuid::Uuid;
+pub use uuid::Uuid;
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 9;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 10;
 /// Version of the user-facing settings transfer document.
 pub const SETTINGS_EXPORT_FORMAT_VERSION: u32 = 1;
 
@@ -90,6 +90,29 @@ pub struct UiPreferences {
     pub list_sort_key: ListSortKeyPreference,
     pub list_sort_direction: ListSortDirectionPreference,
 }
+
+/// Named favorite output folder used as a download category (C1 / D-040).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DownloadCategory {
+    pub id: Uuid,
+    pub name: String,
+    pub directory: PathBuf,
+}
+
+impl DownloadCategory {
+    #[must_use]
+    pub fn new(name: impl Into<String>, directory: impl Into<PathBuf>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            directory: directory.into(),
+        }
+    }
+}
+
+/// Soft cap so settings UI and export stay manageable.
+pub const MAX_DOWNLOAD_CATEGORIES: usize = 32;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -482,6 +505,10 @@ pub struct AppSettings {
     pub notifications: NotificationSettings,
     pub platform: PlatformSettings,
     pub ui: UiPreferences,
+    /// Favorite output folders used as download categories (C1).
+    pub categories: Vec<DownloadCategory>,
+    /// Optional default category for new downloads; None uses `download_directory`.
+    pub default_category_id: Option<Uuid>,
 }
 
 /// Portable settings representation used by explicit export/import actions.
@@ -502,6 +529,8 @@ struct SettingsExportDocument {
     notifications: NotificationSettings,
     platform: PlatformSettings,
     ui: UiPreferences,
+    categories: Vec<DownloadCategory>,
+    default_category_id: Option<Uuid>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -546,6 +575,8 @@ impl SettingsExportDocument {
             notifications: settings.notifications,
             platform: settings.platform,
             ui: settings.ui,
+            categories: settings.categories.clone(),
+            default_category_id: settings.default_category_id,
         }
     }
 
@@ -592,6 +623,8 @@ impl SettingsExportDocument {
             notifications: self.notifications,
             platform: self.platform,
             ui: self.ui,
+            categories: self.categories,
+            default_category_id: self.default_category_id,
         };
         settings.validate()?;
         Ok(settings)
@@ -685,6 +718,8 @@ impl AppSettings {
             notifications: NotificationSettings::default(),
             platform: PlatformSettings::default(),
             ui: UiPreferences::default(),
+            categories: Vec::new(),
+            default_category_id: None,
         }
     }
 
@@ -694,6 +729,7 @@ impl AppSettings {
         }
         self.download_proxy.validate()?;
         self.transfer_policy.validate()?;
+        validate_categories(&self.categories, self.default_category_id)?;
         Ok(())
     }
 }
@@ -716,6 +752,16 @@ pub enum SettingsError {
     InvalidStorePath { path: PathBuf },
     #[error("download directory must not be empty")]
     EmptyDownloadDirectory,
+    #[error("download category name must not be empty")]
+    EmptyCategoryName,
+    #[error("download category directory must not be empty")]
+    EmptyCategoryDirectory,
+    #[error("download category names must be unique (case-insensitive)")]
+    DuplicateCategoryName,
+    #[error("too many download categories (max {MAX_DOWNLOAD_CATEGORIES})")]
+    TooManyCategories,
+    #[error("default download category id is not present in categories")]
+    UnknownDefaultCategory,
     #[error("manual download proxy requires at least one proxy endpoint")]
     MissingManualProxyEndpoint,
     #[error("proxy credential requires a non-empty username")]
@@ -743,6 +789,39 @@ pub enum SettingsError {
         #[source]
         source: io::Error,
     },
+}
+
+fn validate_categories(
+    categories: &[DownloadCategory],
+    default_category_id: Option<Uuid>,
+) -> Result<(), SettingsError> {
+    if categories.len() > MAX_DOWNLOAD_CATEGORIES {
+        return Err(SettingsError::TooManyCategories);
+    }
+    let mut seen_names = std::collections::HashSet::new();
+    let mut seen_ids = std::collections::HashSet::new();
+    for category in categories {
+        let name = category.name.trim();
+        if name.is_empty() {
+            return Err(SettingsError::EmptyCategoryName);
+        }
+        if category.directory.as_os_str().is_empty() {
+            return Err(SettingsError::EmptyCategoryDirectory);
+        }
+        let key = name.to_ascii_lowercase();
+        if !seen_names.insert(key) {
+            return Err(SettingsError::DuplicateCategoryName);
+        }
+        if !seen_ids.insert(category.id) {
+            return Err(SettingsError::DuplicateCategoryName);
+        }
+    }
+    if let Some(default_id) = default_category_id
+        && !categories.iter().any(|category| category.id == default_id)
+    {
+        return Err(SettingsError::UnknownDefaultCategory);
+    }
+    Ok(())
 }
 
 fn validate_proxy_endpoint(label: &'static str, endpoint: &str) -> Result<(), SettingsError> {
@@ -948,6 +1027,22 @@ struct SettingsDocumentV8 {
     ui: UiPreferences,
 }
 
+/// Schema v9 lacked download categories (C1).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsDocumentV9 {
+    schema_version: u32,
+    color_scheme: ColorScheme,
+    language: LanguagePreference,
+    download_directory: PathBuf,
+    download_proxy: DownloadProxySettings,
+    speed_limits: SpeedLimitSettings,
+    transfer_policy: TransferPolicySettings,
+    notifications: NotificationSettings,
+    platform: PlatformSettings,
+    ui: UiPreferences,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SettingsDocument {
@@ -961,6 +1056,8 @@ struct SettingsDocument {
     notifications: NotificationSettings,
     platform: PlatformSettings,
     ui: UiPreferences,
+    categories: Vec<DownloadCategory>,
+    default_category_id: Option<Uuid>,
 }
 
 impl From<&AppSettings> for SettingsDocument {
@@ -976,6 +1073,8 @@ impl From<&AppSettings> for SettingsDocument {
             notifications: settings.notifications,
             platform: settings.platform,
             ui: settings.ui,
+            categories: settings.categories.clone(),
+            default_category_id: settings.default_category_id,
         }
     }
 }
@@ -1000,6 +1099,8 @@ impl TryFrom<SettingsDocument> for AppSettings {
             notifications: document.notifications,
             platform: document.platform,
             ui: document.ui,
+            categories: document.categories,
+            default_category_id: document.default_category_id,
         };
         settings.validate()?;
         Ok(settings)
@@ -1054,6 +1155,8 @@ impl JsonSettingsStore {
                     notifications: NotificationSettings::default(),
                     platform: PlatformSettings::default(),
                     ui: UiPreferences::default(),
+                    categories: Vec::new(),
+                    default_category_id: None,
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1077,6 +1180,8 @@ impl JsonSettingsStore {
                     notifications: NotificationSettings::default(),
                     platform: PlatformSettings::default(),
                     ui: UiPreferences::default(),
+                    categories: Vec::new(),
+                    default_category_id: None,
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1100,6 +1205,8 @@ impl JsonSettingsStore {
                     notifications: NotificationSettings::default(),
                     platform: PlatformSettings::default(),
                     ui: UiPreferences::default(),
+                    categories: Vec::new(),
+                    default_category_id: None,
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1123,6 +1230,8 @@ impl JsonSettingsStore {
                     notifications: NotificationSettings::default(),
                     platform: PlatformSettings::default(),
                     ui: UiPreferences::default(),
+                    categories: Vec::new(),
+                    default_category_id: None,
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1146,6 +1255,8 @@ impl JsonSettingsStore {
                     notifications: document.notifications.into(),
                     platform: PlatformSettings::default(),
                     ui: UiPreferences::default(),
+                    categories: Vec::new(),
+                    default_category_id: None,
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1169,6 +1280,8 @@ impl JsonSettingsStore {
                     notifications: document.notifications,
                     platform: document.platform,
                     ui: UiPreferences::default(),
+                    categories: Vec::new(),
+                    default_category_id: None,
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1192,6 +1305,8 @@ impl JsonSettingsStore {
                     notifications: document.notifications,
                     platform: document.platform,
                     ui: document.ui,
+                    categories: Vec::new(),
+                    default_category_id: None,
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1216,6 +1331,33 @@ impl JsonSettingsStore {
                     notifications: document.notifications,
                     platform: document.platform,
                     ui: document.ui,
+                    categories: Vec::new(),
+                    default_category_id: None,
+                };
+                settings.validate()?;
+                Ok((settings, true))
+            }
+            9 => {
+                let document: SettingsDocumentV9 =
+                    serde_json::from_slice(&bytes).map_err(malformed)?;
+                if document.schema_version != 9 {
+                    return Err(SettingsError::UnsupportedSchemaVersion {
+                        found: document.schema_version,
+                        supported: CURRENT_SETTINGS_SCHEMA_VERSION,
+                    });
+                }
+                let settings = AppSettings {
+                    color_scheme: document.color_scheme,
+                    language: document.language,
+                    download_directory: document.download_directory,
+                    download_proxy: document.download_proxy,
+                    speed_limits: document.speed_limits,
+                    transfer_policy: document.transfer_policy,
+                    notifications: document.notifications,
+                    platform: document.platform,
+                    ui: document.ui,
+                    categories: Vec::new(),
+                    default_category_id: None,
                 };
                 settings.validate()?;
                 Ok((settings, true))
@@ -1525,6 +1667,8 @@ mod tests {
             notifications: NotificationSettings::default(),
             platform: PlatformSettings::default(),
             ui: UiPreferences::default(),
+            categories: Vec::new(),
+            default_category_id: None,
         }
     }
 
@@ -1542,7 +1686,9 @@ mod tests {
         assert_eq!(store.load().expect("load settings"), expected);
 
         let document = fs::read_to_string(store.path()).expect("read settings JSON");
-        assert!(document.contains("\"schema_version\": 9"));
+        assert!(document.contains(&format!(
+            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
+        )));
         assert!(document.contains("\"transfer_policy\""));
         assert!(document.contains("\"notifications\""));
         assert!(document.contains("\"platform\""));
@@ -1582,7 +1728,9 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 9"));
+        assert!(migrated.contains(&format!(
+            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
+        )));
         assert!(migrated.contains("\"download_proxy\""));
         assert!(migrated.contains("\"speed_limits\""));
         assert!(migrated.contains("\"transfer_policy\""));
@@ -1618,7 +1766,9 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 9"));
+        assert!(migrated.contains(&format!(
+            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
+        )));
         assert!(migrated.contains("\"speed_limits\""));
         assert!(migrated.contains("\"transfer_policy\""));
         assert!(migrated.contains("\"notifications\""));
@@ -1659,7 +1809,9 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 9"));
+        assert!(migrated.contains(&format!(
+            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
+        )));
         assert!(migrated.contains("\"transfer_policy\""));
         assert!(migrated.contains("\"max_concurrent_downloads\""));
         assert!(migrated.contains("\"notifications\""));
@@ -1693,7 +1845,9 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 9"));
+        assert!(migrated.contains(&format!(
+            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
+        )));
         assert!(migrated.contains("\"notifications\""));
         assert!(migrated.contains("\"notify_on_completion\""));
         assert!(migrated.contains("\"platform\""));
@@ -1730,7 +1884,9 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 9"));
+        assert!(migrated.contains(&format!(
+            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
+        )));
         assert!(migrated.contains("\"platform\""));
         assert!(migrated.contains("\"os_notifications\""));
         assert!(migrated.contains("\"close_behavior\""));
@@ -1754,7 +1910,9 @@ mod tests {
         assert!(loaded.settings.download_proxy.check_certificate);
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 9"));
+        assert!(migrated.contains(&format!(
+            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
+        )));
         assert!(migrated.contains("\"check_certificate\": true"));
     }
 
@@ -1775,7 +1933,9 @@ mod tests {
         assert_eq!(loaded.settings.language, LanguagePreference::System);
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 9"));
+        assert!(migrated.contains(&format!(
+            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
+        )));
         assert!(migrated.contains("\"language\""));
     }
 
@@ -1797,7 +1957,9 @@ mod tests {
         assert_eq!(loaded.settings.ui, UiPreferences::default());
         assert!(loaded.recovery.is_none());
         let migrated = fs::read_to_string(store.path()).expect("read migrated settings");
-        assert!(migrated.contains("\"schema_version\": 9"));
+        assert!(migrated.contains(&format!(
+            "\"schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION}"
+        )));
         assert!(migrated.contains("\"ui\""));
         assert!(migrated.contains("\"list_filter\""));
     }
@@ -2002,6 +2164,10 @@ mod tests {
                 8,
                 r#"{"schema_version":8,"color_scheme":"system","language":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":true,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false},"ui":{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"}}"#,
             ),
+            (
+                9,
+                r#"{"schema_version":9,"color_scheme":"system","language":"system","download_directory":"downloads","download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null,"check_certificate":true},"speed_limits":{"download_limit":0,"upload_limit":0},"transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":true,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false},"ui":{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"}}"#,
+            ),
         ];
 
         for &(version, body) in fixtures {
@@ -2053,6 +2219,28 @@ mod tests {
             fs::read_to_string(store.path()).expect("read future JSON"),
             future
         );
+    }
+
+    #[test]
+    fn download_categories_validate_and_round_trip() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let mut expected = settings(root.path());
+        let movies = DownloadCategory::new("Movies", root.path().join("movies"));
+        let music = DownloadCategory::new("Music", root.path().join("music"));
+        expected.default_category_id = Some(movies.id);
+        expected.categories = vec![movies.clone(), music];
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        store.save(&expected).expect("save");
+        let loaded = store.load().expect("load");
+        assert_eq!(loaded.categories.len(), 2);
+        assert_eq!(loaded.default_category_id, Some(movies.id));
+        assert_eq!(loaded.categories[0].name, "Movies");
+
+        expected.categories[0].name = " ".into();
+        assert!(matches!(
+            expected.validate(),
+            Err(SettingsError::EmptyCategoryName)
+        ));
     }
 
     #[test]

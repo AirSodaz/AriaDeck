@@ -128,6 +128,7 @@ Env knobs: see root `README.md` (`ARIADECK_RPC_*`).
 | D-037 | Windows metadata associations are explicit installer opt-ins. `.torrent`, `.metalink`, and `.meta4` launch `--open-metadata <path>` into the existing preview/confirmation flow; a bounded, versioned per-data-directory local socket forwards to and activates the running instance without lossy path conversion |
 | D-038 | Windows `magnet:` handling is an explicit installer opt-in. `--open-magnet <uri>` validates a BitTorrent info hash, forwards through the same bounded per-data-directory broker, and fills the Add Download links input without submitting it; the optional `ariadeck:` scheme remains out of scope |
 | D-039 | **B6 local history:** completed/failed task summaries persist in `history.sqlite` under the app data dir (profile-scoped). Engine `tellStopped` remains session memory truth; durable rows merge into Completed/Failed when the engine no longer holds the GID. URI stored only after `redact_source_uri`. User Remove deletes the matching history row. Diagnostic ZIP does not include history by default |
+| D-040 | **C1 download categories:** named favorite output folders in settings (`categories` + optional `default_category_id`). Add Download may select a category (sets aria2 `dir`); task→category affiliation persists in `history.sqlite` `task_category` and filters the list. Categories are local path bookmarks, not freeform multi-tags; remote open-folder rules unchanged (D-007). URI privacy still D-032 |
 
 **SEC inventory (boundary):** raw URIs/options may live in domain for RPC/retry; list/details/clipboard/tracker/server URIs and option secrets must be redacted or keychain-only.  
 **PERF guards:** 10k stopped stress, light snapshot short-circuit, ActivityMode tray intervals, reconnect backoff.
@@ -154,7 +155,7 @@ Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, ad
 
 ### Explicitly deferred
 
-Network aria2 package channels · History retention/analytics policies (C3) · Per-profile proxy/limit bags · Hot profile switch without restart · HTTP JSON-RPC as first-class transport · Pause/resume **scheduling** · Tags/categories · Browser capture · Extra locales · Remote path mapping · In-app auto-update productization
+Network aria2 package channels · History retention/analytics policies (C3) · Per-profile proxy/limit bags · Hot profile switch without restart · HTTP JSON-RPC as first-class transport · Pause/resume **scheduling** · Freeform multi-tags (beyond folder categories) · Browser capture · Extra locales · Remote path mapping · In-app auto-update productization
 
 
 → Prioritized product roadmap: [`docs/roadmap.md`](roadmap.md)

@@ -57,7 +57,7 @@ Legend: **Have** · **Partial** · **Missing** · **Won’t** (non-goal)
 | Bundled aria2 | Partial (import) | Have | N/A | Optional offline pack later; no forced network channel |
 | Browser extension / intercept | Missing | Have (Next strong) | 3rd party | High user expectation |
 | Protocol handlers / file associations | Have (`.torrent`/Metalink + `magnet:`) | Have | N/A | Browser capture remains B3 |
-| Tags / categories / folders | Missing | Next: categories | Filters | Organization |
+| Tags / categories / folders | Have (folder categories) | Next: categories | Filters | D-040; freeform multi-tags later |
 | Download scheduling | Missing | Next: time windows | Weak | Persepolis-class |
 | Queue named groups | Partial (aria2 wait order) | Have | Partial | Productize queues |
 | SQLite history beyond aria2 memory | Have | Next: Have | N/A | D-039; D-021 still engine paging |
@@ -115,7 +115,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 
 | ID | Work | Why |
 | --- | --- | --- |
-| C1 | Tags/categories or favorite output folders | Motrix Next / FDM organization |
+| C1 | **Done** — favorite output folders as download categories; add-time selection, list filter, SQLite task affiliation | Motrix Next / FDM organization; D-040 |
 | C2 | Named queues + simple schedule (start/pause windows) | Persepolis / Next scheduling |
 | C3 | Stale history cleanup policies | Storage hygiene |
 

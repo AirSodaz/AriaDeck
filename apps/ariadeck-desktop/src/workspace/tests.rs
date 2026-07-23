@@ -699,7 +699,7 @@ fn domain_task_mapping_preserves_identity_progress_and_eta() {
     snapshot.download_speed = ByteRate::new(100);
     let task = DownloadTask::from_snapshot(snapshot);
 
-    let mapped = map_task("profile", task, None);
+    let mapped = map_task("profile", task, None, None);
 
     assert_eq!(mapped.identity.profile_id, "profile");
     assert_eq!(mapped.identity.gid, "0000000000000009");
@@ -715,7 +715,12 @@ fn domain_seeding_mapping_preserves_upload_metrics_and_observed_time() {
     snapshot.upload_length = ByteCount::new(250);
     snapshot.upload_speed = ByteRate::new(64);
 
-    let mapped = map_task("profile", DownloadTask::from_snapshot(snapshot), Some(65));
+    let mapped = map_task(
+        "profile",
+        DownloadTask::from_snapshot(snapshot),
+        Some(65),
+        None,
+    );
 
     assert_eq!(mapped.status, TaskStatusView::Seeding);
     assert_eq!(mapped.uploaded_bytes, 250);
@@ -732,6 +737,7 @@ fn presentation_filter_maps_to_application_query() {
         search: "archive".into(),
         sort_key: WorkspaceSortKey::Progress,
         sort_direction: WorkspaceSortDirection::Descending,
+        category_id: None,
     });
 
     assert_eq!(query.filter, DownloadFilter::Completed);
@@ -1001,7 +1007,7 @@ fn task_mapping_exposes_a_specific_disk_space_failure() {
         message: "File allocation failed".into(),
     });
 
-    let mapped = map_task("profile", DownloadTask::from_snapshot(snapshot), None);
+    let mapped = map_task("profile", DownloadTask::from_snapshot(snapshot), None, None);
 
     assert_eq!(mapped.status, TaskStatusView::Failed);
     assert_eq!(
@@ -1286,6 +1292,7 @@ async fn managed_local_add_rejects_an_unsafe_destination_before_submission() {
             }],
             mode: AddDownloadModeView::SeparateTasks,
             destination: Some("relative/downloads".into()),
+            category_id: None,
             required_bytes: None,
             file_conflict: FileConflictPolicyView::default(),
             advanced: AddDownloadAdvancedOptionsView::default(),
@@ -1325,6 +1332,7 @@ async fn managed_local_add_rejects_a_known_size_larger_than_free_space() {
             }],
             mode: AddDownloadModeView::SeparateTasks,
             destination: Some(downloads.path().to_string_lossy().into_owned()),
+            category_id: None,
             required_bytes: Some(u64::MAX),
             file_conflict: FileConflictPolicyView::default(),
             advanced: AddDownloadAdvancedOptionsView::default(),
@@ -1519,6 +1527,7 @@ async fn add_execution_groups_separate_tasks_and_mirrors_explicitly() {
             sources: sources.clone(),
             mode: AddDownloadModeView::SeparateTasks,
             destination: None,
+            category_id: None,
             required_bytes: None,
             file_conflict: FileConflictPolicyView::default(),
             advanced: AddDownloadAdvancedOptionsView::default(),
@@ -1542,6 +1551,7 @@ async fn add_execution_groups_separate_tasks_and_mirrors_explicitly() {
             sources,
             mode: AddDownloadModeView::Mirrors,
             destination: None,
+            category_id: None,
             required_bytes: None,
             file_conflict: FileConflictPolicyView::default(),
             advanced: AddDownloadAdvancedOptionsView::default(),
@@ -1599,6 +1609,7 @@ async fn unknown_add_outcome_refreshes_and_resolves_the_new_gid_without_replay()
             }],
             mode: AddDownloadModeView::SeparateTasks,
             destination: None,
+            category_id: None,
             required_bytes: None,
             file_conflict: FileConflictPolicyView::default(),
             advanced: AddDownloadAdvancedOptionsView::default(),
@@ -1982,6 +1993,8 @@ fn settings_mapping_allocates_a_credential_reference_without_exposing_the_passwo
         transfer_policy: TransferPolicySettingsView::default(),
         notifications: NotificationSettingsView::default(),
         platform: PlatformSettingsView::default(),
+        categories: Vec::new(),
+        default_category_id: None,
     };
 
     let (mapped, password) = map_settings_request(
@@ -2163,6 +2176,8 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
         notifications: NotificationSettings::default(),
         platform: PlatformSettings::default(),
         ui: UiPreferences::default(),
+        categories: Vec::new(),
+        default_category_id: None,
     };
     let second = AppSettings {
         color_scheme: ColorScheme::Light,
@@ -2174,6 +2189,8 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
         notifications: NotificationSettings::default(),
         platform: PlatformSettings::default(),
         ui: UiPreferences::default(),
+        categories: Vec::new(),
+        default_category_id: None,
     };
     sender
         .send(SettingsPersistenceRequest {
@@ -2237,6 +2254,8 @@ fn external_engine_settings_do_not_touch_the_desktop_filesystem() {
         notifications: NotificationSettings::default(),
         platform: PlatformSettings::default(),
         ui: UiPreferences::default(),
+        categories: Vec::new(),
+        default_category_id: None,
     };
 
     persist_settings(&store, &settings, None).expect("persist external engine path");

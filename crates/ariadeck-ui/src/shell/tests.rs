@@ -18,6 +18,7 @@ fn task(index: usize) -> DownloadRowView {
         source_kind: TaskSourceKindView::DirectUri,
         primary_source: Some("https://example.test/file.bin".into()),
         directory: Some("C:/downloads".into()),
+        category_id: None,
         followed_by: Vec::new(),
         belongs_to: None,
         status: TaskStatusView::Complete,
@@ -1813,6 +1814,8 @@ fn proxy_settings_build_a_manual_draft_with_a_masked_password(cx: &mut TestAppCo
         transfer_policy: TransferPolicySettingsView::default(),
         notifications: NotificationSettingsView::default(),
         platform: PlatformSettingsView::default(),
+        categories: Vec::new(),
+        default_category_id: None,
     };
     let (view, cx) =
         cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
@@ -3013,6 +3016,7 @@ fn list_preferences_restore_and_emit_without_search(cx: &mut TestAppContext) {
                 search: "should-not-stick".into(),
                 sort_key: WorkspaceSortKey::Size,
                 sort_direction: WorkspaceSortDirection::Descending,
+                category_id: None,
             },
             cx,
         );

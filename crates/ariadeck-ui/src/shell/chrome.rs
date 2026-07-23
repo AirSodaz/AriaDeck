@@ -284,7 +284,8 @@ impl AppShell {
                                     .child(profile_summary),
                             ),
                     )
-                    .child(div().flex().flex_col().gap_1().children(filters)),
+                    .child(div().flex().flex_col().gap_1().children(filters))
+                    .child(self.render_sidebar_categories(cx)),
             )
             .child(
                 div()
@@ -325,6 +326,93 @@ impl AppShell {
                     ))
                     .child(self.t("settings-label")),
             )
+    }
+
+    fn render_sidebar_categories(&mut self, cx: &mut Context<Self>) -> Div {
+        let colors = self.theme.colors;
+        let categories = self.settings.categories.clone();
+        if categories.is_empty() {
+            return div();
+        }
+        let selected = self.query.category_id.clone();
+        let all_selected = selected.is_none();
+        let mut list = div()
+            .mt_3()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .px_3()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(colors.text_muted)
+                    .child(self.t("settings-categories")),
+            )
+            .child(
+                div()
+                    .id("sidebar-category-all")
+                    .focusable()
+                    .tab_stop(true)
+                    .role(gpui::Role::Button)
+                    .aria_label(self.t("filter-category-all"))
+                    .h(px(32.0))
+                    .w_full()
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .rounded_md()
+                    .text_xs()
+                    .text_color(if all_selected {
+                        colors.accent
+                    } else {
+                        colors.text_secondary
+                    })
+                    .when(all_selected, |el| el.bg(with_alpha(colors.accent, 0.09)))
+                    .when(!all_selected, |el| {
+                        el.hover(|style| style.bg(colors.surface_hover))
+                    })
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.set_category_filter(None, window, cx);
+                    }))
+                    .child(self.t("filter-category-all")),
+            );
+        for category in categories {
+            let id = category.id.clone();
+            let is_selected = selected.as_deref() == Some(id.as_str());
+            let name = category.name.clone();
+            list = list.child(
+                div()
+                    .id(SharedString::from(format!("sidebar-category-{id}")))
+                    .focusable()
+                    .tab_stop(true)
+                    .role(gpui::Role::Button)
+                    .aria_label(name.clone())
+                    .h(px(32.0))
+                    .w_full()
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .rounded_md()
+                    .text_xs()
+                    .text_color(if is_selected {
+                        colors.accent
+                    } else {
+                        colors.text_secondary
+                    })
+                    .when(is_selected, |el| el.bg(with_alpha(colors.accent, 0.09)))
+                    .when(!is_selected, |el| {
+                        el.hover(|style| style.bg(colors.surface_hover))
+                    })
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_category_filter(Some(id.clone()), window, cx);
+                    }))
+                    .child(name),
+            );
+        }
+        list
     }
 
     pub(crate) fn render_speed_chart(&self) -> Stateful<Div> {

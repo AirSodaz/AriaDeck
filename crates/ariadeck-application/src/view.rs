@@ -11,6 +11,8 @@ pub struct TaskListQuery {
     pub filter: DownloadFilter,
     pub search: String,
     pub sort: DownloadSort,
+    /// When set, only GIDs affiliated with this category are visible.
+    pub category_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -46,6 +48,7 @@ impl DownloadStore {
             .filter(|gid| {
                 self.tasks.get(gid).is_some_and(|task| {
                     query.filter.matches(task.status)
+                        && category_matches(self, *gid, query.category_id.as_deref())
                         && (search.is_empty()
                             || self
                                 .search_index
@@ -109,6 +112,16 @@ impl DownloadStore {
         }
         counts
     }
+}
+
+fn category_matches(store: &DownloadStore, gid: Gid, category_id: Option<&str>) -> bool {
+    let Some(wanted) = category_id else {
+        return true;
+    };
+    if wanted.is_empty() {
+        return true;
+    }
+    store.task_category_id(gid) == Some(wanted)
 }
 
 fn compare_tasks(
@@ -201,6 +214,7 @@ mod tests {
             filter: DownloadFilter::Active,
             search: "ALPHA".into(),
             sort: DownloadSort::default(),
+            category_id: None,
         };
 
         assert_eq!(store.view(&query).visible_gids, vec![Gid::from_u64(2)]);

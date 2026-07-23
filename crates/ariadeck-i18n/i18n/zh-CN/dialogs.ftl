@@ -161,3 +161,5 @@ dialog-details-option-sensitive = 敏感
 dialog-details-seed-ratio-disabled = 分享率条件已禁用（0.0）
 dialog-details-seed-ratio-value = 分享率 { $ratio }
 dialog-details-seed-stop-rules = 先达到任一限制即停止：{ $ratio } · 时间 { $time } 分钟
+dialog-add-category = 分类
+dialog-add-category-default = 默认目录

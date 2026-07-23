@@ -106,6 +106,8 @@ pub struct DownloadStore {
     /// GIDs present only in durable local history (not in engine stopped pages).
     pub(crate) history_order: Vec<Gid>,
     history_only: HashSet<Gid>,
+    /// Task → category id affiliations (C1); profile-scoped store instance.
+    pub(crate) category_by_gid: HashMap<Gid, String>,
     stopped_pages: BTreeMap<usize, Vec<Gid>>,
     stopped_total: Option<usize>,
     pub(crate) search_index: HashMap<Gid, String>,
@@ -128,6 +130,7 @@ impl DownloadStore {
             stopped_order: Vec::new(),
             history_order: Vec::new(),
             history_only: HashSet::new(),
+            category_by_gid: HashMap::new(),
             stopped_pages: BTreeMap::new(),
             stopped_total: None,
             search_index: HashMap::new(),
@@ -240,6 +243,35 @@ impl DownloadStore {
     #[must_use]
     pub fn is_history_only(&self, gid: Gid) -> bool {
         self.history_only.contains(&gid)
+    }
+
+    /// Replace in-memory category affiliations (loaded from SQLite).
+    pub fn set_category_affiliations(
+        &mut self,
+        affiliations: impl IntoIterator<Item = (Gid, String)>,
+    ) {
+        self.category_by_gid.clear();
+        for (gid, category_id) in affiliations {
+            if !category_id.is_empty() {
+                self.category_by_gid.insert(gid, category_id);
+            }
+        }
+    }
+
+    pub fn set_task_category_affiliation(&mut self, gid: Gid, category_id: Option<String>) {
+        match category_id {
+            Some(id) if !id.is_empty() => {
+                self.category_by_gid.insert(gid, id);
+            }
+            _ => {
+                self.category_by_gid.remove(&gid);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn task_category_id(&self, gid: Gid) -> Option<&str> {
+        self.category_by_gid.get(&gid).map(String::as_str)
     }
 
     /// Seeds durable local history into the in-memory store.

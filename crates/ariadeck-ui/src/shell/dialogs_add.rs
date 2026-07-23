@@ -53,6 +53,7 @@ impl AppShell {
             input_mode: AddDownloadInputModeView::Links,
             mode: AddDownloadModeView::SeparateTasks,
             file_conflict: FileConflictPolicyView::AutoRename,
+            category_id: self.settings.default_category_id.clone(),
             advanced_open: false,
             metadata_files: Vec::new(),
             active_metadata_file: None,
@@ -211,8 +212,33 @@ impl AppShell {
                 } else {
                     AddDownloadModeView::SeparateTasks
                 },
-                destination: (!self.settings.download_directory.is_empty())
-                    .then(|| self.settings.download_directory.clone()),
+                destination: {
+                    let category_id = self
+                        .add_dialog
+                        .category_id
+                        .clone()
+                        .or_else(|| self.settings.default_category_id.clone());
+                    if let Some(id) = category_id.as_deref() {
+                        self.settings
+                            .categories
+                            .iter()
+                            .find(|category| category.id == id)
+                            .map(|category| category.directory.clone())
+                            .filter(|path| !path.is_empty())
+                            .or_else(|| {
+                                (!self.settings.download_directory.is_empty())
+                                    .then(|| self.settings.download_directory.clone())
+                            })
+                    } else {
+                        (!self.settings.download_directory.is_empty())
+                            .then(|| self.settings.download_directory.clone())
+                    }
+                },
+                category_id: self
+                    .add_dialog
+                    .category_id
+                    .clone()
+                    .or_else(|| self.settings.default_category_id.clone()),
                 required_bytes,
                 file_conflict: if self.add_dialog.input_mode == AddDownloadInputModeView::Links {
                     self.add_dialog.file_conflict
@@ -552,6 +578,66 @@ impl AppShell {
         cx.notify();
     }
 
+    pub(crate) fn set_add_category(&mut self, category_id: Option<String>, cx: &mut Context<Self>) {
+        self.add_dialog.category_id = category_id;
+        cx.notify();
+    }
+
+    fn render_add_category_picker(&mut self, cx: &mut Context<Self>) -> Div {
+        let colors = self.theme.colors;
+        let pending =
+            self.add_dialog.pending.is_some() || self.add_dialog.preview_pending.is_some();
+        let categories = self.settings.categories.clone();
+        if categories.is_empty() {
+            return div();
+        }
+        let selected = self
+            .add_dialog
+            .category_id
+            .clone()
+            .or_else(|| self.settings.default_category_id.clone());
+        let label = self.t("dialog-add-category");
+        let default_label = self.t("dialog-add-category-default");
+        let mut row = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .child(div().text_xs().text_color(colors.text_muted).child(label))
+            .child(
+                Button::new("add-category-none", default_label)
+                    .style(if selected.is_none() {
+                        ButtonStyle::Primary
+                    } else {
+                        ButtonStyle::Secondary
+                    })
+                    .disabled(pending)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set_add_category(None, cx);
+                    }))
+                    .render(colors),
+            );
+        for category in categories {
+            let id = category.id.clone();
+            let is_selected = selected.as_deref() == Some(id.as_str());
+            let name = category.name.clone();
+            row = row.child(
+                Button::new(SharedString::from(format!("add-category-{id}")), name)
+                    .style(if is_selected {
+                        ButtonStyle::Primary
+                    } else {
+                        ButtonStyle::Secondary
+                    })
+                    .disabled(pending)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_add_category(Some(id.clone()), cx);
+                    }))
+                    .render(colors),
+            );
+        }
+        row
+    }
+
     pub(crate) fn render_add_download_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = self.theme.colors;
         let add_pending = self.add_dialog.pending.is_some();
@@ -635,11 +721,13 @@ impl AppShell {
                 })
                 .ok();
         });
+        let category_picker = self.render_add_category_picker(cx);
         let content = div()
             .flex()
             .flex_col()
             .gap_2()
             .child(input_mode_control)
+            .child(category_picker)
             .child(match input_mode {
                 AddDownloadInputModeView::Links => div()
                     .flex()

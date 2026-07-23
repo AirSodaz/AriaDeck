@@ -140,6 +140,8 @@ impl AppShell {
         }
         self.settings = settings.clone();
         self.settings_page.draft_color_scheme = settings.color_scheme;
+        self.settings_page.draft_categories = settings.categories.clone();
+        self.settings_page.draft_default_category_id = settings.default_category_id.clone();
         self.settings_page.draft_language = settings.language;
         self.set_language_runtime(settings.language);
         self.settings_page.draft_file_allocation = settings.transfer_policy.file_allocation;
@@ -246,6 +248,8 @@ impl AppShell {
             draft_close_behavior: self.settings.platform.close_behavior,
             draft_show_tray_icon: self.settings.platform.show_tray_icon,
             draft_start_minimized_to_tray: self.settings.platform.start_minimized_to_tray,
+            draft_categories: self.settings.categories.clone(),
+            draft_default_category_id: self.settings.default_category_id.clone(),
             clear_proxy_password: false,
             editing_profile_id: None,
             draft_profile_kind: ProfileKindView::LocalManaged,
@@ -311,6 +315,8 @@ impl AppShell {
         }
         let mut settings = self.settings.clone();
         settings.download_directory = download_directory;
+        settings.categories = self.settings_page.draft_categories.clone();
+        settings.default_category_id = self.settings_page.draft_default_category_id.clone();
         self.request_settings_save(
             settings,
             ProxyPasswordUpdateView::Unchanged,
@@ -935,7 +941,9 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         let (files, directories, prompt) = match target {
-            PathPickTarget::DownloadDirectory | PathPickTarget::ProfileDownloadDirectory => {
+            PathPickTarget::DownloadDirectory
+            | PathPickTarget::ProfileDownloadDirectory
+            | PathPickTarget::CategoryDirectory { .. } => {
                 (false, true, self.t("settings-pick-download-directory"))
             }
             PathPickTarget::CoreExecutable | PathPickTarget::ProfileExecutable => (
@@ -992,6 +1000,13 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         let display = path.to_string_lossy().into_owned();
+        if let PathPickTarget::CategoryDirectory { index } = target {
+            if let Some(category) = self.settings_page.draft_categories.get_mut(index) {
+                category.directory = display;
+            }
+            cx.notify();
+            return;
+        }
         let field = match target {
             PathPickTarget::DownloadDirectory => self.settings_inputs.directory.clone(),
             PathPickTarget::CoreExecutable => self.settings_inputs.core_path.clone(),
@@ -999,6 +1014,7 @@ impl AppShell {
             PathPickTarget::ProfileDownloadDirectory => {
                 self.settings_inputs.profile_download.clone()
             }
+            PathPickTarget::CategoryDirectory { .. } => unreachable!(),
         };
         field.update(cx, |input, cx| input.set_text(display, cx));
         window.focus(&field.focus_handle(cx), cx);
@@ -1186,8 +1202,13 @@ impl AppShell {
 
         let (dirty, saving) = match active_category {
             SettingsCategory::General => {
-                let dirty = self.settings_inputs.directory.read(cx).text().trim()
+                let dir_dirty = self.settings_inputs.directory.read(cx).text().trim()
                     != self.settings.download_directory;
+                let categories_dirty = self.settings_page.draft_categories
+                    != self.settings.categories
+                    || self.settings_page.draft_default_category_id
+                        != self.settings.default_category_id;
+                let dirty = dir_dirty || categories_dirty;
                 let saving = self
                     .pending_settings_save
                     .as_ref()
@@ -1366,6 +1387,48 @@ impl AppShell {
             .into_any_element()
     }
 
+    pub(crate) fn add_download_category(&mut self, cx: &mut Context<Self>) {
+        let n = self.settings_page.draft_categories.len() + 1;
+        let name = format!("Category {n}");
+        self.settings_page
+            .draft_categories
+            .push(crate::DownloadCategoryView {
+                id: format!(
+                    "{:x}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0)
+                ),
+                name,
+                directory: self.settings.download_directory.clone(),
+            });
+        cx.notify();
+    }
+
+    pub(crate) fn remove_download_category(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.settings_page.draft_categories.len() {
+            return;
+        }
+        let removed = self.settings_page.draft_categories.remove(index);
+        if self.settings_page.draft_default_category_id.as_deref() == Some(removed.id.as_str()) {
+            self.settings_page.draft_default_category_id = None;
+        }
+        if self.add_dialog.category_id.as_deref() == Some(removed.id.as_str()) {
+            self.add_dialog.category_id = self.settings_page.draft_default_category_id.clone();
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn set_default_download_category(
+        &mut self,
+        category_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings_page.draft_default_category_id = category_id;
+        cx.notify();
+    }
+
     pub(crate) fn render_settings_general(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
         let pending = self.pending_settings_save.is_some();
@@ -1466,6 +1529,147 @@ impl AppShell {
                     colors,
                 ),
             ))
+            .child(self.render_settings_categories(cx))
+    }
+
+    pub(crate) fn render_settings_categories(&mut self, cx: &mut Context<Self>) -> Div {
+        let colors = self.theme.colors;
+        let pending = self.pending_settings_save.is_some();
+        let categories = self.settings_page.draft_categories.clone();
+        let default_id = self.settings_page.draft_default_category_id.clone();
+        let title = self.t("settings-categories");
+        let desc = self.t("settings-categories-desc");
+        let add_label = self.t("settings-category-add");
+        let browse_label = self.t("button-browse");
+        let default_label = self.t("settings-category-default");
+        let is_default_label = self.t("settings-category-is-default");
+        let remove_label = self.t("settings-category-remove");
+        let empty_label = self.t("settings-categories-empty");
+        let no_dir = self.t("settings-category-no-directory");
+
+        let mut list = div().flex().flex_col().gap_2();
+        if categories.is_empty() {
+            list = list.child(
+                div()
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(empty_label),
+            );
+        }
+        for (index, category) in categories.iter().enumerate() {
+            let is_default = default_id.as_deref() == Some(category.id.as_str());
+            let cat_id = category.id.clone();
+            let name = category.name.clone();
+            let directory = category.directory.clone();
+            list = list.child(
+                div()
+                    .id(SharedString::from(format!("category-row-{index}")))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(if is_default {
+                        colors.accent
+                    } else {
+                        colors.border
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_sm()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(colors.text_primary)
+                                    .child(name),
+                            )
+                            .child(
+                                Button::new(
+                                    SharedString::from(format!("category-default-{index}")),
+                                    if is_default {
+                                        is_default_label.clone()
+                                    } else {
+                                        default_label.clone()
+                                    },
+                                )
+                                .style(ButtonStyle::Secondary)
+                                .disabled(pending || is_default)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.set_default_download_category(Some(cat_id.clone()), cx);
+                                }))
+                                .render(colors),
+                            )
+                            .child(
+                                Button::new(
+                                    SharedString::from(format!("category-remove-{index}")),
+                                    remove_label.clone(),
+                                )
+                                .style(ButtonStyle::Secondary)
+                                .disabled(pending)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.remove_download_category(index, cx);
+                                }))
+                                .render(colors),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .text_color(colors.text_muted)
+                                    .child(if directory.is_empty() {
+                                        no_dir.clone()
+                                    } else {
+                                        directory
+                                    }),
+                            )
+                            .child(
+                                Button::new(
+                                    SharedString::from(format!("category-browse-{index}")),
+                                    browse_label.clone(),
+                                )
+                                .style(ButtonStyle::Secondary)
+                                .disabled(pending)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.pick_path_for_field(
+                                        PathPickTarget::CategoryDirectory { index },
+                                        window,
+                                        cx,
+                                    );
+                                }))
+                                .render(colors),
+                            ),
+                    ),
+            );
+        }
+
+        settings_section_owned(title, colors)
+            .child(div().text_xs().text_color(colors.text_muted).child(desc))
+            .child(list)
+            .child(
+                div().mt_2().child(
+                    Button::new("add-download-category", add_label)
+                        .style(ButtonStyle::Secondary)
+                        .disabled(pending || self.settings_page.draft_categories.len() >= 32)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.add_download_category(cx);
+                        }))
+                        .render(colors),
+                ),
+            )
     }
 
     pub(crate) fn render_settings_profiles(&mut self, cx: &mut Context<Self>) -> Div {

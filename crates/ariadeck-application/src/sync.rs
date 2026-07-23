@@ -422,6 +422,8 @@ pub struct StoreSnapshot {
     pub observed_seeding_seconds: HashMap<Gid, u64>,
     /// Last probed engine capabilities for this session (empty before connect).
     pub capabilities: EngineCapabilities,
+    /// Task category affiliations for the current profile (C1).
+    pub category_by_gid: HashMap<Gid, String>,
 }
 
 #[derive(Clone)]
@@ -457,6 +459,23 @@ impl SyncHandle {
             .await
             .ok()?;
         receiver.await.ok()
+    }
+
+    /// Persist and apply a task category affiliation (C1).
+    pub async fn set_task_category(&self, gid: Gid, category_id: Option<String>) {
+        let (sender, receiver) = oneshot::channel();
+        if self
+            .commands
+            .send(Control::SetTaskCategory {
+                gid,
+                category_id,
+                sender,
+            })
+            .await
+            .is_ok()
+        {
+            let _ = receiver.await;
+        }
     }
 
     pub async fn snapshot(&self, query: TaskListQuery) -> Option<StoreSnapshot> {
@@ -606,6 +625,11 @@ enum Control {
     LoadMoreStopped {
         sender: oneshot::Sender<StoppedHistoryState>,
     },
+    SetTaskCategory {
+        gid: Gid,
+        category_id: Option<String>,
+        sender: oneshot::Sender<()>,
+    },
     Snapshot {
         query: TaskListQuery,
         sender: oneshot::Sender<StoreSnapshot>,
@@ -656,6 +680,8 @@ fn handle_unavailable_control(
     state: &ConnectionState,
     activity: &mut ActivityMode,
     force_refresh_retries: bool,
+    history: &dyn TaskHistoryStore,
+    profile_id: ProfileId,
 ) -> UnavailableControlDisposition {
     match control {
         Some(Control::SetActivity(mode)) => {
@@ -666,6 +692,18 @@ fn handle_unavailable_control(
             UnavailableControlDisposition::RetryNow
         }
         Some(Control::ForceRefresh) => UnavailableControlDisposition::Continue,
+        Some(Control::SetTaskCategory {
+            gid,
+            category_id,
+            sender,
+        }) => {
+            // Persist while disconnected so affiliation survives reconnect seed.
+            if let Err(error) = history.set_task_category(profile_id, gid, category_id.as_deref()) {
+                tracing::warn!(%error, %gid, "failed to persist task category while offline");
+            }
+            let _ = sender.send(());
+            UnavailableControlDisposition::Continue
+        }
         Some(Control::LoadMoreStopped { sender }) => {
             let _ = sender.send(store.stopped_history());
             UnavailableControlDisposition::Continue
@@ -811,6 +849,8 @@ async fn run_coordinator(
                     &state,
                     &mut activity,
                     false,
+                    config.history.as_ref(),
+                    config.profile_id,
                 ) {
                     UnavailableControlDisposition::Continue
                     | UnavailableControlDisposition::RetryNow => {}
@@ -829,6 +869,8 @@ async fn run_coordinator(
                         &state,
                         &mut activity,
                         &mut cancellation,
+                        config.history.as_ref(),
+                        config.profile_id,
                     )
                     .await
                     {
@@ -851,6 +893,8 @@ async fn run_coordinator(
                         &state,
                         &mut activity,
                         &mut cancellation,
+                        config.history.as_ref(),
+                        config.profile_id,
                     )
                     .await
                     {
@@ -867,6 +911,8 @@ async fn run_coordinator(
                     &state,
                     &mut activity,
                     &mut cancellation,
+                    config.history.as_ref(),
+                    config.profile_id,
                 )
                 .await
                 {
@@ -899,6 +945,8 @@ async fn run_coordinator(
                     &state,
                     &mut activity,
                     false,
+                    config.history.as_ref(),
+                    config.profile_id,
                 ) {
                     UnavailableControlDisposition::Continue
                     | UnavailableControlDisposition::RetryNow => {}
@@ -921,6 +969,8 @@ async fn run_coordinator(
                         &state,
                         &mut activity,
                         &mut cancellation,
+                        config.history.as_ref(),
+                        config.profile_id,
                     )
                     .await
                     {
@@ -943,6 +993,8 @@ async fn run_coordinator(
                         &state,
                         &mut activity,
                         &mut cancellation,
+                        config.history.as_ref(),
+                        config.profile_id,
                     )
                     .await
                     {
@@ -959,6 +1011,8 @@ async fn run_coordinator(
                     &state,
                     &mut activity,
                     &mut cancellation,
+                    config.history.as_ref(),
+                    config.profile_id,
                 )
                 .await
                 {
@@ -988,6 +1042,8 @@ async fn run_coordinator(
                     &state,
                     &mut activity,
                     &mut cancellation,
+                    config.history.as_ref(),
+                    config.profile_id,
                 )
                 .await
                 {
@@ -1037,6 +1093,8 @@ async fn run_coordinator(
                         &state,
                         &mut activity,
                         &mut cancellation,
+                        config.history.as_ref(),
+                        config.profile_id,
                     )
                     .await
                     {
@@ -1060,6 +1118,8 @@ async fn run_coordinator(
                         &state,
                         &mut activity,
                         &mut cancellation,
+                        config.history.as_ref(),
+                        config.profile_id,
                     )
                     .await
                     {
@@ -1076,6 +1136,8 @@ async fn run_coordinator(
                     &state,
                     &mut activity,
                     &mut cancellation,
+                    config.history.as_ref(),
+                    config.profile_id,
                 )
                 .await
                 {
@@ -1134,6 +1196,21 @@ async fn run_connected(
                         if let Err(error) = result {
                             return ConnectedExit::Retry(error);
                         }
+                    }
+                    Some(Control::SetTaskCategory {
+                        gid,
+                        category_id,
+                        sender,
+                    }) => {
+                        if let Err(error) = config.history.set_task_category(
+                            config.profile_id,
+                            gid,
+                            category_id.as_deref(),
+                        ) {
+                            tracing::warn!(%error, %gid, "failed to persist task category");
+                        }
+                        store.set_task_category_affiliation(gid, category_id);
+                        let _ = sender.send(());
                     }
                     Some(Control::LoadMoreStopped { sender }) => {
                         let history = store.stopped_history();
@@ -1740,6 +1817,12 @@ fn seed_history_into_store(
             tracing::warn!(%error, "failed to load local task history");
         }
     }
+    match history.list_task_categories(profile_id) {
+        Ok(affiliations) => store.set_category_affiliations(affiliations),
+        Err(error) => {
+            tracing::warn!(%error, "failed to load task category affiliations");
+        }
+    }
 }
 
 fn delete_history_for_gids(
@@ -1838,6 +1921,7 @@ fn handle_connection_failure(
     error.retryable
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn wait_for_retry_delay(
     delay: Duration,
     commands: &mut mpsc::Receiver<Control>,
@@ -1845,6 +1929,8 @@ async fn wait_for_retry_delay(
     state: &ConnectionState,
     activity: &mut ActivityMode,
     cancellation: &mut watch::Receiver<bool>,
+    history: &dyn TaskHistoryStore,
+    profile_id: ProfileId,
 ) -> bool {
     let sleep = tokio::time::sleep(delay);
     tokio::pin!(sleep);
@@ -1859,6 +1945,8 @@ async fn wait_for_retry_delay(
                 state,
                 activity,
                 true,
+                history,
+                profile_id,
             ) {
                 UnavailableControlDisposition::Continue => {}
                 UnavailableControlDisposition::RetryNow => return true,
@@ -1868,12 +1956,15 @@ async fn wait_for_retry_delay(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn wait_for_manual_retry(
     commands: &mut mpsc::Receiver<Control>,
     store: &DownloadStore,
     state: &ConnectionState,
     activity: &mut ActivityMode,
     cancellation: &mut watch::Receiver<bool>,
+    history: &dyn TaskHistoryStore,
+    profile_id: ProfileId,
 ) -> bool {
     loop {
         tokio::select! {
@@ -1885,6 +1976,8 @@ async fn wait_for_manual_retry(
                 state,
                 activity,
                 true,
+                history,
+                profile_id,
             ) {
                 UnavailableControlDisposition::Continue => {}
                 UnavailableControlDisposition::RetryNow => return true,
@@ -1941,6 +2034,7 @@ fn build_snapshot(
         tasks,
         observed_seeding_seconds,
         capabilities: capabilities.clone(),
+        category_by_gid: store.category_by_gid.clone(),
     }
 }
 

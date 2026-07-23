@@ -120,3 +120,4 @@ ui-external-engine-files-kept = 这是外部引擎；引擎主机上的文件将
 ui-output-name-restart = 更改活动任务的输出文件名可能会重启传输。
 ui-reconnect-refresh-details = 重新连接以刷新当前引擎会话的文件信息。
 ui-requesting-details = 正在从此 aria2 会话请求文件元数据。
+filter-category-all = 全部分类

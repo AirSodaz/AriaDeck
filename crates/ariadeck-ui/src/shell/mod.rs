@@ -214,6 +214,8 @@ struct AddDownloadDialog {
     input_mode: AddDownloadInputModeView,
     mode: AddDownloadModeView,
     file_conflict: FileConflictPolicyView,
+    /// Selected download category id (C1); None uses settings default / global dir.
+    category_id: Option<String>,
     /// Collapsed by default so the common path stays simple (ADD-005).
     advanced_open: bool,
     metadata_files: Vec<AddDownloadMetadataPreviewView>,
@@ -331,6 +333,9 @@ pub(crate) struct SettingsPage {
     draft_close_behavior: CloseBehaviorView,
     draft_show_tray_icon: bool,
     draft_start_minimized_to_tray: bool,
+    /// Working copy of download categories (C1); saved with Directory/General.
+    draft_categories: Vec<crate::DownloadCategoryView>,
+    draft_default_category_id: Option<String>,
     clear_proxy_password: bool,
     /// Profile id currently open in the inline editor (Settings → Profiles).
     editing_profile_id: Option<String>,
@@ -354,6 +359,10 @@ pub(crate) enum PathPickTarget {
     CoreExecutable,
     ProfileExecutable,
     ProfileDownloadDirectory,
+    /// Browse path for a draft category by index.
+    CategoryDirectory {
+        index: usize,
+    },
 }
 
 /// Top-level navigation categories for the settings two-pane layout.
@@ -2499,6 +2508,7 @@ impl AppShell {
             search: String::new(),
             sort_key: query.sort_key,
             sort_direction: query.sort_direction,
+            category_id: query.category_id,
         };
         cx.notify();
     }
@@ -2530,6 +2540,29 @@ impl AppShell {
         self.speed_popover_open = false;
         if query_changed {
             self.query.filter = filter;
+            self.clear_task_selection();
+        }
+        self.list_scroll
+            .scroll_to_item_strict(0, ScrollStrategy::Top);
+        window.focus(&self.focus_handle, cx);
+        if query_changed {
+            self.emit_query(cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_category_filter(
+        &mut self,
+        category_id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let query_changed = self.query.category_id != category_id;
+        self.page = AppPage::Downloads;
+        self.speed_popover_open = false;
+        if query_changed {
+            self.query.category_id = category_id;
             self.clear_task_selection();
         }
         self.list_scroll

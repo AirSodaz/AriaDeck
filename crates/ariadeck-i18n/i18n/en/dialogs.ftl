@@ -179,3 +179,5 @@ dialog-details-option-sensitive = Sensitive
 dialog-details-seed-ratio-disabled = ratio disabled (0.0)
 dialog-details-seed-ratio-value = ratio { $ratio }
 dialog-details-seed-stop-rules = Stops at the first reached limit: { $ratio } · time { $time } min
+dialog-add-category = Category
+dialog-add-category-default = Default directory
