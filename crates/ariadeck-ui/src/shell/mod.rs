@@ -12,7 +12,7 @@ use gpui::{
     FocusHandle, Focusable, FontFeatures, FontWeight, Hsla, IntoElement, MouseButton,
     MouseDownEvent, PathPromptOptions, Pixels, Point, Render, Role, ScrollHandle, ScrollStrategy,
     SharedString, Stateful, Subscription, Toggled, UniformListScrollHandle, WeakFocusHandle,
-    Window, WindowControlArea, div, point, prelude::*, px, relative, uniform_list,
+    Window, WindowControlArea, div, img, point, prelude::*, px, relative, uniform_list,
 };
 
 use crate::{

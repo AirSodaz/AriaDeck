@@ -17,11 +17,7 @@ impl AppShell {
             .gap_2()
             .pl(px(TITLEBAR_BRAND_INSET))
             .window_control_area(WindowControlArea::Drag)
-            .child(
-                Icon::new(IconName::Download)
-                    .size(IconSize::Medium)
-                    .color(colors.accent),
-            )
+            .child(img("icon.svg").size(px(20.0)).flex_none())
             .child(
                 div()
                     .text_sm()

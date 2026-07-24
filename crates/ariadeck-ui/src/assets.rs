@@ -30,6 +30,12 @@ mod tests {
     fn embeds_the_lucide_icon_subset() {
         assert!(
             Assets
+                .load("icon.svg")
+                .expect("application icon should load")
+                .is_some()
+        );
+        assert!(
+            Assets
                 .load("icons/search.svg")
                 .expect("search icon should load")
                 .is_some()
