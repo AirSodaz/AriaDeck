@@ -72,7 +72,7 @@ Expected outputs under `dist/`:
 | Workflow | When | What |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` → job `Windows packages (portable + installer)` | Push to `main` / `master` (after `verify`) | Notices → portable → `choco install innosetup` → installer `-SkipStage` → drop staging dir → assert zip + setup.exe → artifact `ariadeck-windows-x64` (zip + setup only) |
-| `.github/workflows/release.yml` | Tag `v*` | Same packaging (optional Authenticode via secrets) → artifact + GitHub Release files `dist/*.zip` and `dist/*-setup.exe` |
+| `.github/workflows/release.yml` | Tag `v*` | Same packaging (optional Authenticode via secrets) → artifact + GitHub Release attaching `dist/*.zip` and `dist/*-setup.exe`, with a fixed install/SmartScreen body plus auto-generated commit notes |
 
 PR / non-main branches run **verify only** (fmt/test/clippy/release build); they do not produce installers.
 

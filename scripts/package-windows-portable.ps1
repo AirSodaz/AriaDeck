@@ -142,7 +142,7 @@ This folder is a portable build:
   current path. Registration is per-user (HKCU) and needs no admin rights.
 
 Licenses: LICENSE and THIRD_PARTY_NOTICES.md in this folder.
-Docs: https://github.com/ (see repository docs/release.md)
+Docs: https://github.com/AirSodaz/AriaDeck (packaging details: docs/release.md)
 "@
 Set-Content -Path (Join-Path $Stage "README-portable.txt") -Value $portableReadme -Encoding UTF8
 

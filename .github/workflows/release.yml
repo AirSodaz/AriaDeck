@@ -112,6 +112,33 @@ jobs:
           files: |
             dist/*.zip
             dist/*-setup.exe
+          # The generated commit list is appended below this body.
+          body: |
+            Windows x64 only. Two ways to install:
+
+            | Asset | Data directory | Notes |
+            | --- | --- | --- |
+            | `AriaDeck-<ver>-windows-x64-portable.zip` | `.\data` next to the exe (`ariadeck.portable` marker) | Unzip and run; delete the folder to remove everything |
+            | `AriaDeck-<ver>-windows-x64-setup.exe` | `%LOCALAPPDATA%\AriaDeck` | Uninstall keeps user data unless you tick the box |
+
+            **These builds are not code-signed.** SmartScreen will warn on first
+            run — choose *More info* → *Run anyway*. Signed builds are tracked as
+            roadmap item A1.
+
+            **aria2 is not bundled.** On first launch, import or download a core
+            under Settings → Engine, or point AriaDeck at an existing instance
+            with `ARIADECK_RPC_URL` (secret via `ARIADECK_RPC_SECRET`, never in
+            the URL).
+
+            `ariadeck-bridge.exe` (browser native messaging host) ships in both
+            packages but is inert until registered, and this build offers no
+            installer task for it because the extension is not published yet.
+            Register it by hand with
+            `ariadeck-bridge.exe --register --extension-id <ID>` — see
+            [docs/browser-bridge.md](docs/browser-bridge.md).
+
+            Packaging, data-directory, and upgrade details:
+            [docs/release.md](docs/release.md).
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
