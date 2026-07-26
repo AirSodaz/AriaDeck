@@ -3,7 +3,6 @@ use std::{
     env, fs,
     io::Read,
     path::{Path, PathBuf},
-    process::Command,
     sync::{Arc, mpsc::Receiver},
     time::Duration,
 };
@@ -29,7 +28,7 @@ use ariadeck_engine::{
     CoreDiscoveryOrigin, CoreInstallStatus, CoreSource, CoreStore, DiscoveredCore,
     ExternalEngineProfile, JsonProfileStore, LocalDownloadDestinationGateway,
     LocalDownloadRootRegistry, LocalEngineHealth, LocalEngineHealthHandle, LocalEngineSupervisor,
-    LocalTaskFileGateway, ProfileCatalog, ProfileEntry, ProfileKind,
+    LocalTaskFileGateway, ProfileCatalog, ProfileEntry, ProfileKind, console_free_command,
 };
 use ariadeck_i18n::{LocaleId, Translator};
 use ariadeck_rpc::{

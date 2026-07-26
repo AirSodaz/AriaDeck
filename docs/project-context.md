@@ -84,6 +84,8 @@ GPUI → ariadeck-ui → ariadeck-desktop (composition, tray, bridges)
 **Local managed startup (summary):** resolve exe → profile lock → session recover → loopback + ephemeral secret → spawn → WS connect → capability probe → snapshot → apply globals once per session.  
 **Shutdown:** `aria2.shutdown` then kill/wait. Tray close may keep engine; Quit stops owned managed engine. Remote never stopped by AriaDeck.
 
+**Child processes (Windows):** every `aria2c` invocation — managed spawn *and* `--version` probes — must go through `ariadeck_engine::console_free_command` (`CREATE_NO_WINDOW`). The desktop binary is `windows_subsystem = "windows"` and owns no console, so a plain `Command::new` makes Windows allocate one: a black window beside the app, or a flash per probe.
+
 **RPC hard rules:** only `ws`/`wss` path `/jsonrpc` · no HTTP auto-fallback · plain `ws` = loopback unless `ARIADECK_RPC_ALLOW_INSECURE_REMOTE` · WSS uses OS trust (no cert bypass) · credentials not in URL · one actor per socket.
 
 Env knobs: see root `README.md` (`ARIADECK_RPC_*`).

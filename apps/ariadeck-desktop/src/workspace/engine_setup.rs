@@ -277,7 +277,7 @@ pub(crate) fn discover_aria2_executable() -> Option<PathBuf> {
         .into_iter()
         .find(|candidate| candidate.is_file())
         .or_else(|| {
-            Command::new("aria2c")
+            console_free_command("aria2c")
                 .arg("--version")
                 .output()
                 .ok()

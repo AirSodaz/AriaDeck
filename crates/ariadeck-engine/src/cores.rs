@@ -18,14 +18,14 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use ariadeck_domain::CoreInstallationId;
 use serde::{Deserialize, Serialize};
 
-use crate::{EngineError, io_error, validate_executable};
+use crate::{EngineError, console_free_command, io_error, validate_executable};
 
 const REGISTRY_FILE_NAME: &str = "cores.json";
 const INSTALLATION_FILE_NAME: &str = "installation.json";
@@ -663,7 +663,7 @@ impl CoreInstallStatus {
 pub fn probe_aria2(path: impl AsRef<Path>) -> Result<Aria2Probe, EngineError> {
     let path = path.as_ref();
     validate_executable(path)?;
-    let output = Command::new(path)
+    let output = console_free_command(path)
         .arg("--version")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

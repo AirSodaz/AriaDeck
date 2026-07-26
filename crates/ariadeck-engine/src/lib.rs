@@ -15,6 +15,7 @@ pub use discovery::{CoreDiscoveryOrigin, DiscoveredCore, aria2_executable_name, 
 
 use std::{
     collections::{HashSet, VecDeque},
+    ffi::OsStr,
     fmt,
     fs::{self, File, OpenOptions},
     io::{self, Write},
@@ -49,6 +50,29 @@ const CONFIG_FILE_NAME: &str = "aria2.conf";
 const SESSION_FILE_NAME: &str = "aria2.session";
 const LOG_FILE_NAME: &str = "aria2.log";
 const OWNERSHIP_LOCK_FILE_NAME: &str = ".ariadeck-engine.lock";
+
+/// `CREATE_NO_WINDOW` — the child gets no console, inherits none, and keeps the
+/// redirected stdio handles it is spawned with.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Build a command for a console program that must not show a console window.
+///
+/// The desktop binary is `windows_subsystem = "windows"`, so it owns no console;
+/// spawning a console-subsystem child like `aria2c` makes Windows allocate a
+/// fresh one. That is a black window sitting next to the app for the managed
+/// engine, and a flash for every `--version` probe. Every command this crate
+/// runs is such a program, so route them all through here.
+#[must_use]
+pub fn console_free_command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
 
 /// Errors returned by local engine lifecycle and profile storage operations.
 #[derive(Debug, Error)]
@@ -963,7 +987,7 @@ pub fn validate_executable(path: impl AsRef<Path>) -> Result<(), EngineError> {
         });
     }
 
-    let output = Command::new(path)
+    let output = console_free_command(path)
         .arg("--version")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -990,7 +1014,7 @@ pub fn validate_executable(path: impl AsRef<Path>) -> Result<(), EngineError> {
 }
 
 fn validate_command_name(path: &Path) -> Result<(), EngineError> {
-    let output = Command::new(path)
+    let output = console_free_command(path)
         .arg("--version")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1300,7 +1324,7 @@ fn spawn_child(
     let arguments =
         local_engine_arguments(config, port, secret, config_path, session_path, log_path);
 
-    Command::new(&config.executable)
+    console_free_command(&config.executable)
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
