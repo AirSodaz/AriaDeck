@@ -82,13 +82,30 @@ if (-not $SkipStage) {
     if ($Sign) { $arguments += "-Sign" }
     & (Join-Path $PSScriptRoot "package-windows-portable.ps1") @arguments
 }
-if (-not (Test-Path (Join-Path $Stage "ariadeck-desktop.exe"))) {
-    throw "Missing installer staging directory: $Stage"
+foreach ($name in @("ariadeck-desktop.exe", "ariadeck-bridge.exe")) {
+    if (-not (Test-Path (Join-Path $Stage $name))) {
+        throw "Missing $name in the installer staging directory: $Stage"
+    }
 }
 
 $compiler = Find-InnoCompiler
-$definition = "/DMyAppVersion=$Version"
-& $compiler $definition (Join-Path $Root "packaging\windows\AriaDeck.iss")
+$definitions = @("/DMyAppVersion=$Version")
+
+# Browser bridge (D-045). Without a pinned extension ID the installer omits the
+# opt-in task entirely rather than offering a registration that would accept any
+# extension. Validated here so a typo fails the build, not a user's trust model.
+$extensionId = $env:ARIADECK_EXTENSION_ID
+if ($extensionId) {
+    if ($extensionId -notmatch '^[a-p]{32}$') {
+        throw "ARIADECK_EXTENSION_ID must be 32 characters in the range a-p (got '$extensionId')."
+    }
+    $definitions += "/DBridgeExtensionId=$extensionId"
+    Write-Host "Browser bridge task enabled for extension $extensionId"
+} else {
+    Write-Host "ARIADECK_EXTENSION_ID not set - installer omits the browser bridge task"
+}
+
+& $compiler @definitions (Join-Path $Root "packaging\windows\AriaDeck.iss")
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed (exit $LASTEXITCODE)" }
 
 $setup = Join-Path $Root "dist\AriaDeck-$Version-windows-x64-setup.exe"

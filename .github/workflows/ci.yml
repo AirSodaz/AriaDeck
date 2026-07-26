@@ -85,8 +85,8 @@ jobs:
             exit 1
           fi
 
-      - name: Release build (desktop)
-        run: cargo build -p ariadeck-desktop --release
+      - name: Release build (desktop + bridge)
+        run: cargo build -p ariadeck-desktop -p ariadeck-bridge --release
 
   windows-packages:
     name: Windows packages (portable + installer)

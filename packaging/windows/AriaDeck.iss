@@ -12,6 +12,15 @@
 #endif
 #define MyAppPublisher "AriaDeck contributors"
 #define MyAppExeName "ariadeck-desktop.exe"
+#define MyBridgeExeName "ariadeck-bridge.exe"
+
+; Browser bridge (D-045). Pass /DBridgeExtensionId=<32-char id> to offer the
+; opt-in task. Without it the task is omitted entirely: registering a native
+; messaging host with no pinned extension would let any extension launch it,
+; which is the trust boundary the bridge design depends on.
+#ifndef BridgeExtensionId
+  #define BridgeExtensionId ""
+#endif
 
 #ifndef SourceDir
   #define SourceDir "..\..\dist\AriaDeck-" + MyAppVersion + "-windows-x64-portable"
@@ -47,10 +56,15 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "fileassociations"; Description: "Associate .torrent, .metalink, and .meta4 files with AriaDeck"; GroupDescription: "Windows integration:"; Flags: unchecked
 Name: "protocolhandlers"; Description: "Handle magnet links with AriaDeck"; GroupDescription: "Windows integration:"; Flags: unchecked
+#if Len(BridgeExtensionId) > 0
+Name: "browserbridge"; Description: "Accept downloads from the AriaDeck browser extension (Chrome and Edge)"; GroupDescription: "Windows integration:"; Flags: unchecked
+#endif
 
 [Files]
 ; Installed builds must NOT ship ariadeck.portable — data goes to LocalAppData.
 Source: "{#SourceDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; Always installed; inert until the user opts into registering it as a host.
+Source: "{#SourceDir}\{#MyBridgeExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SourceDir}\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
@@ -85,7 +99,24 @@ Root: HKCU; Subkey: "Software\Classes\magnet\DefaultIcon"; ValueType: string; Va
 Root: HKCU; Subkey: "Software\Classes\magnet\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --open-magnet ""%1"""; Flags: uninsdeletevalue; Tasks: protocolhandlers
 
 [Run]
+#if Len(BridgeExtensionId) > 0
+; The host writes its own manifest and registry keys so the recorded path is
+; always the real install path, and so a user can re-register after moving a
+; portable copy. Runs before the app launch entry below.
+Filename: "{app}\{#MyBridgeExeName}"; Parameters: "--register --extension-id {#BridgeExtensionId}"; StatusMsg: "Registering the browser bridge..."; Flags: runhidden; Tasks: browserbridge
+#endif
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+; Not gated on the task or on BridgeExtensionId: the host may also have been
+; registered by hand, and --unregister is a no-op when nothing is registered.
+; Runs before files are removed, so the executable still exists.
+Filename: "{app}\{#MyBridgeExeName}"; Parameters: "--unregister"; RunOnceId: "UnregisterBrowserBridge"; Flags: runhidden skipifdoesntexist
+
+[UninstallDelete]
+; Backstop in case --unregister could not run; the registry keys it also removes
+; are cleaned up by the entry above.
+Type: files; Name: "{app}\com.ariadeck.bridge.json"
 
 [Code]
 // Optional: offer data removal only when the user explicitly checks the box.

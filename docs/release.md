@@ -94,6 +94,16 @@ Unsigned builds may hit SmartScreen. No certs in-repo.
 - Deps: `THIRD_PARTY_NOTICES.md` (`python scripts/gen_third_party_notices.py`)
 - GPUI: Apache-2.0
 
+## Browser bridge (D-045)
+
+- Both packages ship `ariadeck-bridge.exe`; it is inert until registered.
+- Installer offers an opt-in task, defaulted off, **only** when built with a valid
+  `ARIADECK_EXTENSION_ID` (32 chars, `a`–`p`). Without it the task is omitted —
+  registering with an empty `allowed_origins` would accept any extension.
+- Portable: register by hand with `ariadeck-bridge.exe --register --extension-id <ID>`,
+  and re-run after moving the folder (the registration records the current path).
+- Uninstall always runs `--unregister`, removing both browser keys and the manifest.
+
 ## Upgrade / rollback
 
 - Upgrade: overwrite portable or reinstall; settings migrate on load.

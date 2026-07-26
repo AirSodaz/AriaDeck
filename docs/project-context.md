@@ -277,4 +277,5 @@ cargo clippy --workspace --all-targets -- -D warnings
 2026-07-22 (later): compressed this file; product gap plan moved to `docs/roadmap.md`.  
 2026-07-23: D-043 per-profile engine env; settings/profiles/env schema v1-only (no historical migrators in-tree); system Downloads default root (D-044).
 2026-07-26: B3a browser-bridge contract frozen (D-045) in new `docs/browser-bridge.md`.
+2026-07-26: D-045 settings section (`browser_bridge`, additive on schema v1), auto-submit path, and `ariadeck-bridge --register`/`--unregister` self-registration with an installer opt-in task. Only the extension (B3c) remains.
 2026-07-26: B3b done — single-instance IPC extracted to `crates/ariadeck-ipc` (protocol v3 + data-dir/socket-label derivation, GPUI-free), new `apps/ariadeck-bridge` native messaging host, desktop fills the Add dialog from forwarded downloads. D-045 §6 amended: a disconnected engine makes forwarded items wait in memory (D-037/D-038 behavior) rather than reply `not_running`, which the one-way bridge cannot detect. Settings toggles, installer registration, and the extension (B3c) remain.

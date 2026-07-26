@@ -11,6 +11,7 @@
 //! on the UI stack.
 
 mod protocol;
+mod register;
 
 use std::{
     io::{self, Write},
@@ -25,7 +26,59 @@ use crate::protocol::{
     ErrorCode, Frame, Reply, cookies_allowed, decode_items, read_frame, write_reply,
 };
 
+/// What this invocation is for. The browser passes its own arguments (the host
+/// manifest path and the caller's origin), so anything unrecognized means "serve
+/// the port" rather than an error.
+enum Mode {
+    Serve,
+    Register { extension_id: Option<String> },
+    Unregister,
+    Help,
+}
+
+fn parse_mode(arguments: &[String]) -> Mode {
+    let mut mode = Mode::Serve;
+    let mut extension_id = None;
+    let mut arguments = arguments.iter();
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--register" => mode = Mode::Register { extension_id: None },
+            "--unregister" => mode = Mode::Unregister,
+            "--help" | "-h" => return Mode::Help,
+            "--extension-id" => extension_id = arguments.next().cloned(),
+            other => {
+                if let Some(value) = other.strip_prefix("--extension-id=") {
+                    extension_id = Some(value.to_owned());
+                }
+            }
+        }
+    }
+    match mode {
+        Mode::Register { .. } => Mode::Register { extension_id },
+        other => other,
+    }
+}
+
 fn main() -> ExitCode {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    match parse_mode(&arguments) {
+        Mode::Help => {
+            print_usage();
+            return ExitCode::SUCCESS;
+        }
+        Mode::Register { extension_id } => return run_register(extension_id.as_deref()),
+        Mode::Unregister => {
+            return match register::unregister() {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    report(&format!("unregister failed: {error}"));
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        Mode::Serve => {}
+    }
+
     // Single-threaded is sufficient: the host handles one browser port and each
     // forward is a bounded, short-lived socket write.
     let runtime = match Builder::new_current_thread().enable_all().build() {
@@ -92,6 +145,44 @@ fn forward(
         Ok(()) => Reply::accepted(count),
         Err(error) => Reply::failed(ErrorCode::from_forward_error(&error)),
     }
+}
+
+fn run_register(extension_id: Option<&str>) -> ExitCode {
+    let extension_id = match register::resolve_extension_id(extension_id) {
+        Ok(id) => id,
+        Err(error) => {
+            report(&error.to_string());
+            return ExitCode::FAILURE;
+        }
+    };
+    match register::register(&extension_id) {
+        Ok(manifest_path) => {
+            register::report_registered(&manifest_path, &extension_id);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            report(&format!("register failed: {error}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn print_usage() {
+    let _ = writeln!(
+        io::stdout(),
+        "ariadeck-bridge — AriaDeck browser bridge (native messaging host)\n\
+         \n\
+         With no arguments it serves a browser port on stdin/stdout; the browser\n\
+         launches it that way and passes its own arguments.\n\
+         \n\
+         ariadeck-bridge --register [--extension-id <ID>]\n\
+         \x20   Write the host manifest next to this executable and point Chrome and\n\
+         \x20   Edge at it. Requires a pinned extension ID, from --extension-id or\n\
+         \x20   ARIADECK_EXTENSION_ID.\n\
+         \n\
+         ariadeck-bridge --unregister\n\
+         \x20   Remove both registry keys and the generated manifest.\n"
+    );
 }
 
 /// Diagnostics go to stderr, which the browser surfaces in its own log. Payload

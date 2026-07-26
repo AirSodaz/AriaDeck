@@ -16,22 +16,40 @@ Two invariants, both asserted rather than assumed:
 
 ## Registering the host
 
-`com.ariadeck.bridge.template.json` is the manifest template. Substitute:
-
-| Placeholder | Value |
-| --- | --- |
-| `{{BRIDGE_EXE_PATH}}` | Absolute path to `ariadeck-bridge.exe`, JSON-escaped (`C:\\Program Files\\AriaDeck\\ariadeck-bridge.exe`) |
-| `{{ARIADECK_EXTENSION_ID}}` | The published extension ID, pinned at build time |
-
-Then point the browser at the written manifest:
+The host registers itself, so the recorded path is always the real install path
+and a moved portable copy can re-register without a reinstall:
 
 ```text
-HKCU\Software\Google\Chrome\NativeMessagingHosts\com.ariadeck.bridge  (default) = <manifest path>
+ariadeck-bridge --register --extension-id <32-char ID>
+ariadeck-bridge --unregister
+```
+
+`--register` writes `com.ariadeck.bridge.json` next to the executable and points
+both browsers at it:
+
+```text
+HKCU\Software\Google\Chrome\NativeMessagingHosts\com.ariadeck.bridge   (default) = <manifest path>
 HKCU\Software\Microsoft\Edge\NativeMessagingHosts\com.ariadeck.bridge  (default) = <manifest path>
 ```
 
-Registration is an explicit installer opt-in, defaulted off, matching D-037/D-038.
-Uninstall removes both keys.
+Per-user (HKCU), no admin rights. `--unregister` removes both keys and the
+manifest, touching nothing else under the shared `NativeMessagingHosts` key.
+
+**A pinned extension ID is mandatory.** Without one (`--extension-id`, or
+`ARIADECK_EXTENSION_ID` in the environment or at build time) `--register` refuses
+and writes nothing: a manifest with an empty `allowed_origins` would let any
+extension launch the host, which is the trust boundary the whole design rests on.
+The ID must be exactly 32 characters in `a`–`p`, so a typo fails loudly instead of
+pinning to an extension nobody controls.
+
+The installer offers this as an opt-in task, defaulted off, matching D-037/D-038 —
+and only when the build was given an extension ID (`ARIADECK_EXTENSION_ID` when
+running `scripts/package-windows-installer.ps1`). Uninstall always runs
+`--unregister`, including when the host was registered by hand.
+
+Registration is Windows-only for now; Chrome on macOS and Linux uses per-user
+manifest directories instead, deferred alongside the Firefox port
+([`browser-bridge.md`](../../docs/browser-bridge.md) §9).
 
 ## Manual smoke test
 

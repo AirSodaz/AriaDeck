@@ -53,7 +53,7 @@ AriaDeck primary instance      ← already running, or the request fails
 | Field | Value |
 | --- | --- |
 | Host name | `com.ariadeck.bridge` (Chrome host-name grammar: `[a-z0-9._]`) |
-| Windows registration | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.ariadeck.bridge` and the `Microsoft\Edge` equivalent, both pointing at the manifest path |
+| Windows registration | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.ariadeck.bridge` and the `Microsoft\Edge` equivalent, both pointing at the manifest path. Written by `ariadeck-bridge --register`, removed by `--unregister`. Per-user, no admin. macOS/Linux use manifest directories instead and are deferred with the Firefox port (§9) |
 | Manifest `type` | `stdio` |
 | Install trigger | Explicit installer opt-in, same pattern as D-037/D-038 — never enabled silently |
 
@@ -224,8 +224,8 @@ Default is **confirm**, extending D-038's "fill, don't submit" to the bridge.
 
 **Cross-cutting**
 
-- [ ] Installer opt-in checkbox, defaulted off, matching D-037/D-038 wording
-- [ ] Uninstall removes both native-messaging registry keys
+- [x] Installer opt-in checkbox, defaulted off, matching D-037/D-038 wording. The host registers *itself* (`ariadeck-bridge --register --extension-id <ID>`) rather than having the installer write the keys, so the recorded path is always the real install path and a moved portable copy can re-register without a reinstall. `--register` refuses without a pinned, well-formed extension ID (32 chars, `a`–`p`) and writes nothing — an empty `allowed_origins` would let any extension launch the host. The installer omits the task entirely unless the build was given an ID via `ARIADECK_EXTENSION_ID`.
+- [x] Uninstall removes both native-messaging registry keys, plus the generated manifest. Run unconditionally, not gated on the install-time task, because the host may also have been registered by hand; `--unregister` is a no-op when nothing is registered and only touches AriaDeck's own subkey under the shared `NativeMessagingHosts` key.
 - [x] All new user-facing strings in en + zh-CN (i18n parity test already enforces id sets)
 - [x] `browser_bridge` settings section (`allow_cookies` / `auto_submit`), both defaulting off. Additive on disk — schema stays v1 and a pre-D-045 `settings.json` loads with the all-off default instead of tripping corrupt-document recovery. `auto_submit` travels in a settings export; `allow_cookies` deliberately does not, so importing a document never turns cookie forwarding on (same reasoning that keeps proxy credentials out of a transfer document).
 - [x] Auto-submit reuses the confirm path's fill-then-submit route, so category routing (D-042), validation, and the notice/activity trail cannot drift between the two modes.

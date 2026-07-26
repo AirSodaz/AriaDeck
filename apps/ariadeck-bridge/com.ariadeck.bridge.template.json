@@ -1,9 +1,0 @@
-{
-  "name": "com.ariadeck.bridge",
-  "description": "AriaDeck browser bridge",
-  "path": "{{BRIDGE_EXE_PATH}}",
-  "type": "stdio",
-  "allowed_origins": [
-    "chrome-extension://{{ARIADECK_EXTENSION_ID}}/"
-  ]
-}
