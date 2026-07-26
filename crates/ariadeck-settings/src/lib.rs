@@ -737,6 +737,20 @@ impl DownloadProxySettings {
     }
 }
 
+/// First-run guidance state (B4).
+///
+/// Only records what the user has already been asked, never how the engine is
+/// configured — the core registry and the profile catalog remain the truth for
+/// that. Client-wide (`settings.json`), not per-profile: being walked through
+/// core setup is a property of this installation, not of an engine environment.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OnboardingSettings {
+    /// The core-setup guide has been completed or explicitly dismissed, so it
+    /// must not reopen on its own. Settings → Engine still offers the same panel.
+    pub core_setup_dismissed: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppSettings {
     pub color_scheme: ColorScheme,
@@ -748,6 +762,9 @@ pub struct AppSettings {
     pub notifications: NotificationSettings,
     pub platform: PlatformSettings,
     pub browser_bridge: BrowserBridgeSettings,
+    /// First-run guidance state (B4). Deliberately absent from the export
+    /// document: importing settings is not a claim about first-run history.
+    pub onboarding: OnboardingSettings,
     pub ui: UiPreferences,
     /// Output folders + extension rules (C1 / D-042). Exactly one is_fallback.
     pub categories: Vec<DownloadCategory>,
@@ -897,6 +914,9 @@ impl SettingsExportDocument {
                 allow_cookies: false,
                 auto_submit: self.browser_bridge.auto_submit,
             },
+            // First-run history belongs to this installation, so it survives an
+            // import untouched rather than travelling inside the document.
+            onboarding: current.onboarding,
             ui: self.ui,
             categories: self.categories,
             tracker_list: self.tracker_list,
@@ -994,6 +1014,7 @@ impl AppSettings {
             notifications: NotificationSettings::default(),
             platform: PlatformSettings::default(),
             browser_bridge: BrowserBridgeSettings::default(),
+            onboarding: OnboardingSettings::default(),
             ui: UiPreferences::default(),
             categories: default_download_categories(&download_directory),
             tracker_list: TrackerListSettings::default(),
@@ -1239,6 +1260,11 @@ struct SettingsDocument {
     /// all-off default instead of tripping the corrupt-document recovery path.
     #[serde(default)]
     browser_bridge: BrowserBridgeSettings,
+    /// Added by B4, additive for the same reason as `browser_bridge` above: a
+    /// settings file written before the first-run guide existed loads with the
+    /// not-yet-dismissed default, which is exactly right for an upgrade.
+    #[serde(default)]
+    onboarding: OnboardingSettings,
     ui: UiPreferences,
     categories: Vec<DownloadCategory>,
     tracker_list: TrackerListSettings,
@@ -1257,6 +1283,7 @@ impl From<&AppSettings> for SettingsDocument {
             notifications: settings.notifications,
             platform: settings.platform,
             browser_bridge: settings.browser_bridge,
+            onboarding: settings.onboarding,
             ui: settings.ui,
             categories: settings.categories.clone(),
             tracker_list: settings.tracker_list.clone(),
@@ -1284,6 +1311,7 @@ impl TryFrom<SettingsDocument> for AppSettings {
             notifications: document.notifications,
             platform: document.platform,
             browser_bridge: document.browser_bridge,
+            onboarding: document.onboarding,
             ui: document.ui,
             categories: document.categories,
             tracker_list: document.tracker_list,
@@ -1621,6 +1649,7 @@ mod tests {
             notifications: NotificationSettings::default(),
             platform: PlatformSettings::default(),
             browser_bridge: BrowserBridgeSettings::default(),
+            onboarding: OnboardingSettings::default(),
             ui: UiPreferences::default(),
             categories: default_download_categories(root.join("downloads")),
             tracker_list: TrackerListSettings::default(),
@@ -1802,6 +1831,84 @@ mod tests {
         assert!(
             !imported.browser_bridge.allow_cookies,
             "an import must never turn cookie forwarding on"
+        );
+    }
+
+    #[test]
+    fn onboarding_defaults_to_not_yet_dismissed_and_round_trips() {
+        assert_eq!(
+            OnboardingSettings::default(),
+            OnboardingSettings {
+                core_setup_dismissed: false,
+            },
+            "a fresh install has not been through the core-setup guide"
+        );
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        let mut expected = settings(root.path());
+        expected.onboarding.core_setup_dismissed = true;
+
+        store.save(&expected).expect("save onboarding settings");
+        assert_eq!(store.load().expect("load onboarding settings"), expected);
+    }
+
+    /// Same additive contract as `browser_bridge`: a settings file written before
+    /// B4 has no `onboarding` key, and must load rather than trip recovery.
+    #[test]
+    fn settings_written_before_onboarding_existed_still_load() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        let mut expected = settings(root.path());
+        expected.platform.close_behavior = CloseBehavior::Quit;
+        store.save(&expected).expect("save current settings");
+
+        let document = fs::read_to_string(store.path()).expect("read settings JSON");
+        let mut value: serde_json::Value =
+            serde_json::from_str(&document).expect("settings JSON parses");
+        value
+            .as_object_mut()
+            .expect("settings document is an object")
+            .remove("onboarding")
+            .expect("onboarding was written");
+        fs::write(store.path(), value.to_string()).expect("seed pre-B4 settings");
+
+        let loaded = store
+            .load_or_initialize(&expected)
+            .expect("pre-B4 settings load");
+        assert!(
+            loaded.recovery.is_none(),
+            "an additive field must not look like corruption"
+        );
+        assert_eq!(loaded.settings.onboarding, OnboardingSettings::default());
+        assert_eq!(loaded.settings.platform.close_behavior, CloseBehavior::Quit);
+    }
+
+    /// Importing someone else's settings says nothing about whether *this*
+    /// installation has been guided through core setup, so the flag stays local.
+    #[test]
+    fn imported_settings_never_carry_onboarding_state() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let mut source = settings(root.path());
+        source.onboarding.core_setup_dismissed = true;
+
+        let document = export_settings_json(&source).expect("export settings");
+        assert!(!document.contains("onboarding"), "{document}");
+
+        let current = settings(root.path());
+        let imported = import_settings_json(&document, &current).expect("import settings");
+        assert!(
+            !imported.onboarding.core_setup_dismissed,
+            "an import must not claim the local first run already happened"
+        );
+
+        let mut already_dismissed = settings(root.path());
+        already_dismissed.onboarding.core_setup_dismissed = true;
+        let imported =
+            import_settings_json(&document, &already_dismissed).expect("import settings");
+        assert!(
+            imported.onboarding.core_setup_dismissed,
+            "an import must not re-arm a guide the user already finished"
         );
     }
 

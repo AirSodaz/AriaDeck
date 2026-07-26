@@ -26,10 +26,10 @@ use ariadeck_domain::{
     TaskIdentity as DomainTaskIdentity, TaskProgress, TaskUriStatus, TransferPolicyConfig,
 };
 use ariadeck_engine::{
-    CoreInstallStatus, CoreSource, CoreStore, ExternalEngineProfile, JsonProfileStore,
-    LocalDownloadDestinationGateway, LocalDownloadRootRegistry, LocalEngineHealth,
-    LocalEngineHealthHandle, LocalEngineSupervisor, LocalTaskFileGateway, ProfileCatalog,
-    ProfileEntry, ProfileKind,
+    CoreDiscoveryOrigin, CoreInstallStatus, CoreSource, CoreStore, DiscoveredCore,
+    ExternalEngineProfile, JsonProfileStore, LocalDownloadDestinationGateway,
+    LocalDownloadRootRegistry, LocalEngineHealth, LocalEngineHealthHandle, LocalEngineSupervisor,
+    LocalTaskFileGateway, ProfileCatalog, ProfileEntry, ProfileKind,
 };
 use ariadeck_i18n::{LocaleId, Translator};
 use ariadeck_rpc::{
@@ -53,29 +53,30 @@ use ariadeck_ui::{
     BatchCommandOutcomeView, BatchTaskCommandRequestView, BatchTaskCommandResultView,
     BatchTaskCommandView, BatchTaskFailureView, BridgeDownloadView, BrowserBridgeSettingsView,
     CloseBehaviorView, ColorSchemeView, CommandOutcomeView, ConnectionView, CoreCommandOutcomeView,
-    CoreCommandRequestView, CoreCommandResultView, CoreCommandView, CoreInstallStatusView,
+    CoreCommandRequestView, CoreCommandResultView, CoreCommandView, CoreDiscoveryOriginView,
+    CoreDiscoveryResultView, CoreDownloadOfferView, CoreDownloadResultView, CoreInstallStatusView,
     CoreInstallationView, CoreRegistryView, CoreSourceView, DiagnosticExportOutcomeView,
-    DiagnosticExportRequestView, DiagnosticExportResultView, DownloadCategoryView,
-    DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView, EngineHealthView,
-    EngineSessionView, FileAllocationView, FileConflictPolicyView, GlobalTaskCommandRequestView,
-    GlobalTaskCommandResultView, GlobalTaskCommandView, LanguagePreferenceView,
-    NotificationSettingsView, NotificationVolumeView, OperationErrorView, PlatformSettingsView,
-    ProfileCatalogView, ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView,
-    ProxyModeView, ProxyPasswordUpdateView, SaveProfileCatalogOutcomeView,
-    SaveProfileCatalogRequestView, SaveProfileCatalogResultView, SecretStringView,
-    SettingsExportOutcomeView, SettingsExportRequestView, SettingsExportResultView,
-    SettingsImportOutcomeView, SettingsImportRequestView, SettingsImportResultView,
-    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView, SwitchProfileOutcomeView,
-    SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
-    TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
-    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
-    TaskIdentity, TaskNameStateView, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
-    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
-    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
-    TrackerListSettingsView, TrackerListSourceView, TransferPolicySettingsView, WorkspaceFilter,
-    WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
-    format_speed_limit_field,
+    DiagnosticExportRequestView, DiagnosticExportResultView, DiscoveredCoreView,
+    DownloadCategoryView, DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView,
+    EngineHealthView, EngineSessionView, FileAllocationView, FileConflictPolicyView,
+    GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView,
+    LanguagePreferenceView, NotificationSettingsView, NotificationVolumeView, OperationErrorView,
+    PlatformSettingsView, ProfileCatalogView, ProfileEntryView, ProfileKindView,
+    ProfileRpcSecretUpdateView, ProxyModeView, ProxyPasswordUpdateView,
+    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
+    SecretStringView, SettingsExportOutcomeView, SettingsExportRequestView,
+    SettingsExportResultView, SettingsImportOutcomeView, SettingsImportRequestView,
+    SettingsImportResultView, SettingsSaveOutcomeView, SettingsSaveRequestView,
+    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView,
+    StoppedHistoryView, SwitchProfileOutcomeView, SwitchProfileRequestView,
+    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
+    TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
+    TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
+    TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
+    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TrackerListSettingsView,
+    TrackerListSourceView, TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery,
+    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, format_speed_limit_field,
 };
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
 #[cfg(target_os = "windows")]
@@ -94,6 +95,7 @@ use url::Url;
 
 use crate::metadata::parse_metadata;
 
+mod core_fetch;
 mod diagnostics;
 mod engine_setup;
 mod mapping;
@@ -102,6 +104,8 @@ mod settings_bridge;
 mod tracker_list;
 
 // Re-export so DesktopRoot methods and tests keep short names.
+#[allow(unused_imports)]
+pub(crate) use core_fetch::*;
 #[allow(unused_imports)]
 pub(crate) use engine_setup::*;
 #[allow(unused_imports)]
@@ -129,6 +133,8 @@ pub struct DesktopRoot {
     settings_sender: Option<mpsc::UnboundedSender<SettingsPersistenceRequest>>,
     settings_task: Option<JoinHandle<()>>,
     tracker_list_sender: Option<mpsc::UnboundedSender<TrackerListRefreshRequest>>,
+    /// Verified aria2 download worker (B4). Only ever fed by a button press.
+    core_download_sender: Option<mpsc::UnboundedSender<CoreDownloadRequest>>,
     settings: AppSettings,
     data_dir: PathBuf,
     profile_store: JsonProfileStore,
@@ -387,6 +393,9 @@ impl DesktopRoot {
             shell.set_engine_health(initial_engine_health, cx);
             shell.set_profiles(map_profile_catalog(&profile_catalog), cx);
             shell.set_cores(map_core_registry(&core_store), cx);
+            // B4: what this platform may fetch is fixed at build time, so the
+            // panel can describe the offer before anything is scanned.
+            shell.set_core_download_offer(map_core_download_offer(), cx);
             shell.restore_list_preferences(initial_query.clone(), cx);
             if let Some(message) = startup_notice {
                 shell.set_startup_notice(message, true, cx);
@@ -461,6 +470,15 @@ impl DesktopRoot {
                 }
                 AppShellEvent::CoreCommandRequested(request) => {
                     this.handle_core_command(request.clone(), window, cx);
+                }
+                AppShellEvent::CoreDiscoveryRequested { request_id } => {
+                    this.spawn_core_discovery(*request_id, window, cx);
+                }
+                AppShellEvent::CoreDownloadRequested { request_id } => {
+                    this.enqueue_core_download(*request_id, cx);
+                }
+                AppShellEvent::CoreSetupOnboardingDismissed => {
+                    this.persist_core_setup_dismissal(cx);
                 }
                 AppShellEvent::HideToTrayRequested => {
                     this.hide_to_tray(window, cx);
@@ -545,6 +563,18 @@ impl DesktopRoot {
         } else {
             None
         };
+        let core_download_sender = {
+            let (req_tx, req_rx) = mpsc::unbounded_channel::<CoreDownloadRequest>();
+            let (res_tx, res_rx) = mpsc::unbounded_channel::<CoreDownloadResult>();
+            spawn_core_download_bridge(
+                runtime.handle().clone(),
+                core_store.clone(),
+                req_rx,
+                res_tx,
+            );
+            spawn_core_download_result_bridge(res_rx, window, cx);
+            Some(req_tx)
+        };
         if let Some(health) = local_engine_health {
             spawn_local_engine_health_bridge(health, cx);
         }
@@ -572,6 +602,7 @@ impl DesktopRoot {
             settings_sender,
             settings_task,
             tracker_list_sender,
+            core_download_sender,
             settings,
             data_dir: data_dir.clone(),
             profile_store,
@@ -609,6 +640,48 @@ impl DesktopRoot {
             }
         })
         .detach();
+
+        // B4 first run: offer core setup only when this install has no aria2 it
+        // could start, the active profile actually wants a local one, and the
+        // user has not already been asked. The probe executes `--version`, so it
+        // runs off the first frame rather than blocking the window.
+        let wants_local_engine = root
+            .profile_catalog
+            .active()
+            .is_none_or(|profile| profile.kind == ProfileKind::LocalManaged);
+        if !root.settings.onboarding.core_setup_dismissed && wants_local_engine {
+            let runtime = root.runtime.handle().clone();
+            let probe_data_dir = data_dir.clone();
+            let profile_executable = root
+                .profile_catalog
+                .active()
+                .and_then(|profile| profile.executable.clone())
+                .unwrap_or_default();
+            cx.spawn_in(window, async move |this, cx| {
+                let missing = runtime
+                    .spawn_blocking(move || {
+                        local_engine_executable_missing(&probe_data_dir, &profile_executable)
+                    })
+                    .await
+                    .unwrap_or(false);
+                if !missing {
+                    return;
+                }
+                tracing::info!("no usable local aria2 found; opening the core setup guide");
+                this.update_in(cx, |this, window, cx| {
+                    // Same reasoning as D-037/D-038: something that stops to ask
+                    // the user overrides start-minimized-to-tray.
+                    if this.window_hidden_to_tray {
+                        this.show_from_tray(window, cx);
+                    }
+                    this.workspace.update(cx, |shell, cx| {
+                        shell.open_core_setup_onboarding(window, cx);
+                    });
+                })
+                .ok();
+            })
+            .detach();
+        }
 
         // Launch items that will ask the user something override start-minimized;
         // ones that will auto-submit do not (D-045 §6).
@@ -1637,6 +1710,104 @@ impl DesktopRoot {
             }
         }
         let _ = window;
+    }
+
+    /// B4: scan the local filesystem for aria2 binaries. No network access.
+    ///
+    /// Probing spawns one `aria2c --version` per candidate, so the whole scan
+    /// runs on a blocking thread rather than the render path.
+    fn spawn_core_discovery(
+        &self,
+        request_id: ariadeck_ui::RequestId,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let runtime = self.runtime.handle().clone();
+        let core_store = self.core_store.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let discovered = runtime
+                .spawn_blocking(ariadeck_engine::discover_cores)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, "aria2 discovery worker failed");
+                    Vec::new()
+                });
+            let registry = map_core_registry(&core_store);
+            let discovered = map_discovered_cores(discovered, &registry);
+            this.update_in(cx, |this, _window, cx| {
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.set_core_discovery_result(
+                        CoreDiscoveryResultView {
+                            request_id,
+                            discovered,
+                        },
+                        cx,
+                    );
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// B4: hand an explicit download request to the verified-fetch worker.
+    fn enqueue_core_download(
+        &mut self,
+        request_id: ariadeck_ui::RequestId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(sender) = self.core_download_sender.as_ref() else {
+            self.workspace.update(cx, |workspace, cx| {
+                workspace.set_core_download_result(
+                    CoreDownloadResultView {
+                        request_id,
+                        registry: CoreRegistryView::default(),
+                        installed_version: None,
+                        outcome: CoreCommandOutcomeView::Failure(OperationErrorView {
+                            code: "core.download_unavailable".into(),
+                            summary: "The aria2 download worker is not running.".into(),
+                            retryable: false,
+                        }),
+                    },
+                    cx,
+                );
+            });
+            return;
+        };
+        if sender.send(CoreDownloadRequest { request_id }).is_err() {
+            tracing::warn!("aria2 download worker is no longer accepting requests");
+        }
+    }
+
+    /// B4: the first-run guide was closed, so record that the user has been asked.
+    ///
+    /// Persisted through the same ordered settings worker as every other write so
+    /// a concurrent save cannot clobber it (the `persist_ui_preferences` pattern).
+    fn persist_core_setup_dismissal(&mut self, cx: &mut Context<Self>) {
+        if self.settings.onboarding.core_setup_dismissed {
+            return;
+        }
+        let mut next = self.settings.clone();
+        next.onboarding.core_setup_dismissed = true;
+        if let Some(sender) = self.settings_sender.as_ref() {
+            let request = SettingsPersistenceRequest {
+                request_id: ariadeck_ui::RequestId::from_u64(0),
+                settings: next.clone(),
+                previous_settings: self.settings.clone(),
+                proxy_password: ProxyPasswordUpdate::Unchanged,
+                apply_proxy: false,
+                apply_speed_limit: false,
+                apply_transfer_policy: false,
+                apply_bt_tracker: false,
+                active_profile_id: self.profile_catalog.active().map(|p| p.profile_id),
+            };
+            if sender.send(request).is_ok() {
+                self.settings = next;
+            }
+        } else {
+            self.settings = next;
+        }
+        let _ = cx;
     }
 
     fn execute_core_command(&self, command: &CoreCommandView) -> Result<(), String> {

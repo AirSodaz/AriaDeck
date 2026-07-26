@@ -44,6 +44,7 @@ actions!(
         CloseTaskOptions,
         SubmitTaskOptions,
         CloseBatchFailures,
+        CloseCoreSetup,
         RemoveSelectedTask,
         FocusNext,
         FocusPrevious,
@@ -130,6 +131,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("enter", SubmitTaskOptions, Some("TaskOptionsDialog")),
         KeyBinding::new("cmd-enter", SubmitTaskOptions, Some("TaskOptionsDialog")),
         KeyBinding::new("escape", CloseBatchFailures, Some("BatchFailureDialog")),
+        // Escape dismisses the first-run guide, which counts as "you were asked".
+        KeyBinding::new("escape", CloseCoreSetup, Some("CoreSetupDialog")),
         KeyBinding::new("cmd-,", OpenSettings, Some("DownloadWorkspace")),
         KeyBinding::new("escape", CloseSettings, Some("SettingsPage")),
         KeyBinding::new("cmd-enter", SaveSettings, Some("SettingsPage")),

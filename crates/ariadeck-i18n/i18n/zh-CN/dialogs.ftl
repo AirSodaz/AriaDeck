@@ -165,3 +165,13 @@ dialog-add-category = 分类
 dialog-add-category-default = 默认目录
 dialog-add-category-auto = 自动
 dialog-add-category-auto-named = 自动 · { $name }
+
+# B4 — 首次运行的 aria2 核心引导
+dialog-core-setup-title = 设置 aria2
+dialog-core-setup-description = AriaDeck 驱动独立的 aria2 引擎，本身不内置。指定一个即可开始下载。
+dialog-core-setup-remote-hint = 想连接远程 aria2？可跳过此步，在“设置 > 配置”中添加远程配置。
+dialog-core-setup-restart-hint = 已登记托管核心。请在“设置 > 引擎”中启用，然后重启 AriaDeck 生效。
+dialog-core-setup-open-settings = 打开引擎设置
+dialog-core-setup-open-settings-aria = 关闭本引导并打开“设置 > 引擎”
+dialog-core-setup-dismiss = 暂不设置
+dialog-core-setup-dismiss-aria = 不选择核心，关闭 aria2 设置引导

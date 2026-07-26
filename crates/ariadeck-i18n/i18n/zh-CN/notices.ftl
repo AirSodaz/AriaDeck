@@ -111,3 +111,8 @@ cmd-options-success = 任务选项已更新。
 cmd-remove-success = 已从 aria2 移除任务；已下载文件已保留。
 cmd-force-remove-success = 任务已强制移除。
 cmd-remove-files-success = 任务已移除，本地文件已移到回收站。
+
+# B4 — aria2 核心下载
+notice-core-downloading = 正在下载并校验 aria2……
+notice-core-download-installed = 已下载并校验 aria2 { $version }。请在“设置 > 引擎”中启用，然后重启 AriaDeck。
+notice-core-download-unavailable = 该平台没有可校验的 aria2 官方下载。

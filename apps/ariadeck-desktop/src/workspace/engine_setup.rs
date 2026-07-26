@@ -306,6 +306,17 @@ pub(crate) fn resolve_local_executable(
     Ok(discover_aria2_executable().unwrap_or_else(|| PathBuf::from("aria2c")))
 }
 
+/// True when a local managed profile has no aria2 it could actually start (B4).
+///
+/// Resolves the same way startup does, then runs `--version` on the result: a
+/// bare `aria2c` fallback that is not really on `PATH` must count as missing,
+/// and only executing it can tell. Callers must keep this off the render path.
+#[must_use]
+pub(crate) fn local_engine_executable_missing(data_dir: &Path, profile_executable: &Path) -> bool {
+    resolve_local_executable(data_dir, profile_executable)
+        .is_ok_and(|path| ariadeck_engine::probe_aria2(&path).is_err())
+}
+
 /// Hide the GPUI window without destroying it so tray sessions can restore it.
 pub(crate) fn hide_native_window(window: &Window) -> bool {
     #[cfg(target_os = "windows")]

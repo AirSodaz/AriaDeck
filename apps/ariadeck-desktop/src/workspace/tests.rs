@@ -2212,6 +2212,7 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
         notifications: NotificationSettings::default(),
         platform: PlatformSettings::default(),
         browser_bridge: Default::default(),
+        onboarding: Default::default(),
         ui: UiPreferences::default(),
         categories: ariadeck_settings::default_download_categories(root.path().join("first")),
         tracker_list: Default::default(),
@@ -2226,6 +2227,7 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
         notifications: NotificationSettings::default(),
         platform: PlatformSettings::default(),
         browser_bridge: Default::default(),
+        onboarding: Default::default(),
         ui: UiPreferences::default(),
         categories: ariadeck_settings::default_download_categories(root.path().join("second")),
         tracker_list: Default::default(),
@@ -2296,6 +2298,7 @@ fn external_engine_settings_do_not_touch_the_desktop_filesystem() {
         notifications: NotificationSettings::default(),
         platform: PlatformSettings::default(),
         browser_bridge: Default::default(),
+        onboarding: Default::default(),
         ui: UiPreferences::default(),
         categories: ariadeck_settings::default_download_categories(&remote_path),
         tracker_list: Default::default(),
@@ -2422,4 +2425,118 @@ fn resolve_download_dir_prefers_env_then_userprofile_downloads() {
 
     let fallback = resolve_download_dir(|_| None, data.clone());
     assert_eq!(fallback, data.join("downloads"));
+}
+
+/// B4: a discovered binary that the registry already manages must not be
+/// offered as a fresh import, even when it is reached through a different path
+/// (a PATH shim resolving to the same file as a registered scoop install).
+#[test]
+fn discovered_cores_are_marked_when_the_registry_already_holds_them() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let registered = root.path().join("aria2c-registered");
+    let fresh = root.path().join("aria2c-fresh");
+    std::fs::write(&registered, b"binary").expect("write registered");
+    std::fs::write(&fresh, b"binary").expect("write fresh");
+
+    let registry = CoreRegistryView {
+        active_id: Some("c1".into()),
+        last_working_id: Some("c1".into()),
+        installations: vec![CoreInstallationView {
+            id: "c1".into(),
+            version: "1.37.0".into(),
+            target: "windows-x86_64".into(),
+            source: CoreSourceView::Linked,
+            executable: registered.to_string_lossy().into_owned(),
+            features: Vec::new(),
+            is_active: true,
+            is_last_working: true,
+            validated_version: Some("1.37.0".into()),
+            status: CoreInstallStatusView::Ready,
+        }],
+    };
+
+    let mapped = map_discovered_cores(
+        vec![
+            DiscoveredCore {
+                path: registered.clone(),
+                origin: CoreDiscoveryOrigin::Scoop,
+                version: "1.37.0".into(),
+                features: vec!["BitTorrent".into()],
+            },
+            DiscoveredCore {
+                path: fresh.clone(),
+                origin: CoreDiscoveryOrigin::SearchPath,
+                version: "1.36.0".into(),
+                features: Vec::new(),
+            },
+        ],
+        &registry,
+    );
+
+    assert_eq!(mapped.len(), 2);
+    assert!(mapped[0].already_registered);
+    assert_eq!(mapped[0].origin, CoreDiscoveryOriginView::Scoop);
+    assert!(!mapped[1].already_registered);
+    assert_eq!(mapped[1].origin, CoreDiscoveryOriginView::SearchPath);
+}
+
+/// A registry row whose executable is missing (stale manifest) has an empty
+/// path; it must not swallow every discovered candidate.
+#[test]
+fn discovered_cores_ignore_registry_rows_without_an_executable() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let candidate = root.path().join("aria2c");
+    std::fs::write(&candidate, b"binary").expect("write candidate");
+
+    let registry = CoreRegistryView {
+        active_id: None,
+        last_working_id: None,
+        installations: vec![CoreInstallationView {
+            id: "stale".into(),
+            version: "1.36.0".into(),
+            target: "windows-x86_64".into(),
+            source: CoreSourceView::Imported,
+            executable: String::new(),
+            features: Vec::new(),
+            is_active: false,
+            is_last_working: false,
+            validated_version: None,
+            status: CoreInstallStatusView::MissingManifest,
+        }],
+    };
+
+    let mapped = map_discovered_cores(
+        vec![DiscoveredCore {
+            path: candidate,
+            origin: CoreDiscoveryOrigin::SearchPath,
+            version: "1.37.0".into(),
+            features: Vec::new(),
+        }],
+        &registry,
+    );
+    assert_eq!(mapped.len(), 1);
+    assert!(!mapped[0].already_registered);
+}
+
+/// The offer is derived from the pinned catalog, so a platform upstream does
+/// not build for reports "unavailable" rather than an unverified URL.
+#[test]
+fn core_download_offer_matches_the_pinned_catalog_for_this_host() {
+    let offer = map_core_download_offer();
+    assert_eq!(offer.target, host_target());
+    match catalog_entry_for(&offer.target) {
+        Some(entry) => {
+            assert!(offer.available);
+            assert_eq!(offer.version, entry.version);
+            assert_eq!(offer.url, entry.url);
+            assert_eq!(offer.emulated, entry.emulated);
+        }
+        None => {
+            assert!(!offer.available);
+            assert!(
+                offer.url.is_empty(),
+                "an unavailable offer must carry no URL"
+            );
+        }
+    }
 }

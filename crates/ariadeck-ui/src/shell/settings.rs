@@ -234,14 +234,36 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_settings_page(SettingsCategory::default(), window, cx);
+    }
+
+    /// Open Settings on a specific category.
+    ///
+    /// The core-setup guide uses this to hand the user to Settings → Engine,
+    /// where the same panel lives (B4).
+    pub(crate) fn open_settings_page(
+        &mut self,
+        category: SettingsCategory,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.page == AppPage::Settings {
+            // Already here: honour the requested category rather than no-op, so a
+            // hand-off from elsewhere still lands on the right section.
+            self.settings_page.active_category = category;
             window.focus(&self.focus_handle, cx);
+            cx.notify();
             return;
         }
         if self.add_dialog.open
             || self.output_name_dialog.is_some()
             || self.remove_confirmation.is_some()
             || self.batch_failure_details.is_some()
+            // The core-setup guide and Settings > Engine render the same shared
+            // panel — including the same path input entity — so exactly one of
+            // them may be mounted at a time. The guide's own button routes here
+            // via `open_engine_settings_from_onboarding`, which dismisses first.
+            || self.core_setup.onboarding_open
         {
             return;
         }
@@ -308,7 +330,7 @@ impl AppShell {
         self.activity_panel_open = false;
         self.settings_page = SettingsPage {
             previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
-            active_category: SettingsCategory::default(),
+            active_category: category,
             draft_color_scheme: self.settings.color_scheme,
             draft_language: self.settings.language,
             draft_proxy_mode: proxy.mode,
@@ -2769,61 +2791,34 @@ impl AppShell {
                     })),
             )
             .child(
+                div().mt_3().flex().child(
+                    Button::new("rollback-core", self.t("settings-core-rollback"))
+                        .aria_label(self.t("settings-core-rollback-aria"))
+                        .style(ButtonStyle::Secondary)
+                        .disabled(!can_rollback)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.request_core_command(CoreCommandView::Rollback, cx);
+                        }))
+                        .render(colors),
+                ),
+            )
+            // B4: the same Get-aria2 panel the first-run guide shows. Discovery,
+            // verified download, and manual import are not onboarding-only —
+            // switching or repairing a core later needs exactly these controls.
+            .child(
                 div()
-                    .mt_3()
+                    .mt_4()
+                    .pt_4()
+                    .border_t_1()
+                    .border_color(colors.border)
                     .flex()
                     .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(colors.text_primary)
-                            .child(self.t("ui-import-aria2c")),
-                    )
-                    .child(settings_path_field_row(
-                        self.settings_inputs.core_path.clone(),
-                        "browse-core-path",
-                        self.t("button-browse"),
-                        self.t("settings-core-browse-aria"),
-                        PathPickTarget::CoreExecutable,
+                    .gap_3()
+                    .child(settings_section_heading(
+                        self.t("core-setup-section"),
                         colors,
-                        cx,
                     ))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap_2()
-                            .child(
-                                Button::new("import-core", self.t("settings-core-import"))
-                                    .aria_label(self.t("settings-core-import-aria"))
-                                    .style(ButtonStyle::Primary)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.request_import_core_from_input(cx);
-                                    }))
-                                    .render(colors),
-                            )
-                            .child(
-                                Button::new("link-core", self.t("settings-core-link"))
-                                    .aria_label(self.t("settings-core-link-aria"))
-                                    .style(ButtonStyle::Secondary)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.request_link_core_from_input(cx);
-                                    }))
-                                    .render(colors),
-                            )
-                            .child(
-                                Button::new("rollback-core", self.t("settings-core-rollback"))
-                                    .aria_label(self.t("settings-core-rollback-aria"))
-                                    .style(ButtonStyle::Secondary)
-                                    .disabled(!can_rollback)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.request_core_command(CoreCommandView::Rollback, cx);
-                                    }))
-                                    .render(colors),
-                            ),
-                    ),
+                    .child(self.render_core_setup_panel("settings", cx)),
             )
     }
 

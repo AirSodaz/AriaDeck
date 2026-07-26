@@ -2,9 +2,9 @@ use gpui::{TestAppContext, point, px};
 
 use super::*;
 use crate::{
-    AddDownloadMetadataFileView, AddDownloadMetadataPreviewItemView, CoreInstallStatusView,
-    CoreInstallationView, CoreSourceView, SpeedLimitSettingsView, TaskCountsView,
-    TaskNameStateView, TaskSourceKindView, TaskStatusView,
+    AddDownloadMetadataFileView, AddDownloadMetadataPreviewItemView, CoreDiscoveryOriginView,
+    CoreInstallStatusView, CoreInstallationView, CoreSourceView, SpeedLimitSettingsView,
+    TaskCountsView, TaskNameStateView, TaskSourceKindView, TaskStatusView,
 };
 
 fn task(index: usize) -> DownloadRowView {
@@ -3573,6 +3573,224 @@ fn core_registry_commands_emit_and_apply_results(cx: &mut TestAppContext) {
                 .as_ref()
                 .is_some_and(|notice| notice.message.contains("verified"))
         );
+    });
+}
+
+/// B4: the guide asks the desktop layer to scan, renders what came back, and
+/// dismissing it reports that the user was asked so it stops reopening.
+#[gpui::test]
+fn core_setup_guide_scans_on_open_and_reports_dismissal(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let _subscription = view.update(cx, |_, cx| {
+        cx.subscribe(&view, move |_, _, event: &AppShellEvent, _| match event {
+            AppShellEvent::CoreDiscoveryRequested { .. } => sink
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push("discovery"),
+            AppShellEvent::CoreSetupOnboardingDismissed => sink
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push("dismissed"),
+            _ => {}
+        })
+    });
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_core_setup_onboarding(window, cx);
+        assert!(shell.core_setup_onboarding_open());
+        assert!(shell.core_setup.scanning, "opening must trigger a scan");
+    });
+    assert_eq!(
+        *events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec!["discovery"]
+    );
+
+    view.update(cx, |shell, cx| {
+        shell.set_core_discovery_result(
+            CoreDiscoveryResultView {
+                request_id: RequestId::from_u64(1),
+                discovered: vec![DiscoveredCoreView {
+                    path: "C:/tools/aria2c.exe".into(),
+                    version: "1.37.0".into(),
+                    origin: CoreDiscoveryOriginView::SearchPath,
+                    features: vec!["BitTorrent".into()],
+                    already_registered: false,
+                }],
+            },
+            cx,
+        );
+        assert!(!shell.core_setup.scanning);
+        assert!(shell.core_setup.scanned);
+        assert_eq!(shell.core_setup.discovered.len(), 1);
+    });
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.dismiss_core_setup_onboarding(window, cx);
+        assert!(!shell.core_setup_onboarding_open());
+    });
+    assert_eq!(
+        *events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec!["discovery", "dismissed"],
+        "dismissing must report exactly once so the guide stops reopening"
+    );
+}
+
+/// The download is user-initiated by construction: no offer means no request,
+/// and a request in flight does not queue a second one.
+#[gpui::test]
+fn core_download_requires_an_offer_and_never_runs_twice(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+    let requests = Arc::new(std::sync::Mutex::new(0usize));
+    let sink = requests.clone();
+    let _subscription = view.update(cx, |_, cx| {
+        cx.subscribe(&view, move |_, _, event: &AppShellEvent, _| {
+            if matches!(event, AppShellEvent::CoreDownloadRequested { .. }) {
+                *sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) += 1;
+            }
+        })
+    });
+
+    // Platform with nothing published upstream: the button must not fire.
+    view.update(cx, |shell, cx| {
+        shell.set_core_download_offer(
+            CoreDownloadOfferView {
+                available: false,
+                target: "linux-x86_64".into(),
+                ..CoreDownloadOfferView::default()
+            },
+            cx,
+        );
+        shell.request_core_download(cx);
+        assert!(!shell.core_setup.downloading);
+    });
+    assert_eq!(
+        *requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        0
+    );
+
+    view.update(cx, |shell, cx| {
+        shell.set_core_download_offer(
+            CoreDownloadOfferView {
+                available: true,
+                version: "1.37.0".into(),
+                target: "windows-x86_64".into(),
+                url: "https://github.example/aria2.zip".into(),
+                emulated: false,
+            },
+            cx,
+        );
+        shell.request_core_download(cx);
+        shell.request_core_download(cx);
+        assert!(shell.core_setup.downloading);
+    });
+    assert_eq!(
+        *requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        1,
+        "a download already in flight must not be queued again"
+    );
+
+    view.update(cx, |shell, cx| {
+        shell.set_core_download_result(
+            CoreDownloadResultView {
+                request_id: RequestId::from_u64(1),
+                registry: CoreRegistryView {
+                    active_id: None,
+                    last_working_id: None,
+                    installations: vec![CoreInstallationView {
+                        id: "c1".into(),
+                        version: "1.37.0".into(),
+                        target: "windows-x86_64".into(),
+                        source: CoreSourceView::Managed,
+                        executable: "D:/cores/aria2c.exe".into(),
+                        features: Vec::new(),
+                        is_active: false,
+                        is_last_working: false,
+                        validated_version: Some("1.37.0".into()),
+                        status: CoreInstallStatusView::Ready,
+                    }],
+                },
+                installed_version: Some("1.37.0".into()),
+                outcome: CoreCommandOutcomeView::Success,
+            },
+            cx,
+        );
+        assert!(!shell.core_setup.downloading);
+        assert_eq!(shell.cores.installations.len(), 1);
+        assert!(
+            shell
+                .status_notice
+                .as_ref()
+                .is_some_and(|notice| notice.message.contains("1.37.0")),
+            "a completed download must say which version landed"
+        );
+    });
+}
+
+/// The guide hands off to Settings → Engine, where the same panel lives, and
+/// that hand-off still counts as having been asked.
+#[gpui::test]
+fn core_setup_guide_hands_off_to_engine_settings(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_core_setup_onboarding(window, cx);
+        shell.open_engine_settings_from_onboarding(window, cx);
+        assert!(!shell.core_setup_onboarding_open());
+        assert_eq!(shell.page, AppPage::Settings);
+        assert_eq!(
+            shell.settings_page.active_category,
+            SettingsCategory::Engine
+        );
+    });
+}
+
+/// The guide and Settings → Engine share one panel — including one path input
+/// entity — so they must never be mounted in the same frame. Whichever the user
+/// is already looking at wins.
+#[gpui::test]
+fn core_setup_panel_is_never_mounted_in_two_places_at_once(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    // Already on Settings: the guide redirects to Engine instead of stacking.
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_settings(&OpenSettings, window, cx);
+        shell.open_core_setup_onboarding(window, cx);
+        assert!(!shell.core_setup_onboarding_open());
+        assert_eq!(
+            shell.settings_page.active_category,
+            SettingsCategory::Engine
+        );
+        shell.close_settings(window, cx);
+    });
+
+    // Guide up: opening Settings is refused until it is dismissed.
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_core_setup_onboarding(window, cx);
+        assert!(shell.core_setup_onboarding_open());
+        shell.open_settings(&OpenSettings, window, cx);
+        assert_eq!(shell.page, AppPage::Downloads);
+
+        shell.dismiss_core_setup_onboarding(window, cx);
+        shell.open_settings(&OpenSettings, window, cx);
+        assert_eq!(shell.page, AppPage::Settings);
+    });
+
+    // Another modal already owns the screen: the guide waits rather than stacks.
+    view.update_in(cx, |shell, window, cx| {
+        shell.close_settings(window, cx);
+        shell.add_dialog.open = true;
+        shell.open_core_setup_onboarding(window, cx);
+        assert!(!shell.core_setup_onboarding_open());
     });
 }
 

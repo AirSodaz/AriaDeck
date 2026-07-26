@@ -16,6 +16,15 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 
 - unicode-ident 1.0.24
 
+## 0BSD
+
+- doctest-file 1.1.1
+- recvmsg 1.0.0
+
+## 0BSD OR Apache-2.0
+
+- interprocess 2.4.2
+
 ## 0BSD OR MIT OR Apache-2.0
 
 - adler2 2.0.1
@@ -46,8 +55,10 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - stacksafe 0.1.4
 - stacksafe-macro 0.1.4
 - sum_tree 0.1.0
+- sync_wrapper 1.0.2
 - unicode-linebreak 0.1.5
 - util_macros 0.1.0
+- zopfli 0.8.3
 
 ## Apache-2.0 / MIT
 
@@ -71,6 +82,7 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 
 ## Apache-2.0 OR ISC OR MIT
 
+- hyper-rustls 0.27.9
 - rustls 0.23.42
 - rustls-native-certs 0.8.4
 
@@ -113,6 +125,8 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - kurbo 0.11.3
 - kurbo 0.13.1
 - leak 0.1.2
+- libappindicator 0.9.0
+- libappindicator-sys 0.9.0
 - linebender_resource_handle 0.1.1
 - link-section 0.19.0
 - linktime-proc-macro 0.2.0
@@ -160,6 +174,7 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 ## Apache-2.0 WITH LLVM-exception
 
 - ar_archive_writer 0.5.2
+- target-lexicon 0.12.16
 
 ## Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
 
@@ -240,6 +255,7 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 
 ## ISC
 
+- libloading 0.7.4
 - libloading 0.8.9
 - rustls-webpki 0.103.13
 - untrusted 0.9.0
@@ -249,12 +265,16 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - aligned-vec 0.6.4
 - arg_enum_proc_macro 0.3.4
 - ashpd 0.13.13
+- atk 0.18.2
+- atk-sys 0.18.2
 - av-scenechange 0.14.1
 - block 0.1.6
 - block2 0.5.1
 - block2 0.6.2
 - built 0.8.1
 - bytes 1.12.1
+- cairo-rs 0.18.5
+- cairo-sys-rs 0.18.2
 - calloop 0.14.4
 - cfg_aliases 0.2.2
 - color_quant 1.1.0
@@ -279,16 +299,33 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - fontdb 0.22.0
 - fontdb 0.23.0
 - freetype-sys 0.20.1
+- gdk 0.18.2
+- gdk-pixbuf 0.18.5
+- gdk-pixbuf-sys 0.18.0
+- gdk-sys 0.18.2
 - generic-array 0.14.7
+- gio 0.18.4
+- gio-sys 0.18.1
+- glib 0.18.5
+- glib-macros 0.18.5
+- glib-sys 0.18.1
+- gobject-sys 0.18.0
 - grid 1.0.1
+- gtk 0.18.2
+- gtk-sys 0.18.2
+- gtk3-macros 0.18.2
 - harfrust 0.5.2
 - http-body 1.1.0
+- http-body-util 0.1.4
+- hyper 1.11.0
+- hyper-util 0.1.20
 - ico 0.3.0
 - imagesize 0.13.0
 - imagesize 0.14.0
 - interpolate_name 0.2.4
 - libm 0.2.16
 - libredox 0.1.18
+- libsqlite3-sys 0.35.0
 - loop9 0.1.5
 - malloc_buf 0.0.6
 - matchers 0.2.0
@@ -318,6 +355,8 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - objc_id 0.1.1
 - oo7 0.6.0
 - ordered-float 5.3.0
+- pango 0.18.3
+- pango-sys 0.18.0
 - pem 3.0.6
 - phf 0.13.1
 - phf_generator 0.13.1
@@ -334,6 +373,7 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - redox_syscall 0.5.18
 - redox_users 0.5.2
 - rgb 0.8.53
+- rusqlite 0.37.0
 - rust-embed 8.12.0
 - rust-embed-impl 8.12.0
 - rust-embed-utils 8.12.0
@@ -360,20 +400,28 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - tokio 1.53.0
 - tokio-macros 2.7.1
 - tokio-tungstenite 0.28.0
+- tower 0.5.3
+- tower-http 0.6.11
+- tower-layer 0.3.3
+- tower-service 0.3.3
 - tracing 0.1.44
 - tracing-attributes 0.1.31
 - tracing-core 0.1.36
 - tracing-log 0.2.0
 - tracing-subscriber 0.3.23
 - trash 5.2.6
+- try-lock 0.2.5
 - uds_windows 1.2.1
 - urlencoding 2.1.3
 - valuable 0.1.1
+- version-compare 0.2.1
 - vswhom 0.1.0
 - vswhom-sys 0.1.3
+- want 0.3.1
 - wayland-sys 0.31.11
 - which 6.0.3
 - windows-capture 1.5.0
+- winnow 0.5.40
 - winnow 0.7.15
 - winnow 1.0.4
 - winreg 0.55.0
@@ -392,6 +440,7 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - zbus_names 4.3.4
 - zbus_xml 5.2.1
 - zed-scap 0.0.8-zed
+- zip 4.6.1
 - zmij 1.0.23
 - zvariant 5.13.1
 - zvariant_derive 5.13.1
@@ -439,7 +488,9 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - bzip2 0.6.1
 - cbc 0.1.2
 - cc 1.3.0
+- cfg-expr 0.15.8
 - cfg-if 1.0.4
+- chacha20 0.10.1
 - chrono 0.4.45
 - cipher 0.4.4
 - cocoa 0.25.0
@@ -473,6 +524,7 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - data-url 0.3.2
 - der-parser 10.0.0
 - deranged 0.5.8
+- derive_arbitrary 1.4.2
 - digest 0.10.7
 - digest 0.11.3
 - dirs 6.0.0
@@ -487,6 +539,7 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - errno 0.3.14
 - euclid 0.22.14
 - fdeflate 0.3.7
+- field-offset 0.3.6
 - find-msvc-tools 0.1.9
 - fixedbitset 0.5.7
 - flate2 1.1.9
@@ -518,6 +571,7 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - hashbrown 0.15.5
 - hashbrown 0.16.1
 - hashbrown 0.17.1
+- hashlink 0.10.0
 - heapless 0.9.3
 - heck 0.4.1
 - heck 0.5.0
@@ -538,6 +592,7 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - inout 0.1.4
 - inventory 0.3.24
 - io-surface 0.16.1
+- ipnet 2.12.0
 - itertools 0.13.0
 - itertools 0.14.0
 - itoa 1.0.18
@@ -597,7 +652,11 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - ppv-lite86 0.2.21
 - presser 0.3.1
 - prettyplease 0.2.37
+- proc-macro-crate 1.3.1
+- proc-macro-crate 2.0.0
 - proc-macro-crate 3.5.0
+- proc-macro-error 1.0.4
+- proc-macro-error-attr 1.0.4
 - proc-macro-error-attr2 2.0.0
 - proc-macro-error2 2.0.1
 - proc-macro-hack 0.5.20+deprecated
@@ -607,13 +666,19 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - proptest 1.10.0
 - proptest-macro 0.5.0
 - psm 0.1.31
+- quinn 0.11.11
+- quinn-proto 0.11.16
+- quinn-udp 0.5.15
 - quote 1.0.46
+- rand 0.10.2
 - rand 0.8.7
 - rand 0.9.5
 - rand_chacha 0.3.1
 - rand_chacha 0.9.0
+- rand_core 0.10.1
 - rand_core 0.6.4
 - rand_core 0.9.5
+- rand_pcg 0.10.2
 - rand_xorshift 0.4.0
 - range-alloc 0.1.5
 - raw-window-metal 1.1.0
@@ -628,6 +693,7 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - regex-automata 0.4.16
 - regex-syntax 0.8.11
 - renderdoc-sys 1.1.0
+- reqwest 0.12.28
 - roxmltree 0.20.0
 - roxmltree 0.21.1
 - rustc_version 0.4.1
@@ -663,8 +729,10 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - stable_deref_trait 1.2.1
 - stacker 0.1.24
 - static_assertions 1.1.0
+- syn 1.0.109
 - syn 2.0.119
 - sys-locale 0.3.2
+- system-deps 6.2.2
 - tauri-winrt-notification 0.7.3
 - tempfile 3.27.0
 - thiserror 1.0.69
@@ -680,6 +748,8 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - toml 1.1.3+spec-1.1.0
 - toml_datetime 0.6.11
 - toml_datetime 1.1.1+spec-1.1.0
+- toml_edit 0.19.15
+- toml_edit 0.20.7
 - toml_edit 0.22.27
 - toml_edit 0.25.13+spec-1.1.0
 - toml_parser 1.1.2+spec-1.1.0
@@ -720,6 +790,7 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - wgpu-hal 29.0.4
 - wgpu-naga-bridge 29.0.4
 - wgpu-types 29.0.4
+- widestring 1.2.1
 - windows 0.56.0
 - windows 0.57.0
 - windows 0.61.3
@@ -777,6 +848,7 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 ## MIT OR Apache-2.0 OR Zlib
 
 - glow 0.17.0
+- lru-slab 0.1.2
 - raw-window-handle 0.6.2
 - tinyvec_macros 0.1.1
 - zune-core 0.4.12
@@ -797,6 +869,8 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - bitstream-io 4.10.0
 - custom_derive 0.1.7
 - etagere 0.2.15
+- fallible-iterator 0.3.0
+- fallible-streaming-iterator 0.1.9
 - foreign-types 0.5.0
 - foreign-types-macros 0.2.3
 - foreign-types-shared 0.3.1
@@ -824,6 +898,7 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - unicode-ccc 0.4.0
 - unicode-properties 0.1.4
 - unicode-vo 0.1.0
+- vcpkg 0.2.15
 - version_check 0.9.5
 - wait-timeout 0.2.1
 - winapi 0.3.9
@@ -885,6 +960,7 @@ GPUI is Apache-2.0 (dependency of the desktop UI).
 - foldhash 0.2.0
 - nanorand 0.7.0
 - slotmap 1.1.1
+- zlib-rs 0.6.6
 
 ## Zlib OR Apache-2.0 OR MIT
 

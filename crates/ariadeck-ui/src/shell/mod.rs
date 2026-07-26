@@ -23,36 +23,37 @@ use crate::{
     AddDownloadResultView, AddDownloadSourceView, BatchCommandOutcomeView,
     BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
     BatchTaskFailureView, BridgeDownloadView, BrowserBridgeSettingsView, Button, ButtonStyle,
-    ClearSearch, CloseAddDownload, CloseBatchFailures, CloseBehaviorView, CloseSettings,
-    CloseTaskOptions, CloseTaskOutputName, CloseTaskSpeedLimit, ColorSchemeView,
+    ClearSearch, CloseAddDownload, CloseBatchFailures, CloseBehaviorView, CloseCoreSetup,
+    CloseSettings, CloseTaskOptions, CloseTaskOutputName, CloseTaskSpeedLimit, ColorSchemeView,
     CommandOutcomeView, ConnectionView, CoreCommandOutcomeView, CoreCommandRequestView,
-    CoreCommandResultView, CoreCommandView, CoreRegistryView, DiagnosticExportOutcomeView,
-    DiagnosticExportRequestView, DiagnosticExportResultView, Dialog, DownloadProxySettingsView,
-    DownloadRowView, EngineHealthView, EngineSessionView, FileAllocationView,
-    FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch, GlobalTaskCommandRequestView,
-    GlobalTaskCommandResultView, GlobalTaskCommandView, Icon, IconButton, IconName, IconSize,
-    LanguagePreferenceView, LocaleId, MoveTaskDownInQueue, MoveTaskToQueueBottom,
-    MoveTaskToQueueTop, MoveTaskUpInQueue, NotificationSettingsView, NotificationVolumeView,
-    OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit,
-    OperationErrorView, PauseSelectedTask, PlatformSettingsView, ProfileCatalogView,
-    ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView,
-    ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask,
-    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
-    SaveSettings, SearchInputEvent, SecretStringView, Segment, SegmentedControl, SelectAllTasks,
-    SelectNextTask, SelectPreviousTask, SettingsExportOutcomeView, SettingsExportRequestView,
-    SettingsExportResultView, SettingsImportOutcomeView, SettingsImportRequestView,
-    SettingsImportResultView, SettingsSaveOutcomeView, SettingsSaveRequestView,
-    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator,
-    SubmitAddDownload, SubmitTaskOptions, SubmitTaskOutputName, SubmitTaskSpeedLimit,
-    SwitchProfileOutcomeView, SwitchProfileRequestView, SwitchProfileResultView,
-    TaskCommandRequestView, TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView,
-    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity,
-    TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
-    TaskOptionView, TaskPathValidationView, TaskStatusView, TextField, TextFieldConfig, Theme,
-    ThemeMode, Toast, ToastKind, Toggle, Tooltip, TrackerListSettingsView, TrackerListSourceView,
-    TransferPolicySettingsView, Translator, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
-    WorkspaceSortDirection, WorkspaceSortKey, actions::TEXT_FIELD_KEY_CONTEXT, format_bytes,
-    format_eta, format_percent, format_rate, format_share_ratio,
+    CoreCommandResultView, CoreCommandView, CoreDiscoveryResultView, CoreDownloadOfferView,
+    CoreDownloadResultView, CoreRegistryView, DiagnosticExportOutcomeView,
+    DiagnosticExportRequestView, DiagnosticExportResultView, Dialog, DiscoveredCoreView,
+    DownloadProxySettingsView, DownloadRowView, EngineHealthView, EngineSessionView,
+    FileAllocationView, FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch,
+    GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView, Icon,
+    IconButton, IconName, IconSize, LanguagePreferenceView, LocaleId, MoveTaskDownInQueue,
+    MoveTaskToQueueBottom, MoveTaskToQueueTop, MoveTaskUpInQueue, NotificationSettingsView,
+    NotificationVolumeView, OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName,
+    OpenTaskSpeedLimit, OperationErrorView, PauseSelectedTask, PlatformSettingsView,
+    ProfileCatalogView, ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView,
+    ProxyModeView, ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask,
+    RetrySelectedTask, SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView,
+    SaveProfileCatalogResultView, SaveSettings, SearchInputEvent, SecretStringView, Segment,
+    SegmentedControl, SelectAllTasks, SelectNextTask, SelectPreviousTask,
+    SettingsExportOutcomeView, SettingsExportRequestView, SettingsExportResultView,
+    SettingsImportOutcomeView, SettingsImportRequestView, SettingsImportResultView,
+    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
+    SpeedLimitSettingsView, SpeedSampleView, StatusIndicator, SubmitAddDownload, SubmitTaskOptions,
+    SubmitTaskOutputName, SubmitTaskSpeedLimit, SwitchProfileOutcomeView, SwitchProfileRequestView,
+    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
+    TaskFileView, TaskIdentity, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
+    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskStatusView, TextField,
+    TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Toggle, Tooltip, TrackerListSettingsView,
+    TrackerListSourceView, TransferPolicySettingsView, Translator, WorkspaceFilter, WorkspaceQuery,
+    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, actions::TEXT_FIELD_KEY_CONTEXT,
+    format_bytes, format_eta, format_percent, format_rate, format_share_ratio,
 };
 
 #[cfg(test)]
@@ -61,12 +62,14 @@ use crate::{TaskPeerView, TaskServerView, TaskTrackerView, TaskUriView};
 mod activity;
 mod chrome;
 mod commands;
+mod core_setup;
 mod details;
 mod dialogs_add;
 mod helpers;
 mod profiles;
 mod settings;
 mod task_list;
+use core_setup::CoreSetupState;
 #[allow(unused_imports)]
 use helpers::*;
 
@@ -175,6 +178,18 @@ pub enum AppShellEvent {
     SwitchProfileRequested(SwitchProfileRequestView),
     SaveProfileCatalogRequested(SaveProfileCatalogRequestView),
     CoreCommandRequested(CoreCommandRequestView),
+    /// Scan this machine for existing aria2 binaries (B4). Local filesystem only.
+    CoreDiscoveryRequested {
+        request_id: RequestId,
+    },
+    /// Fetch the pinned, checksum-verified aria2 build (B4). Only ever emitted
+    /// from an explicit button press.
+    CoreDownloadRequested {
+        request_id: RequestId,
+    },
+    /// The first-run core-setup guide was closed; persist that it was shown so it
+    /// does not reopen on its own (B4).
+    CoreSetupOnboardingDismissed,
     /// Hide the main window while keeping the process and managed engine alive.
     HideToTrayRequested,
     /// Bring the main window back from tray/minimized state.
@@ -650,6 +665,11 @@ pub struct AppShell {
     add_cancel_focus: FocusHandle,
     add_submit_focus: FocusHandle,
     settings_page: SettingsPage,
+    /// Discovery / verified-download state for the shared Get-aria2 panel (B4).
+    core_setup: CoreSetupState,
+    core_setup_dialog_focus: FocusHandle,
+    core_setup_settings_focus: FocusHandle,
+    core_setup_dismiss_focus: FocusHandle,
     /// Set once the user has confirmed a browser hand-off in this session. Only
     /// consulted when cookies *and* auto-submit are both on, which D-045 §6 makes
     /// the one configuration that never gets a fully silent path.
@@ -1563,6 +1583,10 @@ impl AppShell {
                 draft_tracker_auto_refresh: settings.tracker_list.auto_refresh,
                 ..SettingsPage::default()
             },
+            core_setup: CoreSetupState::default(),
+            core_setup_dialog_focus: cx.focus_handle(),
+            core_setup_settings_focus: cx.focus_handle().tab_stop(true),
+            core_setup_dismiss_focus: cx.focus_handle().tab_stop(true),
             bridge_auto_submit_unlocked: false,
             pending_settings_save: None,
             pending_task_command: None,
@@ -3216,6 +3240,7 @@ impl Render for AppShell {
             .on_action(cx.listener(Self::close_task_options_action))
             .on_action(cx.listener(Self::submit_task_options_action))
             .on_action(cx.listener(Self::close_batch_failure_details_action))
+            .on_action(cx.listener(Self::close_core_setup_onboarding_action))
             .on_action(cx.listener(Self::remove_selected))
             .on_action(cx.listener(Self::focus_next))
             .on_action(cx.listener(Self::focus_previous))
@@ -3288,6 +3313,10 @@ impl Render for AppShell {
             })
             .when(self.batch_failure_details.is_some(), |element| {
                 element.child(self.render_batch_failure_details(cx))
+            })
+            // Last child so the first-run guide sits above the rest of the shell.
+            .when(self.core_setup.onboarding_open, |element| {
+                element.child(self.render_core_setup_onboarding(cx))
             })
     }
 }

@@ -110,7 +110,6 @@ ui-profile-name = 名称
 ui-profile-kind = 类型
 ui-profile-endpoint = 端点 (ws/wss)
 ui-profile-download-dir = 下载目录
-ui-import-aria2c = 导入或链接本地 aria2c
 ui-advanced-options = 高级选项
 ui-torrent-metalink-files = Torrent / Metalink 文件
 ui-files = 文件

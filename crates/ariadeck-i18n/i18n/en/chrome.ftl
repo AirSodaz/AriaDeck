@@ -114,7 +114,6 @@ ui-profile-name = Name
 ui-profile-kind = Kind
 ui-profile-endpoint = Endpoint (ws/wss)
 ui-profile-download-dir = Download directory
-ui-import-aria2c = Import or link local aria2c
 ui-advanced-options = Advanced options
 ui-torrent-metalink-files = Torrent / Metalink files
 ui-files = Files

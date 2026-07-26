@@ -326,6 +326,25 @@ impl CoreStore {
         &self,
         source_path: impl AsRef<Path>,
     ) -> Result<CoreInstallationView, EngineError> {
+        self.install_executable(source_path, CoreSource::Imported)
+    }
+
+    /// Install an aria2c that AriaDeck fetched itself (B4 verified download).
+    ///
+    /// Identical to [`Self::import_executable`] apart from the recorded source,
+    /// which lets the UI distinguish "you gave us this" from "we downloaded it".
+    pub fn install_downloaded_executable(
+        &self,
+        source_path: impl AsRef<Path>,
+    ) -> Result<CoreInstallationView, EngineError> {
+        self.install_executable(source_path, CoreSource::Managed)
+    }
+
+    fn install_executable(
+        &self,
+        source_path: impl AsRef<Path>,
+        source: CoreSource,
+    ) -> Result<CoreInstallationView, EngineError> {
         let source_path = source_path.as_ref();
         validate_executable(source_path)?;
         let probe = probe_aria2(source_path)?;
@@ -379,7 +398,7 @@ impl CoreStore {
             id,
             version: staged_probe.version.clone(),
             target: target.clone(),
-            source: CoreSource::Imported,
+            source,
             executable: file_name,
             sha256: Some(sha256),
             installed_at: now.clone(),
@@ -404,7 +423,7 @@ impl CoreStore {
             id,
             version: installation.version.clone(),
             target: target.clone(),
-            source: CoreSource::Imported,
+            source,
             relative_dir: Self::relative_dir(&version, &target),
         };
         registry.installations.push(summary);
@@ -419,7 +438,7 @@ impl CoreStore {
             id,
             version: installation.version,
             target,
-            source: CoreSource::Imported,
+            source,
             executable: version_dir.join(
                 installation
                     .executable

@@ -54,7 +54,7 @@ Legend: **Have** · **Partial** · **Missing** · **Won’t** (non-goal)
 | System tray + close-to-tray | Have | Have | N/A | Done |
 | Themes + en/zh-CN | Have | Have (more langs) | Have | Extra locales later |
 | Windows portable/installer | Have | Have | N/A | macOS/Linux CI-verified; packages = next distro (Phase E) |
-| Bundled aria2 | Partial (import) | Have | N/A | Optional offline pack later; no forced network channel |
+| Bundled aria2 | Have (discover / verified download / import) | Have | N/A | B4 / D-046: pinned SHA-256, user-initiated only; offline pack (E4) still open |
 | Browser extension / intercept | Done (D-045), unpublished | Have (Next strong) | 3rd party | Per-download opt-in; blanket interception deferred |
 | Protocol handlers / file associations | Have (`.torrent`/Metalink + `magnet:`) | Have | N/A | Browser capture remains B3 |
 | Tags / categories / folders | Have (ext auto-route) | Next: categories | Filters | D-040/D-042; freeform multi-tags later |
@@ -103,11 +103,11 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | B3a | **Done** — contract frozen in [`browser-bridge.md`](browser-bridge.md) (D-045): native messaging host, no port; exhaustive payload whitelist; cookies opt-in/memory-only; confirm by default | Design before build; minimize attack surface |
 | B3b | **Done** — `crates/ariadeck-ipc` (socket protocol v3) + `apps/ariadeck-bridge` native messaging host; `browser_bridge` settings section with System-page toggles and en/zh-CN strings; confirm and auto-submit paths; `--register`/`--unregister` self-registration shipped in both packages with an installer opt-in task. Only B3c is left before the path works end to end — the installer task appears only once a published extension ID exists (`ARIADECK_EXTENSION_ID`) | Motrix Next differentiator |
 | B3c | **Done** — `apps/ariadeck-extension/` (MV3, context-menu opt-in per download, per-site cookie grant, no host access at install), icons rendered from the app's `icon.svg` by `scripts/render-extension-icons.ps1`. Loads unpacked today; needs a published extension ID before store submission, plus the manual gated-download check that CI cannot run | Validate contract end-to-end |
-| B4 | First-run: discover/import aria2 or guided core import | Onboarding; still no mandatory network install |
+| B4 | **Done** — one *Get aria2* panel (D-046) shared by the first-run guide and Settings → Engine: local discovery (PATH / scoop / WinGet / Chocolatey / Homebrew / system / portable, probed with `--version`), pinned checksum-verified download, and manual Browse → Import/Link. The guide opens only when a local-managed profile has no working aria2 and the user has not been asked | Onboarding; still no mandatory or silent network install |
 | B5 | Tray speed meter (at least Windows + optional) | Motrix-class glanceability |
 | B6 | **Done** — SQLite **local history** of completed/failed (paths, hashes, times) in `history.sqlite`; merges with engine stopped pages; Remove clears history rows | Heavy users exhaust aria2 memory fast; D-039 |
 
-**Exit:** User can set AriaDeck as magnet/torrent handler, push links from a browser add-on, and history survives aria2 restarts.
+**Exit:** A first run with no aria2 ends with a working engine, the user can set AriaDeck as magnet/torrent handler, push links from a browser add-on, and history survives aria2 restarts.
 
 ### Phase C — Organization & retention (medium)
 
@@ -142,7 +142,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | E1 | macOS app bundle + notarization path (when signing ready) | Motrix matrix |
 | E2 | Linux AppImage and/or deb/rpm or Flatpak | Reach |
 | E3 | CI matrix for non-Windows smoke | **Done (verify)** — `ci.yml` runs fmt/test/clippy/desktop release on windows-latest, macos-latest, ubuntu-latest; Windows portable zip + Inno installer on `main` push / `v*` tags |
-| E4 | Optional offline **aria2 core pack** (checksummed, user-initiated) | Still not silent network channel |
+| E4 | Optional offline **aria2 core pack** (checksummed, user-initiated) | B4/D-046 already covers the online half on Windows; this is the no-network case, plus targets upstream ships no binary for |
 
 **Exit:** Primary artifacts documented per OS; Windows remains best-supported until E1–E2 land.
 
@@ -176,7 +176,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 
 ```text
 M1  Ship trust     → A1, A3, A6 residual (+ signing / manual QA)
-M2  OS hooks       → B4–B5; B1/B2/B3/B6 done (B3 needs a published extension ID)
+M2  OS hooks       → B5; B1/B2/B3/B4/B6 done (B3 needs a published extension ID)
 M3  Org/cleanup    → C2 (C1 done; C3 if demand); F3/D-043 done
 M4  BT depth / dist → D2–D5, E1 or E2 as capacity allows; D1 done
 ```
@@ -190,7 +190,7 @@ Each milestone should land with: tests or live-check notes for engine paths, `pr
 | Signal | Target |
 | --- | --- |
 | Windows install friction | Signed build; portable + installer both documented |
-| Time-to-first-download | First-run → add URL in under 2 minutes with imported core |
+| Time-to-first-download | First-run → add URL in under 2 minutes; the core-setup guide gets a machine with no aria2 there without leaving the app (B4) |
 | Large queue | 10k stopped remains interactive (PERF-001) |
 | Trust | No secret leakage in copy/logs/diagnostics |
 | Sticky usage | Magnet/torrent open from OS; optional browser push works |

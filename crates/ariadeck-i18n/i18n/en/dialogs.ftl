@@ -183,3 +183,13 @@ dialog-add-category = Category
 dialog-add-category-default = Default directory
 dialog-add-category-auto = Automatic
 dialog-add-category-auto-named = Auto · { $name }
+
+# B4 — first-run aria2 core setup guide
+dialog-core-setup-title = Set up aria2
+dialog-core-setup-description = AriaDeck drives an aria2 engine it does not bundle. Point it at one to start downloading.
+dialog-core-setup-remote-hint = Connecting to a remote aria2 instead? Skip this and add a remote profile in Settings > Profiles.
+dialog-core-setup-restart-hint = A managed core is registered. Activate it in Settings > Engine, then restart AriaDeck to use it.
+dialog-core-setup-open-settings = Open engine settings
+dialog-core-setup-open-settings-aria = Close this guide and open Settings, Engine
+dialog-core-setup-dismiss = Not now
+dialog-core-setup-dismiss-aria = Close the aria2 setup guide without choosing a core

@@ -112,3 +112,8 @@ cmd-options-success = Task options updated.
 cmd-remove-success = Task removed from aria2; downloaded files were kept.
 cmd-force-remove-success = Task force-removed.
 cmd-remove-files-success = Task removed and local files moved to the Recycle Bin.
+
+# B4 — aria2 core download
+notice-core-downloading = Downloading and verifying aria2...
+notice-core-download-installed = aria2 { $version } downloaded and verified. Activate it in Settings > Engine, then restart AriaDeck.
+notice-core-download-unavailable = No verified aria2 download is published for this platform.

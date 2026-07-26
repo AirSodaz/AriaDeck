@@ -28,6 +28,8 @@ secrecy.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sysinfo.workspace = true
+# Staging directory for the verified aria2 download (B4).
+tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -47,7 +49,6 @@ winres = "0.1.12"
 [dev-dependencies]
 async-trait.workspace = true
 futures.workspace = true
-tempfile.workspace = true
 
 [lints.rust]
 # Platform boundary (Win32 ShowWindow for hide-to-tray) requires a narrow unsafe

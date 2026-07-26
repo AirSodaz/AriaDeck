@@ -2038,6 +2038,76 @@ pub struct CoreCommandResultView {
     pub outcome: CoreCommandOutcomeView,
 }
 
+/// Where a discovered `aria2c` was found (B4).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CoreDiscoveryOriginView {
+    Environment,
+    #[default]
+    SearchPath,
+    Scoop,
+    WinGet,
+    Chocolatey,
+    Homebrew,
+    SystemInstall,
+    Portable,
+}
+
+impl CoreDiscoveryOriginView {
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::Environment => "core-origin-environment",
+            Self::SearchPath => "core-origin-path",
+            Self::Scoop => "core-origin-scoop",
+            Self::WinGet => "core-origin-winget",
+            Self::Chocolatey => "core-origin-chocolatey",
+            Self::Homebrew => "core-origin-homebrew",
+            Self::SystemInstall => "core-origin-system",
+            Self::Portable => "core-origin-portable",
+        }
+    }
+}
+
+/// One `aria2c` found on this machine, offered for import or link (B4).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DiscoveredCoreView {
+    pub path: String,
+    pub version: String,
+    pub origin: CoreDiscoveryOriginView,
+    pub features: Vec<String>,
+    /// Already present in the managed core registry, so Import would duplicate it.
+    pub already_registered: bool,
+}
+
+/// The pinned, checksum-verified build offered for this platform (B4).
+///
+/// `available == false` means upstream publishes nothing for this target; the UI
+/// says so rather than offering an unverified download.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CoreDownloadOfferView {
+    pub available: bool,
+    pub version: String,
+    pub target: String,
+    pub url: String,
+    /// The pinned build is not native to this target and runs under OS emulation.
+    pub emulated: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreDiscoveryResultView {
+    pub request_id: RequestId,
+    pub discovered: Vec<DiscoveredCoreView>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreDownloadResultView {
+    pub request_id: RequestId,
+    pub registry: CoreRegistryView,
+    /// Version that landed in the registry, for the success message.
+    pub installed_version: Option<String>,
+    pub outcome: CoreCommandOutcomeView,
+}
+
 /// Output folder + extension rules (C1 / D-040 / D-042).
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DownloadCategoryView {

@@ -59,7 +59,9 @@ url = { version = "2.5.7", features = ["serde"] }
 unic-langid = { version = "0.9.6", features = ["macros"] }
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
 winreg = "0.55"
-zip = { version = "4.6.1", default-features = false }
+# `deflate` is required to read upstream aria2 release archives (B4). The
+# diagnostic export still writes `Stored` entries only.
+zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -334,6 +334,52 @@ pub(crate) fn spawn_tracker_list_result_bridge(
     .detach();
 }
 
+/// Deliver verified-download outcomes to the shell (B4).
+pub(crate) fn spawn_core_download_result_bridge(
+    mut results: mpsc::UnboundedReceiver<CoreDownloadResult>,
+    window: &Window,
+    cx: &mut Context<DesktopRoot>,
+) {
+    cx.spawn_in(window, async move |this, cx| {
+        while let Some(result) = results.recv().await {
+            if this
+                .update_in(cx, |this, _window, cx| {
+                    let registry = map_core_registry(&this.core_store);
+                    let installed_version = result
+                        .installed
+                        .as_ref()
+                        .map(|installation| installation.version.clone());
+                    let outcome = result.result.map_or_else(
+                        |summary| {
+                            CoreCommandOutcomeView::Failure(OperationErrorView {
+                                code: "core.download_failed".into(),
+                                summary,
+                                retryable: true,
+                            })
+                        },
+                        |()| CoreCommandOutcomeView::Success,
+                    );
+                    this.workspace.update(cx, |workspace, cx| {
+                        workspace.set_core_download_result(
+                            CoreDownloadResultView {
+                                request_id: result.request_id,
+                                registry,
+                                installed_version,
+                                outcome,
+                            },
+                            cx,
+                        );
+                    });
+                })
+                .is_err()
+            {
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
 pub(crate) fn spawn_proxy_reapply_bridge(
     runtime: tokio::runtime::Handle,
     handle: SyncHandle,

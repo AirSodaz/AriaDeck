@@ -823,6 +823,72 @@ pub(crate) fn map_core_registry(store: &CoreStore) -> CoreRegistryView {
     }
 }
 
+pub(crate) fn map_core_discovery_origin(origin: CoreDiscoveryOrigin) -> CoreDiscoveryOriginView {
+    match origin {
+        CoreDiscoveryOrigin::EnvironmentOverride => CoreDiscoveryOriginView::Environment,
+        CoreDiscoveryOrigin::SearchPath => CoreDiscoveryOriginView::SearchPath,
+        CoreDiscoveryOrigin::Scoop => CoreDiscoveryOriginView::Scoop,
+        CoreDiscoveryOrigin::WinGet => CoreDiscoveryOriginView::WinGet,
+        CoreDiscoveryOrigin::Chocolatey => CoreDiscoveryOriginView::Chocolatey,
+        CoreDiscoveryOrigin::Homebrew => CoreDiscoveryOriginView::Homebrew,
+        CoreDiscoveryOrigin::SystemInstall => CoreDiscoveryOriginView::SystemInstall,
+        CoreDiscoveryOrigin::Portable => CoreDiscoveryOriginView::Portable,
+    }
+}
+
+/// Project discovery results, marking the ones the core registry already holds.
+///
+/// "Already managed" is decided by comparing canonicalized paths against every
+/// registered installation, so a scoop shim found through PATH is not offered as
+/// a fresh import of a core the user already added.
+pub(crate) fn map_discovered_cores(
+    discovered: Vec<DiscoveredCore>,
+    registry: &CoreRegistryView,
+) -> Vec<DiscoveredCoreView> {
+    let registered: HashSet<PathBuf> = registry
+        .installations
+        .iter()
+        .filter(|core| !core.executable.is_empty())
+        .map(|core| canonical_or_original(Path::new(&core.executable)))
+        .collect();
+    discovered
+        .into_iter()
+        .map(|core| {
+            let identity = canonical_or_original(&core.path);
+            DiscoveredCoreView {
+                path: core.path.to_string_lossy().into_owned(),
+                version: core.version,
+                origin: map_core_discovery_origin(core.origin),
+                features: core.features,
+                already_registered: registered.contains(&identity),
+            }
+        })
+        .collect()
+}
+
+fn canonical_or_original(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The pinned download offer for this platform, or an explicit "not published".
+pub(crate) fn map_core_download_offer() -> CoreDownloadOfferView {
+    let target = host_target();
+    catalog_entry_for(&target).map_or(
+        CoreDownloadOfferView {
+            available: false,
+            target,
+            ..CoreDownloadOfferView::default()
+        },
+        |entry| CoreDownloadOfferView {
+            available: true,
+            version: entry.version.to_owned(),
+            target: entry.target.to_owned(),
+            url: entry.url.to_owned(),
+            emulated: entry.emulated,
+        },
+    )
+}
+
 pub(crate) fn map_profile_catalog(catalog: &ProfileCatalog) -> ProfileCatalogView {
     ProfileCatalogView {
         active_profile_id: catalog.active_profile_id.to_string(),
@@ -1206,6 +1272,9 @@ pub(crate) fn map_settings_request(
             allow_cookies: settings.browser_bridge.allow_cookies,
             auto_submit: settings.browser_bridge.auto_submit,
         },
+        // First-run state is owned by the core-setup guide (B4), not the settings
+        // form; saving Settings must never re-arm or dismiss it.
+        onboarding: current.onboarding,
         // List preferences are owned by the shell query path (UI-001), not the
         // settings form. Preserve whatever is currently persisted.
         ui: current.ui,

@@ -5,11 +5,13 @@
 //! identity is shared through `ariadeck-domain`.
 
 mod cores;
+pub mod discovery;
 
 pub use cores::{
     Aria2Probe, CoreInstallStatus, CoreInstallation, CoreInstallationSummary, CoreInstallationView,
     CoreRegistry, CoreSource, CoreStore, parse_aria2_version_output, probe_aria2,
 };
+pub use discovery::{CoreDiscoveryOrigin, DiscoveredCore, aria2_executable_name, discover_cores};
 
 use std::{
     collections::{HashSet, VecDeque},

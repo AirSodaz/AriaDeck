@@ -14,14 +14,14 @@ pub use ariadeck_i18n::{LanguagePreference, LocaleId, Translator};
 
 pub use actions::init;
 pub use actions::{
-    Backspace, ClearSearch, CloseAddDownload, CloseBatchFailures, CloseSettings, CloseTaskOptions,
-    CloseTaskOutputName, CloseTaskSpeedLimit, Copy, Cut, Delete, FocusNext, FocusPrevious,
-    FocusSearch, InsertNewline, MoveEnd, MoveHome, MoveLeft, MoveRight, MoveTaskDownInQueue,
-    MoveTaskToQueueBottom, MoveTaskToQueueTop, MoveTaskUpInQueue, OpenAddDownload, OpenSettings,
-    OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit, Paste, PauseSelectedTask,
-    RemoveSelectedTask, ResumeSelectedTask, RetrySelectedTask, SaveSettings, SelectAll,
-    SelectAllTasks, SelectLeft, SelectNextTask, SelectPreviousTask, SelectRight, SubmitAddDownload,
-    SubmitTaskOptions, SubmitTaskOutputName, SubmitTaskSpeedLimit,
+    Backspace, ClearSearch, CloseAddDownload, CloseBatchFailures, CloseCoreSetup, CloseSettings,
+    CloseTaskOptions, CloseTaskOutputName, CloseTaskSpeedLimit, Copy, Cut, Delete, FocusNext,
+    FocusPrevious, FocusSearch, InsertNewline, MoveEnd, MoveHome, MoveLeft, MoveRight,
+    MoveTaskDownInQueue, MoveTaskToQueueBottom, MoveTaskToQueueTop, MoveTaskUpInQueue,
+    OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit, Paste,
+    PauseSelectedTask, RemoveSelectedTask, ResumeSelectedTask, RetrySelectedTask, SaveSettings,
+    SelectAll, SelectAllTasks, SelectLeft, SelectNextTask, SelectPreviousTask, SelectRight,
+    SubmitAddDownload, SubmitTaskOptions, SubmitTaskOutputName, SubmitTaskSpeedLimit,
 };
 pub use assets::Assets;
 pub use components::{
@@ -39,11 +39,12 @@ pub use model::{
     BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
     BatchTaskFailureView, BridgeDownloadView, BrowserBridgeSettingsView, CloseBehaviorView,
     ColorSchemeView, CommandOutcomeView, ConnectionView, CoreCommandOutcomeView,
-    CoreCommandRequestView, CoreCommandResultView, CoreCommandView, CoreInstallStatusView,
+    CoreCommandRequestView, CoreCommandResultView, CoreCommandView, CoreDiscoveryOriginView,
+    CoreDiscoveryResultView, CoreDownloadOfferView, CoreDownloadResultView, CoreInstallStatusView,
     CoreInstallationView, CoreRegistryView, CoreSourceView, DiagnosticExportOutcomeView,
-    DiagnosticExportRequestView, DiagnosticExportResultView, DownloadCategoryView,
-    DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView, EngineHealthView,
-    EngineSessionView, FileAllocationView, FileConflictPolicyView, FormatOptions,
+    DiagnosticExportRequestView, DiagnosticExportResultView, DiscoveredCoreView,
+    DownloadCategoryView, DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView,
+    EngineHealthView, EngineSessionView, FileAllocationView, FileConflictPolicyView, FormatOptions,
     GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView,
     LanguagePreferenceView, NotificationSettingsView, NotificationVolumeView, OperationErrorView,
     PlatformSettingsView, ProfileCatalogView, ProfileEntryView, ProfileKindView,
