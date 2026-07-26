@@ -19,6 +19,7 @@ Acceptance contract for portable packages, optional installer, data dirs, signin
 | --- | --- |
 | Portable | `dist/AriaDeck-<ver>-windows-x64-portable/` + `.zip` |
 | Installer | `dist/AriaDeck-<ver>-windows-x64-setup.exe` |
+| Checksums | `dist/SHA256SUMS.txt` (tag builds only; `sha256sum -c` format, LF, no BOM) |
 
 Portable: `ariadeck-desktop.exe`, `ariadeck.portable`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `README-portable.txt`.  
 Installer: exe + licenses (**no** portable marker). **No** bundled aria2—import core or `ARIADECK_RPC_URL`.
@@ -42,7 +43,8 @@ Typical files: `settings.json`, `window.json`, `profiles.json`, `cores/`, `downl
 
 ## Version
 
-Root `Cargo.toml` `workspace.package.version` · About uses `CARGO_PKG_VERSION` · winres via `apps/ariadeck-desktop/build.rs`.
+Root `Cargo.toml` `workspace.package.version` · About uses `CARGO_PKG_VERSION` · winres via `apps/ariadeck-desktop/build.rs`.  
+Bump it **before** tagging: the release tag must be exactly `v<version>` or `release.yml` stops before building.
 
 ## Commands
 
@@ -72,7 +74,7 @@ Expected outputs under `dist/`:
 | Workflow | When | What |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` → job `Windows packages (portable + installer)` | Push to `main` / `master` (after `verify`) | Notices → portable → `choco install innosetup` → installer `-SkipStage` → drop staging dir → assert zip + setup.exe → artifact `ariadeck-windows-x64` (zip + setup only) |
-| `.github/workflows/release.yml` | Tag `v*` | Same packaging (optional Authenticode via secrets) → artifact + GitHub Release attaching `dist/*.zip` and `dist/*-setup.exe`, with a fixed install/SmartScreen body plus auto-generated commit notes |
+| `.github/workflows/release.yml` | Tag `v*` | Assert tag == `workspace.package.version` (fails before the build) → same packaging (optional Authenticode via secrets) → `SHA256SUMS.txt` → artifact + GitHub Release attaching `dist/*.zip`, `dist/*-setup.exe`, `dist/SHA256SUMS.txt`, with a fixed install/SmartScreen body plus auto-generated commit notes |
 
 PR / non-main branches run **verify only** (fmt/test/clippy/release build); they do not produce installers.
 
@@ -136,4 +138,6 @@ Unsigned builds may hit SmartScreen. No certs in-repo.
 8. Double-click while closed and while tray-hidden opens one preview without auto-submitting
 9. Protocol task defaults unchecked; opting in registers `magnet:` and fills Add Download without submitting
 10. Uninstall removes AriaDeck values without deleting shared extension or protocol keys
-11. Optional: `signtool verify /pa`
+11. Launch with a managed local engine: no `aria2c` console window appears (spawn and probes use `CREATE_NO_WINDOW`)
+12. Released assets match `SHA256SUMS.txt` (`sha256sum -c`, or `Get-FileHash -Algorithm SHA256`)
+13. Optional: `signtool verify /pa`

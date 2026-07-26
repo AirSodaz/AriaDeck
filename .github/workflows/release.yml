@@ -18,6 +18,24 @@ jobs:
       # actions/checkout@v5 runs on Node 24 (avoids Node 20 deprecation warnings).
       - uses: actions/checkout@v5
 
+      # Artifact names come from Cargo.toml, the release name from the tag. If the
+      # two disagree, a v0.2.0 release quietly ships 0.1.0 files — so stop here,
+      # before the build, rather than after.
+      - name: Assert tag matches workspace version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = "${{ github.ref_name }}"
+          $toml = Get-Content Cargo.toml -Raw
+          if ($toml -notmatch '\[workspace\.package\][\s\S]*?version\s*=\s*"([^"]+)"') {
+            throw "Cannot read workspace.package.version from Cargo.toml"
+          }
+          $version = $Matches[1]
+          if ($tag -ne "v$version") {
+            throw "Tag $tag does not match workspace version $version (expected tag v$version)"
+          }
+          Write-Host "Tag $tag matches workspace version $version"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -97,6 +115,25 @@ jobs:
             Write-Host "OK $($f.Name) ($mb MB)"
           }
 
+      # Unsigned binaries: checksums are the only integrity check a user has.
+      - name: Write SHA256 checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $files = Get-ChildItem -Path dist -File |
+            Where-Object { $_.Name -like "*-windows-x64-portable.zip" -or $_.Name -like "*-windows-x64-setup.exe" } |
+            Sort-Object Name
+          if (-not $files) { throw "No release artifacts to hash under dist/" }
+          $lines = foreach ($f in $files) {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $f.FullName).Hash.ToLower()
+            Write-Host "$hash  $($f.Name)"
+            "$hash  $($f.Name)"
+          }
+          # `sha256sum -c` wants LF-separated "<hash>  <name>" and no BOM, so write
+          # the bytes directly instead of going through Set-Content.
+          $utf8 = New-Object System.Text.UTF8Encoding $false
+          [System.IO.File]::WriteAllText((Join-Path "dist" "SHA256SUMS.txt"), ($lines -join "`n") + "`n", $utf8)
+
       - name: Upload artifacts
         # v5 still targets Node 20; v6+ is node24-native.
         uses: actions/upload-artifact@v6
@@ -105,6 +142,7 @@ jobs:
           path: |
             dist/*-windows-x64-portable.zip
             dist/*-windows-x64-setup.exe
+            dist/SHA256SUMS.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -112,6 +150,7 @@ jobs:
           files: |
             dist/*.zip
             dist/*-setup.exe
+            dist/SHA256SUMS.txt
           # The generated commit list is appended below this body.
           body: |
             Windows x64 only. Two ways to install:
@@ -123,7 +162,12 @@ jobs:
 
             **These builds are not code-signed.** SmartScreen will warn on first
             run — choose *More info* → *Run anyway*. Signed builds are tracked as
-            roadmap item A1.
+            roadmap item A1. Until then, checksums are the integrity check:
+            compare your download against `SHA256SUMS.txt` below.
+
+            ```powershell
+            Get-FileHash -Algorithm SHA256 .\AriaDeck-<ver>-windows-x64-setup.exe
+            ```
 
             **aria2 is not bundled.** On first launch, import or download a core
             under Settings → Engine, or point AriaDeck at an existing instance
