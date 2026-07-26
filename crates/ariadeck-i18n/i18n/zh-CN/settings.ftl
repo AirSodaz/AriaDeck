@@ -113,6 +113,13 @@ settings-close-minimize = 最小化到托盘
 settings-close-quit = 退出
 settings-tray-hint = 托盘菜单：显示 AriaDeck、全部暂停、全部继续、退出。本进程托管的 aria2 会在退出时停止；远程配置的引擎保持运行。
 
+settings-bridge = 浏览器接管
+settings-bridge-auto-submit = 无需确认直接添加
+settings-bridge-auto-submit-desc = 浏览器扩展交来的下载直接开始，不再填入「添加下载」对话框。每次添加仍会留下提示和活动记录。
+settings-bridge-cookies = 发送 Cookie
+settings-bridge-cookies-desc = 允许扩展附带站点 Cookie，以便下载需要登录的资源。除确有需要，请保持关闭。
+settings-bridge-hint = Cookie 只用于本次下载：限于该站点、仅存于内存，不会写入设置、历史、日志或诊断导出——重启后也不保留，因此重试的任务可能需要重新登录。扩展侧还需授予该站点权限。需要在安装时启用浏览器接管。
+
 settings-network-proxy = 网络代理
 settings-proxy-mode-aria = 下载代理模式
 settings-proxy-disabled = 禁用

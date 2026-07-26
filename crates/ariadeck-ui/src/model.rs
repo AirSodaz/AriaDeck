@@ -1757,6 +1757,13 @@ impl Default for PlatformSettingsView {
     }
 }
 
+/// Browser bridge preferences (D-045). Both off by default.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BrowserBridgeSettingsView {
+    pub allow_cookies: bool,
+    pub auto_submit: bool,
+}
+
 /// Kind of in-app activity/history entry.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ActivityKindView {
@@ -2053,6 +2060,7 @@ pub struct SettingsView {
     pub transfer_policy: TransferPolicySettingsView,
     pub notifications: NotificationSettingsView,
     pub platform: PlatformSettingsView,
+    pub browser_bridge: BrowserBridgeSettingsView,
     pub categories: Vec<DownloadCategoryView>,
     pub tracker_list: TrackerListSettingsView,
 }

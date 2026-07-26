@@ -122,6 +122,7 @@ impl AppShell {
             file_conflict: FileConflictPolicyView::AutoRename,
             category_id: None, // None = auto-route by extension (D-042)
             advanced_open: false,
+            from_bridge: false,
             metadata_files: Vec::new(),
             active_metadata_file: None,
             preview_pending: None,
@@ -264,6 +265,11 @@ impl AppShell {
             session: session.clone(),
         });
         self.add_dialog.error = None;
+        if self.add_dialog.from_bridge {
+            // One confirmed hand-off unlocks auto-submit for the rest of the
+            // session (D-045 §6). A dialog the user cancels does not.
+            self.bridge_auto_submit_unlocked = true;
+        }
         let advanced = if self.add_dialog.input_mode == AddDownloadInputModeView::Links {
             self.collect_add_advanced_options(cx)
         } else {
@@ -462,6 +468,40 @@ impl AppShell {
         self.can_open_magnet_uris()
     }
 
+    /// Whether a forwarded download will stop for confirmation (D-045 §6).
+    ///
+    /// Auto-submit is opt-in. With cookies also enabled, the first hand-off of
+    /// the session is confirmed anyway: that combination is the highest-impact
+    /// configuration and does not get a fully silent path.
+    #[must_use]
+    pub fn bridge_requires_confirmation(&self) -> bool {
+        !self.settings.browser_bridge.auto_submit
+            || (self.settings.browser_bridge.allow_cookies && !self.bridge_auto_submit_unlocked)
+    }
+
+    /// Take browser-bridge downloads and either fill the dialog for confirmation
+    /// or submit them, per [`Self::bridge_requires_confirmation`].
+    ///
+    /// Auto-submit deliberately goes through the same fill-then-submit path as
+    /// the confirm case rather than a second add route, so category routing
+    /// (D-042), validation, and the notice/activity trail (D-025) cannot drift
+    /// between the two modes.
+    ///
+    /// Returns how many leading downloads were consumed.
+    #[must_use]
+    pub fn accept_bridge_downloads(
+        &mut self,
+        downloads: &[BridgeDownloadView],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        let consumed = self.open_bridge_downloads(downloads, window, cx);
+        if consumed > 0 && !self.bridge_requires_confirmation() {
+            self.submit_add_download(cx);
+        }
+        consumed
+    }
+
     /// Fill the add-download dialog from browser-bridge downloads **without
     /// submitting** (D-045 confirm policy).
     ///
@@ -501,6 +541,7 @@ impl AppShell {
         if !self.add_dialog.open {
             return 0;
         }
+        self.add_dialog.from_bridge = true;
         self.add_input.update(cx, |input, cx| {
             input.set_text(urls.join("\n"), cx);
         });

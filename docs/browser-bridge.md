@@ -226,7 +226,9 @@ Default is **confirm**, extending D-038's "fill, don't submit" to the bridge.
 
 - [ ] Installer opt-in checkbox, defaulted off, matching D-037/D-038 wording
 - [ ] Uninstall removes both native-messaging registry keys
-- [ ] All new user-facing strings in en + zh-CN (i18n parity test already enforces id sets)
+- [x] All new user-facing strings in en + zh-CN (i18n parity test already enforces id sets)
+- [x] `browser_bridge` settings section (`allow_cookies` / `auto_submit`), both defaulting off. Additive on disk — schema stays v1 and a pre-D-045 `settings.json` loads with the all-off default instead of tripping corrupt-document recovery. `auto_submit` travels in a settings export; `allow_cookies` deliberately does not, so importing a document never turns cookie forwarding on (same reasoning that keeps proxy credentials out of a transfer document).
+- [x] Auto-submit reuses the confirm path's fill-then-submit route, so category routing (D-042), validation, and the notice/activity trail cannot drift between the two modes.
 
 ---
 

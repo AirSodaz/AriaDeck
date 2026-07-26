@@ -684,6 +684,24 @@ impl Default for PlatformSettings {
     }
 }
 
+/// Browser bridge preferences (D-045).
+///
+/// Client-wide UI behavior rather than engine state, so it belongs here and not
+/// in the per-profile engine environment bag (D-043). Both fields default off:
+/// the bridge's safe configuration must be the one you get without deciding
+/// anything.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserBridgeSettings {
+    /// Forward the extension's cookie for the download's origin. A cookie is the
+    /// highest-impact field the bridge can carry, so it needs this **and** the
+    /// extension's own host-permission grant (browser-bridge.md §5).
+    pub allow_cookies: bool,
+    /// Add forwarded downloads without opening the confirmation dialog. Never
+    /// silent: every add still leaves a toast and an activity entry (§6, D-025).
+    pub auto_submit: bool,
+}
+
 impl DownloadProxySettings {
     pub fn validate(&self) -> Result<(), SettingsError> {
         for (label, endpoint) in [
@@ -729,6 +747,7 @@ pub struct AppSettings {
     pub transfer_policy: TransferPolicySettings,
     pub notifications: NotificationSettings,
     pub platform: PlatformSettings,
+    pub browser_bridge: BrowserBridgeSettings,
     pub ui: UiPreferences,
     /// Output folders + extension rules (C1 / D-042). Exactly one is_fallback.
     pub categories: Vec<DownloadCategory>,
@@ -753,6 +772,10 @@ struct SettingsExportDocument {
     transfer_policy: TransferPolicySettings,
     notifications: NotificationSettings,
     platform: PlatformSettings,
+    /// Absent from documents written before D-045; `auto_submit` only, because
+    /// `allow_cookies` deliberately does not travel — see [`SettingsExportBrowserBridge`].
+    #[serde(default)]
+    browser_bridge: SettingsExportBrowserBridge,
     ui: UiPreferences,
     categories: Vec<DownloadCategory>,
     tracker_list: TrackerListSettings,
@@ -769,6 +792,26 @@ struct SettingsExportProxy {
     no_proxy: Vec<String>,
     username: Option<String>,
     check_certificate: bool,
+}
+
+/// Browser bridge preferences as they appear in a transfer document.
+///
+/// `allow_cookies` is intentionally missing, for the same reason
+/// [`SettingsExportProxy`] omits the credential ref: importing a settings file is
+/// an explicit action, but it is not an explicit decision about forwarding
+/// cookies. That opt-in is made per machine, and an import always leaves it off.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsExportBrowserBridge {
+    auto_submit: bool,
+}
+
+impl From<&BrowserBridgeSettings> for SettingsExportBrowserBridge {
+    fn from(bridge: &BrowserBridgeSettings) -> Self {
+        Self {
+            auto_submit: bridge.auto_submit,
+        }
+    }
 }
 
 impl From<&DownloadProxySettings> for SettingsExportProxy {
@@ -799,6 +842,7 @@ impl SettingsExportDocument {
             transfer_policy: settings.transfer_policy,
             notifications: settings.notifications,
             platform: settings.platform,
+            browser_bridge: SettingsExportBrowserBridge::from(&settings.browser_bridge),
             ui: settings.ui,
             categories: settings.categories.clone(),
             tracker_list: settings.tracker_list.clone(),
@@ -847,6 +891,12 @@ impl SettingsExportDocument {
             transfer_policy: self.transfer_policy,
             notifications: self.notifications,
             platform: self.platform,
+            browser_bridge: BrowserBridgeSettings {
+                // An import never turns cookie forwarding on; see
+                // SettingsExportBrowserBridge.
+                allow_cookies: false,
+                auto_submit: self.browser_bridge.auto_submit,
+            },
             ui: self.ui,
             categories: self.categories,
             tracker_list: self.tracker_list,
@@ -943,6 +993,7 @@ impl AppSettings {
             transfer_policy: TransferPolicySettings::default(),
             notifications: NotificationSettings::default(),
             platform: PlatformSettings::default(),
+            browser_bridge: BrowserBridgeSettings::default(),
             ui: UiPreferences::default(),
             categories: default_download_categories(&download_directory),
             tracker_list: TrackerListSettings::default(),
@@ -1183,6 +1234,11 @@ struct SettingsDocument {
     transfer_policy: TransferPolicySettings,
     notifications: NotificationSettings,
     platform: PlatformSettings,
+    /// Added by D-045 and additive on purpose: schema stays v1 and a settings
+    /// file written before the bridge existed still loads, taking the
+    /// all-off default instead of tripping the corrupt-document recovery path.
+    #[serde(default)]
+    browser_bridge: BrowserBridgeSettings,
     ui: UiPreferences,
     categories: Vec<DownloadCategory>,
     tracker_list: TrackerListSettings,
@@ -1200,6 +1256,7 @@ impl From<&AppSettings> for SettingsDocument {
             transfer_policy: settings.transfer_policy,
             notifications: settings.notifications,
             platform: settings.platform,
+            browser_bridge: settings.browser_bridge,
             ui: settings.ui,
             categories: settings.categories.clone(),
             tracker_list: settings.tracker_list.clone(),
@@ -1226,6 +1283,7 @@ impl TryFrom<SettingsDocument> for AppSettings {
             transfer_policy: document.transfer_policy,
             notifications: document.notifications,
             platform: document.platform,
+            browser_bridge: document.browser_bridge,
             ui: document.ui,
             categories: document.categories,
             tracker_list: document.tracker_list,
@@ -1562,6 +1620,7 @@ mod tests {
             transfer_policy: TransferPolicySettings::default(),
             notifications: NotificationSettings::default(),
             platform: PlatformSettings::default(),
+            browser_bridge: BrowserBridgeSettings::default(),
             ui: UiPreferences::default(),
             categories: default_download_categories(root.join("downloads")),
             tracker_list: TrackerListSettings::default(),
@@ -1654,6 +1713,96 @@ mod tests {
 
         store.save(&expected).expect("save platform settings");
         assert_eq!(store.load().expect("load platform settings"), expected);
+    }
+
+    #[test]
+    fn browser_bridge_settings_default_off_and_round_trip() {
+        assert_eq!(
+            BrowserBridgeSettings::default(),
+            BrowserBridgeSettings {
+                allow_cookies: false,
+                auto_submit: false,
+            },
+            "the bridge's safe configuration must be the no-decision default"
+        );
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        let mut expected = settings(root.path());
+        expected.browser_bridge = BrowserBridgeSettings {
+            allow_cookies: true,
+            auto_submit: true,
+        };
+
+        store.save(&expected).expect("save bridge settings");
+        assert_eq!(store.load().expect("load bridge settings"), expected);
+        // The host reads this key directly out of settings.json, so its name and
+        // shape are part of the D-045 contract, not an internal detail.
+        let document = fs::read_to_string(store.path()).expect("read settings JSON");
+        assert!(
+            document.contains(r#""browser_bridge""#) && document.contains(r#""allow_cookies""#),
+            "{document}"
+        );
+    }
+
+    /// A settings file written before D-045 has no `browser_bridge` key. It must
+    /// load with the all-off default, not trip the corrupt-document recovery
+    /// path, which would reset every other preference the user had set.
+    #[test]
+    fn settings_written_before_the_bridge_existed_still_load() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        let mut expected = settings(root.path());
+        expected.platform.close_behavior = CloseBehavior::Quit;
+        store.save(&expected).expect("save current settings");
+
+        let document = fs::read_to_string(store.path()).expect("read settings JSON");
+        let mut value: serde_json::Value =
+            serde_json::from_str(&document).expect("settings JSON parses");
+        value
+            .as_object_mut()
+            .expect("settings document is an object")
+            .remove("browser_bridge")
+            .expect("browser_bridge was written");
+        fs::write(store.path(), value.to_string()).expect("seed pre-D-045 settings");
+
+        let loaded = store
+            .load_or_initialize(&expected)
+            .expect("pre-D-045 settings load");
+        assert!(
+            loaded.recovery.is_none(),
+            "an additive field must not look like corruption"
+        );
+        assert_eq!(
+            loaded.settings.browser_bridge,
+            BrowserBridgeSettings::default()
+        );
+        assert_eq!(loaded.settings.platform.close_behavior, CloseBehavior::Quit);
+    }
+
+    /// §5: importing a settings document is an explicit action, but it is not an
+    /// explicit decision about forwarding cookies. `auto_submit` travels;
+    /// `allow_cookies` is re-decided per machine.
+    #[test]
+    fn exported_settings_carry_auto_submit_but_never_the_cookie_opt_in() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let mut source = settings(root.path());
+        source.browser_bridge = BrowserBridgeSettings {
+            allow_cookies: true,
+            auto_submit: true,
+        };
+
+        let document = export_settings_json(&source).expect("export settings");
+        assert!(!document.contains("allow_cookies"), "{document}");
+        assert!(document.contains("auto_submit"), "{document}");
+
+        let current = settings(root.path());
+        let imported = import_settings_json(&document, &current).expect("import settings");
+        assert!(imported.browser_bridge.auto_submit);
+        assert!(
+            !imported.browser_bridge.allow_cookies,
+            "an import must never turn cookie forwarding on"
+        );
     }
 
     #[test]

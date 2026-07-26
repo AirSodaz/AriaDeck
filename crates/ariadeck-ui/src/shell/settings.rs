@@ -159,6 +159,8 @@ impl AppShell {
         self.settings_page.draft_show_tray_icon = settings.platform.show_tray_icon;
         self.settings_page.draft_start_minimized_to_tray =
             settings.platform.start_minimized_to_tray;
+        self.settings_page.draft_bridge_allow_cookies = settings.browser_bridge.allow_cookies;
+        self.settings_page.draft_bridge_auto_submit = settings.browser_bridge.auto_submit;
         self.settings_page.draft_tracker_enabled = settings.tracker_list.enabled;
         self.settings_page.draft_tracker_source = settings.tracker_list.source;
         self.settings_page.draft_tracker_auto_refresh = settings.tracker_list.auto_refresh;
@@ -322,6 +324,8 @@ impl AppShell {
             draft_close_behavior: self.settings.platform.close_behavior,
             draft_show_tray_icon: self.settings.platform.show_tray_icon,
             draft_start_minimized_to_tray: self.settings.platform.start_minimized_to_tray,
+            draft_bridge_allow_cookies: self.settings.browser_bridge.allow_cookies,
+            draft_bridge_auto_submit: self.settings.browser_bridge.auto_submit,
             draft_categories: self.settings.categories.clone(),
             draft_category_edit_index: None,
             draft_tracker_enabled: self.settings.tracker_list.enabled,
@@ -903,6 +907,13 @@ impl AppShell {
         );
     }
 
+    fn browser_bridge_draft(&self) -> BrowserBridgeSettingsView {
+        BrowserBridgeSettingsView {
+            allow_cookies: self.settings_page.draft_bridge_allow_cookies,
+            auto_submit: self.settings_page.draft_bridge_auto_submit,
+        }
+    }
+
     pub(crate) fn submit_platform(&mut self, cx: &mut Context<Self>) {
         if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
             return;
@@ -912,11 +923,13 @@ impl AppShell {
             show_tray_icon: self.settings_page.draft_show_tray_icon,
             start_minimized_to_tray: self.settings_page.draft_start_minimized_to_tray,
         };
-        if draft == self.settings.platform {
+        let bridge_draft = self.browser_bridge_draft();
+        if draft == self.settings.platform && bridge_draft == self.settings.browser_bridge {
             return;
         }
         let mut settings = self.settings.clone();
         settings.platform = draft;
+        settings.browser_bridge = bridge_draft;
         self.request_settings_save(
             settings,
             ProxyPasswordUpdateView::Unchanged,
@@ -1031,6 +1044,25 @@ impl AppShell {
         }
         self.settings_page.draft_start_minimized_to_tray =
             !self.settings_page.draft_start_minimized_to_tray;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_bridge_allow_cookies(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        self.settings_page.draft_bridge_allow_cookies =
+            !self.settings_page.draft_bridge_allow_cookies;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_bridge_auto_submit(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        self.settings_page.draft_bridge_auto_submit = !self.settings_page.draft_bridge_auto_submit;
         self.settings_page.error = None;
         cx.notify();
     }
@@ -1568,7 +1600,8 @@ impl AppShell {
                     show_tray_icon: self.settings_page.draft_show_tray_icon,
                     start_minimized_to_tray: self.settings_page.draft_start_minimized_to_tray,
                 };
-                let dirty = platform_draft != self.settings.platform;
+                let dirty = platform_draft != self.settings.platform
+                    || self.browser_bridge_draft() != self.settings.browser_bridge;
                 let saving = self
                     .pending_settings_save
                     .as_ref()
@@ -3497,7 +3530,11 @@ impl AppShell {
         });
         let s1 = cx.entity().downgrade();
         let s2 = cx.entity().downgrade();
-        settings_section_owned(self.t("settings-window-tray"), colors)
+        let s3 = cx.entity().downgrade();
+        let s4 = cx.entity().downgrade();
+        let draft_allow_cookies = self.settings_page.draft_bridge_allow_cookies;
+        let draft_auto_submit = self.settings_page.draft_bridge_auto_submit;
+        let tray_section = settings_section_owned(self.t("settings-window-tray"), colors)
             .child(settings_section_row_owned(
                 self.t("settings-tray-icon"),
                 Some(self.t("settings-tray-icon-desc")),
@@ -3535,7 +3572,51 @@ impl AppShell {
                     .text_xs()
                     .text_color(colors.text_muted)
                     .child(self.t("settings-tray-hint")),
-            )
+            );
+
+        // D-045: cookie forwarding and auto-submit are the two decisions that
+        // widen what a browser hand-off can do, so they live together with the
+        // caveats spelled out rather than buried in a tooltip.
+        let bridge_section = settings_section_owned(self.t("settings-bridge"), colors)
+            .child(settings_section_row_owned(
+                self.t("settings-bridge-auto-submit"),
+                Some(self.t("settings-bridge-auto-submit-desc")),
+                Toggle::new("toggle-bridge-auto-submit", draft_auto_submit)
+                    .aria_label(self.t("settings-bridge-auto-submit"))
+                    .disabled(pending)
+                    .on_click(move |_, _, cx| {
+                        s3.update(cx, |shell, cx| shell.toggle_bridge_auto_submit(cx))
+                            .ok();
+                    })
+                    .render(colors),
+                colors,
+            ))
+            .child(settings_section_row_owned(
+                self.t("settings-bridge-cookies"),
+                Some(self.t("settings-bridge-cookies-desc")),
+                Toggle::new("toggle-bridge-cookies", draft_allow_cookies)
+                    .aria_label(self.t("settings-bridge-cookies"))
+                    .disabled(pending)
+                    .on_click(move |_, _, cx| {
+                        s4.update(cx, |shell, cx| shell.toggle_bridge_allow_cookies(cx))
+                            .ok();
+                    })
+                    .render(colors),
+                colors,
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(self.t("settings-bridge-hint")),
+            );
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_6()
+            .child(tray_section)
+            .child(bridge_section)
     }
 
     pub(crate) fn render_settings_about(&mut self, cx: &mut Context<Self>) -> Div {

@@ -51,8 +51,8 @@ use ariadeck_ui::{
     AddDownloadMetadataPreviewResultView, AddDownloadMetadataPreviewView, AddDownloadModeView,
     AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView, AppShell, AppShellEvent,
     BatchCommandOutcomeView, BatchTaskCommandRequestView, BatchTaskCommandResultView,
-    BatchTaskCommandView, BatchTaskFailureView, BridgeDownloadView, CloseBehaviorView,
-    ColorSchemeView, CommandOutcomeView, ConnectionView, CoreCommandOutcomeView,
+    BatchTaskCommandView, BatchTaskFailureView, BridgeDownloadView, BrowserBridgeSettingsView,
+    CloseBehaviorView, ColorSchemeView, CommandOutcomeView, ConnectionView, CoreCommandOutcomeView,
     CoreCommandRequestView, CoreCommandResultView, CoreCommandView, CoreInstallStatusView,
     CoreInstallationView, CoreRegistryView, CoreSourceView, DiagnosticExportOutcomeView,
     DiagnosticExportRequestView, DiagnosticExportResultView, DownloadCategoryView,
@@ -610,9 +610,13 @@ impl DesktopRoot {
         })
         .detach();
 
-        if root.pending_metadata_paths.is_empty()
-            && root.pending_magnet_uris.is_empty()
-            && root.pending_downloads.is_empty()
+        // Launch items that will ask the user something override start-minimized;
+        // ones that will auto-submit do not (D-045 §6).
+        let launch_needs_the_window = !root.pending_metadata_paths.is_empty()
+            || !root.pending_magnet_uris.is_empty()
+            || (!root.pending_downloads.is_empty()
+                && root.workspace.read(cx).bridge_requires_confirmation());
+        if !launch_needs_the_window
             && root.settings.platform.start_minimized_to_tray
             && root.tray.is_some()
         {
@@ -677,10 +681,17 @@ impl DesktopRoot {
     }
 
     fn poll_instance_requests(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // D-037/D-038 raise the window because those paths always ask the user to
+        // confirm. A browser hand-off only earns that when it will actually stop
+        // for confirmation; under auto-submit the window stays where it is and the
+        // add reports itself through the usual notice/activity trail (D-045 §6).
         let mut activate = false;
         if let Some(receiver) = self.instance_requests.as_ref() {
             while let Ok(request) = receiver.try_recv() {
-                activate = true;
+                activate |= !request.metadata_paths.is_empty()
+                    || !request.magnet_uris.is_empty()
+                    || (!request.downloads.is_empty()
+                        && self.workspace.read(cx).bridge_requires_confirmation());
                 let remaining = self.launch_budget();
                 self.pending_metadata_paths
                     .extend(request.metadata_paths.into_iter().take(remaining));
@@ -725,7 +736,7 @@ impl DesktopRoot {
             let views: Vec<BridgeDownloadView> =
                 self.pending_downloads.iter().map(bridge_view).collect();
             let consumed = self.workspace.update(cx, |workspace, cx| {
-                workspace.open_bridge_downloads(&views, window, cx)
+                workspace.accept_bridge_downloads(&views, window, cx)
             });
             if consumed > 0 {
                 self.pending_downloads.drain(..consumed);

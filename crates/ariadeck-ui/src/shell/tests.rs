@@ -1352,6 +1352,81 @@ fn bridge_downloads_fill_the_dialog_without_submitting(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
+fn bridge_confirms_by_default_and_auto_submits_only_when_opted_in(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(1);
+        shell
+    });
+
+    view.update_in(cx, |shell, window, cx| {
+        // Default: confirm. The dialog fills and waits.
+        assert!(shell.bridge_requires_confirmation());
+        let downloads = [bridge_download("https://example.test/a.bin", "", None)];
+        assert_eq!(shell.accept_bridge_downloads(&downloads, window, cx), 1);
+        assert!(shell.add_dialog.open);
+        assert!(
+            shell.add_dialog.pending.is_none(),
+            "the default path must not submit for the user"
+        );
+    });
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.close_add_download(window, cx);
+        shell.settings.browser_bridge.auto_submit = true;
+        assert!(!shell.bridge_requires_confirmation());
+        let downloads = [bridge_download("https://example.test/b.bin", "", None)];
+        assert_eq!(shell.accept_bridge_downloads(&downloads, window, cx), 1);
+        assert!(
+            shell.add_dialog.pending.is_some(),
+            "auto-submit must reach the engine without a confirmation"
+        );
+    });
+}
+
+/// §6: cookies + auto-submit is the highest-impact configuration, so the first
+/// hand-off of the session is confirmed regardless.
+#[gpui::test]
+fn cookies_plus_auto_submit_still_confirms_once_per_session(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(1);
+        shell.settings.browser_bridge.auto_submit = true;
+        shell.settings.browser_bridge.allow_cookies = true;
+        shell
+    });
+
+    view.update_in(cx, |shell, window, cx| {
+        assert!(shell.bridge_requires_confirmation());
+        let downloads = [bridge_download(
+            "https://example.test/first.bin",
+            "https://example.test/p",
+            Some("session=secret"),
+        )];
+        assert_eq!(shell.accept_bridge_downloads(&downloads, window, cx), 1);
+        assert!(shell.add_dialog.open);
+        assert!(shell.add_dialog.pending.is_none(), "first add is confirmed");
+
+        // Cancelling does not buy the unlock.
+        shell.close_add_download(window, cx);
+        assert!(shell.bridge_requires_confirmation());
+    });
+
+    // Confirming one hand-off unlocks the rest of the session.
+    view.update_in(cx, |shell, window, cx| {
+        let downloads = [bridge_download(
+            "https://example.test/second.bin",
+            "https://example.test/p",
+            Some("session=secret"),
+        )];
+        assert_eq!(shell.accept_bridge_downloads(&downloads, window, cx), 1);
+        shell.submit_add_download(cx);
+        assert!(shell.add_dialog.pending.is_some());
+        assert!(!shell.bridge_requires_confirmation());
+    });
+}
+
+#[gpui::test]
 fn bridge_downloads_consume_only_the_leading_header_group(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut shell = AppShell::new(Theme::dark(), window, cx);
@@ -1909,6 +1984,7 @@ fn proxy_settings_build_a_manual_draft_with_a_masked_password(cx: &mut TestAppCo
         transfer_policy: TransferPolicySettingsView::default(),
         notifications: NotificationSettingsView::default(),
         platform: PlatformSettingsView::default(),
+        browser_bridge: BrowserBridgeSettingsView::default(),
         categories: vec![crate::DownloadCategoryView {
             id: "00000000-0000-4000-8000-000000000001".into(),
             name: "General".into(),

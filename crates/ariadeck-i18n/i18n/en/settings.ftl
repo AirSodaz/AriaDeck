@@ -113,6 +113,13 @@ settings-close-minimize = Minimize to tray
 settings-close-quit = Quit
 settings-tray-hint = Tray menu: Show AriaDeck, Pause all, Resume all, Quit. Managed aria2 is owned by this process and stops on quit; remote profiles keep their engines running.
 
+settings-bridge = Browser bridge
+settings-bridge-auto-submit = Add without confirming
+settings-bridge-auto-submit-desc = Start downloads handed over by the browser extension immediately instead of filling the Add Download dialog. Every add still leaves a notice and an activity entry.
+settings-bridge-cookies = Send cookies
+settings-bridge-cookies-desc = Allow the extension to attach the site's cookie so downloads behind a login work. Off unless you need it.
+settings-bridge-hint = Cookies are used for the download only: scoped to that site, kept in memory, never written to settings, history, logs, or a diagnostic export—and never restored after a restart, so a retried download may need signing in again. The extension must also grant the site permission. Requires the browser bridge to be enabled during installation.
+
 settings-network-proxy = Network proxy
 settings-proxy-mode-aria = Download proxy mode
 settings-proxy-disabled = Disabled

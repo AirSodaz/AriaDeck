@@ -1056,6 +1056,10 @@ pub(crate) fn map_settings(settings: &AppSettings) -> SettingsView {
             show_tray_icon: settings.platform.show_tray_icon,
             start_minimized_to_tray: settings.platform.start_minimized_to_tray,
         },
+        browser_bridge: BrowserBridgeSettingsView {
+            allow_cookies: settings.browser_bridge.allow_cookies,
+            auto_submit: settings.browser_bridge.auto_submit,
+        },
         categories: settings
             .categories
             .iter()
@@ -1197,6 +1201,10 @@ pub(crate) fn map_settings_request(
             },
             show_tray_icon: settings.platform.show_tray_icon,
             start_minimized_to_tray: settings.platform.start_minimized_to_tray,
+        },
+        browser_bridge: ariadeck_settings::BrowserBridgeSettings {
+            allow_cookies: settings.browser_bridge.allow_cookies,
+            auto_submit: settings.browser_bridge.auto_submit,
         },
         // List preferences are owned by the shell query path (UI-001), not the
         // settings form. Preserve whatever is currently persisted.
