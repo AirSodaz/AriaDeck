@@ -102,7 +102,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | B2 | **Done** — opt-in `magnet:` handler forwards to the running instance and fills the Add Download confirmation input; optional custom `ariadeck:` remains deferred | System integration without auto-submission |
 | B3a | **Done** — contract frozen in [`browser-bridge.md`](browser-bridge.md) (D-045): native messaging host, no port; exhaustive payload whitelist; cookies opt-in/memory-only; confirm by default | Design before build; minimize attack surface |
 | B3b | **Done** — `crates/ariadeck-ipc` (socket protocol v3) + `apps/ariadeck-bridge` native messaging host; `browser_bridge` settings section with System-page toggles and en/zh-CN strings; confirm and auto-submit paths; `--register`/`--unregister` self-registration shipped in both packages with an installer opt-in task. Only B3c is left before the path works end to end — the installer task appears only once a published extension ID exists (`ARIADECK_EXTENSION_ID`) | Motrix Next differentiator |
-| B3c | **Done** — `apps/ariadeck-extension/` (MV3, context-menu opt-in per download, per-site cookie grant, no host access at install). Loads unpacked today; needs icons and a published extension ID before store submission, plus the manual gated-download check that CI cannot run | Validate contract end-to-end |
+| B3c | **Done** — `apps/ariadeck-extension/` (MV3, context-menu opt-in per download, per-site cookie grant, no host access at install), icons rendered from the app's `icon.svg` by `scripts/render-extension-icons.ps1`. Loads unpacked today; needs a published extension ID before store submission, plus the manual gated-download check that CI cannot run | Validate contract end-to-end |
 | B4 | First-run: discover/import aria2 or guided core import | Onboarding; still no mandatory network install |
 | B5 | Tray speed meter (at least Windows + optional) | Motrix-class glanceability |
 | B6 | **Done** — SQLite **local history** of completed/failed (paths, hashes, times) in `history.sqlite`; merges with engine stopped pages; Remove clears history rows | Heavy users exhaust aria2 memory fast; D-039 |
@@ -176,7 +176,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 
 ```text
 M1  Ship trust     → A1, A3, A6 residual (+ signing / manual QA)
-M2  OS hooks       → B4–B5; B1/B2/B3/B6 done (B3 needs icons + a published extension ID)
+M2  OS hooks       → B4–B5; B1/B2/B3/B6 done (B3 needs a published extension ID)
 M3  Org/cleanup    → C2 (C1 done; C3 if demand); F3/D-043 done
 M4  BT depth / dist → D2–D5, E1 or E2 as capacity allows; D1 done
 ```

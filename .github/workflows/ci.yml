@@ -77,8 +77,9 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-      # The extension mirrors the host's payload limits (D-045 §3); these pin
-      # them so the two cannot drift apart silently. One OS is enough — the code
+      # The extension mirrors the host's payload limits (D-045 §3) and its
+      # manifest carries the §7 permission boundary and the icon set; all three
+      # fail quietly when wrong, so these pin them. One OS is enough — the code
       # under test is platform-independent.
       - name: Test browser extension
         if: matrix.os == 'ubuntu-latest'

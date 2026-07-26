@@ -82,29 +82,51 @@ succeeds through it and fails without it. To check that:
    page URL travelled as `referer`.
 3. For a login-gated file, repeat with cookies off, then on.
 
+## Icons
+
+`icons/icon{16,32,48,128}.png` are generated, not drawn:
+
+```powershell
+./scripts/render-extension-icons.ps1
+```
+
+It rasterizes `apps/ariadeck-desktop/assets/icon.svg` in headless Chrome, so the
+extension's mark cannot drift away from the app's, and re-running after an edit to
+the SVG is the whole update procedure. Commit the PNGs — Chrome cannot use an SVG
+for an extension icon, and the store needs the files.
+
+All four sizes come from the one source. A simplified variant for 16 and 32 px was
+tried and dropped: with the deck bars removed the letterform reads as a bare
+chevron, which looks like a different product next to the app icon.
+
 ## Tests
 
 ```sh
 node --test "apps/ariadeck-extension/*.test.js"
 ```
 
-They cover the URL rules and the payload limits — the item cap and the 64 KiB
-message ceiling — because those numbers also exist on the host side and a silent
-drift between the two would turn a clean local refusal into a `too_large` reply.
-`chrome.*` paths need a browser, so anything expressing a contract bound stays in
-a plain function that these can reach.
+`bridge.test.js` covers the URL rules and the payload limits — the item cap and
+the 64 KiB message ceiling — because those numbers also exist on the host side and
+a silent drift between the two would turn a clean local refusal into a `too_large`
+reply. `chrome.*` paths need a browser, so anything expressing a contract bound
+stays in a plain function that these can reach.
+
+`manifest.test.js` covers what `manifest.json` fails quietly at: an icon path or
+size that is wrong is accepted by both Chrome and the store, giving you the puzzle
+piece or a rescaled blur with no error anywhere, so each declared PNG is checked
+against its actual pixel dimensions. It also pins the permission shape — no
+install-time host access, no `externally_connectable`, no `downloads` — which
+until now only review enforced.
 
 ## Before store submission
 
-- **Icons.** No `action.default_icon` / `icons` block yet, so the toolbar shows
-  the default puzzle piece. The stores want 16/32/48/128 px PNGs; render them from
-  `apps/ariadeck-desktop/assets/icon.svg`.
 - **Pin the ID.** Build the host with `ARIADECK_EXTENSION_ID` set to the published
   ID so the installer can offer its opt-in task.
 - **Version.** `manifest.json` carries its own version; it is not read from
   `Cargo.toml`.
 - **Exclude the dev files** from the zip: `package.json`, `*.test.js`, and this
-  README. The browser ignores them; the store listing does not need them.
+  README. The browser ignores them; the store listing does not need them. `icons/`
+  must stay.
 
 Firefox is not a first-party target: MV3 and native-messaging manifests differ
 enough to warrant a fork (§9).
