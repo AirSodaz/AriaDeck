@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AriaDeck</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #1a1a1a;
+        --muted: #5f5f5f;
+        --bg: #ffffff;
+        --border: #d8d8d8;
+        --accent: #2f6feb;
+        --danger: #c62828;
+        --ok: #2e7d32;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #ededed;
+          --muted: #a0a0a0;
+          --bg: #1c1c1e;
+          --border: #3a3a3c;
+          --accent: #5b8cff;
+          --ok: #74c47a;
+          --danger: #ef7b7b;
+        }
+      }
+      body {
+        margin: 0;
+        padding: 14px;
+        width: 300px;
+        font: 13px/1.45 system-ui, sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+      }
+      h1 {
+        margin: 0 0 10px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      p {
+        margin: 0 0 10px;
+        color: var(--muted);
+      }
+      .origin {
+        font-weight: 600;
+        color: var(--fg);
+        word-break: break-all;
+      }
+      button {
+        font: inherit;
+        padding: 6px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: transparent;
+        color: var(--fg);
+        cursor: pointer;
+      }
+      button.primary {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px 0;
+        border-top: 1px solid var(--border);
+      }
+      .status {
+        margin-top: 4px;
+      }
+      .status.ok {
+        color: var(--ok);
+      }
+      .status.bad {
+        color: var(--danger);
+      }
+      .note {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid var(--border);
+        font-size: 12px;
+        color: var(--muted);
+      }
+      ul {
+        margin: 6px 0 0;
+        padding-left: 18px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      li {
+        word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>AriaDeck</h1>
+    <p>Right-click a link or media file and choose <b>Download with AriaDeck</b>.</p>
+
+    <div class="row">
+      <div>
+        <div>Send cookies for <span class="origin" id="origin">this site</span></div>
+        <div class="status" id="cookie-state"></div>
+      </div>
+      <button id="cookie-toggle" hidden></button>
+    </div>
+
+    <div id="allowed-block" hidden>
+      <div class="note">Cookies enabled for:</div>
+      <ul id="allowed"></ul>
+    </div>
+
+    <div class="status" id="last"></div>
+
+    <div class="note">
+      Cookies are only sent for sites you enable here, and only for that site.
+      AriaDeck must also have <b>Send cookies</b> turned on in Settings →
+      System; it keeps the cookie in memory for the download and never writes it
+      to disk.
+    </div>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

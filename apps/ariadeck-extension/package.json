@@ -1,0 +1,11 @@
+{
+  "name": "ariadeck-extension",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Reference Chrome/Edge extension for the AriaDeck browser bridge (D-045).",
+  "//": "type=module so node resolves the same ES modules the manifest declares. No dependencies and no build step: the directory loads unpacked as-is. Exclude this file when zipping for the store.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"*.test.js\""
+  }
+}

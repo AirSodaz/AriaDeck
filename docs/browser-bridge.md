@@ -1,6 +1,6 @@
 # AriaDeck — Browser Bridge Contract (B3a)
 
-**Status:** Frozen contract. B3b (host + IPC) implemented; B3c (extension) and the cross-cutting installer/settings/i18n work pending.
+**Status:** Implemented. B3a contract, B3b host + IPC, B3c reference extension, and the cross-cutting settings/installer/i18n work are all in tree. Outstanding: extension icons, a published extension ID, and the manual end-to-end check against a real gated download (§8).
 **Last updated:** 2026-07-26
 **Owns:** Auth model, wire protocol, confirm policy, and header/cookie handling for the browser extension path.
 **Summary contract:** D-045 in [`project-context.md`](project-context.md) · **Priority:** B3 in [`roadmap.md`](roadmap.md)
@@ -215,12 +215,14 @@ Default is **confirm**, extending D-038's "fill, don't submit" to the bridge.
 
 §6's "engine not connected" rule was amended during B3b to match the D-037/D-038 in-memory wait; see the note under §6 for why.
 
-**B3c (reference extension)**
+**B3c (reference extension)** — `apps/ariadeck-extension/`
 
-- [ ] Chrome/Edge MV3; no `externally_connectable`; minimum host permissions
-- [ ] Cookie attachment gated behind an in-extension toggle, origin-scoped
-- [ ] Interception is opt-in per download or per site — not a blanket `onDeterminingFilename` takeover in v1
-- [ ] End-to-end: gated download (referer+cookie required) succeeds via the bridge and fails without it, confirming the contract carries what it claims
+- [x] Chrome/Edge MV3; no `externally_connectable`; minimum host permissions. Install-time permissions are `activeTab`, `contextMenus`, `nativeMessaging`, `storage` — no host access to any site. `cookies` is optional and host access is `optional_host_permissions`, requested one origin at a time.
+- [x] Cookie attachment gated behind an in-extension toggle, origin-scoped. Three independent grants are all required: the extension's per-site opt-in, the browser's permission prompt for that one origin, and AriaDeck's own `allow_cookies`. `chrome.cookies.getAll({ url })` does the domain/path matching, so another site's cookies cannot ride along; an allow-list entry whose browser permission was revoked sends nothing.
+- [x] Interception is opt-in per download — a context-menu item on links and media. No `downloads` permission and no `onDeterminingFilename` hook exist in v1, so blanket interception is not merely unused but unavailable.
+- [ ] End-to-end: gated download (referer+cookie required) succeeds via the bridge and fails without it. **Needs a browser and a real gated URL; not automatable in CI.** The manual procedure is in [`apps/ariadeck-extension/README.md`](../apps/ariadeck-extension/README.md).
+
+Icons are still missing (the toolbar shows the default puzzle piece) and the extension ID is unpublished, so the installer's opt-in task stays hidden until a build supplies `ARIADECK_EXTENSION_ID`. Both are listed in that README.
 
 **Cross-cutting**
 

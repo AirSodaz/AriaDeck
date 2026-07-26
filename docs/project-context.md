@@ -192,7 +192,7 @@ Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, ad
 
 ### Explicitly deferred
 
-Network aria2 package channels · History retention/analytics policies (C3) · Hot profile switch without restart (engine rebind) · HTTP JSON-RPC as first-class transport · Pause/resume **scheduling** · Freeform multi-tags (beyond folder categories) · Browser **extension** (D-045 host + IPC done; B3c extension, bridge settings, and installer registration pending) · Extra locales · Remote path mapping · In-app auto-update productization
+Network aria2 package channels · History retention/analytics policies (C3) · Hot profile switch without restart (engine rebind) · HTTP JSON-RPC as first-class transport · Pause/resume **scheduling** · Freeform multi-tags (beyond folder categories) · Browser **blanket download interception** (D-045 is per-download opt-in; taking over every browser download needs its own UX pass) · Firefox extension port · Extra locales · Remote path mapping · In-app auto-update productization
 
 
 → Prioritized product roadmap: [`docs/roadmap.md`](roadmap.md)
@@ -236,6 +236,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 | Settings / profile env | `crates/ariadeck-settings/` (`lib.rs`, `profile_env.rs`) |
 | Workspace / dialogs | `apps/ariadeck-desktop/src/workspace/` |
 | Single-instance IPC / bridge wire | `crates/ariadeck-ipc/` · `apps/ariadeck-bridge/` · `docs/browser-bridge.md` |
+| Browser extension (MV3) | `apps/ariadeck-extension/` (JS, not a cargo member) |
 | UI shell | `crates/ariadeck-ui/src/` |
 | i18n | `crates/ariadeck-i18n/` · `docs/i18n.md` |
 
@@ -277,5 +278,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 2026-07-22 (later): compressed this file; product gap plan moved to `docs/roadmap.md`.  
 2026-07-23: D-043 per-profile engine env; settings/profiles/env schema v1-only (no historical migrators in-tree); system Downloads default root (D-044).
 2026-07-26: B3a browser-bridge contract frozen (D-045) in new `docs/browser-bridge.md`.
-2026-07-26: D-045 settings section (`browser_bridge`, additive on schema v1), auto-submit path, and `ariadeck-bridge --register`/`--unregister` self-registration with an installer opt-in task. Only the extension (B3c) remains.
+2026-07-26: B3c done — `apps/ariadeck-extension/` MV3 reference extension: context-menu opt-in per download, per-site cookie grant, no host access at install, no `downloads` permission. D-045 is feature-complete in tree; icons, a published extension ID, and the manual gated-download check remain.
+2026-07-26: D-045 settings section (`browser_bridge`, additive on schema v1), auto-submit path, and `ariadeck-bridge --register`/`--unregister` self-registration with an installer opt-in task.
 2026-07-26: B3b done — single-instance IPC extracted to `crates/ariadeck-ipc` (protocol v3 + data-dir/socket-label derivation, GPUI-free), new `apps/ariadeck-bridge` native messaging host, desktop fills the Add dialog from forwarded downloads. D-045 §6 amended: a disconnected engine makes forwarded items wait in memory (D-037/D-038 behavior) rather than reply `not_running`, which the one-way bridge cannot detect. Settings toggles, installer registration, and the extension (B3c) remain.

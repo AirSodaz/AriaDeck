@@ -55,6 +55,14 @@ jobs:
           toolchain: "1.96"
           components: rustfmt, clippy
 
+      # Pinned like the Rust toolchain: the extension tests use node:test and the
+      # glob form of --test, so the version needs to be known, not inherited.
+      - name: Install Node
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -68,6 +76,13 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      # The extension mirrors the host's payload limits (D-045 §3); these pin
+      # them so the two cannot drift apart silently. One OS is enough — the code
+      # under test is platform-independent.
+      - name: Test browser extension
+        if: matrix.os == 'ubuntu-latest'
+        run: node --test "apps/ariadeck-extension/*.test.js"
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings

@@ -55,7 +55,7 @@ Legend: **Have** · **Partial** · **Missing** · **Won’t** (non-goal)
 | Themes + en/zh-CN | Have | Have (more langs) | Have | Extra locales later |
 | Windows portable/installer | Have | Have | N/A | macOS/Linux CI-verified; packages = next distro (Phase E) |
 | Bundled aria2 | Partial (import) | Have | N/A | Optional offline pack later; no forced network channel |
-| Browser extension / intercept | Host + IPC done (D-045); no extension yet | Have (Next strong) | 3rd party | High user expectation; B3c + installer/settings remain |
+| Browser extension / intercept | Done (D-045), unpublished | Have (Next strong) | 3rd party | Per-download opt-in; blanket interception deferred |
 | Protocol handlers / file associations | Have (`.torrent`/Metalink + `magnet:`) | Have | N/A | Browser capture remains B3 |
 | Tags / categories / folders | Have (ext auto-route) | Next: categories | Filters | D-040/D-042; freeform multi-tags later |
 | Download scheduling | Missing | Next: time windows | Weak | Persepolis-class |
@@ -102,7 +102,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | B2 | **Done** — opt-in `magnet:` handler forwards to the running instance and fills the Add Download confirmation input; optional custom `ariadeck:` remains deferred | System integration without auto-submission |
 | B3a | **Done** — contract frozen in [`browser-bridge.md`](browser-bridge.md) (D-045): native messaging host, no port; exhaustive payload whitelist; cookies opt-in/memory-only; confirm by default | Design before build; minimize attack surface |
 | B3b | **Done** — `crates/ariadeck-ipc` (socket protocol v3) + `apps/ariadeck-bridge` native messaging host; `browser_bridge` settings section with System-page toggles and en/zh-CN strings; confirm and auto-submit paths; `--register`/`--unregister` self-registration shipped in both packages with an installer opt-in task. Only B3c is left before the path works end to end — the installer task appears only once a published extension ID exists (`ARIADECK_EXTENSION_ID`) | Motrix Next differentiator |
-| B3c | Reference browser extension (Chrome/Edge); community can fork for Firefox | Validate contract end-to-end |
+| B3c | **Done** — `apps/ariadeck-extension/` (MV3, context-menu opt-in per download, per-site cookie grant, no host access at install). Loads unpacked today; needs icons and a published extension ID before store submission, plus the manual gated-download check that CI cannot run | Validate contract end-to-end |
 | B4 | First-run: discover/import aria2 or guided core import | Onboarding; still no mandatory network install |
 | B5 | Tray speed meter (at least Windows + optional) | Motrix-class glanceability |
 | B6 | **Done** — SQLite **local history** of completed/failed (paths, hashes, times) in `history.sqlite`; merges with engine stopped pages; Remove clears history rows | Heavy users exhaust aria2 memory fast; D-039 |
@@ -176,7 +176,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 
 ```text
 M1  Ship trust     → A1, A3, A6 residual (+ signing / manual QA)
-M2  OS hooks       → B3c (extension) + bridge settings/installer, B4–B5; B1/B2/B3a/B3b/B6 done
+M2  OS hooks       → B4–B5; B1/B2/B3/B6 done (B3 needs icons + a published extension ID)
 M3  Org/cleanup    → C2 (C1 done; C3 if demand); F3/D-043 done
 M4  BT depth / dist → D2–D5, E1 or E2 as capacity allows; D1 done
 ```
@@ -204,7 +204,7 @@ Each milestone should land with: tests or live-check notes for engine paths, `pr
 | `project-context.md` | Architecture, contracts D-xxx, invariants |
 | `roadmap.md` (this) | Priority & competitive direction |
 | `release.md` | Packaging acceptance |
-| `browser-bridge.md` | Browser bridge contract (D-045): transport, payload whitelist, cookie/confirm policy |
+| `browser-bridge.md` | Browser bridge contract (D-045): transport, payload whitelist, cookie/confirm policy. Implementation notes live with the code: `apps/ariadeck-bridge/README.md` (host + registration), `apps/ariadeck-extension/README.md` (extension, manual E2E check) |
 | `i18n.md` | Locale workflow |
 | `README.md` | Clone/run/env surface |
 
