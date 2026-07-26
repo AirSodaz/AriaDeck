@@ -231,6 +231,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ariadeck-bridge"
+version = "0.1.0"
+dependencies = [
+ "ariadeck-ipc",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "ariadeck-desktop"
 version = "0.1.0"
 dependencies = [
@@ -239,6 +251,7 @@ dependencies = [
  "ariadeck-engine",
  "ariadeck-history",
  "ariadeck-i18n",
+ "ariadeck-ipc",
  "ariadeck-rpc",
  "ariadeck-settings",
  "ariadeck-telemetry",
@@ -323,6 +336,23 @@ dependencies = [
  "rust-embed",
  "sys-locale",
  "unic-langid",
+]
+
+[[package]]
+name = "ariadeck-ipc"
+version = "0.1.0"
+dependencies = [
+ "ariadeck-domain",
+ "data-encoding",
+ "interprocess",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

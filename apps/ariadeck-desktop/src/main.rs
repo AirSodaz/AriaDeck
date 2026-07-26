@@ -3,7 +3,6 @@
     windows_subsystem = "windows"
 )]
 
-mod instance;
 mod metadata;
 mod platform;
 mod workspace;
@@ -17,14 +16,12 @@ use gpui::{
 use gpui_platform::application;
 use tokio::runtime::Builder;
 
+use ariadeck_ipc::{
+    InstanceRole, LaunchRequest, MAX_LAUNCH_ITEMS, coordinate_instance, is_supported_magnet_uri,
+};
 use ariadeck_settings::{JsonWindowGeometryStore, WINDOW_DEFAULT_HEIGHT, WINDOW_DEFAULT_WIDTH};
 
-use crate::{
-    instance::{
-        InstanceRole, LaunchRequest, MAX_LAUNCH_ITEMS, coordinate_instance, is_supported_magnet_uri,
-    },
-    workspace::DesktopRoot,
-};
+use crate::workspace::DesktopRoot;
 
 fn main() {
     ariadeck_telemetry::init("ariadeck=info");

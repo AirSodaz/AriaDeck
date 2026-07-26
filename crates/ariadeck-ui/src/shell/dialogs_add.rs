@@ -453,6 +453,83 @@ impl AppShell {
         true
     }
 
+    /// Whether the shell can accept browser-bridge downloads right now.
+    ///
+    /// Same gate as magnet links, so a forwarded download never clobbers input
+    /// the user is already editing.
+    #[must_use]
+    pub fn can_open_bridge_downloads(&self) -> bool {
+        self.can_open_magnet_uris()
+    }
+
+    /// Fill the add-download dialog from browser-bridge downloads **without
+    /// submitting** (D-045 confirm policy).
+    ///
+    /// Returns how many leading downloads were consumed. The dialog carries one
+    /// shared advanced-options block, so only the leading run that agrees on
+    /// referer, user agent, and cookie is taken; the caller keeps the rest
+    /// queued for the next dialog rather than applying the wrong headers.
+    #[must_use]
+    pub fn open_bridge_downloads(
+        &mut self,
+        downloads: &[BridgeDownloadView],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        let Some(first) = downloads.first() else {
+            return 0;
+        };
+        if !self.can_open_bridge_downloads() {
+            return 0;
+        }
+        let group_len = downloads
+            .iter()
+            .take_while(|download| download.shares_headers_with(first))
+            .count();
+
+        let mut known = HashSet::new();
+        let urls = downloads[..group_len]
+            .iter()
+            .map(|download| download.url.clone())
+            .filter(|url| known.insert(url.clone()))
+            .collect::<Vec<_>>();
+        if urls.is_empty() {
+            return 0;
+        }
+
+        self.open_add_download(&OpenAddDownload, window, cx);
+        if !self.add_dialog.open {
+            return 0;
+        }
+        self.add_input.update(cx, |input, cx| {
+            input.set_text(urls.join("\n"), cx);
+        });
+
+        if !first.referer.is_empty() || !first.user_agent.is_empty() || first.cookie.is_some() {
+            let referer = first.referer.clone();
+            let user_agent = first.user_agent.clone();
+            let cookie = first
+                .cookie
+                .clone()
+                .map(SecretStringView::into_inner)
+                .unwrap_or_default();
+            self.add_inputs.referer.update(cx, |input, cx| {
+                input.set_text(referer, cx);
+            });
+            self.add_inputs.user_agent.update(cx, |input, cx| {
+                input.set_text(user_agent, cx);
+            });
+            self.add_inputs.cookie.update(cx, |input, cx| {
+                input.set_text(cookie, cx);
+            });
+            // Reveal what was prefilled. Carrying a cookie silently would hide
+            // the most sensitive part of the request from whoever confirms it.
+            self.add_dialog.advanced_open = true;
+        }
+        cx.notify();
+        group_len
+    }
+
     /// Open the add-download dialog and enqueue metadata files for preview.
     #[must_use]
     pub fn open_metadata_paths(

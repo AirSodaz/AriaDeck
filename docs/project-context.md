@@ -1,11 +1,11 @@
 # AriaDeck — Project Context
 
 **Status:** Product-ready core (MVP + download-manager surface). Landed: ACCESS-001, I18N-001 (en/zh-CN), SEC-001, PERF-001, RELEASE-001 (Windows).  
-**Last updated:** 2026-07-23
+**Last updated:** 2026-07-26
 **Stack:** Rust 1.96 · GPUI (Zed `v1.11.3`) · aria2 JSON-RPC (WebSocket) · Tokio  
 
 Single source of truth for intent, architecture, contracts, and residual work. Prefer code when it diverges; update this file when scope or boundaries change.  
-**Next work:** [`docs/roadmap.md`](roadmap.md) · **Release:** [`docs/release.md`](release.md) · **i18n:** [`docs/i18n.md`](i18n.md)
+**Next work:** [`docs/roadmap.md`](roadmap.md) · **Release:** [`docs/release.md`](release.md) · **i18n:** [`docs/i18n.md`](i18n.md) · **Browser bridge:** [`docs/browser-bridge.md`](browser-bridge.md)
 
 ---
 
@@ -135,6 +135,7 @@ Env knobs: see root `README.md` (`ARIADECK_RPC_*`).
 | D-042 | **C1b extension auto-route:** new downloads resolve category by last file extension (case-insensitive; first matching category wins). No match / magnet / no name → **General** (fixed fallback). Add dialog defaults to **Auto** with optional manual override. Default presets (General/Compressed/Documents/Music/Video/Programs/Images) seeded on first run. Settings schema is v1; historical migrations are not kept in-tree (dev configs maintained manually). |
 | D-043 | **Per-profile engine environment (F3).** Frozen product contract — see §5.1 below |
 | D-044 | **Default download root:** new installs seed category dirs from the system Downloads folder (`USERPROFILE`/`HOME` + `Downloads`), overridable by `ARIADECK_DOWNLOAD_DIR`; not under app data |
+| D-045 | **Browser bridge (host + IPC done; B3c extension and installer/settings pending).** Native messaging host only—no listening port; extension ID pinned via `allowed_origins`; installer opt-in like D-037/D-038. One-way write path: host forwards over the existing per-data-directory socket at protocol **v3** (`downloads` added; v2 still accepted, v4+ rejected). Payload whitelist is exhaustive—URL (`http`/`https` only), `referer`, `user_agent`, optional `cookie`; `dir`/`out`/auth/checksum/arbitrary options never accepted, and `filename` is a display hint only (D-001). Maps onto the existing `AddDownloadAdvancedOptions` so `validate()` (CRLF) and secret redaction (D-032) are reused. Cookies are off by default, origin-scoped, memory-only, never persisted to settings/history/logs/diagnostics (D-035). Default is confirm (fill, don't submit); auto-submit is opt-in, never silent (D-025), and cookie + auto-submit still confirms once per session. Forwarded items never spool to disk: while the engine is disconnected they wait in memory under the same 32-item cap as D-037/D-038. Full spec: [`browser-bridge.md`](browser-bridge.md) |
 
 **SEC inventory (boundary):** raw URIs/options may live in domain for RPC/retry; list/details/clipboard/tracker/server URIs and option secrets must be redacted or keychain-only.  
 **PERF guards:** 10k stopped stress, light snapshot short-circuit, ActivityMode tray intervals, reconnect backoff.
@@ -191,7 +192,7 @@ Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, ad
 
 ### Explicitly deferred
 
-Network aria2 package channels · History retention/analytics policies (C3) · Hot profile switch without restart (engine rebind) · HTTP JSON-RPC as first-class transport · Pause/resume **scheduling** · Freeform multi-tags (beyond folder categories) · Browser capture · Extra locales · Remote path mapping · In-app auto-update productization
+Network aria2 package channels · History retention/analytics policies (C3) · Hot profile switch without restart (engine rebind) · HTTP JSON-RPC as first-class transport · Pause/resume **scheduling** · Freeform multi-tags (beyond folder categories) · Browser **extension** (D-045 host + IPC done; B3c extension, bridge settings, and installer registration pending) · Extra locales · Remote path mapping · In-app auto-update productization
 
 
 → Prioritized product roadmap: [`docs/roadmap.md`](roadmap.md)
@@ -234,6 +235,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 | Process / cores | `crates/ariadeck-engine/` |
 | Settings / profile env | `crates/ariadeck-settings/` (`lib.rs`, `profile_env.rs`) |
 | Workspace / dialogs | `apps/ariadeck-desktop/src/workspace/` |
+| Single-instance IPC / bridge wire | `crates/ariadeck-ipc/` · `apps/ariadeck-bridge/` · `docs/browser-bridge.md` |
 | UI shell | `crates/ariadeck-ui/src/` |
 | i18n | `crates/ariadeck-i18n/` · `docs/i18n.md` |
 
@@ -274,3 +276,5 @@ cargo clippy --workspace --all-targets -- -D warnings
 `design.md`, `implementation-progress.md`, and `post-mvp-progress.md` were consolidated here on 2026-07-22. Long verification tables live in git history.  
 2026-07-22 (later): compressed this file; product gap plan moved to `docs/roadmap.md`.  
 2026-07-23: D-043 per-profile engine env; settings/profiles/env schema v1-only (no historical migrators in-tree); system Downloads default root (D-044).
+2026-07-26: B3a browser-bridge contract frozen (D-045) in new `docs/browser-bridge.md`.
+2026-07-26: B3b done — single-instance IPC extracted to `crates/ariadeck-ipc` (protocol v3 + data-dir/socket-label derivation, GPUI-free), new `apps/ariadeck-bridge` native messaging host, desktop fills the Add dialog from forwarded downloads. D-045 §6 amended: a disconnected engine makes forwarded items wait in memory (D-037/D-038 behavior) rather than reply `not_running`, which the one-way bridge cannot detect. Settings toggles, installer registration, and the extension (B3c) remain.

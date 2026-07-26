@@ -1289,6 +1289,101 @@ fn add_download_advanced_options_toggle_and_collect_secrets(cx: &mut TestAppCont
     });
 }
 
+fn bridge_download(url: &str, referer: &str, cookie: Option<&str>) -> BridgeDownloadView {
+    BridgeDownloadView {
+        url: url.into(),
+        referer: referer.into(),
+        user_agent: "AriaDeck-Bridge/1.0".into(),
+        cookie: cookie.map(SecretStringView::new),
+        filename: Some("file.bin".into()),
+        file_size: Some(1_048_576),
+    }
+}
+
+#[gpui::test]
+fn bridge_downloads_fill_the_dialog_without_submitting(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(1);
+        shell
+    });
+
+    view.update_in(cx, |shell, window, cx| {
+        assert!(shell.can_open_bridge_downloads());
+        let downloads = [bridge_download(
+            "https://example.test/file.bin",
+            "https://example.test/page",
+            Some("session=bridge-secret"),
+        )];
+        assert_eq!(shell.open_bridge_downloads(&downloads, window, cx), 1);
+
+        assert!(shell.add_dialog.open);
+        // D-045 §6: fill, never submit.
+        assert!(shell.add_dialog.pending.is_none());
+        assert_eq!(
+            shell.add_input.read(cx).text(),
+            "https://example.test/file.bin"
+        );
+        assert_eq!(
+            shell.add_inputs.referer.read(cx).text(),
+            "https://example.test/page"
+        );
+        // A prefilled cookie must be visible to whoever confirms the add.
+        assert!(shell.add_dialog.advanced_open);
+        assert!(shell.add_inputs.cookie.read(cx).is_secure());
+    });
+
+    view.read_with(cx, |shell, cx| {
+        let advanced = shell.collect_add_advanced_options(cx);
+        assert_eq!(
+            advanced
+                .cookie
+                .as_ref()
+                .map(|value| value.clone().into_inner()),
+            Some("session=bridge-secret".into())
+        );
+        // The bridge never supplies an output path or HTTP auth (D-001 / D-045 §5).
+        assert!(advanced.http_user.is_empty());
+        assert!(advanced.http_passwd.is_none());
+        assert!(advanced.checksum.is_empty());
+        assert!(advanced.headers.is_empty());
+        assert!(!format!("{advanced:?}").contains("bridge-secret"));
+    });
+}
+
+#[gpui::test]
+fn bridge_downloads_consume_only_the_leading_header_group(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(1);
+        shell
+    });
+
+    view.update_in(cx, |shell, window, cx| {
+        let downloads = [
+            // Two items agree on headers, and the second repeats the first URL.
+            bridge_download("https://example.test/a.bin", "https://example.test/p", None),
+            bridge_download("https://example.test/a.bin", "https://example.test/p", None),
+            bridge_download("https://example.test/b.bin", "https://example.test/p", None),
+            // Different referer: must not inherit the group above.
+            bridge_download("https://other.test/c.bin", "https://other.test/p", None),
+        ];
+        assert_eq!(shell.open_bridge_downloads(&downloads, window, cx), 3);
+        assert_eq!(
+            shell.add_input.read(cx).text(),
+            "https://example.test/a.bin\nhttps://example.test/b.bin"
+        );
+        assert_eq!(
+            shell.add_inputs.referer.read(cx).text(),
+            "https://example.test/p"
+        );
+
+        // The dialog is now busy, so the remainder stays queued for the caller.
+        assert!(!shell.can_open_bridge_downloads());
+        assert_eq!(shell.open_bridge_downloads(&downloads[3..], window, cx), 0);
+    });
+}
+
 #[gpui::test]
 fn add_download_dialog_accepts_keyboard_input(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| {

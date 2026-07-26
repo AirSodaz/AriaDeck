@@ -1,0 +1,22 @@
+[package]
+name = "ariadeck-bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+# Chrome/Edge native messaging host (D-045). Deliberately depends on the IPC leaf
+# crate only: it must never link GPUI or the UI stack.
+[dependencies]
+ariadeck-ipc = { path = "../../crates/ariadeck-ipc" }
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

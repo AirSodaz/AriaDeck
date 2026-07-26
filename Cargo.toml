@@ -1,12 +1,14 @@
 [workspace]
 resolver = "3"
 members = [
+    "apps/ariadeck-bridge",
     "apps/ariadeck-desktop",
     "crates/ariadeck-application",
     "crates/ariadeck-domain",
     "crates/ariadeck-engine",
     "crates/ariadeck-history",
     "crates/ariadeck-i18n",
+    "crates/ariadeck-ipc",
     "crates/ariadeck-rpc",
     "crates/ariadeck-settings",
     "crates/ariadeck-telemetry",

@@ -1,6 +1,6 @@
 # AriaDeck — Product Roadmap
 
-**Last updated:** 2026-07-23
+**Last updated:** 2026-07-26
 **Purpose:** Competitive gaps → prioritized development direction. Complements [`project-context.md`](project-context.md) (architecture & contracts).
 
 Core download-manager surface is **done**. Remaining work is distribution polish, OS integration users expect from Motrix-class apps, and selective depth features—without becoming a web UI, cloud product, or engine reimplementation.
@@ -55,7 +55,7 @@ Legend: **Have** · **Partial** · **Missing** · **Won’t** (non-goal)
 | Themes + en/zh-CN | Have | Have (more langs) | Have | Extra locales later |
 | Windows portable/installer | Have | Have | N/A | macOS/Linux CI-verified; packages = next distro (Phase E) |
 | Bundled aria2 | Partial (import) | Have | N/A | Optional offline pack later; no forced network channel |
-| Browser extension / intercept | Missing | Have (Next strong) | 3rd party | High user expectation |
+| Browser extension / intercept | Host + IPC done (D-045); no extension yet | Have (Next strong) | 3rd party | High user expectation; B3c + installer/settings remain |
 | Protocol handlers / file associations | Have (`.torrent`/Metalink + `magnet:`) | Have | N/A | Browser capture remains B3 |
 | Tags / categories / folders | Have (ext auto-route) | Next: categories | Filters | D-040/D-042; freeform multi-tags later |
 | Download scheduling | Missing | Next: time windows | Weak | Persepolis-class |
@@ -100,8 +100,8 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | --- | --- | --- |
 | B1 | **Done** — opt-in associations for `.torrent`, `.metalink`, and `.meta4`; double-click forwards to the running instance and opens the existing preview/confirmation flow | OS file integration without auto-submission |
 | B2 | **Done** — opt-in `magnet:` handler forwards to the running instance and fills the Add Download confirmation input; optional custom `ariadeck:` remains deferred | System integration without auto-submission |
-| B3a | Browser extension: define API contract (auth model, confirm policy, referer/cookie handling) | Design before build; minimize attack surface |
-| B3b | Native messaging host + local RPC endpoint for browser add-on | Motrix Next differentiator |
+| B3a | **Done** — contract frozen in [`browser-bridge.md`](browser-bridge.md) (D-045): native messaging host, no port; exhaustive payload whitelist; cookies opt-in/memory-only; confirm by default | Design before build; minimize attack surface |
+| B3b | **Done** — `crates/ariadeck-ipc` (socket protocol v3) + `apps/ariadeck-bridge` native messaging host; desktop fills the Add dialog from forwarded downloads. Remaining before the path is user-reachable: `browser_bridge` settings section (`allow_cookies` / `auto_submit`) with UI + en/zh-CN strings, and installer opt-in that writes/removes the Chrome+Edge native-messaging keys | Motrix Next differentiator |
 | B3c | Reference browser extension (Chrome/Edge); community can fork for Firefox | Validate contract end-to-end |
 | B4 | First-run: discover/import aria2 or guided core import | Onboarding; still no mandatory network install |
 | B5 | Tray speed meter (at least Windows + optional) | Motrix-class glanceability |
@@ -176,7 +176,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 
 ```text
 M1  Ship trust     → A1, A3, A6 residual (+ signing / manual QA)
-M2  OS hooks       → B4–B5, then B3a–B3c (extension); B1/B2/B6 done
+M2  OS hooks       → B3c (extension) + bridge settings/installer, B4–B5; B1/B2/B3a/B3b/B6 done
 M3  Org/cleanup    → C2 (C1 done; C3 if demand); F3/D-043 done
 M4  BT depth / dist → D2–D5, E1 or E2 as capacity allows; D1 done
 ```
@@ -204,6 +204,7 @@ Each milestone should land with: tests or live-check notes for engine paths, `pr
 | `project-context.md` | Architecture, contracts D-xxx, invariants |
 | `roadmap.md` (this) | Priority & competitive direction |
 | `release.md` | Packaging acceptance |
+| `browser-bridge.md` | Browser bridge contract (D-045): transport, payload whitelist, cookie/confirm policy |
 | `i18n.md` | Locale workflow |
 | `README.md` | Clone/run/env surface |
 

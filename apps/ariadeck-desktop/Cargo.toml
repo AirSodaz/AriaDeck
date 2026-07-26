@@ -12,6 +12,7 @@ ariadeck-domain = { path = "../../crates/ariadeck-domain" }
 ariadeck-engine = { path = "../../crates/ariadeck-engine" }
 ariadeck-history = { path = "../../crates/ariadeck-history" }
 ariadeck-i18n = { path = "../../crates/ariadeck-i18n" }
+ariadeck-ipc = { path = "../../crates/ariadeck-ipc" }
 ariadeck-rpc = { path = "../../crates/ariadeck-rpc" }
 ariadeck-settings = { path = "../../crates/ariadeck-settings" }
 ariadeck-telemetry = { path = "../../crates/ariadeck-telemetry" }

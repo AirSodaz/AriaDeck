@@ -51,40 +51,40 @@ use ariadeck_ui::{
     AddDownloadMetadataPreviewResultView, AddDownloadMetadataPreviewView, AddDownloadModeView,
     AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView, AppShell, AppShellEvent,
     BatchCommandOutcomeView, BatchTaskCommandRequestView, BatchTaskCommandResultView,
-    BatchTaskCommandView, BatchTaskFailureView, CloseBehaviorView, ColorSchemeView,
-    CommandOutcomeView, ConnectionView, CoreCommandOutcomeView, CoreCommandRequestView,
-    CoreCommandResultView, CoreCommandView, CoreInstallStatusView, CoreInstallationView,
-    CoreRegistryView, CoreSourceView, DiagnosticExportOutcomeView, DiagnosticExportRequestView,
-    DiagnosticExportResultView, DownloadCategoryView, DownloadProxySettingsView, DownloadRowView,
-    EngineCapabilitiesView, EngineHealthView, EngineSessionView, FileAllocationView,
-    FileConflictPolicyView, GlobalTaskCommandRequestView, GlobalTaskCommandResultView,
-    GlobalTaskCommandView, LanguagePreferenceView, NotificationSettingsView,
-    NotificationVolumeView, OperationErrorView, PlatformSettingsView, ProfileCatalogView,
-    ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView,
-    ProxyPasswordUpdateView, SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView,
-    SaveProfileCatalogResultView, SettingsExportOutcomeView, SettingsExportRequestView,
-    SettingsExportResultView, SettingsImportOutcomeView, SettingsImportRequestView,
-    SettingsImportResultView, SettingsSaveOutcomeView, SettingsSaveRequestView,
-    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView,
-    StoppedHistoryView, SwitchProfileOutcomeView, SwitchProfileRequestView,
-    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
-    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
-    TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
-    TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
-    TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
-    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TrackerListSettingsView,
-    TrackerListSourceView, TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery,
-    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, format_speed_limit_field,
+    BatchTaskCommandView, BatchTaskFailureView, BridgeDownloadView, CloseBehaviorView,
+    ColorSchemeView, CommandOutcomeView, ConnectionView, CoreCommandOutcomeView,
+    CoreCommandRequestView, CoreCommandResultView, CoreCommandView, CoreInstallStatusView,
+    CoreInstallationView, CoreRegistryView, CoreSourceView, DiagnosticExportOutcomeView,
+    DiagnosticExportRequestView, DiagnosticExportResultView, DownloadCategoryView,
+    DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView, EngineHealthView,
+    EngineSessionView, FileAllocationView, FileConflictPolicyView, GlobalTaskCommandRequestView,
+    GlobalTaskCommandResultView, GlobalTaskCommandView, LanguagePreferenceView,
+    NotificationSettingsView, NotificationVolumeView, OperationErrorView, PlatformSettingsView,
+    ProfileCatalogView, ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView,
+    ProxyModeView, ProxyPasswordUpdateView, SaveProfileCatalogOutcomeView,
+    SaveProfileCatalogRequestView, SaveProfileCatalogResultView, SecretStringView,
+    SettingsExportOutcomeView, SettingsExportRequestView, SettingsExportResultView,
+    SettingsImportOutcomeView, SettingsImportRequestView, SettingsImportResultView,
+    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
+    SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView, SwitchProfileOutcomeView,
+    SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
+    TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
+    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
+    TaskIdentity, TaskNameStateView, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
+    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
+    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
+    TrackerListSettingsView, TrackerListSourceView, TransferPolicySettingsView, WorkspaceFilter,
+    WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    format_speed_limit_field,
 };
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
 #[cfg(target_os = "windows")]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 
-use crate::{
-    instance::{LaunchRequest, MAX_LAUNCH_ITEMS},
-    platform::{self, SystemTray, TrayAction},
-};
+use ariadeck_ipc::{BridgeDownload, LaunchRequest, MAX_LAUNCH_ITEMS};
+
+use crate::platform::{self, SystemTray, TrayAction};
 use tokio::{
     runtime::Runtime,
     sync::{mpsc, watch},
@@ -142,6 +142,7 @@ pub struct DesktopRoot {
     pending_geometry: Option<WindowGeometry>,
     pending_metadata_paths: Vec<PathBuf>,
     pending_magnet_uris: Vec<String>,
+    pending_downloads: Vec<BridgeDownload>,
     instance_requests: Option<Receiver<LaunchRequest>>,
     geometry_save_generation: u64,
     _workspace_subscription: Subscription,
@@ -584,6 +585,7 @@ impl DesktopRoot {
             pending_geometry: None,
             pending_metadata_paths: initial_request.metadata_paths,
             pending_magnet_uris: initial_request.magnet_uris,
+            pending_downloads: initial_request.downloads,
             instance_requests,
             geometry_save_generation: 0,
             _workspace_subscription: workspace_subscription,
@@ -610,6 +612,7 @@ impl DesktopRoot {
 
         if root.pending_metadata_paths.is_empty()
             && root.pending_magnet_uris.is_empty()
+            && root.pending_downloads.is_empty()
             && root.settings.platform.start_minimized_to_tray
             && root.tray.is_some()
         {
@@ -664,21 +667,29 @@ impl DesktopRoot {
         });
     }
 
+    /// Remaining slots before the shared launch-item flood cap is reached.
+    fn launch_budget(&self) -> usize {
+        MAX_LAUNCH_ITEMS.saturating_sub(
+            self.pending_metadata_paths.len()
+                + self.pending_magnet_uris.len()
+                + self.pending_downloads.len(),
+        )
+    }
+
     fn poll_instance_requests(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut activate = false;
         if let Some(receiver) = self.instance_requests.as_ref() {
             while let Ok(request) = receiver.try_recv() {
                 activate = true;
-                let remaining = MAX_LAUNCH_ITEMS.saturating_sub(
-                    self.pending_metadata_paths.len() + self.pending_magnet_uris.len(),
-                );
+                let remaining = self.launch_budget();
                 self.pending_metadata_paths
                     .extend(request.metadata_paths.into_iter().take(remaining));
-                let remaining = MAX_LAUNCH_ITEMS.saturating_sub(
-                    self.pending_metadata_paths.len() + self.pending_magnet_uris.len(),
-                );
+                let remaining = self.launch_budget();
                 self.pending_magnet_uris
                     .extend(request.magnet_uris.into_iter().take(remaining));
+                let remaining = self.launch_budget();
+                self.pending_downloads
+                    .extend(request.downloads.into_iter().take(remaining));
             }
         }
         if activate {
@@ -703,6 +714,21 @@ impl DesktopRoot {
             });
             if !opened {
                 self.pending_magnet_uris = uris;
+            }
+        }
+
+        // D-045: bridge downloads carry per-item headers, but the add dialog holds a
+        // single shared advanced-options block, so only the leading run of items that
+        // agree on headers is consumed per dialog. The rest stays queued.
+        if !self.pending_downloads.is_empty() && self.workspace.read(cx).can_open_bridge_downloads()
+        {
+            let views: Vec<BridgeDownloadView> =
+                self.pending_downloads.iter().map(bridge_view).collect();
+            let consumed = self.workspace.update(cx, |workspace, cx| {
+                workspace.open_bridge_downloads(&views, window, cx)
+            });
+            if consumed > 0 {
+                self.pending_downloads.drain(..consumed);
             }
         }
     }
@@ -1899,6 +1925,23 @@ async fn execute_add_download(
         request_id,
         session,
         items,
+    }
+}
+
+/// Map a validated bridge payload onto the add-dialog view model (D-045).
+///
+/// `filename` stays a display hint only and is never mapped onto `out` (D-001).
+fn bridge_view(download: &BridgeDownload) -> BridgeDownloadView {
+    BridgeDownloadView {
+        url: download.url.clone(),
+        referer: download.referer.clone().unwrap_or_default(),
+        user_agent: download.user_agent.clone().unwrap_or_default(),
+        cookie: download
+            .cookie
+            .as_ref()
+            .map(|cookie| SecretStringView::new(cookie.expose_secret())),
+        filename: download.filename.clone(),
+        file_size: download.file_size,
     }
 }
 

@@ -964,6 +964,32 @@ impl AddDownloadAdvancedOptionsView {
     }
 }
 
+/// A download handed over by the browser bridge, awaiting confirmation (D-045).
+///
+/// The add dialog carries one shared advanced-options block for every link in a
+/// request, so the shell only fills a run of downloads that agree on referer,
+/// user agent, and cookie; the rest stay queued for the next dialog. `filename`
+/// and `file_size` are display hints and never become an output path (D-001).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BridgeDownloadView {
+    pub url: String,
+    pub referer: String,
+    pub user_agent: String,
+    pub cookie: Option<SecretStringView>,
+    pub filename: Option<String>,
+    pub file_size: Option<u64>,
+}
+
+impl BridgeDownloadView {
+    /// Whether two downloads can share a single add dialog.
+    #[must_use]
+    pub fn shares_headers_with(&self, other: &Self) -> bool {
+        self.referer == other.referer
+            && self.user_agent == other.user_agent
+            && self.cookie == other.cookie
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AddDownloadRequestView {
     pub request_id: RequestId,

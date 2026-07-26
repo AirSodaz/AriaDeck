@@ -72,6 +72,19 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # D-045: the native messaging host is launched by the browser and must stay a
+      # small, UI-free binary. A stray dependency edge would pull the whole GPUI
+      # stack into it, so assert the boundary rather than trusting review.
+      - name: Assert bridge links no GPUI
+        shell: bash
+        run: |
+          set -euo pipefail
+          if cargo tree -p ariadeck-bridge --edges normal --prefix none | grep -q '^gpui'; then
+            echo "ariadeck-bridge must not depend on GPUI (D-045)" >&2
+            cargo tree -p ariadeck-bridge --edges normal --invert gpui >&2 || true
+            exit 1
+          fi
+
       - name: Release build (desktop)
         run: cargo build -p ariadeck-desktop --release
 
