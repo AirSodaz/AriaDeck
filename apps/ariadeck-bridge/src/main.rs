@@ -69,7 +69,10 @@ fn main() -> ExitCode {
         Mode::Register { extension_id } => return run_register(extension_id.as_deref()),
         Mode::Unregister => {
             return match register::unregister() {
-                Ok(()) => ExitCode::SUCCESS,
+                Ok(()) => {
+                    register::report_unregistered();
+                    ExitCode::SUCCESS
+                }
                 Err(error) => {
                     report(&format!("unregister failed: {error}"));
                     ExitCode::FAILURE

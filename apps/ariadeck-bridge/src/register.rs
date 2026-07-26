@@ -203,6 +203,13 @@ pub fn report_registered(manifest_path: &Path, extension_id: &str) {
     );
 }
 
+/// Removal is idempotent, so it cannot report what it removed without racing.
+/// It still has to say something: run by hand, silence is indistinguishable from
+/// having done nothing. The installer runs it hidden and ignores this.
+pub fn report_unregistered() {
+    let _ = writeln!(io::stdout(), "unregistered {HOST_NAME}");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
