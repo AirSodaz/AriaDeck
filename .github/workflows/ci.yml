@@ -104,6 +104,11 @@ jobs:
       - name: Release build (desktop + bridge)
         run: cargo build -p ariadeck-desktop -p ariadeck-bridge --release
 
+      - name: Verify Windows DPI manifest and reparse guards
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: ./scripts/verify-windows-a3.ps1 -SkipBuild
+
   windows-packages:
     name: Windows packages (portable + installer)
     runs-on: windows-latest

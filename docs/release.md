@@ -125,6 +125,8 @@ Unsigned builds may hit SmartScreen. No certs in-repo.
 | File associations | Explicit default-unchecked Inno task; owned ProgIDs only |
 | External metadata open | `--open-metadata` → preview/confirmation; running instance activated |
 | Magnet protocol | Explicit default-unchecked Inno task; `--open-magnet` fills links without submission |
+| Windows DPI awareness | GPUI `windows-manifest` is explicit; release EXE contains `PerMonitorV2` + `true/pm` |
+| Reparse-point containment | Windows junction regression tests reject destination components and Trash task directories |
 
 ## Manual checklist
 
@@ -141,3 +143,6 @@ Unsigned builds may hit SmartScreen. No certs in-repo.
 11. Launch with a managed local engine: no `aria2c` console window appears (spawn and probes use `CREATE_NO_WINDOW`)
 12. Released assets match `SHA256SUMS.txt` (`sha256sum -c`, or `Get-FileHash -Algorithm SHA256`)
 13. Optional: `signtool verify /pa`
+14. Run `pwsh -File scripts/verify-windows-a3.ps1`; it tests real directory junctions, builds the release EXE, and verifies its embedded Per-Monitor V2 manifest. Windows CI repeats the automated portion after its release build.
+15. At Windows 125% scale, run the script again with `-SkipBuild -ExpectedScale 125`, launch the printed EXE, and inspect the main task list, Add Download, task details, Settings, Profiles, and first-run core setup at the 960x620 minimum and maximized. Text must not clip or overlap; controls and modal actions must remain visible and usable.
+16. Repeat step 15 at 150% with `-ExpectedScale 150`. When two monitors with different scales are available, drag the open window between them and confirm it redraws sharply without changing its logical minimum size or losing pointer alignment.

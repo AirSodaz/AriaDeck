@@ -353,7 +353,7 @@ fn validate_existing_destination_path(
                 ));
             }
         };
-        if metadata.file_type().is_symlink() {
+        if is_symlink_or_reparse_point(&metadata) {
             return Err(unsafe_path_error(format!(
                 "download file path cannot traverse a symlink or reparse point: {}",
                 current.display()
@@ -418,6 +418,25 @@ fn verify_directory_writable(directory: &Path) -> Result<(), GatewayError> {
     remove_result.map_err(|error| {
         filesystem_error("remove download-directory write probe", &probe, error, true)
     })
+}
+
+fn is_symlink_or_reparse_point(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink() || is_windows_reparse_point(metadata)
+}
+
+#[cfg(windows)]
+fn is_windows_reparse_point(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+
+    // Junctions and other name-surrogate reparse points are not reported by
+    // FileType::is_symlink(), but can redirect a path after containment checks.
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_windows_reparse_point(_metadata: &fs::Metadata) -> bool {
+    false
 }
 
 fn available_space(directory: &Path) -> Result<u64, GatewayError> {
@@ -758,7 +777,7 @@ fn resolve_engine_path(base: &Path, value: &str) -> Result<PathBuf, GatewayError
 fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf, GatewayError> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| filesystem_error(&format!("inspect {label}"), path, error, true))?;
-    if metadata.file_type().is_symlink() {
+    if is_symlink_or_reparse_point(&metadata) {
         return Err(unsafe_path_error(format!(
             "{label} cannot be a symlink or reparse point: {}",
             path.display()
@@ -784,7 +803,7 @@ fn safe_existing_file(
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(filesystem_error("inspect task file", path, error, true)),
     };
-    if metadata.file_type().is_symlink() {
+    if is_symlink_or_reparse_point(&metadata) {
         return Err(unsafe_path_error(format!(
             "task file cannot be a symlink or reparse point: {}",
             path.display()
@@ -2861,6 +2880,76 @@ mod tests {
 
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(outside);
+    }
+
+    #[cfg(windows)]
+    fn create_directory_junction(link: &Path, target: &Path) {
+        let output = console_free_command("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .expect("run mklink for junction fixture");
+        assert!(
+            output.status.success(),
+            "mklink failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_reparse_points_are_rejected_by_destination_preflight() {
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        let actual = downloads.join("actual");
+        let junction = downloads.join("junction");
+        fs::create_dir_all(&actual).expect("create junction target");
+        create_directory_junction(&junction, &actual);
+
+        let gateway = LocalDownloadDestinationGateway::new();
+        let error = gateway
+            .preflight(&DownloadDestinationRequest {
+                directory: ariadeck_domain::EnginePath::new(downloads.to_string_lossy()),
+                required_bytes: Some(1),
+                files: vec![DownloadDestinationFile {
+                    relative_path: ariadeck_domain::EnginePath::new("junction/new.bin"),
+                    reject_existing: false,
+                }],
+            })
+            .expect_err("junction components must be rejected even within the download root");
+        assert_eq!(error.kind, GatewayErrorKind::UnsafePath);
+
+        fs::remove_dir(&junction).expect("remove junction fixture");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_reparse_points_are_rejected_by_file_gateway() {
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        let actual = downloads.join("actual");
+        let junction = downloads.join("task");
+        let content = actual.join("item.bin");
+        fs::create_dir_all(&actual).expect("create junction target");
+        fs::write(&content, b"content").expect("create content file");
+        create_directory_junction(&junction, &actual);
+
+        let gateway = LocalTaskFileGateway::new(&downloads);
+        let error = gateway
+            .preflight(&TaskFileRemovalRequest {
+                directory: ariadeck_domain::EnginePath::new(junction.to_string_lossy()),
+                files: vec![ariadeck_domain::EnginePath::new(
+                    junction.join("item.bin").to_string_lossy(),
+                )],
+                include_control_files: false,
+            })
+            .expect_err("junction task directories must never reach Trash");
+        assert_eq!(error.kind, GatewayErrorKind::UnsafePath);
+
+        fs::remove_dir(&junction).expect("remove junction fixture");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

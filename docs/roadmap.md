@@ -85,7 +85,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | --- | --- | --- |
 | A1 | Prod code-signing + release checklist hardening | SmartScreen; `docs/release.md` residual |
 | A2 | **Done** — dialogs, details, and stable validation/error codes localized | en/zh-CN parity; English summaries remain unknown-code fallback |
-| A3 | High-DPI + Windows reparse manual QA | ACCESS/SEC residuals |
+| A3 | **Done** — Per-Monitor V2 manifest is explicit and verified from the release EXE; Windows junction/reparse containment is hardened and covered by live regression tests; the 125%/150% visual pass completed | ACCESS/SEC release gate covered |
 | A4 | **Done** — optional diagnostic export (redacted ZIP) | Support without leaking secrets; excludes URLs, paths, settings, credentials, and logs |
 | A5 | **Done** — settings export/import (versioned JSON, no credentials) | AriaNg parity; strict validation, local keychain secrets unchanged |
 | A6 | **In progress** — code baseline for roles, labels, keyboard focus, and modal focus traps | Manual NVDA / Narrator pass remains |
@@ -175,7 +175,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 ## 6. Suggested sequence (next 2–3 milestones)
 
 ```text
-M1  Ship trust     → A1, A3, A6 residual (+ signing / manual QA)
+M1  Ship trust     → A1, A6 residual (+ signing / a11y manual QA)
 M2  OS hooks       → B5; B1/B2/B3/B4/B6 done (B3 needs a published extension ID)
 M3  Org/cleanup    → C2 (C1 done; C3 if demand); F3/D-043 done
 M4  BT depth / dist → D2–D5, E1 or E2 as capacity allows; D1 done
