@@ -59,7 +59,7 @@ jobs:
       # glob form of --test, so the version needs to be known, not inherited.
       - name: Install Node
         if: matrix.os == 'ubuntu-latest'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "22"
 

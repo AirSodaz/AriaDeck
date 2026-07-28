@@ -65,12 +65,14 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// runs is such a program, so route them all through here.
 #[must_use]
 pub fn console_free_command(program: impl AsRef<OsStr>) -> Command {
-    let mut command = Command::new(program);
+    let command = Command::new(program);
     #[cfg(windows)]
-    {
+    let command = {
         use std::os::windows::process::CommandExt as _;
+        let mut command = command;
         command.creation_flags(CREATE_NO_WINDOW);
-    }
+        command
+    };
     command
 }
 
