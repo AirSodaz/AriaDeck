@@ -110,6 +110,9 @@ pub struct TextField {
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
+    /// Horizontal offset used to keep the active caret visible in the clipped
+    /// single-line text area.
+    text_scroll_x: Pixels,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
@@ -156,6 +159,7 @@ impl TextField {
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
+            text_scroll_x: Pixels::ZERO,
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
@@ -517,7 +521,7 @@ impl TextField {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(position.x - bounds.left())
+        line.closest_index_for_x(position.x - bounds.left() + self.text_scroll_x)
     }
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
@@ -664,8 +668,14 @@ impl EntityInputHandler for TextField {
         let line = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
         Some(Bounds::from_corners(
-            point(bounds.left() + line.x_for_index(range.start), bounds.top()),
-            point(bounds.left() + line.x_for_index(range.end), bounds.bottom()),
+            point(
+                bounds.left() + line.x_for_index(range.start) - self.text_scroll_x,
+                bounds.top(),
+            ),
+            point(
+                bounds.left() + line.x_for_index(range.end) - self.text_scroll_x,
+                bounds.bottom(),
+            ),
         ))
     }
 
@@ -677,7 +687,7 @@ impl EntityInputHandler for TextField {
     ) -> Option<usize> {
         let bounds = self.last_bounds?;
         let line = self.last_layout.as_ref()?;
-        let index = line.index_for_x(point.x - bounds.left())?;
+        let index = line.index_for_x(point.x - bounds.left() + self.text_scroll_x)?;
         Some(self.offset_to_utf16(index))
     }
 }
@@ -688,6 +698,7 @@ struct TextFieldElement {
 
 struct TextFieldPrepaintState {
     line: Option<ShapedLine>,
+    text_scroll_x: Pixels,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
 }
@@ -791,13 +802,15 @@ impl Element for TextFieldElement {
             .text_system()
             .shape_line(display_text, font_size, &runs, None);
         let cursor_x = line.x_for_index(cursor);
+        let text_scroll_x =
+            text_scroll_offset(input.text_scroll_x, cursor_x, line.width, bounds.size.width);
         let selection_color = with_alpha(theme.colors.focus_ring, 0.24);
         let (selection, cursor) = if selected_range.is_empty() {
             (
                 None,
                 Some(fill(
                     Bounds::new(
-                        point(bounds.left() + cursor_x, bounds.top()),
+                        point(bounds.left() + cursor_x - text_scroll_x, bounds.top()),
                         size(px(1.5), bounds.size.height),
                     ),
                     theme.colors.focus_ring,
@@ -808,11 +821,11 @@ impl Element for TextFieldElement {
                 Some(fill(
                     Bounds::from_corners(
                         point(
-                            bounds.left() + line.x_for_index(selected_range.start),
+                            bounds.left() + line.x_for_index(selected_range.start) - text_scroll_x,
                             bounds.top(),
                         ),
                         point(
-                            bounds.left() + line.x_for_index(selected_range.end),
+                            bounds.left() + line.x_for_index(selected_range.end) - text_scroll_x,
                             bounds.bottom(),
                         ),
                     ),
@@ -823,6 +836,7 @@ impl Element for TextFieldElement {
         };
         TextFieldPrepaintState {
             line: Some(line),
+            text_scroll_x,
             cursor,
             selection,
         }
@@ -851,7 +865,7 @@ impl Element for TextFieldElement {
             return;
         };
         let _ = line.paint(
-            bounds.origin,
+            point(bounds.origin.x - prepaint.text_scroll_x, bounds.origin.y),
             window.line_height(),
             gpui::TextAlign::Left,
             None,
@@ -866,6 +880,7 @@ impl Element for TextFieldElement {
             window.paint_quad(cursor);
         }
         self.input.update(cx, |input, _cx| {
+            input.text_scroll_x = prepaint.text_scroll_x;
             input.last_layout = Some(line);
             input.last_bounds = Some(bounds);
         });
@@ -1001,6 +1016,33 @@ impl gpui::Render for TextField {
                 )
             })
     }
+}
+
+/// Keep the caret (including its small visual width) inside the clipped text
+/// viewport while retaining the current offset whenever the caret is visible.
+fn text_scroll_offset(
+    current: Pixels,
+    cursor_x: Pixels,
+    content_width: Pixels,
+    viewport_width: Pixels,
+) -> Pixels {
+    let viewport = f32::from(viewport_width).max(0.0);
+    if viewport <= 0.0 {
+        return Pixels::ZERO;
+    }
+
+    let content = f32::from(content_width).max(0.0);
+    let max_offset = (content - viewport).max(0.0);
+    let cursor = f32::from(cursor_x).max(0.0);
+    let mut offset = f32::from(current).clamp(0.0, max_offset);
+
+    if cursor < offset {
+        offset = cursor;
+    } else if cursor + 1.5 > offset + viewport {
+        offset = cursor + 1.5 - viewport;
+    }
+
+    px(offset.clamp(0.0, max_offset))
 }
 
 fn mask_secret(secret: &str) -> String {
@@ -1258,6 +1300,26 @@ mod tests {
         let debug = format!("{event:?}");
         assert!(debug.contains("[REDACTED]"));
         assert!(!debug.contains("never-log-this"));
+    }
+
+    #[test]
+    fn text_scroll_offset_keeps_the_caret_inside_the_viewport() {
+        assert_eq!(
+            text_scroll_offset(px(0.0), px(40.0), px(80.0), px(100.0)),
+            px(0.0)
+        );
+        assert_eq!(
+            text_scroll_offset(px(0.0), px(190.0), px(200.0), px(100.0)),
+            px(91.5)
+        );
+        assert_eq!(
+            text_scroll_offset(px(91.5), px(20.0), px(200.0), px(100.0)),
+            px(20.0)
+        );
+        assert_eq!(
+            text_scroll_offset(px(91.5), px(190.0), px(120.0), px(100.0)),
+            px(20.0)
+        );
     }
 
     #[test]
