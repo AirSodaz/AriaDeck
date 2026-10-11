@@ -66,7 +66,7 @@ impl AppShell {
                     .items_center()
                     .justify_end()
                     .gap_2()
-                    .when(cfg!(target_os = "windows"), |element| element.pl_2().pr_3())
+                    .when(cfg!(target_os = "windows"), |element| element.pl_2().pr_2())
                     .when(!cfg!(target_os = "windows"), |element| {
                         element.w(px(TITLEBAR_SIDE_WIDTH))
                     })
@@ -79,7 +79,7 @@ impl AppShell {
                         .items_center()
                         .justify_end()
                         .child(actions)
-                        .child(div().w(px(1.0)).h(px(16.0)).mr_1().bg(colors.border))
+                        .child(div().w(px(1.0)).h(px(16.0)).mr_2().bg(colors.border))
                         .child(self.render_window_controls(_window))
                 }
                 #[cfg(not(target_os = "windows"))]
@@ -454,31 +454,17 @@ impl AppShell {
             .max()
             .unwrap_or(0);
         let scale = max_rate.max(1) as f32;
-        let columns = if visible.is_empty() {
-            vec![
-                div()
-                    .h_full()
-                    .w_full()
-                    .flex()
-                    .items_end()
-                    .child(div().h(px(1.0)).w_full().bg(with_alpha(colors.border, 0.4)))
-                    .into_any_element(),
-            ]
-        } else {
-            let step = if visible.len() > 60 { 2 } else { 1 };
-            visible
-                .iter()
-                .step_by(step)
-                .map(|sample| {
-                    speed_chart_column(
-                        sample.download_rate as f32 / scale,
-                        sample.upload_rate as f32 / scale,
-                        colors,
-                    )
-                    .into_any_element()
-                })
-                .collect()
-        };
+        let mut columns = Vec::with_capacity(SPEED_CHART_SAMPLES);
+        columns.extend(
+            (visible.len()..SPEED_CHART_SAMPLES).map(|_| speed_chart_column(0.0, 0.0, colors)),
+        );
+        columns.extend(visible.iter().map(|sample| {
+            speed_chart_column(
+                sample.download_rate as f32 / scale,
+                sample.upload_rate as f32 / scale,
+                colors,
+            )
+        }));
 
         div()
             .id("speed-history-chart")
@@ -1113,12 +1099,14 @@ impl AppShell {
                             .text_color(colors.text_primary)
                             .child(title),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(colors.text_muted)
-                            .child(self.t("empty-state-subtitle")),
-                    )
+                    .when(show_add, |element| {
+                        element.child(
+                            div()
+                                .text_xs()
+                                .text_color(colors.text_muted)
+                                .child(self.t("empty-state-subtitle")),
+                        )
+                    })
                     .when(show_clear, |element| {
                         element.child(
                             Button::new("clear-empty-filter", self.t("clear-filter"))

@@ -1472,6 +1472,8 @@ impl AppShell {
                                                     )
                                                     .child(
                                                         div()
+                                                            .flex_1()
+                                                            .min_w_0()
                                                             .truncate()
                                                             .text_xs()
                                                             .text_color(colors.text_secondary)

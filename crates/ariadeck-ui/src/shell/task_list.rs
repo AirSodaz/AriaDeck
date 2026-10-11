@@ -1374,25 +1374,56 @@ impl AppShell {
             format_eta(task.eta_seconds)
         };
         let aria_label = if seeding {
-            format!(
-                "{display_name}, {}, {share_ratio}, {}, {rate_label}, {eta_label}",
-                self.t("task-status-seeding"),
-                format_bytes(task.uploaded_bytes),
+            self.t_args(
+                "task-seeding-aria",
+                &[
+                    ("name", FluentValue::from(display_name.as_str())),
+                    ("status", FluentValue::from(self.t("task-status-seeding"))),
+                    ("ratio", FluentValue::from(share_ratio.as_str())),
+                    (
+                        "uploaded",
+                        FluentValue::from(format_bytes(task.uploaded_bytes)),
+                    ),
+                    ("rate", FluentValue::from(format_rate(task.upload_rate))),
+                    ("time", FluentValue::from(observed_seeding.as_str())),
+                ],
             )
         } else {
-            format!(
-                "{display_name}, {}, {progress_label}, {rate_label}, {eta_label}",
-                self.t(task.status.message_key()),
+            self.t_args(
+                "task-row-aria",
+                &[
+                    ("name", FluentValue::from(display_name.as_str())),
+                    (
+                        "status",
+                        FluentValue::from(self.t(task.status.message_key())),
+                    ),
+                    ("progress", FluentValue::from(format_percent(basis_points))),
+                    ("rate", FluentValue::from(format_rate(task.download_rate))),
+                    ("eta", FluentValue::from(format_eta(task.eta_seconds))),
+                ],
             )
         };
-        let aria_label = if let Some(error) = &task_error_label {
-            format!("{aria_label}, {error}")
+        let aria_label = task_error_label
+            .as_ref()
+            .map_or(aria_label.clone(), |error| {
+                self.t_args(
+                    "task-row-with-error-aria",
+                    &[
+                        ("task", FluentValue::from(aria_label.as_str())),
+                        ("error", FluentValue::from(error.as_str())),
+                    ],
+                )
+            });
+        let wide_secondary_label = if layout == TaskLayoutMode::Wide {
+            Some(task_error_label.clone().unwrap_or_else(|| {
+                self.t_args(
+                    "task-gid-label",
+                    &[("gid", FluentValue::from(task.identity.gid.as_str()))],
+                )
+            }))
         } else {
-            aria_label
+            None
         };
-        let wide_secondary_label = task_error_label
-            .clone()
-            .unwrap_or_else(|| format!("GID {}", task.identity.gid));
         let compact_secondary_label = if layout == TaskLayoutMode::Compact {
             Some(task_error_label.clone().unwrap_or_else(|| {
                 if seeding {
@@ -1428,8 +1459,14 @@ impl AppShell {
         };
         let status_badge =
             task_status_badge(task.status, self.t(task.status.message_key()), colors);
+        let task_key = {
+            use std::hash::{DefaultHasher, Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            task.identity.hash(&mut hasher);
+            hasher.finish()
+        };
         let row = div()
-            .id(("task-row", index))
+            .id(("task-row", task_key))
             .role(Role::ListItem)
             .aria_label(aria_label)
             .aria_selected(selected)
@@ -1474,7 +1511,7 @@ impl AppShell {
             }))
             .child(
                 div()
-                    .id(("task-select", index))
+                    .id(("task-select", task_key))
                     .role(Role::CheckBox)
                     .aria_label(if selected {
                         self.t_args(
@@ -1560,7 +1597,7 @@ impl AppShell {
                                 .font_features(tabular_numbers())
                                 .text_xs()
                                 .text_color(secondary_color)
-                                .child(wide_secondary_label),
+                                .child(wide_secondary_label.unwrap_or_default()),
                         ),
                 )
                 .child(

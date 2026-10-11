@@ -2193,6 +2193,7 @@ impl AppShell {
                     Button::new("add-download-category", add_label)
                         .icon(IconName::Plus)
                         .style(ButtonStyle::Secondary)
+                        .disabled(pending || self.settings_page.draft_categories.len() >= 32)
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.add_download_category(window, cx);
                         }))
