@@ -79,7 +79,7 @@ impl AppShell {
             task.display_name.clone()
         };
         self.output_name_input
-            .update(cx, |input, cx| input.set_text(initial_name, cx));
+            .update(cx, |input, cx| input.set_value(initial_name, window, cx));
         self.output_name_dialog = Some(TaskOutputNameDialog {
             identity: task.identity.clone(),
             display_name: task_display_name(&task),
@@ -145,7 +145,7 @@ impl AppShell {
         else {
             return;
         };
-        let output_name = self.output_name_input.read(cx).text().trim().to_owned();
+        let output_name = self.output_name_input.read(cx).value().trim().to_owned();
         if let Some(key) = output_name_validation_error(&output_name) {
             let summary = self.t(key);
             if let Some(dialog) = &mut self.output_name_dialog {
@@ -215,10 +215,10 @@ impl AppShell {
         // getOption surface), so the fields start blank and set a fresh value.
         self.task_inputs
             .download_limit
-            .update(cx, |input, cx| input.set_text("", cx));
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self.task_inputs
             .upload_limit
-            .update(cx, |input, cx| input.set_text("", cx));
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self.task_speed_limit_dialog = Some(TaskSpeedLimitDialog {
             identity: task.identity.clone(),
             display_name: task_display_name(&task),
@@ -288,10 +288,10 @@ impl AppShell {
                 .task_inputs
                 .download_limit
                 .read(cx)
-                .text()
+                .value()
                 .trim()
                 .into(),
-            upload_limit: self.task_inputs.upload_limit.read(cx).text().trim().into(),
+            upload_limit: self.task_inputs.upload_limit.read(cx).value().trim().into(),
         };
         let (Some(download_limit), Some(upload_limit)) =
             (draft.parse_download_limit(), draft.parse_upload_limit())
@@ -401,22 +401,24 @@ impl AppShell {
             })
             .unwrap_or_default();
         self.task_inputs.seed_ratio.update(cx, |input, cx| {
-            input.set_text(
+            input.set_value(
                 if supports_seed_rules {
                     seed_ratio
                 } else {
                     String::new()
                 },
+                window,
                 cx,
             );
         });
         self.task_inputs.seed_time.update(cx, |input, cx| {
-            input.set_text(
+            input.set_value(
                 if supports_seed_rules {
                     seed_time
                 } else {
                     String::new()
                 },
+                window,
                 cx,
             );
         });
@@ -469,10 +471,16 @@ impl AppShell {
             .task_inputs
             .seed_ratio
             .read(cx)
-            .text()
+            .value()
             .trim()
             .to_owned();
-        let seed_time_raw = self.task_inputs.seed_time.read(cx).text().trim().to_owned();
+        let seed_time_raw = self
+            .task_inputs
+            .seed_time
+            .read(cx)
+            .value()
+            .trim()
+            .to_owned();
         let mut seed_ratio = None;
         let mut seed_time_minutes = None;
         if !supports_seed_rules {
@@ -642,7 +650,6 @@ impl AppShell {
         }
         self.sort_popover_open = false;
         self.speed_popover_open = false;
-        self.text_field_context_menu = None;
         self.context_menu = Some(TaskContextMenu {
             identity: task.identity,
             position,
@@ -1419,7 +1426,7 @@ impl AppShell {
                     .text_color(colors.text_secondary)
                     .child(self.t("dialog-output-name-filename")),
             )
-            .child(self.output_name_input.clone())
+            .child(Input::new(&self.output_name_input))
             .when(active, |element| {
                 element.child(
                     div()
@@ -1522,7 +1529,7 @@ impl AppShell {
                     .child(
                         settings_labeled_input(
                             self.t("dialog-speed-limit-download"),
-                            self.task_inputs.download_limit.clone(),
+                            &self.task_inputs.download_limit,
                             colors,
                         )
                         .flex_1()
@@ -1531,7 +1538,7 @@ impl AppShell {
                     .child(
                         settings_labeled_input(
                             self.t("dialog-speed-limit-upload"),
-                            self.task_inputs.upload_limit.clone(),
+                            &self.task_inputs.upload_limit,
                             colors,
                         )
                         .flex_1()
@@ -1638,7 +1645,7 @@ impl AppShell {
                             .child(
                                 settings_labeled_input(
                                     self.t("dialog-task-options-seed-ratio"),
-                                    self.task_inputs.seed_ratio.clone(),
+                                    &self.task_inputs.seed_ratio,
                                     colors,
                                 )
                                 .flex_1()
@@ -1647,7 +1654,7 @@ impl AppShell {
                             .child(
                                 settings_labeled_input(
                                     self.t("dialog-task-options-seed-time"),
-                                    self.task_inputs.seed_time.clone(),
+                                    &self.task_inputs.seed_time,
                                     colors,
                                 )
                                 .flex_1()

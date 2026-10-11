@@ -1,10 +1,12 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, AnyView, App, AppContext as _, BoxShadow, ClickEvent, CursorStyle, ElementId,
-    FocusHandle, Hsla, IntoElement, Render, RenderOnce, Role, SharedString, Stateful, Toggled,
-    Window, div, prelude::*, px, svg,
+    AnyElement, AnyView, App, AppContext as _, ClickEvent, CursorStyle, ElementId, FocusHandle,
+    Hsla, IntoElement, Render, RenderOnce, Role, SharedString, Stateful, Window, div, prelude::*,
+    px, svg,
 };
+
+pub use gpui_kit::component::button::ButtonVariants;
 
 use crate::{Theme, ThemeColors};
 
@@ -13,12 +15,10 @@ type SelectionHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
 const CONTROL_RADIUS: f32 = 4.0;
 const OVERLAY_RADIUS: f32 = 6.0;
-const FOCUS_RING_WIDTH: f32 = 2.0;
 const DISABLED_OPACITY: f32 = 0.48;
 const LOADING_OPACITY: f32 = 0.72;
 
-/// The supported embedded Lucide icons.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, IntoElement)]
 pub enum IconName {
     Search,
     Settings,
@@ -66,7 +66,7 @@ pub enum IconName {
     ChevronsUp,
     ChevronsDown,
     Check,
-    /// Windows caption glyphs (thin Fluent-style strokes).
+    /// Windows caption glyphs.
     WindowMinimize,
     WindowMaximize,
     WindowRestore,
@@ -131,33 +131,56 @@ impl IconName {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+impl gpui_kit::assets::IconNamed for IconName {
+    fn path(self) -> SharedString {
+        self.path().into()
+    }
+}
+
+impl RenderOnce for IconName {
+    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
+        let text_style = window.text_style();
+        svg()
+            .path(self.path())
+            .flex_shrink_0()
+            .size(text_style.font_size.to_pixels(window.rem_size()))
+            .text_color(text_style.color)
+    }
+}
+
+impl From<IconName> for AnyElement {
+    fn from(name: IconName) -> Self {
+        name.into_any_element()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IconSize {
     XSmall,
-    #[default]
     Small,
     Medium,
     Large,
 }
 
 impl IconSize {
-    const fn pixels(self) -> f32 {
+    #[must_use]
+    pub const fn pixels(self) -> f32 {
         match self {
             Self::XSmall => 12.0,
             Self::Small => 14.0,
             Self::Medium => 16.0,
-            Self::Large => 24.0,
+            Self::Large => 20.0,
         }
     }
 }
 
-/// A consistently sized, theme-tintable SVG icon.
-#[derive(IntoElement)]
+/// Standard icon rendering.
+#[derive(Clone, Debug, PartialEq, IntoElement)]
 pub struct Icon {
-    name: IconName,
-    size: IconSize,
-    color: Option<Hsla>,
-    label: Option<SharedString>,
+    pub name: IconName,
+    pub size: IconSize,
+    pub color: Option<Hsla>,
+    pub label: Option<SharedString>,
 }
 
 impl Icon {
@@ -191,13 +214,15 @@ impl Icon {
 }
 
 impl RenderOnce for Icon {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        svg()
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let mut element = svg()
             .path(self.name.path())
             .size(px(self.size.pixels()))
-            .flex_none()
-            .when_some(self.color, |icon, color| icon.text_color(color))
-            .when_some(self.label, |icon, _label| icon)
+            .flex_none();
+        if let Some(color) = self.color {
+            element = element.text_color(color);
+        }
+        element
     }
 }
 
@@ -283,14 +308,15 @@ pub enum ButtonVariant {
 
 pub type ButtonStyle = ButtonVariant;
 
-/// Standard labeled button with unified states and optional icon.
+/// Standard button component with fluent variants and unified styling.
 pub struct Button {
     id: ElementId,
-    label: SharedString,
+    label: Option<SharedString>,
     icon: Option<IconName>,
     variant: ButtonVariant,
     disabled: bool,
     loading: bool,
+    compact: bool,
     aria_label: Option<SharedString>,
     tooltip: Option<Tooltip>,
     focus: Option<FocusHandle>,
@@ -302,16 +328,53 @@ impl Button {
     pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Self {
         Self {
             id: id.into(),
-            label: label.into(),
+            label: Some(label.into()),
             icon: None,
             variant: ButtonVariant::Secondary,
             disabled: false,
             loading: false,
+            compact: false,
             aria_label: None,
             tooltip: None,
             focus: None,
             on_click: None,
         }
+    }
+
+    #[must_use]
+    pub fn primary(mut self) -> Self {
+        self.variant = ButtonVariant::Primary;
+        self
+    }
+
+    #[must_use]
+    pub fn secondary(mut self) -> Self {
+        self.variant = ButtonVariant::Secondary;
+        self
+    }
+
+    #[must_use]
+    pub fn danger(mut self) -> Self {
+        self.variant = ButtonVariant::Danger;
+        self
+    }
+
+    #[must_use]
+    pub fn ghost(mut self) -> Self {
+        self.variant = ButtonVariant::Ghost;
+        self
+    }
+
+    #[must_use]
+    pub fn outline(mut self) -> Self {
+        self.variant = ButtonVariant::Secondary;
+        self
+    }
+
+    #[must_use]
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
     }
 
     #[must_use]
@@ -352,6 +415,22 @@ impl Button {
     #[must_use]
     pub fn tooltip(mut self, tooltip: Tooltip) -> Self {
         self.tooltip = Some(tooltip);
+        self
+    }
+
+    #[must_use]
+    pub fn tooltip_with_action(
+        mut self,
+        action: impl Into<SharedString>,
+        tooltip: Tooltip,
+    ) -> Self {
+        self.tooltip = Some(tooltip.meta(action));
+        self
+    }
+
+    #[must_use]
+    pub fn focus(mut self, focus: FocusHandle) -> Self {
+        self.focus = Some(focus);
         self
     }
 
@@ -389,36 +468,47 @@ impl Button {
                 colors.surface_active,
             ),
             ButtonVariant::Ghost => (
-                transparent(),
+                gpui::transparent_white(),
                 colors.text_secondary,
-                transparent(),
+                gpui::transparent_white(),
                 colors.surface_hover,
                 colors.surface_active,
             ),
-            ButtonVariant::Danger => (
-                colors.danger,
-                colors.text_inverse,
-                colors.danger,
-                emphasized(colors.danger, colors.text_inverse, 0.06),
-                emphasized(colors.danger, colors.text_inverse, 0.1),
-            ),
+            ButtonVariant::Danger => {
+                let mut hover_danger = colors.danger;
+                hover_danger.l = (hover_danger.l * 0.9).clamp(0.0, 1.0);
+                let mut active_danger = colors.danger;
+                active_danger.l = (active_danger.l * 0.8).clamp(0.0, 1.0);
+                (
+                    colors.danger,
+                    colors.text_inverse,
+                    colors.danger,
+                    hover_danger,
+                    active_danger,
+                )
+            }
         };
         let tooltip = self.tooltip;
-        let aria_label = self.aria_label.unwrap_or_else(|| self.label.clone());
+        let aria_label = self
+            .aria_label
+            .or_else(|| self.label.clone())
+            .unwrap_or_default();
+        let height = if self.compact { px(26.0) } else { px(32.0) };
+        let px_pad = if self.compact { px(8.0) } else { px(12.0) };
         let mut button = div()
             .id(self.id)
             .role(Role::Button)
             .aria_label(aria_label)
             .focusable()
             .tab_stop(enabled)
-            .focus_visible(move |style| focus_ring(style, colors.focus_ring))
-            .h(px(32.0))
-            .min_w(px(32.0))
+            .focus_visible(move |style| style.border_2().border_color(colors.focus_ring))
+            .h(height)
+            .min_w(height)
             .flex()
             .items_center()
             .justify_center()
             .gap_2()
-            .px_3()
+            .px(px_pad)
             .rounded(px(CONTROL_RADIUS))
             .border_1()
             .border_color(border)
@@ -437,38 +527,77 @@ impl Button {
                     .opacity(DISABLED_OPACITY)
             })
             .when(self.loading, |button| button.opacity(LOADING_OPACITY));
-        if let Some(focus) = self.focus {
-            button = button.track_focus(&focus);
+
+        if let Some(focus) = self.focus.as_ref() {
+            button = button.track_focus(focus);
         }
-        if enabled && let Some(handler) = self.on_click {
-            button = button.on_click(move |event, window, cx| handler(event, window, cx));
+        if let Some(handler) = self.on_click {
+            button = button.on_click(move |event, window, cx| {
+                if !enabled {
+                    return;
+                }
+                handler(event, window, cx);
+            });
         }
-        if let Some(tooltip) = tooltip {
-            button = button.tooltip(Tooltip::text(tooltip.title, tooltip.meta, colors));
+        if let Some(mut tooltip) = tooltip {
+            tooltip.colors = colors;
+            button = button.tooltip(move |_window, cx| {
+                let tooltip = tooltip.clone();
+                cx.new(|_| tooltip).into()
+            });
+        }
+        if self.loading {
+            let indicator_size = if self.compact {
+                IconSize::Small
+            } else {
+                IconSize::Medium
+            };
+            let icon_color = match self.variant {
+                ButtonVariant::Primary | ButtonVariant::Danger => colors.text_inverse,
+                ButtonVariant::Ghost => colors.text_secondary,
+                ButtonVariant::Secondary => colors.text_primary,
+            };
+            button = button.child(LoadingIndicator::new(icon_color).size(indicator_size));
+        } else if let Some(icon) = self.icon {
+            let icon_color = match self.variant {
+                ButtonVariant::Primary | ButtonVariant::Danger => colors.text_inverse,
+                ButtonVariant::Ghost => colors.text_secondary,
+                ButtonVariant::Secondary => colors.text_primary,
+            };
+            button = button.child(
+                Icon::new(icon)
+                    .size(if self.compact {
+                        IconSize::Small
+                    } else {
+                        IconSize::Medium
+                    })
+                    .color(icon_color),
+            );
+        }
+        if let Some(label) = self.label {
+            button = button.child(label);
         }
         button
-            .when(self.loading, |button| {
-                button.child(LoadingIndicator::new(foreground).size(IconSize::Medium))
-            })
-            .when(!self.loading, |button| {
-                button.when_some(self.icon, |button, icon| {
-                    button.child(Icon::new(icon).size(IconSize::Medium).color(foreground))
-                })
-            })
-            .child(self.label)
     }
 }
 
-/// Square icon-only button. An accessibility label is always required.
+impl IntoElement for Button {
+    type Element = Stateful<gpui::Div>;
+    fn into_element(self) -> Self::Element {
+        let colors = Theme::dark().colors;
+        self.render(colors)
+    }
+}
+
+/// Icon-only button.
 pub struct IconButton {
     id: ElementId,
     icon: IconName,
-    aria_label: Option<SharedString>,
     variant: ButtonVariant,
     disabled: bool,
     loading: bool,
-    hover_background: Option<Hsla>,
-    active_background: Option<Hsla>,
+    compact: bool,
+    aria_label: Option<SharedString>,
     tooltip: Option<Tooltip>,
     focus: Option<FocusHandle>,
     on_click: Option<ClickHandler>,
@@ -480,12 +609,11 @@ impl IconButton {
         Self {
             id: id.into(),
             icon,
-            aria_label: None,
             variant: ButtonVariant::Ghost,
             disabled: false,
             loading: false,
-            hover_background: None,
-            active_background: None,
+            compact: false,
+            aria_label: None,
             tooltip: None,
             focus: None,
             on_click: None,
@@ -505,11 +633,6 @@ impl IconButton {
     }
 
     #[must_use]
-    pub fn variant(self, variant: ButtonVariant) -> Self {
-        self.style(variant)
-    }
-
-    #[must_use]
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -522,20 +645,20 @@ impl IconButton {
     }
 
     #[must_use]
-    pub fn hover_background(mut self, color: Hsla) -> Self {
-        self.hover_background = Some(color);
-        self
-    }
-
-    #[must_use]
-    pub fn active_background(mut self, color: Hsla) -> Self {
-        self.active_background = Some(color);
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
         self
     }
 
     #[must_use]
     pub fn tooltip(mut self, tooltip: Tooltip) -> Self {
         self.tooltip = Some(tooltip);
+        self
+    }
+
+    #[must_use]
+    pub fn focus(mut self, focus: FocusHandle) -> Self {
+        self.focus = Some(focus);
         self
     }
 
@@ -557,7 +680,7 @@ impl IconButton {
     #[must_use]
     pub fn render(self, colors: ThemeColors) -> Stateful<gpui::Div> {
         let enabled = !self.disabled && !self.loading;
-        let (background, foreground, border, default_hover, default_active) = match self.variant {
+        let (background, foreground, border, hover, active) = match self.variant {
             ButtonVariant::Primary => (
                 colors.accent,
                 colors.text_inverse,
@@ -573,31 +696,37 @@ impl IconButton {
                 colors.surface_active,
             ),
             ButtonVariant::Ghost => (
-                transparent(),
+                gpui::transparent_white(),
                 colors.text_secondary,
-                transparent(),
+                gpui::transparent_white(),
                 colors.surface_hover,
                 colors.surface_active,
             ),
-            ButtonVariant::Danger => (
-                transparent(),
-                colors.danger,
-                transparent(),
-                with_alpha(colors.danger, 0.12),
-                with_alpha(colors.danger, 0.2),
-            ),
+            ButtonVariant::Danger => {
+                let mut hover_danger = colors.danger;
+                hover_danger.l = (hover_danger.l * 0.9).clamp(0.0, 1.0);
+                let mut active_danger = colors.danger;
+                active_danger.l = (active_danger.l * 0.8).clamp(0.0, 1.0);
+                (
+                    colors.danger,
+                    colors.text_inverse,
+                    colors.danger,
+                    hover_danger,
+                    active_danger,
+                )
+            }
         };
-        let hover = self.hover_background.unwrap_or(default_hover);
-        let active = self.active_background.unwrap_or(default_active);
-        let label = self.aria_label.unwrap_or_else(|| "Icon button".into());
+        let tooltip = self.tooltip;
+        let aria_label = self.aria_label.unwrap_or_default();
+        let size = if self.compact { px(26.0) } else { px(32.0) };
         let mut button = div()
             .id(self.id)
             .role(Role::Button)
-            .aria_label(label.clone())
+            .aria_label(aria_label)
             .focusable()
             .tab_stop(enabled)
-            .focus_visible(move |style| focus_ring(style, colors.focus_ring))
-            .size(px(32.0))
+            .focus_visible(move |style| style.border_2().border_color(colors.focus_ring))
+            .size(size)
             .flex_none()
             .flex()
             .items_center()
@@ -606,7 +735,6 @@ impl IconButton {
             .border_1()
             .border_color(border)
             .bg(background)
-            .text_color(foreground)
             .when(enabled, |button| {
                 button
                     .cursor(CursorStyle::PointingHand)
@@ -619,103 +747,173 @@ impl IconButton {
                     .opacity(DISABLED_OPACITY)
             })
             .when(self.loading, |button| button.opacity(LOADING_OPACITY));
-        if let Some(focus) = self.focus {
-            button = button.track_focus(&focus);
+
+        if let Some(focus) = self.focus.as_ref() {
+            button = button.track_focus(focus);
         }
-        if let Some(tooltip) = self.tooltip {
-            button = button.tooltip(Tooltip::text(tooltip.title, tooltip.meta, colors));
+        if let Some(handler) = self.on_click {
+            button = button.on_click(move |event, window, cx| {
+                if !enabled {
+                    return;
+                }
+                handler(event, window, cx);
+            });
         }
-        if enabled && let Some(handler) = self.on_click {
-            button = button.on_click(move |event, window, cx| handler(event, window, cx));
+        if let Some(mut tooltip) = tooltip {
+            tooltip.colors = colors;
+            button = button.tooltip(move |_window, cx| {
+                let tooltip = tooltip.clone();
+                cx.new(|_| tooltip).into()
+            });
         }
-        // Toolbar / chrome icon buttons are 32px hit targets; keep the glyph
-        // at a fixed 16px so every action reads the same optical size.
-        button.child(if self.loading {
-            LoadingIndicator::new(foreground)
-                .size(IconSize::Medium)
-                .into_any_element()
+        let icon_size = if self.compact {
+            IconSize::Small
         } else {
-            Icon::new(self.icon)
-                .size(IconSize::Medium)
-                .color(foreground)
-                .into_any_element()
-        })
+            IconSize::Medium
+        };
+        if self.loading {
+            button = button.child(LoadingIndicator::new(foreground).size(icon_size));
+        } else {
+            button = button.child(Icon::new(self.icon).size(icon_size).color(foreground));
+        }
+        button
     }
 }
 
-/// Compact status marker with color + optional icon/label for non-color status.
-///
-/// Prefer always supplying `.label(...)` (or a parent `aria_label`) so status is
-/// never conveyed by color alone for assistive tech.
-#[derive(IntoElement)]
-pub struct StatusIndicator {
-    color: Hsla,
-    label: Option<SharedString>,
-    icon: Option<IconName>,
+impl IntoElement for IconButton {
+    type Element = Stateful<gpui::Div>;
+    fn into_element(self) -> Self::Element {
+        let colors = Theme::dark().colors;
+        self.render(colors)
+    }
 }
 
-impl StatusIndicator {
+/// Pill-shaped switch.
+pub struct Toggle {
+    pub id: ElementId,
+    pub on: bool,
+    pub disabled: bool,
+    pub aria_label: Option<SharedString>,
+    pub on_click: Option<ClickHandler>,
+}
+
+impl Toggle {
     #[must_use]
-    pub fn new(color: Hsla) -> Self {
+    pub fn new(id: impl Into<ElementId>, on: bool) -> Self {
         Self {
-            color,
-            label: None,
-            icon: None,
+            id: id.into(),
+            on,
+            disabled: false,
+            aria_label: None,
+            on_click: None,
         }
     }
 
     #[must_use]
-    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
-        self.label = Some(label.into());
+    pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.aria_label = Some(label.into());
         self
     }
 
-    /// Optional icon so status is not color-only when the parent omits text.
     #[must_use]
-    pub fn icon(mut self, icon: IconName) -> Self {
-        self.icon = Some(icon);
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
         self
     }
-}
 
-impl RenderOnce for StatusIndicator {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let label = self.label;
-        let icon = self.icon;
-        let color = self.color;
-        div()
-            .id("status-indicator")
-            .role(Role::Status)
-            .when_some(label.clone(), |indicator, label| {
-                indicator.aria_label(label)
+    #[must_use]
+    pub fn on_click(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_click = Some(Rc::new(handler));
+        self
+    }
+
+    #[must_use]
+    pub fn render(self, colors: ThemeColors) -> Stateful<gpui::Div> {
+        let enabled = !self.disabled;
+        let on = self.on;
+        let (track_bg, thumb_bg, border_color) = if on {
+            (colors.accent, colors.text_inverse, colors.accent)
+        } else {
+            (colors.surface, colors.text_muted, colors.border_strong)
+        };
+        let aria_label = self.aria_label.unwrap_or_else(|| {
+            if on {
+                "Enabled".into()
+            } else {
+                "Disabled".into()
+            }
+        });
+        let mut toggle = div()
+            .id(self.id)
+            .role(Role::Switch)
+            .aria_label(aria_label)
+            .aria_toggled(if on {
+                gpui::Toggled::True
+            } else {
+                gpui::Toggled::False
             })
+            .focusable()
+            .tab_stop(enabled)
+            .focus_visible(move |style| style.border_2().border_color(colors.focus_ring))
+            .w(px(36.0))
+            .h(px(20.0))
+            .flex_none()
             .flex()
             .items_center()
-            .gap_2()
-            .text_xs()
-            .min_h(px(16.0))
-            .child(
-                div()
-                    .size(px(8.0))
-                    .rounded_full()
-                    .bg(color)
-                    .border_1()
-                    .border_color(with_alpha(color, 0.55))
-                    .flex_none(),
-            )
-            .when_some(icon, |indicator, icon| {
-                indicator.child(
-                    Icon::new(icon)
-                        .size(IconSize::XSmall)
-                        .color(color)
-                        .into_any_element(),
-                )
+            .px(px(2.0))
+            .rounded_full()
+            .border_1()
+            .border_color(border_color)
+            .bg(track_bg)
+            .when(enabled, |toggle| {
+                toggle
+                    .cursor(CursorStyle::PointingHand)
+                    .hover(move |style| {
+                        style.bg(if on {
+                            colors.accent_hover
+                        } else {
+                            colors.surface_hover
+                        })
+                    })
             })
-            .when_some(label, |indicator, label| indicator.child(label))
+            .when(self.disabled, |toggle| {
+                toggle
+                    .cursor(CursorStyle::OperationNotAllowed)
+                    .opacity(DISABLED_OPACITY)
+            });
+
+        if let Some(handler) = self.on_click {
+            toggle = toggle.on_click(move |event, window, cx| {
+                if !enabled {
+                    return;
+                }
+                handler(event, window, cx);
+            });
+        }
+
+        let thumb = div().size(px(14.0)).rounded_full().bg(thumb_bg).shadow_sm();
+
+        if on {
+            toggle.justify_end().child(thumb)
+        } else {
+            toggle.justify_start().child(thumb)
+        }
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl IntoElement for Toggle {
+    type Element = Stateful<gpui::Div>;
+    fn into_element(self) -> Self::Element {
+        let colors = Theme::dark().colors;
+        self.render(colors)
+    }
+}
+
+/// One segment inside SegmentedControl.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Segment {
     pub label: SharedString,
     pub icon: Option<IconName>,
@@ -737,34 +935,33 @@ impl Segment {
     }
 }
 
-/// Mutually exclusive selection control for short option sets.
-#[derive(IntoElement)]
+/// Segmented control.
 pub struct SegmentedControl {
-    id: SharedString,
-    segments: Vec<Segment>,
-    selected: usize,
-    disabled: bool,
-    theme: Theme,
-    aria_label: Option<SharedString>,
-    on_select: Option<SelectionHandler>,
+    pub id: ElementId,
+    pub segments: Vec<Segment>,
+    pub selected_index: usize,
+    pub disabled: bool,
+    pub aria_label: Option<SharedString>,
+    pub on_select: Option<SelectionHandler>,
+    pub theme: Theme,
 }
 
 impl SegmentedControl {
     #[must_use]
     pub fn new(
-        id: impl Into<SharedString>,
+        id: impl Into<ElementId>,
         segments: impl IntoIterator<Item = Segment>,
-        selected: usize,
+        selected_index: usize,
         theme: Theme,
     ) -> Self {
         Self {
             id: id.into(),
             segments: segments.into_iter().collect(),
-            selected,
+            selected_index,
             disabled: false,
-            theme,
             aria_label: None,
             on_select: None,
+            theme,
         }
     }
 
@@ -785,26 +982,24 @@ impl SegmentedControl {
         self.on_select = Some(Rc::new(handler));
         self
     }
-}
 
-impl RenderOnce for SegmentedControl {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let colors = self.theme.colors;
+    #[must_use]
+    pub fn render(self, colors: ThemeColors) -> Stateful<gpui::Div> {
+        let id = self.id;
+        let selected = self.selected_index;
         let disabled = self.disabled;
-        let selected = self.selected;
         let handler = self.on_select;
-        let id = self.id.clone();
-        let group_label = self.aria_label;
         let segment_count = self.segments.len();
+        let aria_label = self.aria_label.unwrap_or_else(|| "Options".into());
+
         div()
             .id(id.clone())
             .role(Role::RadioGroup)
-            .when_some(group_label, |group, label| group.aria_label(label))
-            .flex_none()
+            .aria_label(aria_label)
             .flex()
             .items_center()
-            .gap_0p5()
-            .p_0p5()
+            .gap_1()
+            .p(px(2.0))
             .rounded(px(CONTROL_RADIUS))
             .border_1()
             .border_color(colors.border)
@@ -829,13 +1024,18 @@ impl RenderOnce for SegmentedControl {
                             label.to_string()
                         };
                         let mut button = div()
-                            .id((id.clone(), index))
+                            .id(ElementId::NamedChild(
+                                id.clone().into(),
+                                SharedString::from(format!("{index}")),
+                            ))
                             .role(Role::RadioButton)
                             .aria_label(segment_aria)
                             .aria_selected(is_selected)
                             .focusable()
                             .tab_stop(!disabled)
-                            .focus_visible(move |style| focus_ring(style, colors.focus_ring))
+                            .focus_visible(move |style| {
+                                style.border_2().border_color(colors.focus_ring)
+                            })
                             .h(px(28.0))
                             .min_w(px(28.0))
                             .flex()
@@ -846,7 +1046,9 @@ impl RenderOnce for SegmentedControl {
                             .rounded(px(CONTROL_RADIUS))
                             .text_xs()
                             .text_color(foreground)
-                            .when(is_selected, |button| button.bg(colors.elevated_surface))
+                            .when(is_selected, |button| {
+                                button.bg(colors.elevated_surface).shadow_sm()
+                            })
                             .when(!disabled, |button| {
                                 button
                                     .cursor(CursorStyle::PointingHand)
@@ -862,13 +1064,137 @@ impl RenderOnce for SegmentedControl {
                                     .child(Icon::new(icon).size(IconSize::Small).color(foreground))
                             })
                             .child(label);
-                        if !disabled && let Some(handler) = handler {
-                            button =
-                                button.on_click(move |_, window, cx| handler(index, window, cx));
+
+                        if let Some(handler) = handler {
+                            button = button.on_click(move |_event, window, cx| {
+                                if disabled {
+                                    return;
+                                }
+                                handler(index, window, cx);
+                            });
                         }
                         button
                     }),
             )
+    }
+}
+
+impl IntoElement for SegmentedControl {
+    type Element = Stateful<gpui::Div>;
+    fn into_element(self) -> Self::Element {
+        let colors = self.theme.colors;
+        self.render(colors)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToastKind {
+    Information,
+    Success,
+    Error,
+}
+
+#[derive(IntoElement)]
+pub struct Toast {
+    id: ElementId,
+    message: SharedString,
+    kind: ToastKind,
+    theme: Theme,
+    close_label: SharedString,
+    on_close: Option<ClickHandler>,
+}
+
+impl Toast {
+    #[must_use]
+    pub fn new(
+        id: impl Into<ElementId>,
+        message: impl Into<SharedString>,
+        kind: ToastKind,
+        theme: Theme,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            message: message.into(),
+            kind,
+            theme,
+            close_label: "Dismiss notification".into(),
+            on_close: None,
+        }
+    }
+
+    #[must_use]
+    pub fn close_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.close_label = label.into();
+        self
+    }
+
+    #[must_use]
+    pub fn on_close(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_close = Some(Rc::new(handler));
+        self
+    }
+
+    #[must_use]
+    pub fn render(self, _colors: ThemeColors) -> Self {
+        self
+    }
+}
+
+impl RenderOnce for Toast {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let colors = self.theme.colors;
+        let (icon, color, role) = match self.kind {
+            ToastKind::Success => (IconName::CircleCheck, colors.success, Role::Status),
+            ToastKind::Error => (IconName::CircleX, colors.danger, Role::Alert),
+            ToastKind::Information => (IconName::Info, colors.information, Role::Status),
+        };
+        let close_id = ElementId::NamedChild(self.id.clone().into(), "close".into());
+        let mut close = div()
+            .id(close_id)
+            .role(Role::Button)
+            .aria_label(self.close_label)
+            .focusable()
+            .tab_stop(true)
+            .size(px(26.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(CONTROL_RADIUS))
+            .cursor(CursorStyle::PointingHand)
+            .hover(move |style| style.bg(colors.surface_hover))
+            .active(move |style| style.bg(colors.surface_active))
+            .child(
+                Icon::new(IconName::X)
+                    .size(IconSize::Small)
+                    .color(colors.text_muted),
+            );
+        if let Some(handler) = self.on_close {
+            close = close.on_click(move |event, window, cx| handler(event, window, cx));
+        }
+        div()
+            .id(self.id)
+            .role(role)
+            .aria_label(self.message.clone())
+            .min_w(px(280.0))
+            .max_w(px(440.0))
+            .flex()
+            .items_center()
+            .gap_3()
+            .p_3()
+            .rounded(px(OVERLAY_RADIUS))
+            .border_1()
+            .border_color(colors.border_strong)
+            .bg(colors.elevated_surface)
+            .shadow_lg()
+            .text_sm()
+            .text_color(colors.text_primary)
+            .child(Icon::new(icon).color(color))
+            .child(div().min_w_0().flex_1().child(self.message))
+            .child(close)
     }
 }
 
@@ -937,191 +1263,147 @@ impl Dialog {
         self.actions.push(action.into_any_element());
         self
     }
+
+    #[must_use]
+    pub fn render(self, _colors: ThemeColors) -> Self {
+        self
+    }
 }
 
 impl RenderOnce for Dialog {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let colors = self.theme.colors;
+        let mut card = div()
+            .id(self.id)
+            .role(Role::Dialog)
+            .aria_label(self.title.clone())
+            .w(px(self.width))
+            .max_w(px(720.0))
+            .flex()
+            .flex_col()
+            .gap_4()
+            .p_6()
+            .rounded(px(OVERLAY_RADIUS))
+            .border_1()
+            .border_color(colors.border_strong)
+            .bg(colors.elevated_surface)
+            .shadow_lg()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(colors.text_primary)
+                            .child(self.title),
+                    )
+                    .when_some(self.description, |header, desc| {
+                        header.child(
+                            div()
+                                .text_sm()
+                                .text_color(colors.text_secondary)
+                                .child(desc),
+                        )
+                    }),
+            )
+            .children(self.body)
+            .when(!self.actions.is_empty(), |card| {
+                card.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap_3()
+                        .pt_2()
+                        .children(self.actions),
+                )
+            });
+
+        if let Some(key_context) = self.key_context {
+            card = card.key_context(key_context);
+        }
+        if let Some(focus) = self.focus {
+            card = card.track_focus(&focus);
+        }
+
         div()
-            .id(SharedString::from(format!("dialog-scrim-{}", self.id)))
+            .id("dialog-scrim")
+            .occlude()
             .absolute()
             .inset_0()
             .flex()
             .items_center()
             .justify_center()
-            .bg(scrim(colors.background))
-            .occlude()
-            .child(
-                div()
-                    .id(self.id)
-                    .role(Role::Dialog)
-                    .aria_label(self.title.clone())
-                    .when_some(self.key_context, |dialog, key_context| {
-                        dialog.key_context(key_context)
-                    })
-                    .when_some(self.focus, |dialog, focus| dialog.track_focus(&focus))
-                    .w(px(self.width))
-                    .max_w_full()
-                    .flex()
-                    .flex_col()
-                    .rounded(px(OVERLAY_RADIUS))
-                    .border_1()
-                    .border_color(colors.border_strong)
-                    .bg(colors.elevated_surface)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .px_5()
-                            .pt_5()
-                            .child(
-                                div()
-                                    .text_base()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(colors.text_primary)
-                                    .child(self.title),
-                            )
-                            .when_some(self.description, |header, description| {
-                                header.child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(colors.text_secondary)
-                                        .child(description),
-                                )
-                            }),
-                    )
-                    .child(div().flex().flex_col().gap_3().p_5().children(self.body))
-                    .when(!self.actions.is_empty(), |dialog| {
-                        dialog.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_end()
-                                .gap_2()
-                                .px_5()
-                                .pb_5()
-                                .children(self.actions),
-                        )
-                    }),
-            )
+            .bg(gpui::rgba(0x00_00_00_aa))
+            .child(card)
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ToastKind {
-    Success,
-    Error,
-    Information,
-}
-
-/// Non-layout-shifting operation feedback surface.
+/// Visual status indicator dot with optional label and icon.
 #[derive(IntoElement)]
-pub struct Toast {
-    id: ElementId,
-    message: SharedString,
-    kind: ToastKind,
-    theme: Theme,
-    close_label: SharedString,
-    on_close: Option<ClickHandler>,
+pub struct StatusIndicator {
+    color: Hsla,
+    label: Option<SharedString>,
+    icon: Option<IconName>,
 }
 
-impl Toast {
+impl StatusIndicator {
     #[must_use]
-    pub fn new(
-        id: impl Into<ElementId>,
-        message: impl Into<SharedString>,
-        kind: ToastKind,
-        theme: Theme,
-    ) -> Self {
+    pub fn new(color: Hsla) -> Self {
         Self {
-            id: id.into(),
-            message: message.into(),
-            kind,
-            theme,
-            close_label: "Dismiss notification".into(),
-            on_close: None,
+            color,
+            label: None,
+            icon: None,
         }
     }
 
     #[must_use]
-    pub(crate) fn close_label(mut self, label: impl Into<SharedString>) -> Self {
-        self.close_label = label.into();
+    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = Some(label.into());
         self
     }
 
     #[must_use]
-    pub fn on_close(
-        mut self,
-        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    ) -> Self {
-        self.on_close = Some(Rc::new(handler));
+    pub fn icon(mut self, icon: IconName) -> Self {
+        self.icon = Some(icon);
         self
     }
 }
 
-impl RenderOnce for Toast {
+impl RenderOnce for StatusIndicator {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let colors = self.theme.colors;
-        let (icon, color, role) = match self.kind {
-            ToastKind::Success => (IconName::CircleCheck, colors.success, Role::Status),
-            ToastKind::Error => (IconName::CircleX, colors.danger, Role::Alert),
-            ToastKind::Information => (IconName::Info, colors.information, Role::Status),
-        };
-        let close_id = ElementId::NamedChild(self.id.clone().into(), "close".into());
-        let mut close = div()
-            .id(close_id)
-            .role(Role::Button)
-            .aria_label(self.close_label)
-            .focusable()
-            .tab_stop(true)
-            .focus_visible(move |style| focus_ring(style, colors.focus_ring))
-            .size(px(26.0))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(CONTROL_RADIUS))
-            .cursor(CursorStyle::PointingHand)
-            .hover(move |style| style.bg(colors.surface_hover))
-            .active(move |style| style.bg(colors.surface_active))
-            .child(
-                Icon::new(IconName::X)
-                    .size(IconSize::Small)
-                    .color(colors.text_muted),
-            );
-        if let Some(handler) = self.on_close {
-            close = close.on_click(move |event, window, cx| handler(event, window, cx));
-        }
         div()
-            .id(self.id)
-            .role(role)
-            .aria_label(self.message.clone())
-            .min_w(px(280.0))
-            .max_w(px(440.0))
             .flex()
             .items_center()
-            .gap_3()
-            .p_3()
-            .rounded(px(OVERLAY_RADIUS))
-            .border_1()
-            .border_color(colors.border_strong)
-            .bg(colors.elevated_surface)
-            .text_sm()
-            .text_color(colors.text_primary)
-            .child(Icon::new(icon).color(color))
-            .child(div().min_w_0().flex_1().child(self.message))
-            .child(close)
+            .gap_1p5()
+            .when_some(self.icon, |el, icon| {
+                el.child(Icon::new(icon).size(IconSize::XSmall).color(self.color))
+            })
+            .when(self.icon.is_none(), |el| {
+                el.child(
+                    div()
+                        .size(px(8.0))
+                        .rounded_full()
+                        .bg(self.color)
+                        .flex_none(),
+                )
+            })
+            .when_some(self.label, |el, label| {
+                el.child(div().text_xs().text_color(self.color).child(label))
+            })
     }
 }
 
-/// Consistent compact pending-state glyph.
+/// Loading spinner glyph.
 #[derive(IntoElement)]
 pub struct LoadingIndicator {
     color: Hsla,
     size: IconSize,
     label: SharedString,
-    /// When true, use a static clock icon instead of the spinner glyph (ACCESS reduced motion).
     reduced_motion: bool,
 }
 
@@ -1169,154 +1451,6 @@ impl RenderOnce for LoadingIndicator {
     }
 }
 
-/// A pill-shaped on/off switch for boolean settings.
-///
-/// The track uses the accent color when on and the surface color when off.
-/// The knob is always a contrasting circle inside the track.
-pub struct Toggle {
-    id: ElementId,
-    on: bool,
-    disabled: bool,
-    aria_label: Option<SharedString>,
-    on_click: Option<ClickHandler>,
-}
-
-impl Toggle {
-    #[must_use]
-    pub fn new(id: impl Into<ElementId>, on: bool) -> Self {
-        Self {
-            id: id.into(),
-            on,
-            disabled: false,
-            aria_label: None,
-            on_click: None,
-        }
-    }
-
-    #[must_use]
-    pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
-        self.aria_label = Some(label.into());
-        self
-    }
-
-    #[must_use]
-    pub fn disabled(mut self, disabled: bool) -> Self {
-        self.disabled = disabled;
-        self
-    }
-
-    #[must_use]
-    pub fn on_click(
-        mut self,
-        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    ) -> Self {
-        self.on_click = Some(Rc::new(handler));
-        self
-    }
-
-    /// Render the toggle switch. Width 36 × height 20 pill.
-    #[must_use]
-    pub fn render(self, colors: ThemeColors) -> Stateful<gpui::Div> {
-        let enabled = !self.disabled;
-        let on = self.on;
-
-        let track_bg = if on { colors.accent } else { colors.surface };
-        let track_border = if on { colors.accent } else { colors.border };
-        let knob_bg = if on {
-            colors.text_inverse
-        } else {
-            colors.text_secondary
-        };
-        let hover_bg = if on {
-            colors.accent_hover
-        } else {
-            colors.surface_hover
-        };
-
-        let aria = self
-            .aria_label
-            .unwrap_or_else(|| if on { "On".into() } else { "Off".into() });
-
-        // Visual track is 36×20; outer hit target is at least 32px tall for high-DPI/touch.
-        let mut track = div()
-            .id(self.id)
-            .role(Role::Switch)
-            .aria_label(aria)
-            .aria_toggled(if on { Toggled::True } else { Toggled::False })
-            .focusable()
-            .tab_stop(enabled)
-            .focus_visible(move |style| focus_ring(style, colors.focus_ring))
-            .min_h(px(32.0))
-            .min_w(px(44.0))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .px_1()
-            .py_1()
-            .rounded(px(CONTROL_RADIUS))
-            .when(enabled, |t| {
-                t.cursor(CursorStyle::PointingHand)
-                    .hover(move |style| style.bg(with_alpha(hover_bg, 0.35)))
-                    .active(move |style| style.bg(with_alpha(hover_bg, 0.5)))
-            })
-            .when(!enabled, |t| {
-                t.cursor(CursorStyle::OperationNotAllowed)
-                    .opacity(DISABLED_OPACITY)
-            })
-            .child(
-                div()
-                    .w(px(36.0))
-                    .h(px(20.0))
-                    .flex()
-                    .items_center()
-                    .px(px(2.0))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(track_border)
-                    .bg(track_bg)
-                    .when(on, |t| t.justify_end())
-                    .when(!on, |t| t.justify_start())
-                    .child(div().size(px(16.0)).rounded_full().bg(knob_bg).flex_none()),
-            );
-
-        if enabled && let Some(handler) = self.on_click {
-            track = track.on_click(move |event, window, cx| handler(event, window, cx));
-        }
-
-        track
-    }
-}
-
-fn transparent() -> Hsla {
-    gpui::transparent_black()
-}
-
-fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
-    color.a = alpha;
-    color
-}
-
-fn emphasized(mut color: Hsla, foreground: Hsla, amount: f32) -> Hsla {
-    color.l = if foreground.l > 0.5 {
-        (color.l - amount).max(0.0)
-    } else {
-        (color.l + amount).min(1.0)
-    };
-    color
-}
-
-fn focus_ring(style: gpui::StyleRefinement, color: Hsla) -> gpui::StyleRefinement {
-    style.shadow(vec![
-        BoxShadow::new(px(0.0), px(0.0), color).spread_radius(px(FOCUS_RING_WIDTH)),
-    ])
-}
-
-fn scrim(background: Hsla) -> Hsla {
-    let alpha = if background.l < 0.5 { 0.68 } else { 0.42 };
-    with_alpha(gpui::rgb(0x000000).into(), alpha)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1343,7 +1477,6 @@ mod tests {
             IconName::CircleX,
             IconName::Info,
             IconName::LoaderCircle,
-            IconName::MoreHorizontal,
             IconName::PanelRight,
             IconName::Wifi,
             IconName::WifiOff,
@@ -1392,6 +1525,21 @@ mod tests {
         let off = Toggle::new("t2", false).disabled(true);
         assert!(!off.on);
         assert!(off.disabled);
+    }
+
+    #[test]
+    fn button_chainable_variants() {
+        let primary = Button::new("b1", "Primary").primary().compact();
+        assert_eq!(primary.variant, ButtonVariant::Primary);
+        assert!(primary.compact);
+
+        let danger = Button::new("b2", "Delete").danger().disabled(true);
+        assert_eq!(danger.variant, ButtonVariant::Danger);
+        assert!(danger.disabled);
+
+        let ghost = Button::new("b3", "Ghost").ghost().loading(true);
+        assert_eq!(ghost.variant, ButtonVariant::Ghost);
+        assert!(ghost.loading);
     }
 
     #[test]

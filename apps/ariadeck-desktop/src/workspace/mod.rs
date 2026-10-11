@@ -1539,7 +1539,7 @@ impl DesktopRoot {
         let settings_view = map_settings(&self.settings);
         self.workspace.update(cx, |shell, cx| {
             // Apply env bag into drafts first; switch result notice covers restart.
-            shell.apply_settings(settings_view, cx);
+            shell.apply_settings(settings_view, Some(window), cx);
             shell.set_switch_profile_result(
                 SwitchProfileResultView {
                     request_id: request.request_id,
@@ -1550,7 +1550,6 @@ impl DesktopRoot {
                 cx,
             );
         });
-        let _ = window;
     }
 
     fn deliver_switch_profile_error(
@@ -1633,6 +1632,7 @@ impl DesktopRoot {
                             catalog: view,
                             outcome: SaveProfileCatalogOutcomeView::Success,
                         },
+                        Some(window),
                         cx,
                     );
                 });
@@ -1659,6 +1659,7 @@ impl DesktopRoot {
                         retryable: true,
                     }),
                 },
+                Some(window),
                 cx,
             );
         });

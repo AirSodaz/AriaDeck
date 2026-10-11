@@ -79,6 +79,7 @@ fn text_field_bindings() -> Vec<KeyBinding> {
 }
 
 pub fn init(cx: &mut App) {
+    gpui_kit::init(cx);
     let mut bindings = text_field_bindings();
     bindings.extend([
         KeyBinding::new("cmd-f", FocusSearch, None),

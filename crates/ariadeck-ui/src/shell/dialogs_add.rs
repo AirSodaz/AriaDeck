@@ -103,7 +103,7 @@ impl AppShell {
         }
 
         self.add_input
-            .update(cx, |input, cx| input.set_text("", cx));
+            .update(cx, |input, cx| input.set_value("", window, cx));
         for input in [
             &self.add_inputs.referer,
             &self.add_inputs.user_agent,
@@ -113,7 +113,7 @@ impl AppShell {
             &self.add_inputs.http_passwd,
             &self.add_inputs.checksum,
         ] {
-            input.update(cx, |input, cx| input.set_text("", cx));
+            input.update(cx, |input, cx| input.set_value("", window, cx));
         }
         self.add_dialog = AddDownloadDialog {
             open: true,
@@ -130,7 +130,6 @@ impl AppShell {
             pending: None,
             error: None,
             results: Vec::new(),
-            updating_input_from_result: false,
         };
         cx.notify();
         cx.defer_in(window, |this, window, cx| {
@@ -189,7 +188,7 @@ impl AppShell {
         }
         let sources = match self.add_dialog.input_mode {
             AddDownloadInputModeView::Links => {
-                parse_add_download_sources(self.add_input.read(cx).text())
+                parse_add_download_sources(self.add_input.read(cx).value().as_ref())
             }
             AddDownloadInputModeView::MetadataFiles => self
                 .add_dialog
@@ -292,7 +291,8 @@ impl AppShell {
                             .map(|name| name.to_string_lossy().into_owned())
                     });
                     let metadata_name = metadata_name.as_deref();
-                    let links = parse_add_download_sources(self.add_input.read(cx).text());
+                    let links =
+                        parse_add_download_sources(self.add_input.read(cx).value().as_ref());
                     let hint = filename_hint_for_add(&links, metadata_name);
                     let category_id = resolve_add_category_id(
                         &self.settings.categories,
@@ -312,7 +312,8 @@ impl AppShell {
                             .map(|name| name.to_string_lossy().into_owned())
                     });
                     let metadata_name = metadata_name.as_deref();
-                    let links = parse_add_download_sources(self.add_input.read(cx).text());
+                    let links =
+                        parse_add_download_sources(self.add_input.read(cx).value().as_ref());
                     let hint = filename_hint_for_add(&links, metadata_name);
                     resolve_add_category_id(
                         &self.settings.categories,
@@ -453,7 +454,7 @@ impl AppShell {
             return false;
         }
         self.add_input.update(cx, |input, cx| {
-            input.set_text(uris.join("\n"), cx);
+            input.set_value(uris.join("\n"), window, cx);
         });
         cx.notify();
         true
@@ -543,7 +544,7 @@ impl AppShell {
         }
         self.add_dialog.from_bridge = true;
         self.add_input.update(cx, |input, cx| {
-            input.set_text(urls.join("\n"), cx);
+            input.set_value(urls.join("\n"), window, cx);
         });
 
         if !first.referer.is_empty() || !first.user_agent.is_empty() || first.cookie.is_some() {
@@ -555,13 +556,13 @@ impl AppShell {
                 .map(SecretStringView::into_inner)
                 .unwrap_or_default();
             self.add_inputs.referer.update(cx, |input, cx| {
-                input.set_text(referer, cx);
+                input.set_value(referer, window, cx);
             });
             self.add_inputs.user_agent.update(cx, |input, cx| {
-                input.set_text(user_agent, cx);
+                input.set_value(user_agent, window, cx);
             });
             self.add_inputs.cookie.update(cx, |input, cx| {
-                input.set_text(cookie, cx);
+                input.set_value(cookie, window, cx);
             });
             // Reveal what was prefilled. Carrying a cookie silently would hide
             // the most sensitive part of the request from whoever confirms it.
@@ -744,16 +745,22 @@ impl AppShell {
     }
 
     pub(crate) fn collect_add_advanced_options(&self, cx: &App) -> AddDownloadAdvancedOptionsView {
-        let cookie = self.add_inputs.cookie.read(cx).text().trim().to_owned();
-        let http_passwd = self.add_inputs.http_passwd.read(cx).text();
+        let cookie = self.add_inputs.cookie.read(cx).value().trim().to_owned();
+        let http_passwd = self.add_inputs.http_passwd.read(cx).value().to_string();
         AddDownloadAdvancedOptionsView {
-            referer: self.add_inputs.referer.read(cx).text().trim().to_owned(),
-            user_agent: self.add_inputs.user_agent.read(cx).text().trim().to_owned(),
-            headers: self.add_inputs.headers.read(cx).text().to_owned(),
+            referer: self.add_inputs.referer.read(cx).value().trim().to_owned(),
+            user_agent: self
+                .add_inputs
+                .user_agent
+                .read(cx)
+                .value()
+                .trim()
+                .to_owned(),
+            headers: self.add_inputs.headers.read(cx).value().to_string(),
             cookie: (!cookie.is_empty()).then(|| SecretStringView::new(cookie)),
-            http_user: self.add_inputs.http_user.read(cx).text().trim().to_owned(),
+            http_user: self.add_inputs.http_user.read(cx).value().trim().to_owned(),
             http_passwd: (!http_passwd.is_empty()).then(|| SecretStringView::new(http_passwd)),
-            checksum: self.add_inputs.checksum.read(cx).text().trim().to_owned(),
+            checksum: self.add_inputs.checksum.read(cx).value().trim().to_owned(),
         }
     }
 
@@ -784,7 +791,7 @@ impl AppShell {
         if categories.is_empty() {
             return div();
         }
-        let links = parse_add_download_sources(self.add_input.read(cx).text());
+        let links = parse_add_download_sources(self.add_input.read(cx).value().as_ref());
         let metadata_name = self.add_dialog.metadata_files.first().and_then(|file| {
             file.path
                 .file_name()
@@ -854,7 +861,7 @@ impl AppShell {
         let preview_pending = self.add_dialog.preview_pending.is_some();
         let pending = add_pending || preview_pending;
         let error = self.add_dialog.error.clone();
-        let sources = parse_add_download_sources(self.add_input.read(cx).text());
+        let sources = parse_add_download_sources(self.add_input.read(cx).value().as_ref());
         let input_mode = self.add_dialog.input_mode;
         let mode = self.add_dialog.mode;
         let file_conflict = self.add_dialog.file_conflict;
@@ -950,7 +957,7 @@ impl AppShell {
                             .text_color(colors.text_secondary)
                             .child(self.t("dialog-add-url-or-magnet")),
                     )
-                    .child(self.add_input.clone())
+                    .child(Textarea::new(&self.add_input))
                     .child(
                         div()
                             .flex()
@@ -1133,7 +1140,7 @@ impl AppShell {
                             .child(
                                 settings_labeled_input(
                                     self.t("dialog-add-referer"),
-                                    self.add_inputs.referer.clone(),
+                                    &self.add_inputs.referer,
                                     colors,
                                 )
                                 .flex_1()
@@ -1142,7 +1149,7 @@ impl AppShell {
                             .child(
                                 settings_labeled_input(
                                     self.t("dialog-add-user-agent"),
-                                    self.add_inputs.user_agent.clone(),
+                                    &self.add_inputs.user_agent,
                                     colors,
                                 )
                                 .flex_1()
@@ -1151,12 +1158,12 @@ impl AppShell {
                     )
                     .child(settings_labeled_input(
                         self.t("dialog-add-custom-headers"),
-                        self.add_inputs.headers.clone(),
+                        &self.add_inputs.headers,
                         colors,
                     ))
                     .child(settings_labeled_input(
                         self.t("dialog-add-cookie"),
-                        self.add_inputs.cookie.clone(),
+                        &self.add_inputs.cookie,
                         colors,
                     ))
                     .child(
@@ -1166,7 +1173,7 @@ impl AppShell {
                             .child(
                                 settings_labeled_input(
                                     self.t("dialog-add-http-username"),
-                                    self.add_inputs.http_user.clone(),
+                                    &self.add_inputs.http_user,
                                     colors,
                                 )
                                 .flex_1()
@@ -1175,7 +1182,7 @@ impl AppShell {
                             .child(
                                 settings_labeled_input(
                                     self.t("dialog-add-http-password"),
-                                    self.add_inputs.http_passwd.clone(),
+                                    &self.add_inputs.http_passwd,
                                     colors,
                                 )
                                 .flex_1()
@@ -1184,7 +1191,7 @@ impl AppShell {
                     )
                     .child(settings_labeled_input(
                         self.t("dialog-add-checksum"),
-                        self.add_inputs.checksum.clone(),
+                        &self.add_inputs.checksum,
                         colors,
                     ))
                     .when(pending, |element| {

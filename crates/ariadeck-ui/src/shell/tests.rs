@@ -1,4 +1,4 @@
-use gpui::{TestAppContext, point, px};
+use gpui::{TestAppContext, px};
 
 use super::*;
 use crate::{
@@ -616,9 +616,9 @@ fn add_download_submission_is_single_flight(cx: &mut TestAppContext) {
         shell
     });
 
-    view.update(cx, |shell, cx| {
+    view.update_in(cx, |shell, window, cx| {
         shell.add_input.update(cx, |input, cx| {
-            input.set_text("https://example.com/archive.bin", cx);
+            input.set_value("https://example.com/archive.bin", window, cx);
         });
         shell.submit_add_download(cx);
         let first = shell
@@ -718,9 +718,7 @@ fn queue_reordering_is_authoritative_only_for_the_unfiltered_ascending_queue(
 
     view.update_in(cx, |shell, window, cx| {
         shell.set_filter(WorkspaceFilter::All, window, cx);
-        shell.search_input.update(cx, |input, cx| {
-            input.set_text("archive", cx);
-        });
+        shell.set_search_query("archive", window, cx);
     });
     view.read_with(cx, |shell, _| {
         assert!(
@@ -1065,10 +1063,10 @@ fn magnet_launch_opens_links_without_submitting_and_does_not_clobber_open_dialog
         assert!(shell.open_magnet_uris(vec![magnet.clone(), magnet.clone()], window, cx));
         assert!(shell.add_dialog.open);
         assert!(shell.add_dialog.pending.is_none());
-        assert_eq!(shell.add_input.read(cx).text(), magnet);
+        assert_eq!(shell.add_input.read(cx).value().as_ref(), magnet);
         assert!(!shell.can_open_magnet_uris());
         assert!(!shell.open_magnet_uris(vec!["magnet:?xt=urn:btih:bad".into()], window, cx));
-        assert_eq!(shell.add_input.read(cx).text(), magnet);
+        assert_eq!(shell.add_input.read(cx).value().as_ref(), magnet);
     });
 }
 
@@ -1238,25 +1236,25 @@ fn add_download_advanced_options_toggle_and_collect_secrets(cx: &mut TestAppCont
         shell.toggle_add_advanced(cx);
         assert!(shell.add_dialog.advanced_open);
         shell.add_inputs.referer.update(cx, |input, cx| {
-            input.set_text("https://example.test/ref", cx);
+            input.set_value("https://example.test/ref", window, cx);
         });
         shell.add_inputs.user_agent.update(cx, |input, cx| {
-            input.set_text("AriaDeck-Test/1.0", cx);
+            input.set_value("AriaDeck-Test/1.0", window, cx);
         });
         shell.add_inputs.headers.update(cx, |input, cx| {
-            input.set_text("X-Token: one\nAccept: */*", cx);
+            input.set_value("X-Token: one\nAccept: */*", window, cx);
         });
         shell.add_inputs.cookie.update(cx, |input, cx| {
-            input.set_text("session=secret-cookie", cx);
+            input.set_value("session=secret-cookie", window, cx);
         });
         shell.add_inputs.http_user.update(cx, |input, cx| {
-            input.set_text("alice", cx);
+            input.set_value("alice", window, cx);
         });
         shell.add_inputs.http_passwd.update(cx, |input, cx| {
-            input.set_text("s3cret", cx);
+            input.set_value("s3cret", window, cx);
         });
         shell.add_inputs.checksum.update(cx, |input, cx| {
-            input.set_text(format!("sha-256={}", "ab".repeat(32)), cx);
+            input.set_value(format!("sha-256={}", "ab".repeat(32)), window, cx);
         });
     });
 
@@ -1284,8 +1282,15 @@ fn add_download_advanced_options_toggle_and_collect_secrets(cx: &mut TestAppCont
         let debug = format!("{advanced:?}");
         assert!(!debug.contains("s3cret"));
         assert!(!debug.contains("secret-cookie"));
-        assert!(shell.add_inputs.cookie.read(cx).is_secure());
-        assert!(shell.add_inputs.http_passwd.read(cx).is_secure());
+        assert!(shell.add_inputs.cookie.read(cx).presentation().is_masked());
+        assert!(
+            shell
+                .add_inputs
+                .http_passwd
+                .read(cx)
+                .presentation()
+                .is_masked()
+        );
     });
 }
 
@@ -1330,7 +1335,7 @@ fn bridge_downloads_fill_the_dialog_without_submitting(cx: &mut TestAppContext) 
         );
         // A prefilled cookie must be visible to whoever confirms the add.
         assert!(shell.add_dialog.advanced_open);
-        assert!(shell.add_inputs.cookie.read(cx).is_secure());
+        assert!(shell.add_inputs.cookie.read(cx).presentation().is_masked());
     });
 
     view.read_with(cx, |shell, cx| {
@@ -1498,14 +1503,11 @@ fn add_download_dialog_input_can_be_clicked_before_typing(cx: &mut TestAppContex
     view.update_in(cx, |shell, window, cx| {
         window.focus(&shell.search_input.focus_handle(cx), cx);
     });
-    cx.simulate_click(
-        point(input_bounds.left() - px(16.0), input_bounds.center().y),
-        Default::default(),
-    );
+    cx.simulate_click(input_bounds.center(), Default::default());
     cx.simulate_input("https://example.com/file");
 
     view.read_with(cx, |shell, cx| {
-        assert_eq!(shell.add_input.read(cx).text(), "https://example.com/file");
+        assert_eq!(shell.add_input.read(cx).value(), "https://example.com/file");
     });
 }
 
@@ -1521,7 +1523,7 @@ fn add_download_dialog_supports_standard_clipboard_shortcuts(cx: &mut TestAppCon
     view.update_in(cx, |shell, window, cx| {
         shell.open_add_download(&OpenAddDownload, window, cx);
         shell.add_input.update(cx, |input, cx| {
-            input.set_text("https://example.com/file", cx);
+            input.set_value("https://example.com/file", window, cx);
         });
     });
     cx.simulate_keystrokes("secondary-a secondary-c");
@@ -1535,12 +1537,12 @@ fn add_download_dialog_supports_standard_clipboard_shortcuts(cx: &mut TestAppCon
     ));
     cx.simulate_keystrokes("secondary-v");
     view.read_with(cx, |shell, cx| {
-        assert_eq!(shell.add_input.read(cx).text(), "magnet:?xt=urn:btih:test");
+        assert_eq!(shell.add_input.read(cx).value(), "magnet:?xt=urn:btih:test");
     });
 
     cx.simulate_keystrokes("secondary-a secondary-x");
     view.read_with(cx, |shell, cx| {
-        assert!(shell.add_input.read(cx).text().is_empty());
+        assert!(shell.add_input.read(cx).value().is_empty());
     });
     assert_eq!(
         cx.read_from_clipboard().and_then(|item| item.text()),
@@ -1566,11 +1568,11 @@ fn add_download_input_preserves_pasted_lines_and_shift_enter(cx: &mut TestAppCon
 
     view.read_with(cx, |shell, cx| {
         assert_eq!(
-            shell.add_input.read(cx).text(),
+            shell.add_input.read(cx).value().replace("\r\n", "\n"),
             "https://example.test/one\nhttps://example.test/two\nmagnet:?xt=urn:btih:abc"
         );
         assert_eq!(
-            parse_add_download_sources(shell.add_input.read(cx).text()).len(),
+            parse_add_download_sources(shell.add_input.read(cx).value().as_ref()).len(),
             3
         );
     });
@@ -1585,8 +1587,9 @@ fn partial_add_result_keeps_only_sources_that_are_safe_to_retry(cx: &mut TestApp
         shell.snapshot = snapshot(1);
         shell.add_dialog.open = true;
         shell.add_input.update(cx, |input, cx| {
-            input.set_text(
+            input.set_value(
                 "https://example.test/accepted\nhttps://example.test/retry\nhttps://example.test/unknown",
+                window,
                 cx,
             );
         });
@@ -1667,7 +1670,7 @@ fn duplicate_add_result_focuses_the_existing_task_and_closes_the_dialog(cx: &mut
         shell.snapshot = snapshot(1);
         shell.add_dialog.open = true;
         shell.add_input.update(cx, |input, cx| {
-            input.set_text("https://example.test/existing", cx);
+            input.set_value("https://example.test/existing", window, cx);
         });
         shell.submit_add_download(cx);
         shell
@@ -1799,9 +1802,9 @@ fn output_name_dialog_validates_and_submits_the_exact_filename(cx: &mut TestAppC
         shell
     });
 
-    view.update(cx, |shell, cx| {
+    view.update_in(cx, |shell, window, cx| {
         shell.output_name_input.update(cx, |input, cx| {
-            input.set_text("folder/archive.iso", cx);
+            input.set_value("folder/archive.iso", window, cx);
         });
     });
     view.update(cx, |shell, cx| {
@@ -1818,9 +1821,9 @@ fn output_name_dialog_validates_and_submits_the_exact_filename(cx: &mut TestAppC
         );
     });
 
-    view.update(cx, |shell, cx| {
+    view.update_in(cx, |shell, window, cx| {
         shell.output_name_input.update(cx, |input, cx| {
-            input.set_text("  archive-renamed.iso  ", cx);
+            input.set_value("  archive-renamed.iso  ", window, cx);
         });
     });
     view.update(cx, |shell, cx| {
@@ -1849,9 +1852,9 @@ fn output_name_result_closes_on_success_and_stays_open_on_failure(cx: &mut TestA
         shell
     });
 
-    view.update(cx, |shell, cx| {
+    view.update_in(cx, |shell, window, cx| {
         shell.output_name_input.update(cx, |input, cx| {
-            input.set_text("first.iso", cx);
+            input.set_value("first.iso", window, cx);
         });
     });
     let first = view.update(cx, |shell, cx| {
@@ -1886,9 +1889,9 @@ fn output_name_result_closes_on_success_and_stays_open_on_failure(cx: &mut TestA
         );
     });
 
-    view.update(cx, |shell, cx| {
+    view.update_in(cx, |shell, window, cx| {
         shell.output_name_input.update(cx, |input, cx| {
-            input.set_text("second.iso", cx);
+            input.set_value("second.iso", window, cx);
         });
     });
     let second = view.update(cx, |shell, cx| {
@@ -2001,21 +2004,30 @@ fn proxy_settings_build_a_manual_draft_with_a_masked_password(cx: &mut TestAppCo
         shell.open_settings(&OpenSettings, window, cx);
         shell.select_proxy_mode(ProxyModeView::Manual, cx);
         shell.settings_inputs.all_proxy.update(cx, |input, cx| {
-            input.set_text("proxy.example:8080", cx);
+            input.set_value("proxy.example:8080", window, cx);
         });
         shell
             .settings_inputs
             .proxy_username
-            .update(cx, |input, cx| input.set_text("proxy-user", cx));
+            .update(cx, |input, cx| input.set_value("proxy-user", window, cx));
         shell
             .settings_inputs
             .proxy_password
-            .update(cx, |input, cx| input.set_text("never-render-this", cx));
+            .update(cx, |input, cx| {
+                input.set_value("never-render-this", window, cx)
+            });
         shell.submit_proxy_settings(cx);
     });
 
     view.read_with(cx, |shell, cx| {
-        assert!(shell.settings_inputs.proxy_password.read(cx).is_secure());
+        assert!(
+            shell
+                .settings_inputs
+                .proxy_password
+                .read(cx)
+                .presentation()
+                .is_masked()
+        );
         let pending = shell
             .pending_settings_save
             .as_ref()
@@ -2455,7 +2467,7 @@ fn escape_priority_closes_popover_then_settings_then_search(cx: &mut TestAppCont
         shell.page = AppPage::Settings;
         shell.speed_popover_open = true;
         shell.search_input.update(cx, |input, cx| {
-            input.set_text("archive", cx);
+            input.set_value("archive", window, cx);
         });
         shell
     });
@@ -2466,7 +2478,7 @@ fn escape_priority_closes_popover_then_settings_then_search(cx: &mut TestAppCont
     view.read_with(cx, |shell, cx| {
         assert!(!shell.speed_popover_open);
         assert_eq!(shell.page, AppPage::Settings);
-        assert_eq!(shell.search_input.read(cx).text(), "archive");
+        assert_eq!(shell.search_input.read(cx).value(), "archive");
     });
 
     view.update_in(cx, |shell, window, cx| {
@@ -2474,14 +2486,14 @@ fn escape_priority_closes_popover_then_settings_then_search(cx: &mut TestAppCont
     });
     view.read_with(cx, |shell, cx| {
         assert_eq!(shell.page, AppPage::Downloads);
-        assert_eq!(shell.search_input.read(cx).text(), "archive");
+        assert_eq!(shell.search_input.read(cx).value(), "archive");
     });
 
     view.update_in(cx, |shell, window, cx| {
         shell.clear_search(&ClearSearch, window, cx);
     });
     view.read_with(cx, |shell, cx| {
-        assert!(shell.search_input.read(cx).text().is_empty());
+        assert!(shell.search_input.read(cx).value().is_empty());
     });
 }
 
@@ -2558,13 +2570,13 @@ fn global_speed_limit_save_emits_parsed_request_and_normalizes_on_success(cx: &m
     view.update_in(cx, |shell, window, cx| {
         shell.open_settings(&OpenSettings, window, cx);
     });
-    view.update(cx, |shell, cx| {
+    view.update_in(cx, |shell, window, cx| {
         // "2M" and blank (unlimited) both go through the K/M parser.
         shell
             .settings_inputs
             .download_limit
             .update(cx, |input, cx| {
-                input.set_text("2M", cx);
+                input.set_value("2M", window, cx);
             });
     });
     let request_id = view.update(cx, |shell, cx| {
@@ -2605,13 +2617,13 @@ fn global_speed_limit_save_emits_parsed_request_and_normalizes_on_success(cx: &m
     view.read_with(cx, |shell, cx| {
         assert!(shell.pending_settings_save.is_none());
         assert_eq!(shell.settings.speed_limits.download_limit, "2M");
-        assert_eq!(shell.settings_inputs.download_limit.read(cx).text(), "2M");
+        assert_eq!(shell.settings_inputs.download_limit.read(cx).value(), "2M");
         assert!(
             shell
                 .settings_inputs
                 .upload_limit
                 .read(cx)
-                .text()
+                .value()
                 .is_empty()
         );
     });
@@ -2626,12 +2638,12 @@ fn invalid_global_speed_limit_is_rejected_before_a_save_request(cx: &mut TestApp
     view.update_in(cx, |shell, window, cx| {
         shell.open_settings(&OpenSettings, window, cx);
     });
-    view.update(cx, |shell, cx| {
+    view.update_in(cx, |shell, window, cx| {
         shell
             .settings_inputs
             .download_limit
             .update(cx, |input, cx| {
-                input.set_text("5MB", cx);
+                input.set_value("5MB", window, cx);
             });
     });
     view.update(cx, |shell, cx| {
@@ -2667,18 +2679,18 @@ fn transfers_footer_saves_speed_limit_and_policy_together(cx: &mut TestAppContex
     view.update_in(cx, |shell, window, cx| {
         shell.open_settings(&OpenSettings, window, cx);
     });
-    view.update(cx, |shell, cx| {
+    view.update_in(cx, |shell, window, cx| {
         shell
             .settings_inputs
             .download_limit
             .update(cx, |input, cx| {
-                input.set_text("2M", cx);
+                input.set_value("2M", window, cx);
             });
         shell
             .settings_inputs
             .max_concurrent
             .update(cx, |input, cx| {
-                input.set_text("8", cx);
+                input.set_value("8", window, cx);
             });
     });
     view.update(cx, |shell, cx| {
@@ -2713,18 +2725,18 @@ fn transfers_footer_rejects_invalid_speed_even_when_policy_is_dirty(cx: &mut Tes
     view.update_in(cx, |shell, window, cx| {
         shell.open_settings(&OpenSettings, window, cx);
     });
-    view.update(cx, |shell, cx| {
+    view.update_in(cx, |shell, window, cx| {
         shell
             .settings_inputs
             .download_limit
             .update(cx, |input, cx| {
-                input.set_text("5MB", cx);
+                input.set_value("5MB", window, cx);
             });
         shell
             .settings_inputs
             .max_concurrent
             .update(cx, |input, cx| {
-                input.set_text("8", cx);
+                input.set_value("8", window, cx);
             });
     });
     view.update(cx, |shell, cx| {
@@ -3271,7 +3283,7 @@ fn platform_preferences_save_and_close_policy(cx: &mut TestAppContext) {
         assert!(pending.settings.platform.start_minimized_to_tray);
 
         // Apply saved platform prefs and verify close interception.
-        shell.apply_settings(pending.settings.clone(), cx);
+        shell.apply_settings(pending.settings.clone(), Some(window), cx);
         shell.pending_settings_save = None;
         assert!(shell.handle_window_close_request(cx));
 
@@ -3401,12 +3413,12 @@ fn profile_catalog_can_switch_and_add_drafts(cx: &mut TestAppContext) {
         shell
     });
 
-    view.update(cx, |shell, cx| {
+    view.update_in(cx, |shell, window, cx| {
         shell.request_switch_profile("p1".into(), cx);
         assert!(shell.status_notice.as_ref().is_some_and(|notice| {
             notice.message.contains("already active") || notice.message.contains("已是当前配置")
         }));
-        shell.add_draft_local_profile(cx);
+        shell.add_draft_local_profile(window, cx);
         assert_eq!(shell.profiles.profiles.len(), 3);
         let draft = shell
             .profiles
@@ -3420,9 +3432,9 @@ fn profile_catalog_can_switch_and_add_drafts(cx: &mut TestAppContext) {
             Some(draft.profile_id.as_str())
         );
         shell.settings_inputs.profile_name.update(cx, |input, cx| {
-            input.set_text("Home NAS-ready", cx);
+            input.set_value("Home NAS-ready", window, cx);
         });
-        shell.apply_profile_editor(cx);
+        shell.apply_profile_editor(window, cx);
         assert!(shell.settings_page.editing_profile_id.is_none());
         assert!(
             shell
@@ -3432,7 +3444,7 @@ fn profile_catalog_can_switch_and_add_drafts(cx: &mut TestAppContext) {
                 .any(|profile| profile.name == "Home NAS-ready")
         );
 
-        shell.add_draft_remote_profile(cx);
+        shell.add_draft_remote_profile(window, cx);
         assert_eq!(shell.profiles.profiles.len(), 4);
         assert!(
             shell
@@ -3455,7 +3467,7 @@ fn profile_catalog_can_switch_and_add_drafts(cx: &mut TestAppContext) {
         assert_eq!(shell.profiles.profiles.len(), 3);
 
         // Remote secret set is staged until Save profiles.
-        shell.add_draft_remote_profile(cx);
+        shell.add_draft_remote_profile(window, cx);
         let remote_id = shell
             .profiles
             .profiles
@@ -3463,14 +3475,14 @@ fn profile_catalog_can_switch_and_add_drafts(cx: &mut TestAppContext) {
             .find(|profile| profile.profile_id.starts_with("draft-remote-"))
             .map(|profile| profile.profile_id.clone())
             .expect("remote draft");
-        shell.open_profile_editor(remote_id.clone(), cx);
+        shell.open_profile_editor(remote_id.clone(), window, cx);
         shell
             .settings_inputs
             .profile_secret
             .update(cx, |input, cx| {
-                input.set_text("s3cret", cx);
+                input.set_value("s3cret", window, cx);
             });
-        shell.apply_profile_editor(cx);
+        shell.apply_profile_editor(window, cx);
         assert!(
             shell
                 .settings_page

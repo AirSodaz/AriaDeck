@@ -1,11 +1,15 @@
 //! AriaDeck-owned GPUI design system and application components.
 
+pub extern crate gpui_kit as gpui;
+
+pub use gpui_kit::component;
+pub use gpui_kit::*;
+
 mod accessibility;
 mod actions;
-mod assets;
+mod app_assets;
 mod components;
 mod model;
-mod search_input;
 mod shell;
 mod theme;
 
@@ -23,12 +27,13 @@ pub use actions::{
     SelectAll, SelectAllTasks, SelectLeft, SelectNextTask, SelectPreviousTask, SelectRight,
     SubmitAddDownload, SubmitTaskOptions, SubmitTaskOutputName, SubmitTaskSpeedLimit,
 };
-pub use assets::Assets;
+pub use app_assets::Assets;
 pub use components::{
     Button, ButtonStyle, ButtonVariant, Dialog, Icon, IconButton, IconName, IconSize,
     LoadingIndicator, Segment, SegmentedControl, StatusIndicator, Toast, ToastKind, Toggle,
     Tooltip,
 };
+pub use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 pub use model::{
     ActivityEntryView, ActivityKindView, AddDownloadAdvancedOptionsView, AddDownloadInputModeView,
     AddDownloadItemResultView, AddDownloadMetadataFileView, AddDownloadMetadataKindView,
@@ -68,6 +73,5 @@ pub use model::{
     format_relative_time_with, format_share_ratio, format_share_ratio_with,
     format_speed_limit_field, parse_speed_limit_field, set_active_format_options,
 };
-pub use search_input::{SearchInput, SearchInputEvent, TextField, TextFieldConfig, TextFieldEvent};
 pub use shell::{AppShell, AppShellEvent};
 pub use theme::{Theme, ThemeColors, ThemeMode};

@@ -257,14 +257,6 @@ pub(crate) fn queue_move_button(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TextFieldContextAction {
-    Cut,
-    Copy,
-    Paste,
-    SelectAll,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ContextMenuAction {
     Details,
     OpenDownload,
@@ -442,29 +434,9 @@ pub(crate) fn render_vertical_scrollbar(
         .into_any_element()
 }
 
-pub(crate) fn settings_input_config(
-    element_id: &'static str,
-    accessibility_label: &'static str,
-    placeholder: &'static str,
-    leading_icon: Option<IconName>,
-    secure: bool,
-) -> TextFieldConfig {
-    TextFieldConfig {
-        element_id: element_id.into(),
-        key_context: TEXT_FIELD_KEY_CONTEXT.into(),
-        role: Role::TextInput,
-        accessibility_label: accessibility_label.into(),
-        placeholder: placeholder.into(),
-        leading_icon,
-        clearable: !secure,
-        allow_newlines: false,
-        secure,
-    }
-}
-
 pub(crate) fn settings_labeled_input(
     label: impl Into<SharedString>,
-    input: Entity<TextField>,
+    input: &Entity<InputState>,
     colors: crate::ThemeColors,
 ) -> Div {
     let label = label.into();
@@ -473,11 +445,11 @@ pub(crate) fn settings_labeled_input(
         .flex_col()
         .gap_1()
         .child(div().text_xs().text_color(colors.text_muted).child(label))
-        .child(input)
+        .child(Input::new(input))
 }
 
 pub(crate) fn settings_path_field_row(
-    input: Entity<TextField>,
+    input: &Entity<InputState>,
     browse_id: impl Into<ElementId>,
     browse_label: impl Into<SharedString>,
     browse_aria: impl Into<SharedString>,
@@ -491,7 +463,7 @@ pub(crate) fn settings_path_field_row(
         .flex()
         .items_center()
         .gap_2()
-        .child(div().flex_1().min_w_0().child(input))
+        .child(div().flex_1().min_w_0().child(Input::new(input)))
         .child(
             Button::new(browse_id, browse_label)
                 .icon(IconName::FolderDown)

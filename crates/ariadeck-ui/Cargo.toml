@@ -9,11 +9,10 @@ license.workspace = true
 [dependencies]
 ariadeck-domain = { path = "../ariadeck-domain" }
 ariadeck-i18n = { path = "../ariadeck-i18n" }
-gpui.workspace = true
-rust-embed.workspace = true
+gpui-kit = { workspace = true }
 
 [dev-dependencies]
-gpui = { workspace = true, features = ["test-support"] }
+gpui-kit = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

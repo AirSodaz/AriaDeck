@@ -1,4 +1,4 @@
-use gpui::{Hsla, rgb};
+use gpui::{App, Hsla, Window, WindowAppearance, rgb};
 
 /// User-facing color scheme selection.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -12,6 +12,26 @@ pub enum ThemeMode {
     Dark,
 }
 
+impl ThemeMode {
+    /// Resolve to a concrete gpui-kit ThemeMode based on window appearance.
+    #[must_use]
+    pub fn resolve(self, appearance: WindowAppearance) -> gpui_kit::component::ThemeMode {
+        match self {
+            Self::System => appearance.into(),
+            Self::Light => gpui_kit::component::ThemeMode::Light,
+            Self::Dark => gpui_kit::component::ThemeMode::Dark,
+        }
+    }
+}
+
+impl From<gpui_kit::component::ThemeMode> for ThemeMode {
+    fn from(mode: gpui_kit::component::ThemeMode) -> Self {
+        match mode {
+            gpui_kit::component::ThemeMode::Light => Self::Light,
+            gpui_kit::component::ThemeMode::Dark => Self::Dark,
+        }
+    }
+}
 /// Semantic colors consumed by AriaDeck components.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ThemeColors {
@@ -38,6 +58,51 @@ pub struct ThemeColors {
     pub progress_track: Hsla,
     pub progress_download: Hsla,
     pub progress_upload: Hsla,
+}
+
+impl ThemeColors {
+    /// Construct ThemeColors mapped from gpui-kit's Theme token set.
+    #[must_use]
+    pub fn from_kit(kit: &gpui_kit::component::Theme) -> Self {
+        let is_dark = kit.mode.is_dark();
+        Self {
+            background: kit.background,
+            surface: if is_dark {
+                color(0x181b1f)
+            } else {
+                color(0xf1f3f5)
+            },
+            toolbar_surface: kit.background,
+            elevated_surface: kit.popover,
+            surface_hover: kit.secondary_hover,
+            surface_active: kit.secondary_active,
+            text_primary: kit.foreground,
+            text_secondary: kit.secondary_foreground,
+            text_muted: kit.muted_foreground,
+            text_inverse: if is_dark {
+                color(0x121416)
+            } else {
+                color(0xffffff)
+            },
+            border: kit.border,
+            border_strong: kit.border,
+            focus_ring: kit.ring,
+            accent: kit.primary,
+            accent_hover: kit.primary_hover,
+            accent_active: kit.primary_active,
+            success: kit.success,
+            warning: kit.warning,
+            danger: kit.danger,
+            information: kit.info,
+            progress_track: if is_dark {
+                color(0x30373e)
+            } else {
+                color(0xdce2e8)
+            },
+            progress_download: kit.primary,
+            progress_upload: kit.success,
+        }
+    }
 }
 
 /// Complete semantic theme used by the component layer.
@@ -112,6 +177,33 @@ impl Theme {
                 progress_upload: color(0x208255),
             },
         }
+    }
+    /// Construct a Theme from a gpui-kit Theme.
+    #[must_use]
+    pub fn from_kit(kit: &gpui_kit::component::Theme) -> Self {
+        Self {
+            mode: if kit.mode.is_dark() {
+                ThemeMode::Dark
+            } else {
+                ThemeMode::Light
+            },
+            colors: ThemeColors::from_kit(kit),
+        }
+    }
+
+    /// Sync the current Theme to the global gpui-kit Theme.
+    pub fn sync_to_kit(&self, window: Option<&mut Window>, cx: &mut App) {
+        let mode = match self.mode {
+            ThemeMode::Light => gpui_kit::component::ThemeMode::Light,
+            ThemeMode::Dark => gpui_kit::component::ThemeMode::Dark,
+            ThemeMode::System => match window.as_ref().map(|w| w.appearance()) {
+                Some(WindowAppearance::Dark | WindowAppearance::VibrantDark) => {
+                    gpui_kit::component::ThemeMode::Dark
+                }
+                _ => gpui_kit::component::ThemeMode::Light,
+            },
+        };
+        gpui_kit::component::Theme::change(mode, window, cx);
     }
 }
 
@@ -229,5 +321,33 @@ mod tests {
         assert_eq!(dark.border, color(0x2d3339));
         assert_eq!(dark.border_strong, color(0x434b53));
         assert_eq!(dark.accent, color(0x5b9dff));
+    }
+
+    #[test]
+    fn theme_mode_resolution_and_conversion() {
+        assert_eq!(
+            ThemeMode::System.resolve(WindowAppearance::Light),
+            gpui_kit::component::ThemeMode::Light
+        );
+        assert_eq!(
+            ThemeMode::System.resolve(WindowAppearance::Dark),
+            gpui_kit::component::ThemeMode::Dark
+        );
+        assert_eq!(
+            ThemeMode::Light.resolve(WindowAppearance::Dark),
+            gpui_kit::component::ThemeMode::Light
+        );
+        assert_eq!(
+            ThemeMode::Dark.resolve(WindowAppearance::Light),
+            gpui_kit::component::ThemeMode::Dark
+        );
+        assert_eq!(
+            ThemeMode::from(gpui_kit::component::ThemeMode::Light),
+            ThemeMode::Light
+        );
+        assert_eq!(
+            ThemeMode::from(gpui_kit::component::ThemeMode::Dark),
+            ThemeMode::Dark
+        );
     }
 }

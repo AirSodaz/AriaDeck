@@ -18,8 +18,7 @@ ariadeck-settings = { path = "../../crates/ariadeck-settings" }
 ariadeck-telemetry = { path = "../../crates/ariadeck-telemetry" }
 ariadeck-ui = { path = "../../crates/ariadeck-ui" }
 data-encoding.workspace = true
-gpui.workspace = true
-gpui_platform.workspace = true
+gpui-kit = { workspace = true }
 lava_torrent.workspace = true
 notify-rust.workspace = true
 quick-xml.workspace = true

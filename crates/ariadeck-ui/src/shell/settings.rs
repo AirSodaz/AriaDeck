@@ -21,7 +21,7 @@ impl AppShell {
 
         match result.outcome {
             SettingsSaveOutcomeView::Success => {
-                self.apply_settings(result.settings, cx);
+                self.apply_settings(result.settings, Some(window), cx);
                 self.settings_page.error = None;
                 let message = match source {
                     SettingsSaveSource::Theme => self.t("notice-settings-appearance"),
@@ -30,22 +30,22 @@ impl AppShell {
                     SettingsSaveSource::Proxy => {
                         self.settings_inputs
                             .proxy_password
-                            .update(cx, |input, cx| input.set_text("", cx));
+                            .update(cx, |input, cx| input.set_value("", window, cx));
                         self.settings_page.clear_proxy_password = false;
                         self.t("notice-settings-proxy")
                     }
                     SettingsSaveSource::SpeedLimit => {
-                        self.sync_speed_limit_fields_from_settings(cx);
+                        self.sync_speed_limit_fields_from_settings(Some(window), cx);
                         self.t("notice-settings-speed")
                     }
                     SettingsSaveSource::TransferPolicy => {
-                        self.sync_transfer_policy_fields_from_settings(cx);
+                        self.sync_transfer_policy_fields_from_settings(Some(window), cx);
                         self.t("notice-settings-transfer-policy")
                     }
                     SettingsSaveSource::Transfers => {
-                        self.sync_speed_limit_fields_from_settings(cx);
-                        self.sync_transfer_policy_fields_from_settings(cx);
-                        self.sync_tracker_list_fields_from_settings(cx);
+                        self.sync_speed_limit_fields_from_settings(Some(window), cx);
+                        self.sync_transfer_policy_fields_from_settings(Some(window), cx);
+                        self.sync_tracker_list_fields_from_settings(Some(window), cx);
                         self.t("notice-settings-transfers")
                     }
                     SettingsSaveSource::Notifications => self.t("notice-settings-notifications"),
@@ -133,12 +133,18 @@ impl AppShell {
     }
 
     // --- apply_settings..apply_settings ---
-    pub fn apply_settings(&mut self, settings: SettingsView, cx: &mut Context<Self>) {
-        // System scheme resolution needs a Window; callers that only have Context
-        // keep the previously resolved palette until the next appearance event.
-        if settings.color_scheme != ColorSchemeView::System {
+    pub fn apply_settings(
+        &mut self,
+        settings: SettingsView,
+        mut window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(w) = window.as_deref() {
+            self.theme = resolve_theme(settings.color_scheme, w);
+        } else if settings.color_scheme != ColorSchemeView::System {
             self.theme = theme_for_scheme(settings.color_scheme);
         }
+        self.theme.sync_to_kit(window.as_deref_mut(), cx);
         self.settings = settings.clone();
         self.settings_page.draft_color_scheme = settings.color_scheme;
         self.settings_page.draft_categories = settings.categories.clone();
@@ -164,65 +170,69 @@ impl AppShell {
         self.settings_page.draft_tracker_enabled = settings.tracker_list.enabled;
         self.settings_page.draft_tracker_source = settings.tracker_list.source;
         self.settings_page.draft_tracker_auto_refresh = settings.tracker_list.auto_refresh;
-        // Refresh bound text fields so a profile switch shows the new env immediately.
-        let download_directory = settings.download_directory.clone();
-        self.settings_inputs
-            .directory
-            .update(cx, |input, cx| input.set_text(download_directory, cx));
-        let proxy = settings.download_proxy.clone();
-        self.settings_inputs.all_proxy.update(cx, |input, cx| {
-            input.set_text(proxy.all_proxy.clone(), cx);
-        });
-        self.settings_inputs.http_proxy.update(cx, |input, cx| {
-            input.set_text(proxy.http_proxy.clone(), cx);
-        });
-        self.settings_inputs.https_proxy.update(cx, |input, cx| {
-            input.set_text(proxy.https_proxy.clone(), cx);
-        });
-        self.settings_inputs.ftp_proxy.update(cx, |input, cx| {
-            input.set_text(proxy.ftp_proxy.clone(), cx);
-        });
-        self.settings_inputs.no_proxy.update(cx, |input, cx| {
-            input.set_text(proxy.no_proxy.join(", "), cx);
-        });
-        self.settings_inputs.proxy_username.update(cx, |input, cx| {
-            input.set_text(proxy.username.clone(), cx);
-        });
-        self.settings_inputs
-            .proxy_password
-            .update(cx, |input, cx| input.set_text("", cx));
-        let speed_limits = settings.speed_limits.clone();
-        self.settings_inputs.download_limit.update(cx, |input, cx| {
-            input.set_text(speed_limits.download_limit.clone(), cx);
-        });
-        self.settings_inputs.upload_limit.update(cx, |input, cx| {
-            input.set_text(speed_limits.upload_limit.clone(), cx);
-        });
-        let transfer_policy = settings.transfer_policy.clone();
-        self.settings_inputs.max_concurrent.update(cx, |input, cx| {
-            input.set_text(transfer_policy.max_concurrent_downloads.clone(), cx);
-        });
-        self.settings_inputs.max_connection.update(cx, |input, cx| {
-            input.set_text(transfer_policy.max_connection_per_server.clone(), cx);
-        });
-        self.settings_inputs.split.update(cx, |input, cx| {
-            input.set_text(transfer_policy.split.clone(), cx);
-        });
-        self.settings_inputs.min_split_size.update(cx, |input, cx| {
-            input.set_text(transfer_policy.min_split_size.clone(), cx);
-        });
-        let tracker = settings.tracker_list.clone();
-        self.settings_inputs
-            .tracker_custom_url
-            .update(cx, |input, cx| {
-                input.set_text(tracker.custom_url.clone(), cx);
+        if let Some(window) = window {
+            let download_directory = settings.download_directory.clone();
+            self.settings_inputs.directory.update(cx, |input, cx| {
+                input.set_value(download_directory, window, cx)
             });
-        self.settings_inputs
-            .tracker_list_text
-            .update(cx, |input, cx| {
-                input.set_text(tracker.list_text.clone(), cx);
+            let proxy = settings.download_proxy.clone();
+            self.settings_inputs.all_proxy.update(cx, |input, cx| {
+                input.set_value(proxy.all_proxy.clone(), window, cx);
             });
-        self.apply_theme_to_text_fields(cx);
+            self.settings_inputs.http_proxy.update(cx, |input, cx| {
+                input.set_value(proxy.http_proxy.clone(), window, cx);
+            });
+            self.settings_inputs.https_proxy.update(cx, |input, cx| {
+                input.set_value(proxy.https_proxy.clone(), window, cx);
+            });
+            self.settings_inputs.ftp_proxy.update(cx, |input, cx| {
+                input.set_value(proxy.ftp_proxy.clone(), window, cx);
+            });
+            self.settings_inputs.no_proxy.update(cx, |input, cx| {
+                input.set_value(proxy.no_proxy.join(", "), window, cx);
+            });
+            self.settings_inputs.proxy_username.update(cx, |input, cx| {
+                input.set_value(proxy.username.clone(), window, cx);
+            });
+            self.settings_inputs
+                .proxy_password
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            let speed_limits = settings.speed_limits.clone();
+            self.settings_inputs.download_limit.update(cx, |input, cx| {
+                input.set_value(speed_limits.download_limit.clone(), window, cx);
+            });
+            self.settings_inputs.upload_limit.update(cx, |input, cx| {
+                input.set_value(speed_limits.upload_limit.clone(), window, cx);
+            });
+            let transfer_policy = settings.transfer_policy.clone();
+            self.settings_inputs.max_concurrent.update(cx, |input, cx| {
+                input.set_value(transfer_policy.max_concurrent_downloads.clone(), window, cx);
+            });
+            self.settings_inputs.max_connection.update(cx, |input, cx| {
+                input.set_value(
+                    transfer_policy.max_connection_per_server.clone(),
+                    window,
+                    cx,
+                );
+            });
+            self.settings_inputs.split.update(cx, |input, cx| {
+                input.set_value(transfer_policy.split.clone(), window, cx);
+            });
+            self.settings_inputs.min_split_size.update(cx, |input, cx| {
+                input.set_value(transfer_policy.min_split_size.clone(), window, cx);
+            });
+            let tracker = settings.tracker_list.clone();
+            self.settings_inputs
+                .tracker_custom_url
+                .update(cx, |input, cx| {
+                    input.set_value(tracker.custom_url.clone(), window, cx);
+                });
+            self.settings_inputs
+                .tracker_list_text
+                .update(cx, |input, cx| {
+                    input.set_value(tracker.list_text.clone(), window, cx);
+                });
+        }
         cx.notify();
     }
 
@@ -268,61 +278,65 @@ impl AppShell {
             return;
         }
         let download_directory = self.settings.download_directory.clone();
-        self.settings_inputs
-            .directory
-            .update(cx, |input, cx| input.set_text(download_directory, cx));
+        self.settings_inputs.directory.update(cx, |input, cx| {
+            input.set_value(download_directory, window, cx)
+        });
         let proxy = self.settings.download_proxy.clone();
         self.settings_inputs.all_proxy.update(cx, |input, cx| {
-            input.set_text(proxy.all_proxy.clone(), cx);
+            input.set_value(proxy.all_proxy.clone(), window, cx);
         });
         self.settings_inputs.http_proxy.update(cx, |input, cx| {
-            input.set_text(proxy.http_proxy.clone(), cx);
+            input.set_value(proxy.http_proxy.clone(), window, cx);
         });
         self.settings_inputs.https_proxy.update(cx, |input, cx| {
-            input.set_text(proxy.https_proxy.clone(), cx);
+            input.set_value(proxy.https_proxy.clone(), window, cx);
         });
         self.settings_inputs.ftp_proxy.update(cx, |input, cx| {
-            input.set_text(proxy.ftp_proxy.clone(), cx);
+            input.set_value(proxy.ftp_proxy.clone(), window, cx);
         });
         self.settings_inputs.no_proxy.update(cx, |input, cx| {
-            input.set_text(proxy.no_proxy.join(", "), cx);
+            input.set_value(proxy.no_proxy.join(", "), window, cx);
         });
         self.settings_inputs.proxy_username.update(cx, |input, cx| {
-            input.set_text(proxy.username.clone(), cx);
+            input.set_value(proxy.username.clone(), window, cx);
         });
         self.settings_inputs
             .proxy_password
-            .update(cx, |input, cx| input.set_text("", cx));
+            .update(cx, |input, cx| input.set_value("", window, cx));
         let speed_limits = self.settings.speed_limits.clone();
         self.settings_inputs.download_limit.update(cx, |input, cx| {
-            input.set_text(speed_limits.download_limit.clone(), cx);
+            input.set_value(speed_limits.download_limit.clone(), window, cx);
         });
         self.settings_inputs.upload_limit.update(cx, |input, cx| {
-            input.set_text(speed_limits.upload_limit.clone(), cx);
+            input.set_value(speed_limits.upload_limit.clone(), window, cx);
         });
         let transfer_policy = self.settings.transfer_policy.clone();
         self.settings_inputs.max_concurrent.update(cx, |input, cx| {
-            input.set_text(transfer_policy.max_concurrent_downloads.clone(), cx);
+            input.set_value(transfer_policy.max_concurrent_downloads.clone(), window, cx);
         });
         self.settings_inputs.max_connection.update(cx, |input, cx| {
-            input.set_text(transfer_policy.max_connection_per_server.clone(), cx);
+            input.set_value(
+                transfer_policy.max_connection_per_server.clone(),
+                window,
+                cx,
+            );
         });
         self.settings_inputs.split.update(cx, |input, cx| {
-            input.set_text(transfer_policy.split.clone(), cx);
+            input.set_value(transfer_policy.split.clone(), window, cx);
         });
         self.settings_inputs.min_split_size.update(cx, |input, cx| {
-            input.set_text(transfer_policy.min_split_size.clone(), cx);
+            input.set_value(transfer_policy.min_split_size.clone(), window, cx);
         });
         let tracker_list = self.settings.tracker_list.clone();
         self.settings_inputs
             .tracker_custom_url
             .update(cx, |input, cx| {
-                input.set_text(tracker_list.custom_url.clone(), cx);
+                input.set_value(tracker_list.custom_url.clone(), window, cx);
             });
         self.settings_inputs
             .tracker_list_text
             .update(cx, |input, cx| {
-                input.set_text(tracker_list.list_text.clone(), cx);
+                input.set_value(tracker_list.list_text.clone(), window, cx);
             });
         self.page = AppPage::Settings;
         self.details_drawer = None;
@@ -480,7 +494,7 @@ impl AppShell {
         self.settings_page.draft_color_scheme = scheme;
         // Apply chrome immediately so TextFields switch light/dark before save returns.
         self.theme = resolve_theme(scheme, window);
-        self.apply_theme_to_text_fields(cx);
+        self.theme.sync_to_kit(Some(window), cx);
         let mut settings = self.settings.clone();
         settings.color_scheme = scheme;
         self.request_settings_save(
@@ -521,7 +535,11 @@ impl AppShell {
         cx.notify();
     }
 
-    pub(crate) fn clear_saved_proxy_password(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn clear_saved_proxy_password(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.pending_settings_save.is_some() || !self.settings.download_proxy.has_password {
             return;
         }
@@ -529,7 +547,7 @@ impl AppShell {
         if clear {
             self.settings_inputs
                 .proxy_password
-                .update(cx, |input, cx| input.set_text("", cx));
+                .update(cx, |input, cx| input.set_value("", window, cx));
         }
         self.settings_page.clear_proxy_password = clear;
         self.settings_page.error = None;
@@ -545,7 +563,7 @@ impl AppShell {
             .settings_inputs
             .proxy_password
             .read(cx)
-            .text()
+            .value()
             .to_owned();
         let password_update = if self.settings_page.clear_proxy_password {
             ProxyPasswordUpdateView::Clear
@@ -556,27 +574,39 @@ impl AppShell {
         };
         settings.download_proxy = DownloadProxySettingsView {
             mode: self.settings_page.draft_proxy_mode,
-            all_proxy: self.settings_inputs.all_proxy.read(cx).text().trim().into(),
+            all_proxy: self
+                .settings_inputs
+                .all_proxy
+                .read(cx)
+                .value()
+                .trim()
+                .into(),
             http_proxy: self
                 .settings_inputs
                 .http_proxy
                 .read(cx)
-                .text()
+                .value()
                 .trim()
                 .into(),
             https_proxy: self
                 .settings_inputs
                 .https_proxy
                 .read(cx)
-                .text()
+                .value()
                 .trim()
                 .into(),
-            ftp_proxy: self.settings_inputs.ftp_proxy.read(cx).text().trim().into(),
+            ftp_proxy: self
+                .settings_inputs
+                .ftp_proxy
+                .read(cx)
+                .value()
+                .trim()
+                .into(),
             no_proxy: self
                 .settings_inputs
                 .no_proxy
                 .read(cx)
-                .text()
+                .value()
                 .split(',')
                 .map(str::trim)
                 .filter(|entry| !entry.is_empty())
@@ -586,7 +616,7 @@ impl AppShell {
                 .settings_inputs
                 .proxy_username
                 .read(cx)
-                .text()
+                .value()
                 .trim()
                 .into(),
             has_password: match &password_update {
@@ -669,14 +699,14 @@ impl AppShell {
                 .settings_inputs
                 .download_limit
                 .read(cx)
-                .text()
+                .value()
                 .trim()
                 .into(),
             upload_limit: self
                 .settings_inputs
                 .upload_limit
                 .read(cx)
-                .text()
+                .value()
                 .trim()
                 .into(),
         }
@@ -691,22 +721,22 @@ impl AppShell {
                 .settings_inputs
                 .max_concurrent
                 .read(cx)
-                .text()
+                .value()
                 .trim()
                 .into(),
             max_connection_per_server: self
                 .settings_inputs
                 .max_connection
                 .read(cx)
-                .text()
+                .value()
                 .trim()
                 .into(),
-            split: self.settings_inputs.split.read(cx).text().trim().into(),
+            split: self.settings_inputs.split.read(cx).value().trim().into(),
             min_split_size: self
                 .settings_inputs
                 .min_split_size
                 .read(cx)
-                .text()
+                .value()
                 .trim()
                 .into(),
             file_allocation: self.settings_page.draft_file_allocation,
@@ -722,7 +752,7 @@ impl AppShell {
                 .settings_inputs
                 .tracker_custom_url
                 .read(cx)
-                .text()
+                .value()
                 .trim()
                 .into(),
             auto_refresh: self.settings_page.draft_tracker_auto_refresh,
@@ -732,26 +762,32 @@ impl AppShell {
                 .settings_inputs
                 .tracker_list_text
                 .read(cx)
-                .text()
+                .value()
                 .into(),
         }
     }
 
-    pub(crate) fn sync_tracker_list_fields_from_settings(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn sync_tracker_list_fields_from_settings(
+        &mut self,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
         let tracker = self.settings.tracker_list.clone();
         self.settings_page.draft_tracker_enabled = tracker.enabled;
         self.settings_page.draft_tracker_source = tracker.source;
         self.settings_page.draft_tracker_auto_refresh = tracker.auto_refresh;
-        self.settings_inputs
-            .tracker_custom_url
-            .update(cx, |input, cx| {
-                input.set_text(tracker.custom_url.clone(), cx);
-            });
-        self.settings_inputs
-            .tracker_list_text
-            .update(cx, |input, cx| {
-                input.set_text(tracker.list_text.clone(), cx);
-            });
+        if let Some(window) = window {
+            self.settings_inputs
+                .tracker_custom_url
+                .update(cx, |input, cx| {
+                    input.set_value(tracker.custom_url.clone(), window, cx);
+                });
+            self.settings_inputs
+                .tracker_list_text
+                .update(cx, |input, cx| {
+                    input.set_value(tracker.list_text.clone(), window, cx);
+                });
+        }
     }
 
     pub(crate) fn toggle_tracker_list_enabled(&mut self, cx: &mut Context<Self>) {
@@ -827,8 +863,8 @@ impl AppShell {
         match result {
             Ok(()) => {
                 if let Some(settings) = settings {
-                    self.apply_settings(settings, cx);
-                    self.sync_tracker_list_fields_from_settings(cx);
+                    self.apply_settings(settings, None, cx);
+                    self.sync_tracker_list_fields_from_settings(None, cx);
                 }
                 if !auto {
                     self.show_notice(
@@ -852,30 +888,42 @@ impl AppShell {
 
     /// Reflect the normalized (compact) speed-limit form back into the fields
     /// so a saved "2097152" re-renders as "2M".
-    pub(crate) fn sync_speed_limit_fields_from_settings(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn sync_speed_limit_fields_from_settings(
+        &mut self,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
         let speed_limits = self.settings.speed_limits.clone();
-        self.settings_inputs.download_limit.update(cx, |input, cx| {
-            input.set_text(speed_limits.download_limit.clone(), cx);
-        });
-        self.settings_inputs.upload_limit.update(cx, |input, cx| {
-            input.set_text(speed_limits.upload_limit.clone(), cx);
-        });
+        if let Some(window) = window {
+            self.settings_inputs.download_limit.update(cx, |input, cx| {
+                input.set_value(speed_limits.download_limit.clone(), window, cx);
+            });
+            self.settings_inputs.upload_limit.update(cx, |input, cx| {
+                input.set_value(speed_limits.upload_limit.clone(), window, cx);
+            });
+        }
     }
 
-    pub(crate) fn sync_transfer_policy_fields_from_settings(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn sync_transfer_policy_fields_from_settings(
+        &mut self,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
         let policy = self.settings.transfer_policy.clone();
-        self.settings_inputs.max_concurrent.update(cx, |input, cx| {
-            input.set_text(policy.max_concurrent_downloads.clone(), cx);
-        });
-        self.settings_inputs.max_connection.update(cx, |input, cx| {
-            input.set_text(policy.max_connection_per_server.clone(), cx);
-        });
-        self.settings_inputs.split.update(cx, |input, cx| {
-            input.set_text(policy.split.clone(), cx);
-        });
-        self.settings_inputs.min_split_size.update(cx, |input, cx| {
-            input.set_text(policy.min_split_size.clone(), cx);
-        });
+        if let Some(window) = window {
+            self.settings_inputs.max_concurrent.update(cx, |input, cx| {
+                input.set_value(policy.max_concurrent_downloads.clone(), window, cx);
+            });
+            self.settings_inputs.max_connection.update(cx, |input, cx| {
+                input.set_value(policy.max_connection_per_server.clone(), window, cx);
+            });
+            self.settings_inputs.split.update(cx, |input, cx| {
+                input.set_value(policy.split.clone(), window, cx);
+            });
+            self.settings_inputs.min_split_size.update(cx, |input, cx| {
+                input.set_value(policy.min_split_size.clone(), window, cx);
+            });
+        }
     }
 
     pub(crate) fn select_file_allocation(
@@ -1311,7 +1359,7 @@ impl AppShell {
             // Keep the edit-panel path field in sync when browsing while editing.
             if self.settings_page.draft_category_edit_index == Some(index) {
                 self.settings_inputs.directory.update(cx, |input, cx| {
-                    input.set_text(display, cx);
+                    input.set_value(display, window, cx);
                 });
             }
             if self.page == AppPage::Settings {
@@ -1325,7 +1373,7 @@ impl AppShell {
             PathPickTarget::ProfileExecutable => self.settings_inputs.profile_executable.clone(),
             PathPickTarget::CategoryDirectory { .. } => unreachable!(),
         };
-        field.update(cx, |input, cx| input.set_text(display, cx));
+        field.update(cx, |input, cx| input.set_value(display, window, cx));
         window.focus(&field.focus_handle(cx), cx);
         // Clear stale settings form error once the user picks a path.
         if self.page == AppPage::Settings {
@@ -1523,7 +1571,7 @@ impl AppShell {
                     .settings_inputs
                     .proxy_password
                     .read(cx)
-                    .text()
+                    .value()
                     .is_empty();
                 let password_cleared = self.settings_page.clear_proxy_password;
                 let proxy_has_password = if password_changed {
@@ -1535,27 +1583,39 @@ impl AppShell {
                 };
                 let proxy_draft = DownloadProxySettingsView {
                     mode: self.settings_page.draft_proxy_mode,
-                    all_proxy: self.settings_inputs.all_proxy.read(cx).text().trim().into(),
+                    all_proxy: self
+                        .settings_inputs
+                        .all_proxy
+                        .read(cx)
+                        .value()
+                        .trim()
+                        .into(),
                     http_proxy: self
                         .settings_inputs
                         .http_proxy
                         .read(cx)
-                        .text()
+                        .value()
                         .trim()
                         .into(),
                     https_proxy: self
                         .settings_inputs
                         .https_proxy
                         .read(cx)
-                        .text()
+                        .value()
                         .trim()
                         .into(),
-                    ftp_proxy: self.settings_inputs.ftp_proxy.read(cx).text().trim().into(),
+                    ftp_proxy: self
+                        .settings_inputs
+                        .ftp_proxy
+                        .read(cx)
+                        .value()
+                        .trim()
+                        .into(),
                     no_proxy: self
                         .settings_inputs
                         .no_proxy
                         .read(cx)
-                        .text()
+                        .value()
                         .split(',')
                         .map(str::trim)
                         .filter(|e| !e.is_empty())
@@ -1565,7 +1625,7 @@ impl AppShell {
                         .settings_inputs
                         .proxy_username
                         .read(cx)
-                        .text()
+                        .value()
                         .trim()
                         .into(),
                     has_password: proxy_has_password,
@@ -1705,20 +1765,20 @@ impl AppShell {
             .settings_inputs
             .category_name
             .read(cx)
-            .text()
+            .value()
             .trim()
             .to_owned();
         let extensions = self
             .settings_inputs
             .category_extensions
             .read(cx)
-            .text()
-            .to_owned();
+            .value()
+            .to_string();
         let directory = self
             .settings_inputs
             .directory
             .read(cx)
-            .text()
+            .value()
             .trim()
             .to_owned();
         let category = &mut self.settings_page.draft_categories[index];
@@ -1729,7 +1789,12 @@ impl AppShell {
         category.directory = directory;
     }
 
-    pub(crate) fn select_category_editor(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(crate) fn select_category_editor(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if index >= self.settings_page.draft_categories.len() {
             return;
         }
@@ -1737,20 +1802,20 @@ impl AppShell {
         self.settings_page.draft_category_edit_index = Some(index);
         let category = self.settings_page.draft_categories[index].clone();
         self.settings_inputs.category_name.update(cx, |input, cx| {
-            input.set_text(category.name.clone(), cx);
+            input.set_value(category.name.clone(), window, cx);
         });
         self.settings_inputs
             .category_extensions
             .update(cx, |input, cx| {
-                input.set_text(category.extensions.clone(), cx);
+                input.set_value(category.extensions.clone(), window, cx);
             });
         self.settings_inputs.directory.update(cx, |input, cx| {
-            input.set_text(category.directory.clone(), cx);
+            input.set_value(category.directory.clone(), window, cx);
         });
         cx.notify();
     }
 
-    pub(crate) fn add_download_category(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn add_download_category(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.flush_category_editor(cx);
         let n = self.settings_page.draft_categories.len() + 1;
         let name = format!("Category {n}");
@@ -1770,7 +1835,7 @@ impl AppShell {
                 is_fallback: false,
             });
         let index = self.settings_page.draft_categories.len() - 1;
-        self.select_category_editor(index, cx);
+        self.select_category_editor(index, window, cx);
     }
 
     pub(crate) fn remove_download_category(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -1984,8 +2049,8 @@ impl AppShell {
                                     ButtonStyle::Secondary
                                 })
                                 .disabled(pending)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.select_category_editor(index, cx);
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.select_category_editor(index, window, cx);
                                 }))
                                 .render(colors),
                             )
@@ -2026,12 +2091,12 @@ impl AppShell {
                                 .pt_1()
                                 .child(settings_labeled_input(
                                     self.t("settings-category-name"),
-                                    self.settings_inputs.category_name.clone(),
+                                    &self.settings_inputs.category_name,
                                     colors,
                                 ))
                                 .child(settings_labeled_input(
                                     self.t("settings-category-extensions"),
-                                    self.settings_inputs.category_extensions.clone(),
+                                    &self.settings_inputs.category_extensions,
                                     colors,
                                 ))
                                 .child(
@@ -2046,7 +2111,7 @@ impl AppShell {
                                                 .child(self.t("settings-category-directory")),
                                         )
                                         .child(settings_path_field_row(
-                                            self.settings_inputs.directory.clone(),
+                                            &self.settings_inputs.directory,
                                             "browse-category-directory",
                                             browse_label.clone(),
                                             self.t("settings-category-directory-browse-aria"),
@@ -2068,8 +2133,8 @@ impl AppShell {
                     Button::new("add-download-category", add_label)
                         .style(ButtonStyle::Secondary)
                         .disabled(pending || self.settings_page.draft_categories.len() >= 32)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.add_download_category(cx);
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.add_download_category(window, cx);
                         }))
                         .render(colors),
                 ),
@@ -2239,8 +2304,8 @@ impl AppShell {
                                 &[("name", FluentValue::from(profile.name.as_str()))],
                             ))
                             .style(ButtonStyle::Secondary)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.open_profile_editor(edit_id.clone(), cx);
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_profile_editor(edit_id.clone(), window, cx);
                             }))
                             .render(colors),
                         )
@@ -2278,7 +2343,7 @@ impl AppShell {
                         self.theme,
                     )
                     .aria_label(self.t("settings-profile-kind-aria"))
-                    .on_select(move |index, _window, cx| {
+                    .on_select(move |index, window, cx| {
                         let kind = if index == 0 {
                             ProfileKindView::LocalManaged
                         } else {
@@ -2286,7 +2351,7 @@ impl AppShell {
                         };
                         kind_shell
                             .update(cx, |shell, cx| {
-                                shell.select_profile_editor_kind(kind, cx);
+                                shell.select_profile_editor_kind(kind, window, cx);
                             })
                             .ok();
                     });
@@ -2329,7 +2394,7 @@ impl AppShell {
                                             .text_color(colors.text_muted)
                                             .child(self.t("ui-profile-name")),
                                     )
-                                    .child(self.settings_inputs.profile_name.clone()),
+                                    .child(Input::new(&self.settings_inputs.profile_name)),
                             )
                             .child(
                                 div()
@@ -2356,7 +2421,7 @@ impl AppShell {
                                             .child(self.t("settings-profile-executable-label")),
                                     )
                                     .child(settings_path_field_row(
-                                        self.settings_inputs.profile_executable.clone(),
+                                        &self.settings_inputs.profile_executable,
                                         "browse-profile-executable",
                                         self.t("button-browse"),
                                         self.t("settings-profile-executable-browse-aria"),
@@ -2388,7 +2453,9 @@ impl AppShell {
                                                     .text_color(colors.text_muted)
                                                     .child(self.t("ui-profile-endpoint")),
                                             )
-                                            .child(self.settings_inputs.profile_endpoint.clone()),
+                                            .child(Input::new(
+                                                &self.settings_inputs.profile_endpoint,
+                                            )),
                                     )
                                     .child(
                                         div()
@@ -2407,7 +2474,9 @@ impl AppShell {
                                                         self.t("settings-profile-secret-optional")
                                                     }),
                                             )
-                                            .child(self.settings_inputs.profile_secret.clone()),
+                                            .child(Input::new(
+                                                &self.settings_inputs.profile_secret,
+                                            )),
                                     )
                                     .child(
                                         Button::new(
@@ -2423,8 +2492,8 @@ impl AppShell {
                                         .aria_label(self.t("settings-profile-secret-toggle-aria"))
                                         .style(ButtonStyle::Secondary)
                                         .disabled(!has_secret && !secret_cleared)
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.toggle_clear_profile_rpc_secret(cx);
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.toggle_clear_profile_rpc_secret(window, cx);
                                         }))
                                         .render(colors),
                                     )
@@ -2442,8 +2511,8 @@ impl AppShell {
                                         )
                                         .aria_label(self.t("settings-profile-apply-aria"))
                                         .style(ButtonStyle::Primary)
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.apply_profile_editor(cx);
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.apply_profile_editor(window, cx);
                                         }))
                                         .render(colors),
                                     )
@@ -2454,8 +2523,8 @@ impl AppShell {
                                         )
                                         .aria_label(self.t("settings-profile-cancel-aria"))
                                         .style(ButtonStyle::Secondary)
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.close_profile_editor(cx);
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.close_profile_editor(window, cx);
                                         }))
                                         .render(colors),
                                     ),
@@ -2473,8 +2542,8 @@ impl AppShell {
                         Button::new("add-local-profile", self.t("settings-profile-add-local"))
                             .aria_label(self.t("settings-profile-add-local-aria"))
                             .style(ButtonStyle::Secondary)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.add_draft_local_profile(cx);
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.add_draft_local_profile(window, cx);
                             }))
                             .render(colors),
                     )
@@ -2482,8 +2551,8 @@ impl AppShell {
                         Button::new("add-remote-profile", self.t("settings-profile-add-remote"))
                             .aria_label(self.t("settings-profile-add-remote-aria"))
                             .style(ButtonStyle::Secondary)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.add_draft_remote_profile(cx);
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.add_draft_remote_profile(window, cx);
                             }))
                             .render(colors),
                     )
@@ -2829,7 +2898,7 @@ impl AppShell {
             .settings_inputs
             .proxy_password
             .read(cx)
-            .text()
+            .value()
             .is_empty();
         let password_cleared = self.settings_page.clear_proxy_password;
         let proxy_has_password = if password_changed {
@@ -2841,27 +2910,39 @@ impl AppShell {
         };
         let proxy_draft = DownloadProxySettingsView {
             mode: self.settings_page.draft_proxy_mode,
-            all_proxy: self.settings_inputs.all_proxy.read(cx).text().trim().into(),
+            all_proxy: self
+                .settings_inputs
+                .all_proxy
+                .read(cx)
+                .value()
+                .trim()
+                .into(),
             http_proxy: self
                 .settings_inputs
                 .http_proxy
                 .read(cx)
-                .text()
+                .value()
                 .trim()
                 .into(),
             https_proxy: self
                 .settings_inputs
                 .https_proxy
                 .read(cx)
-                .text()
+                .value()
                 .trim()
                 .into(),
-            ftp_proxy: self.settings_inputs.ftp_proxy.read(cx).text().trim().into(),
+            ftp_proxy: self
+                .settings_inputs
+                .ftp_proxy
+                .read(cx)
+                .value()
+                .trim()
+                .into(),
             no_proxy: self
                 .settings_inputs
                 .no_proxy
                 .read(cx)
-                .text()
+                .value()
                 .split(',')
                 .map(str::trim)
                 .filter(|entry| !entry.is_empty())
@@ -2871,7 +2952,7 @@ impl AppShell {
                 .settings_inputs
                 .proxy_username
                 .read(cx)
-                .text()
+                .value()
                 .trim()
                 .into(),
             has_password: proxy_has_password,
@@ -2956,7 +3037,7 @@ impl AppShell {
                         .gap_3()
                         .child(settings_labeled_input(
                             self.t("settings-proxy-all"),
-                            self.settings_inputs.all_proxy.clone(),
+                            &self.settings_inputs.all_proxy,
                             colors,
                         ))
                         .child(
@@ -2966,7 +3047,7 @@ impl AppShell {
                                 .child(
                                     settings_labeled_input(
                                         self.t("settings-proxy-http"),
-                                        self.settings_inputs.http_proxy.clone(),
+                                        &self.settings_inputs.http_proxy,
                                         colors,
                                     )
                                     .flex_1()
@@ -2975,7 +3056,7 @@ impl AppShell {
                                 .child(
                                     settings_labeled_input(
                                         self.t("settings-proxy-https"),
-                                        self.settings_inputs.https_proxy.clone(),
+                                        &self.settings_inputs.https_proxy,
                                         colors,
                                     )
                                     .flex_1()
@@ -2984,12 +3065,12 @@ impl AppShell {
                         )
                         .child(settings_labeled_input(
                             self.t("settings-proxy-ftp"),
-                            self.settings_inputs.ftp_proxy.clone(),
+                            &self.settings_inputs.ftp_proxy,
                             colors,
                         ))
                         .child(settings_labeled_input(
                             self.t("settings-proxy-bypass"),
-                            self.settings_inputs.no_proxy.clone(),
+                            &self.settings_inputs.no_proxy,
                             colors,
                         ))
                         .child(
@@ -3000,7 +3081,7 @@ impl AppShell {
                                 .child(
                                     settings_labeled_input(
                                         self.t("settings-proxy-username"),
-                                        self.settings_inputs.proxy_username.clone(),
+                                        &self.settings_inputs.proxy_username,
                                         colors,
                                     )
                                     .flex_1()
@@ -3009,7 +3090,7 @@ impl AppShell {
                                 .child(
                                     settings_labeled_input(
                                         self.t("settings-proxy-password"),
-                                        self.settings_inputs.proxy_password.clone(),
+                                        &self.settings_inputs.proxy_password,
                                         colors,
                                     )
                                     .flex_1()
@@ -3024,8 +3105,8 @@ impl AppShell {
                                         .aria_label(password_button_label.clone())
                                         .disabled(pending)
                                         .tooltip(Tooltip::new(password_button_label.clone()))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.clear_saved_proxy_password(cx);
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.clear_saved_proxy_password(window, cx);
                                         }))
                                         .render(colors),
                                     )
@@ -3066,8 +3147,8 @@ impl AppShell {
                                 .aria_label(password_button_label.clone())
                                 .disabled(pending)
                                 .tooltip(Tooltip::new(password_button_label.clone()))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.clear_saved_proxy_password(cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.clear_saved_proxy_password(window, cx);
                                 }))
                                 .render(colors),
                             ),
@@ -3124,7 +3205,7 @@ impl AppShell {
                         .child(
                             settings_labeled_input(
                                 self.t("settings-download-limit"),
-                                self.settings_inputs.download_limit.clone(),
+                                &self.settings_inputs.download_limit,
                                 colors,
                             )
                             .flex_1()
@@ -3133,7 +3214,7 @@ impl AppShell {
                         .child(
                             settings_labeled_input(
                                 self.t("settings-upload-limit"),
-                                self.settings_inputs.upload_limit.clone(),
+                                &self.settings_inputs.upload_limit,
                                 colors,
                             )
                             .flex_1()
@@ -3156,7 +3237,7 @@ impl AppShell {
                                 .child(
                                     settings_labeled_input(
                                         self.t("settings-max-concurrent"),
-                                        self.settings_inputs.max_concurrent.clone(),
+                                        &self.settings_inputs.max_concurrent,
                                         colors,
                                     )
                                     .flex_1()
@@ -3165,7 +3246,7 @@ impl AppShell {
                                 .child(
                                     settings_labeled_input(
                                         self.t("settings-connections-per-server"),
-                                        self.settings_inputs.max_connection.clone(),
+                                        &self.settings_inputs.max_connection,
                                         colors,
                                     )
                                     .flex_1()
@@ -3179,7 +3260,7 @@ impl AppShell {
                                 .child(
                                     settings_labeled_input(
                                         self.t("settings-split"),
-                                        self.settings_inputs.split.clone(),
+                                        &self.settings_inputs.split,
                                         colors,
                                     )
                                     .flex_1()
@@ -3188,7 +3269,7 @@ impl AppShell {
                                 .child(
                                     settings_labeled_input(
                                         self.t("settings-min-split-size"),
-                                        self.settings_inputs.min_split_size.clone(),
+                                        &self.settings_inputs.min_split_size,
                                         colors,
                                     )
                                     .flex_1()
@@ -3244,7 +3325,7 @@ impl AppShell {
             .settings_inputs
             .tracker_list_text
             .read(cx)
-            .text()
+            .value()
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
@@ -3308,7 +3389,7 @@ impl AppShell {
                 .when(custom, |section| {
                     section.child(settings_labeled_input(
                         self.t("settings-tracker-custom-url"),
-                        self.settings_inputs.tracker_custom_url.clone(),
+                        &self.settings_inputs.tracker_custom_url,
                         colors,
                     ))
                 })
@@ -3364,7 +3445,7 @@ impl AppShell {
                 )
                 .child(settings_labeled_input(
                     self.t("settings-tracker-list-text"),
-                    self.settings_inputs.tracker_list_text.clone(),
+                    &self.settings_inputs.tracker_list_text,
                     colors,
                 ))
                 .child(

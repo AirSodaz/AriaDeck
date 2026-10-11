@@ -218,7 +218,7 @@ impl AppShell {
                             .child(self.t("core-setup-manual-description")),
                     )
                     .child(settings_path_field_row(
-                        self.settings_inputs.core_path.clone(),
+                        &self.settings_inputs.core_path,
                         SharedString::from(format!("{id_prefix}-browse-core-path")),
                         self.t("button-browse"),
                         self.t("settings-core-browse-aria"),

@@ -39,22 +39,23 @@ use crate::{
     ProfileCatalogView, ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView,
     ProxyModeView, ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask,
     RetrySelectedTask, SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView,
-    SaveProfileCatalogResultView, SaveSettings, SearchInputEvent, SecretStringView, Segment,
-    SegmentedControl, SelectAllTasks, SelectNextTask, SelectPreviousTask,
-    SettingsExportOutcomeView, SettingsExportRequestView, SettingsExportResultView,
-    SettingsImportOutcomeView, SettingsImportRequestView, SettingsImportResultView,
-    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    SpeedLimitSettingsView, SpeedSampleView, StatusIndicator, SubmitAddDownload, SubmitTaskOptions,
-    SubmitTaskOutputName, SubmitTaskSpeedLimit, SwitchProfileOutcomeView, SwitchProfileRequestView,
+    SaveProfileCatalogResultView, SaveSettings, SecretStringView, Segment, SegmentedControl,
+    SelectAllTasks, SelectNextTask, SelectPreviousTask, SettingsExportOutcomeView,
+    SettingsExportRequestView, SettingsExportResultView, SettingsImportOutcomeView,
+    SettingsImportRequestView, SettingsImportResultView, SettingsSaveOutcomeView,
+    SettingsSaveRequestView, SettingsSaveResultView, SettingsView, SpeedLimitSettingsView,
+    SpeedSampleView, StatusIndicator, SubmitAddDownload, SubmitTaskOptions, SubmitTaskOutputName,
+    SubmitTaskSpeedLimit, SwitchProfileOutcomeView, SwitchProfileRequestView,
     SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
     TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
     TaskFileView, TaskIdentity, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
-    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskStatusView, TextField,
-    TextFieldConfig, Theme, ThemeMode, Toast, ToastKind, Toggle, Tooltip, TrackerListSettingsView,
-    TrackerListSourceView, TransferPolicySettingsView, Translator, WorkspaceFilter, WorkspaceQuery,
-    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, actions::TEXT_FIELD_KEY_CONTEXT,
-    format_bytes, format_eta, format_percent, format_rate, format_share_ratio,
+    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskStatusView, Theme, ThemeMode,
+    Toast, ToastKind, Toggle, Tooltip, TrackerListSettingsView, TrackerListSourceView,
+    TransferPolicySettingsView, Translator, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
+    WorkspaceSortDirection, WorkspaceSortKey, format_bytes, format_eta, format_percent,
+    format_rate, format_share_ratio,
 };
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 
 #[cfg(test)]
 use crate::{TaskPeerView, TaskServerView, TaskTrackerView, TaskUriView};
@@ -248,7 +249,6 @@ struct AddDownloadDialog {
     pending: Option<PendingAddDownload>,
     error: Option<OperationErrorView>,
     results: Vec<AddDownloadItemResultView>,
-    updating_input_from_result: bool,
 }
 
 struct PendingTaskCommand {
@@ -523,12 +523,6 @@ struct TaskOptionsDialog {
     error: Option<OperationErrorView>,
 }
 
-/// Right-click menu for one focused task row (D-024).
-struct TextFieldContextMenuState {
-    field: Entity<TextField>,
-    position: Point<Pixels>,
-}
-
 struct TaskContextMenu {
     identity: TaskIdentity,
     position: Point<Pixels>,
@@ -540,35 +534,36 @@ struct BatchFailureDetails {
     previous_focus: Option<WeakFocusHandle>,
 }
 
-/// Settings-page TextField entities, grouped for navigation and theme updates.
+/// Settings-page InputState entities, grouped for navigation and theme updates.
 pub(crate) struct SettingsInputs {
-    pub(crate) directory: Entity<TextField>,
-    pub(crate) core_path: Entity<TextField>,
-    pub(crate) profile_name: Entity<TextField>,
-    pub(crate) profile_executable: Entity<TextField>,
-    pub(crate) profile_endpoint: Entity<TextField>,
-    pub(crate) profile_secret: Entity<TextField>,
-    pub(crate) all_proxy: Entity<TextField>,
-    pub(crate) http_proxy: Entity<TextField>,
-    pub(crate) https_proxy: Entity<TextField>,
-    pub(crate) ftp_proxy: Entity<TextField>,
-    pub(crate) no_proxy: Entity<TextField>,
-    pub(crate) proxy_username: Entity<TextField>,
-    pub(crate) proxy_password: Entity<TextField>,
-    pub(crate) download_limit: Entity<TextField>,
-    pub(crate) upload_limit: Entity<TextField>,
-    pub(crate) max_concurrent: Entity<TextField>,
-    pub(crate) max_connection: Entity<TextField>,
-    pub(crate) split: Entity<TextField>,
-    pub(crate) min_split_size: Entity<TextField>,
-    pub(crate) tracker_custom_url: Entity<TextField>,
-    pub(crate) tracker_list_text: Entity<TextField>,
-    pub(crate) category_name: Entity<TextField>,
-    pub(crate) category_extensions: Entity<TextField>,
+    pub(crate) directory: Entity<InputState>,
+    pub(crate) core_path: Entity<InputState>,
+    pub(crate) profile_name: Entity<InputState>,
+    pub(crate) profile_executable: Entity<InputState>,
+    pub(crate) profile_endpoint: Entity<InputState>,
+    pub(crate) profile_secret: Entity<InputState>,
+    pub(crate) all_proxy: Entity<InputState>,
+    pub(crate) http_proxy: Entity<InputState>,
+    pub(crate) https_proxy: Entity<InputState>,
+    pub(crate) ftp_proxy: Entity<InputState>,
+    pub(crate) no_proxy: Entity<InputState>,
+    pub(crate) proxy_username: Entity<InputState>,
+    pub(crate) proxy_password: Entity<InputState>,
+    pub(crate) download_limit: Entity<InputState>,
+    pub(crate) upload_limit: Entity<InputState>,
+    pub(crate) max_concurrent: Entity<InputState>,
+    pub(crate) max_connection: Entity<InputState>,
+    pub(crate) split: Entity<InputState>,
+    pub(crate) min_split_size: Entity<InputState>,
+    pub(crate) tracker_custom_url: Entity<InputState>,
+    pub(crate) tracker_list_text: Entity<InputState>,
+    pub(crate) category_name: Entity<InputState>,
+    pub(crate) category_extensions: Entity<InputState>,
 }
 
+#[allow(dead_code)]
 impl SettingsInputs {
-    pub(crate) fn all(&self) -> [&Entity<TextField>; 23] {
+    pub(crate) fn all(&self) -> [&Entity<InputState>; 23] {
         [
             &self.directory,
             &self.core_path,
@@ -597,19 +592,20 @@ impl SettingsInputs {
     }
 }
 
-/// Add-download advanced option TextField entities.
+/// Add-download advanced option InputState entities.
 pub(crate) struct AddInputs {
-    pub(crate) referer: Entity<TextField>,
-    pub(crate) user_agent: Entity<TextField>,
-    pub(crate) headers: Entity<TextField>,
-    pub(crate) cookie: Entity<TextField>,
-    pub(crate) http_user: Entity<TextField>,
-    pub(crate) http_passwd: Entity<TextField>,
-    pub(crate) checksum: Entity<TextField>,
+    pub(crate) referer: Entity<InputState>,
+    pub(crate) user_agent: Entity<InputState>,
+    pub(crate) headers: Entity<InputState>,
+    pub(crate) cookie: Entity<InputState>,
+    pub(crate) http_user: Entity<InputState>,
+    pub(crate) http_passwd: Entity<InputState>,
+    pub(crate) checksum: Entity<InputState>,
 }
 
+#[allow(dead_code)]
 impl AddInputs {
-    pub(crate) fn all(&self) -> [&Entity<TextField>; 7] {
+    pub(crate) fn all(&self) -> [&Entity<InputState>; 7] {
         [
             &self.referer,
             &self.user_agent,
@@ -622,16 +618,17 @@ impl AddInputs {
     }
 }
 
-/// Per-task dialog TextField entities.
+/// Per-task dialog InputState entities.
 pub(crate) struct TaskInputs {
-    pub(crate) download_limit: Entity<TextField>,
-    pub(crate) upload_limit: Entity<TextField>,
-    pub(crate) seed_ratio: Entity<TextField>,
-    pub(crate) seed_time: Entity<TextField>,
+    pub(crate) download_limit: Entity<InputState>,
+    pub(crate) upload_limit: Entity<InputState>,
+    pub(crate) seed_ratio: Entity<InputState>,
+    pub(crate) seed_time: Entity<InputState>,
 }
 
+#[allow(dead_code)]
 impl TaskInputs {
-    pub(crate) fn all(&self) -> [&Entity<TextField>; 4] {
+    pub(crate) fn all(&self) -> [&Entity<InputState>; 4] {
         [
             &self.download_limit,
             &self.upload_limit,
@@ -655,10 +652,10 @@ pub struct AppShell {
     selected: Option<TaskIdentity>,
     selected_tasks: HashSet<TaskIdentity>,
     range_anchor: Option<TaskIdentity>,
-    search_input: Entity<TextField>,
-    add_input: Entity<TextField>,
+    search_input: Entity<InputState>,
+    add_input: Entity<TextareaState>,
     add_inputs: AddInputs,
-    output_name_input: Entity<TextField>,
+    output_name_input: Entity<InputState>,
     settings_inputs: SettingsInputs,
     add_dialog: AddDownloadDialog,
     add_dialog_focus: FocusHandle,
@@ -704,7 +701,6 @@ pub struct AppShell {
     speed_popover_previous_focus: Option<WeakFocusHandle>,
     sort_popover_open: bool,
     context_menu: Option<TaskContextMenu>,
-    text_field_context_menu: Option<TextFieldContextMenuState>,
     status_notice: Option<StatusNotice>,
     next_notice_id: u64,
     activity_log: Vec<ActivityEntryView>,
@@ -771,50 +767,36 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search_input = cx.new(|cx| TextField::new("Search downloads or GID", theme, cx));
+        if !cx.has_global::<gpui_kit::component::Theme>() {
+            gpui_kit::init(cx);
+        }
+        theme.sync_to_kit(Some(window), cx);
+
+        let search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search downloads or GID"));
         let search_subscription = cx.subscribe(
             &search_input,
-            |this: &mut Self, input, event: &SearchInputEvent, cx| {
-                this.handle_text_field_event(input, event, cx);
-                if let SearchInputEvent::TextChanged { text, .. } = event
-                    && this.query.search != *text
-                {
-                    this.query.search.clone_from(text);
-                    this.sort_popover_open = false;
-                    this.clear_task_selection();
-                    this.emit_query(cx);
+            |this: &mut Self, input, event: &InputEvent, cx| {
+                if let InputEvent::Change = event {
+                    let text = input.read(cx).value().to_string();
+                    if this.query.search != text {
+                        this.query.search = text;
+                        this.sort_popover_open = false;
+                        this.clear_task_selection();
+                        this.emit_query(cx);
+                    }
                 }
             },
         );
-        let add_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "add-download-uri".into(),
-                    key_context: "AddDownloadInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "Download URLs or magnet links".into(),
-                    placeholder: "Paste one or more URLs".into(),
-                    leading_icon: Some(IconName::Link),
-                    clearable: true,
-                    allow_newlines: true,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
+        let add_input =
+            cx.new(|cx| TextareaState::new(window, cx).placeholder("Paste one or more URLs"));
         let add_subscription = cx.subscribe(
             &add_input,
-            |this: &mut Self, input, event: &SearchInputEvent, cx| {
-                this.handle_text_field_event(input, event, cx);
-                if let SearchInputEvent::TextChanged { .. } = event
+            |this: &mut Self, _input, event: &InputEvent, cx| {
+                if let InputEvent::Change = event
                     && this.add_dialog.open
                     && this.add_dialog.pending.is_none()
                 {
-                    if this.add_dialog.updating_input_from_result {
-                        this.add_dialog.updating_input_from_result = false;
-                        return;
-                    }
                     let changed = this.add_dialog.error.take().is_some()
                         || !this.add_dialog.results.is_empty();
                     this.add_dialog.results.clear();
@@ -824,125 +806,28 @@ impl AppShell {
                 }
             },
         );
-        let add_referer_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "add-download-referer".into(),
-                    key_context: "AddDownloadAdvancedInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "Download referer".into(),
-                    placeholder: "https://example.test/page".into(),
-                    leading_icon: Some(IconName::Link),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
-        let add_user_agent_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "add-download-user-agent".into(),
-                    key_context: "AddDownloadAdvancedInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "Download user agent".into(),
-                    placeholder: "Optional User-Agent".into(),
-                    leading_icon: Some(IconName::Info),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
-        let add_headers_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "add-download-headers".into(),
-                    key_context: "AddDownloadAdvancedInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "Custom download headers".into(),
-                    placeholder: "One Name: value header per line".into(),
-                    leading_icon: Some(IconName::List),
-                    clearable: true,
-                    allow_newlines: true,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
-        let add_cookie_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "add-download-cookie".into(),
-                    key_context: "AddDownloadAdvancedInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "Download cookie".into(),
-                    placeholder: "session=…".into(),
-                    leading_icon: Some(IconName::Info),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: true,
-                },
-                theme,
-                cx,
-            )
-        });
-        let add_http_user_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "add-download-http-user".into(),
-                    key_context: "AddDownloadAdvancedInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "HTTP authentication username".into(),
-                    placeholder: "username".into(),
-                    leading_icon: Some(IconName::Pencil),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
-        let add_http_passwd_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "add-download-http-passwd".into(),
-                    key_context: "AddDownloadAdvancedInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "HTTP authentication password".into(),
-                    placeholder: "password".into(),
-                    leading_icon: Some(IconName::CircleAlert),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: true,
-                },
-                theme,
-                cx,
-            )
-        });
-        let add_checksum_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "add-download-checksum".into(),
-                    key_context: "AddDownloadAdvancedInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "Download checksum".into(),
-                    placeholder: "sha-256=…".into(),
-                    leading_icon: Some(IconName::ScanSearch),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
+
+        let make_input = |placeholder: &'static str,
+                          masked: bool,
+                          window: &mut Window,
+                          cx: &mut Context<Self>| {
+            cx.new(|cx| {
+                let mut state = InputState::new(window, cx).placeholder(placeholder);
+                if masked {
+                    state = state.masked(true);
+                }
+                state
+            })
+        };
+
+        let add_referer_input = make_input("https://example.test/page", false, window, cx);
+        let add_user_agent_input = make_input("Optional User-Agent", false, window, cx);
+        let add_headers_input = make_input("One Name: value header per line", false, window, cx);
+        let add_cookie_input = make_input("session=…", true, window, cx);
+        let add_http_user_input = make_input("username", false, window, cx);
+        let add_http_passwd_input = make_input("password", true, window, cx);
+        let add_checksum_input = make_input("sha-256=…", false, window, cx);
+
         let add_advanced_subscriptions = [
             &add_referer_input,
             &add_user_agent_input,
@@ -953,47 +838,23 @@ impl AppShell {
             &add_checksum_input,
         ]
         .map(|input| {
-            cx.subscribe(
-                input,
-                |this: &mut Self, input, event: &SearchInputEvent, cx| {
-                    this.handle_text_field_event(input, event, cx);
-                    let SearchInputEvent::TextChanged { .. } = event else {
-                        return;
-                    };
-                    if this.add_dialog.open
-                        && this.add_dialog.pending.is_none()
-                        && this.add_dialog.error.take().is_some()
-                    {
-                        cx.notify();
-                    }
-                },
-            )
+            cx.subscribe(input, |this: &mut Self, _input, event: &InputEvent, cx| {
+                if let InputEvent::Change = event
+                    && this.add_dialog.open
+                    && this.add_dialog.pending.is_none()
+                    && this.add_dialog.error.take().is_some()
+                {
+                    cx.notify();
+                }
+            })
         });
-        let output_name_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "task-output-name".into(),
-                    key_context: "OutputNameInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "Task output filename".into(),
-                    placeholder: "archive.iso".into(),
-                    leading_icon: Some(IconName::Pencil),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
+
+        let output_name_input = make_input("archive.iso", false, window, cx);
         let output_name_subscription = cx.subscribe(
             &output_name_input,
-            |this: &mut Self, input, event: &SearchInputEvent, cx| {
-                this.handle_text_field_event(input, event, cx);
-                let SearchInputEvent::TextChanged { .. } = event else {
-                    return;
-                };
-                if let Some(dialog) = &mut this.output_name_dialog
+            |this: &mut Self, _input, event: &InputEvent, cx| {
+                if let InputEvent::Change = event
+                    && let Some(dialog) = &mut this.output_name_dialog
                     && this.pending_task_command.is_none()
                     && dialog.error.take().is_some()
                 {
@@ -1001,431 +862,82 @@ impl AppShell {
                 }
             },
         );
-        let task_download_limit_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "task-download-limit".into(),
-                    key_context: "TaskSpeedLimitInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "Task maximum download speed".into(),
-                    placeholder: "Unlimited (e.g. 2M, 512K)".into(),
-                    leading_icon: Some(IconName::ArrowDown),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
-        let task_upload_limit_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "task-upload-limit".into(),
-                    key_context: "TaskSpeedLimitInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "Task maximum upload speed".into(),
-                    placeholder: "Unlimited (e.g. 1M, 256K)".into(),
-                    leading_icon: Some(IconName::ArrowUp),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
+
+        let task_download_limit_input = make_input("Unlimited (e.g. 2M, 512K)", false, window, cx);
+        let task_upload_limit_input = make_input("Unlimited (e.g. 1M, 256K)", false, window, cx);
         let task_speed_limit_subscriptions = [&task_download_limit_input, &task_upload_limit_input]
             .map(|input| {
-                cx.subscribe(
-                    input,
-                    |this: &mut Self, input, event: &SearchInputEvent, cx| {
-                        this.handle_text_field_event(input, event, cx);
-                        let SearchInputEvent::TextChanged { .. } = event else {
-                            return;
-                        };
-                        if let Some(dialog) = &mut this.task_speed_limit_dialog
-                            && this.pending_task_command.is_none()
-                            && dialog.error.take().is_some()
-                        {
-                            cx.notify();
-                        }
-                    },
-                )
+                cx.subscribe(input, |this: &mut Self, _input, event: &InputEvent, cx| {
+                    if let InputEvent::Change = event
+                        && let Some(dialog) = &mut this.task_speed_limit_dialog
+                        && this.pending_task_command.is_none()
+                        && dialog.error.take().is_some()
+                    {
+                        cx.notify();
+                    }
+                })
             });
-        let task_seed_ratio_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "task-seed-ratio".into(),
-                    key_context: "TaskOptionsInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "BitTorrent seed ratio".into(),
-                    placeholder: "e.g. 1.0 or 0 to disable".into(),
-                    leading_icon: Some(IconName::Activity),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
-        let task_seed_time_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "task-seed-time".into(),
-                    key_context: "TaskOptionsInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "BitTorrent seed time in minutes".into(),
-                    placeholder: "Minutes (e.g. 60)".into(),
-                    leading_icon: Some(IconName::Clock3),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
+
+        let task_seed_ratio_input = make_input("e.g. 1.0 or 0 to disable", false, window, cx);
+        let task_seed_time_input = make_input("Minutes (e.g. 60)", false, window, cx);
         let task_options_subscriptions =
             [&task_seed_ratio_input, &task_seed_time_input].map(|input| {
-                cx.subscribe(
-                    input,
-                    |this: &mut Self, input, event: &SearchInputEvent, cx| {
-                        this.handle_text_field_event(input, event, cx);
-                        let SearchInputEvent::TextChanged { .. } = event else {
-                            return;
-                        };
-                        if let Some(dialog) = &mut this.task_options_dialog
-                            && this.pending_task_command.is_none()
-                            && dialog.error.take().is_some()
-                        {
-                            cx.notify();
-                        }
-                    },
-                )
-            });
-        let settings_directory_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "settings-download-directory".into(),
-                    key_context: "SettingsCategoryDirectoryInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "Default download directory".into(),
-                    placeholder: "D:\\Downloads".into(),
-                    leading_icon: Some(IconName::FolderDown),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
-        let settings_core_path_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "settings-core-path".into(),
-                    key_context: "SettingsCorePathInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "Path to aria2c executable to import or link".into(),
-                    placeholder: if cfg!(windows) {
-                        "C:\\path\\to\\aria2c.exe"
-                    } else {
-                        "/usr/bin/aria2c"
+                cx.subscribe(input, |this: &mut Self, _input, event: &InputEvent, cx| {
+                    if let InputEvent::Change = event
+                        && let Some(dialog) = &mut this.task_options_dialog
+                        && this.pending_task_command.is_none()
+                        && dialog.error.take().is_some()
+                    {
+                        cx.notify();
                     }
-                    .into(),
-                    leading_icon: Some(IconName::FolderDown),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
-        let settings_profile_name_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "settings-profile-name".into(),
-                    key_context: "SettingsProfileNameInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "Profile display name".into(),
-                    placeholder: "Local aria2".into(),
-                    leading_icon: Some(IconName::Pencil),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
-        let settings_profile_executable_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "settings-profile-executable".into(),
-                    key_context: "SettingsProfileExecutableInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "Optional pinned aria2c path for this local profile"
-                        .into(),
-                    placeholder: "Leave empty to use the active managed core".into(),
-                    leading_icon: Some(IconName::FolderDown),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
-        let settings_profile_endpoint_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "settings-profile-endpoint".into(),
-                    key_context: "SettingsProfileEndpointInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "Remote aria2 WebSocket endpoint".into(),
-                    placeholder: "wss://host:6800/jsonrpc".into(),
-                    leading_icon: Some(IconName::Link),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: false,
-                },
-                theme,
-                cx,
-            )
-        });
-        let settings_profile_secret_input = cx.new(|cx| {
-            TextField::new_with_config(
-                TextFieldConfig {
-                    element_id: "settings-profile-secret".into(),
-                    key_context: "SettingsProfileSecretInput".into(),
-                    role: Role::TextInput,
-                    accessibility_label: "Remote aria2 RPC secret".into(),
-                    placeholder: "Leave blank to keep the saved secret".into(),
-                    leading_icon: Some(IconName::Wifi),
-                    clearable: true,
-                    allow_newlines: false,
-                    secure: true,
-                },
-                theme,
-                cx,
-            )
-        });
-        let settings_all_proxy_input = cx.new(|cx| {
-            TextField::new_with_config(
-                settings_input_config(
-                    "settings-all-proxy",
-                    "All-protocol proxy",
-                    "http://proxy.example:8080",
-                    Some(IconName::Wifi),
-                    false,
-                ),
-                theme,
-                cx,
-            )
-        });
-        let settings_http_proxy_input = cx.new(|cx| {
-            TextField::new_with_config(
-                settings_input_config(
-                    "settings-http-proxy",
-                    "HTTP proxy",
-                    "http://proxy.example:8080",
-                    Some(IconName::Link),
-                    false,
-                ),
-                theme,
-                cx,
-            )
-        });
-        let settings_https_proxy_input = cx.new(|cx| {
-            TextField::new_with_config(
-                settings_input_config(
-                    "settings-https-proxy",
-                    "HTTPS proxy",
-                    "http://proxy.example:8080",
-                    Some(IconName::Link),
-                    false,
-                ),
-                theme,
-                cx,
-            )
-        });
-        let settings_ftp_proxy_input = cx.new(|cx| {
-            TextField::new_with_config(
-                settings_input_config(
-                    "settings-ftp-proxy",
-                    "FTP proxy",
-                    "http://proxy.example:8080",
-                    Some(IconName::Link),
-                    false,
-                ),
-                theme,
-                cx,
-            )
-        });
-        let settings_no_proxy_input = cx.new(|cx| {
-            TextField::new_with_config(
-                settings_input_config(
-                    "settings-no-proxy",
-                    "Hosts that bypass the proxy",
-                    "localhost, 127.0.0.1, 10.0.0.0/8",
-                    Some(IconName::WifiOff),
-                    false,
-                ),
-                theme,
-                cx,
-            )
-        });
-        let settings_proxy_username_input = cx.new(|cx| {
-            TextField::new_with_config(
-                settings_input_config(
-                    "settings-proxy-username",
-                    "Proxy username",
-                    "Optional username",
-                    None,
-                    false,
-                ),
-                theme,
-                cx,
-            )
-        });
-        let settings_proxy_password_input = cx.new(|cx| {
-            TextField::new_with_config(
-                settings_input_config(
-                    "settings-proxy-password",
-                    "Proxy password",
-                    "Optional password or replacement",
-                    None,
-                    true,
-                ),
-                theme,
-                cx,
-            )
-        });
-        let settings_download_limit_input = cx.new(|cx| {
-            TextField::new_with_config(
-                settings_input_config(
-                    "settings-download-limit",
-                    "Maximum download speed",
-                    "Unlimited (e.g. 2M, 512K)",
-                    Some(IconName::ArrowDown),
-                    false,
-                ),
-                theme,
-                cx,
-            )
-        });
-        let settings_upload_limit_input = cx.new(|cx| {
-            TextField::new_with_config(
-                settings_input_config(
-                    "settings-upload-limit",
-                    "Maximum upload speed",
-                    "Unlimited (e.g. 1M, 256K)",
-                    Some(IconName::ArrowUp),
-                    false,
-                ),
-                theme,
-                cx,
-            )
-        });
-        let settings_max_concurrent_input = cx.new(|cx| {
-            TextField::new_with_config(
-                settings_input_config(
-                    "settings-max-concurrent",
-                    "Maximum concurrent downloads",
-                    "5",
-                    None,
-                    false,
-                ),
-                theme,
-                cx,
-            )
-        });
-        let settings_max_connection_input = cx.new(|cx| {
-            TextField::new_with_config(
-                settings_input_config(
-                    "settings-max-connection",
-                    "Maximum connections per server",
-                    "1-16",
-                    None,
-                    false,
-                ),
-                theme,
-                cx,
-            )
-        });
-        let settings_split_input = cx.new(|cx| {
-            TextField::new_with_config(
-                settings_input_config("settings-split", "Split count", "5", None, false),
-                theme,
-                cx,
-            )
-        });
-        let settings_min_split_size_input = cx.new(|cx| {
-            TextField::new_with_config(
-                settings_input_config(
-                    "settings-min-split-size",
-                    "Minimum split size",
-                    "20M",
-                    None,
-                    false,
-                ),
-                theme,
-                cx,
-            )
-        });
-        let settings_tracker_custom_url_input = cx.new(|cx| {
-            TextField::new_with_config(
-                settings_input_config(
-                    "settings-tracker-custom-url",
-                    "Custom tracker list URL",
-                    "https://example.com/trackers.txt",
-                    None,
-                    false,
-                ),
-                theme,
-                cx,
-            )
-        });
-        let settings_tracker_list_text_input = cx.new(|cx| {
-            let mut config = settings_input_config(
-                "settings-tracker-list-text",
-                "Tracker list",
-                "https://tracker.example/announce",
-                None,
-                false,
-            );
-            config.allow_newlines = true;
-            TextField::new_with_config(config, theme, cx)
-        });
-        let settings_category_name_input = cx.new(|cx| {
-            TextField::new_with_config(
-                settings_input_config(
-                    "settings-category-name",
-                    "Category name",
-                    "General",
-                    None,
-                    false,
-                ),
-                theme,
-                cx,
-            )
-        });
-        let settings_category_extensions_input = cx.new(|cx| {
-            TextField::new_with_config(
-                settings_input_config(
-                    "settings-category-extensions",
-                    "Extensions",
-                    "mp4, mkv, zip",
-                    None,
-                    false,
-                ),
-                theme,
-                cx,
-            )
-        });
+                })
+            });
+
+        let settings_directory_input = make_input("D:\\Downloads", false, window, cx);
+        let settings_core_path_input = make_input(
+            if cfg!(windows) {
+                "C:\\path\\to\\aria2c.exe"
+            } else {
+                "/usr/bin/aria2c"
+            },
+            false,
+            window,
+            cx,
+        );
+        let settings_profile_name_input = make_input("Local aria2", false, window, cx);
+        let settings_profile_executable_input = make_input(
+            "Leave empty to use the active managed core",
+            false,
+            window,
+            cx,
+        );
+        let settings_profile_endpoint_input =
+            make_input("wss://host:6800/jsonrpc", false, window, cx);
+        let settings_profile_secret_input =
+            make_input("Leave blank to keep the saved secret", true, window, cx);
+        let settings_all_proxy_input = make_input("http://proxy.example:8080", false, window, cx);
+        let settings_http_proxy_input = make_input("http://proxy.example:8080", false, window, cx);
+        let settings_https_proxy_input = make_input("http://proxy.example:8080", false, window, cx);
+        let settings_ftp_proxy_input = make_input("http://proxy.example:8080", false, window, cx);
+        let settings_no_proxy_input =
+            make_input("localhost, 127.0.0.1, 10.0.0.0/8", false, window, cx);
+        let settings_proxy_username_input = make_input("Optional username", false, window, cx);
+        let settings_proxy_password_input =
+            make_input("Optional password or replacement", true, window, cx);
+        let settings_download_limit_input =
+            make_input("Unlimited (e.g. 2M, 512K)", false, window, cx);
+        let settings_upload_limit_input =
+            make_input("Unlimited (e.g. 1M, 256K)", false, window, cx);
+        let settings_max_concurrent_input = make_input("5", false, window, cx);
+        let settings_max_connection_input = make_input("1-16", false, window, cx);
+        let settings_split_input = make_input("5", false, window, cx);
+        let settings_min_split_size_input = make_input("20M", false, window, cx);
+        let settings_tracker_custom_url_input =
+            make_input("https://example.com/trackers.txt", false, window, cx);
+        let settings_tracker_list_text_input =
+            make_input("https://tracker.example/announce", false, window, cx);
+        let settings_category_name_input = make_input("General", false, window, cx);
+        let settings_category_extensions_input = make_input("mp4, mkv, zip", false, window, cx);
 
         let mut settings_subscriptions = [
             &settings_directory_input,
@@ -1453,38 +965,30 @@ impl AppShell {
         ]
         .into_iter()
         .map(|input| {
-            cx.subscribe(
-                input,
-                |this: &mut Self, input, event: &SearchInputEvent, cx| {
-                    this.handle_text_field_event(input, event, cx);
-                    let SearchInputEvent::TextChanged { .. } = event else {
-                        return;
-                    };
-                    if this.page == AppPage::Settings
-                        && this.pending_settings_save.is_none()
-                        && this.settings_page.error.take().is_some()
-                    {
-                        cx.notify();
-                    }
-                },
-            )
+            cx.subscribe(input, |this: &mut Self, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change)
+                    && this.page == AppPage::Settings
+                    && this.pending_settings_save.is_none()
+                    && this.settings_page.error.take().is_some()
+                {
+                    cx.notify();
+                }
+            })
         })
         .collect::<Vec<_>>();
         settings_subscriptions.push(cx.subscribe(
             &settings_proxy_password_input,
-            |this: &mut Self, input, event: &SearchInputEvent, cx| {
-                this.handle_text_field_event(input, event, cx);
-                let SearchInputEvent::TextChanged { .. } = event else {
-                    return;
-                };
-                let changed = this.settings_page.clear_proxy_password
-                    || (this.page == AppPage::Settings
-                        && this.pending_settings_save.is_none()
-                        && this.settings_page.error.is_some());
-                this.settings_page.clear_proxy_password = false;
-                this.settings_page.error = None;
-                if changed {
-                    cx.notify();
+            |this: &mut Self, _input, event: &InputEvent, cx| {
+                if let InputEvent::Change = event {
+                    let changed = this.settings_page.clear_proxy_password
+                        || (this.page == AppPage::Settings
+                            && this.pending_settings_save.is_none()
+                            && this.settings_page.error.is_some());
+                    this.settings_page.clear_proxy_password = false;
+                    this.settings_page.error = None;
+                    if changed {
+                        cx.notify();
+                    }
                 }
             },
         ));
@@ -1498,7 +1002,7 @@ impl AppShell {
                     let theme = resolve_theme(ColorSchemeView::System, window);
                     if this.theme.mode != theme.mode || this.theme.colors != theme.colors {
                         this.theme = theme;
-                        this.apply_theme_to_text_fields(cx);
+                        this.theme.sync_to_kit(Some(window), cx);
                         cx.notify();
                     }
                 }
@@ -1624,7 +1128,6 @@ impl AppShell {
             speed_popover_previous_focus: None,
             sort_popover_open: false,
             context_menu: None,
-            text_field_context_menu: None,
             status_notice: None,
             next_notice_id: 1,
             activity_log: Vec::new(),
@@ -1927,7 +1430,7 @@ impl AppShell {
 
         if all_succeeded {
             self.add_input
-                .update(cx, |input, cx| input.set_text("", cx));
+                .update(cx, |input, cx| input.set_value("", window, cx));
             self.add_dialog.metadata_files.clear();
             self.add_dialog.active_metadata_file = None;
             self.show_notice(
@@ -1994,10 +1497,8 @@ impl AppShell {
             .retain(|preview| retryable_metadata_paths.contains(&metadata_path_key(&preview.path)));
         self.add_dialog.active_metadata_file =
             (!self.add_dialog.metadata_files.is_empty()).then_some(0);
-        self.add_dialog.updating_input_from_result =
-            self.add_input.read(cx).text() != retryable_uris;
         self.add_input
-            .update(cx, |input, cx| input.set_text(retryable_uris, cx));
+            .update(cx, |input, cx| input.set_value(retryable_uris, window, cx));
         self.add_dialog.results = result.items;
         self.show_notice(
             format!(
@@ -2733,6 +2234,24 @@ impl AppShell {
         cx.notify();
     }
 
+    pub fn set_search_query(
+        &mut self,
+        text: impl Into<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = text.into();
+        self.search_input.update(cx, |input, cx| {
+            input.set_value(text.clone(), window, cx);
+        });
+        if self.query.search != text {
+            self.query.search = text;
+            self.sort_popover_open = false;
+            self.clear_task_selection();
+            self.emit_query(cx);
+        }
+    }
+
     fn clear_search(&mut self, _: &ClearSearch, window: &mut Window, cx: &mut Context<Self>) {
         if self.context_menu.take().is_some() {
             cx.notify();
@@ -2755,9 +2274,8 @@ impl AppShell {
         } else if self.details_drawer.is_some() {
             // Overlay and inline drawers both dismiss before clearing search/selection.
             self.close_task_details(window, cx);
-        } else if !self.search_input.read(cx).text().is_empty() {
-            self.search_input
-                .update(cx, |input, cx| input.set_text("", cx));
+        } else if !self.search_input.read(cx).value().is_empty() {
+            self.set_search_query("", window, cx);
         } else if !self.selected_tasks.is_empty() {
             self.clear_task_selection();
             cx.notify();
@@ -2933,106 +2451,6 @@ impl AppShell {
     fn clear_task_selection(&mut self) {
         self.selected_tasks.clear();
         self.range_anchor = None;
-    }
-
-    fn apply_theme_to_text_fields(&mut self, cx: &mut Context<Self>) {
-        let theme = self.theme;
-        for input in self.all_text_fields() {
-            input.update(cx, |input, cx| input.set_theme(theme, cx));
-        }
-    }
-
-    fn handle_text_field_event(
-        &mut self,
-        field: Entity<TextField>,
-        event: &SearchInputEvent,
-        cx: &mut Context<Self>,
-    ) {
-        match event {
-            SearchInputEvent::TextChanged { .. } => {}
-            SearchInputEvent::ContextMenuRequested { position } => {
-                self.open_text_field_context_menu(field, *position, cx);
-            }
-        }
-    }
-
-    fn open_text_field_context_menu(
-        &mut self,
-        field: Entity<TextField>,
-        position: Point<Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        self.context_menu = None;
-        self.sort_popover_open = false;
-        self.speed_popover_open = false;
-        self.text_field_context_menu = Some(TextFieldContextMenuState { field, position });
-        cx.notify();
-    }
-
-    fn close_text_field_context_menu(&mut self, cx: &mut Context<Self>) {
-        if self.text_field_context_menu.take().is_some() {
-            cx.notify();
-        }
-    }
-
-    fn activate_text_field_context_action(
-        &mut self,
-        action: TextFieldContextAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(menu) = self.text_field_context_menu.take() else {
-            return;
-        };
-        menu.field.update(cx, |field, cx| match action {
-            TextFieldContextAction::Cut => field.context_cut(window, cx),
-            TextFieldContextAction::Copy => field.context_copy(window, cx),
-            TextFieldContextAction::Paste => field.context_paste(window, cx),
-            TextFieldContextAction::SelectAll => field.context_select_all(window, cx),
-        });
-        cx.notify();
-    }
-
-    fn all_text_fields(&self) -> [&Entity<TextField>; 34] {
-        let add = self.add_inputs.all();
-        let settings = self.settings_inputs.all();
-        let task = self.task_inputs.all();
-        [
-            &self.search_input,
-            &self.add_input,
-            add[0],
-            add[1],
-            add[2],
-            add[3],
-            add[4],
-            add[5],
-            add[6],
-            &self.output_name_input,
-            settings[0],
-            settings[1],
-            settings[2],
-            settings[3],
-            settings[4],
-            settings[5],
-            settings[6],
-            settings[7],
-            settings[8],
-            settings[9],
-            settings[10],
-            settings[11],
-            settings[12],
-            settings[13],
-            settings[14],
-            settings[15],
-            settings[16],
-            settings[17],
-            settings[18],
-            settings[19],
-            task[0],
-            task[1],
-            task[2],
-            task[3],
-        ]
     }
 
     fn focus_next(&mut self, _: &FocusNext, window: &mut Window, cx: &mut Context<Self>) {
@@ -3300,9 +2718,6 @@ impl Render for AppShell {
             })
             .when(self.context_menu.is_some(), |element| {
                 element.child(self.render_task_context_menu(cx))
-            })
-            .when(self.text_field_context_menu.is_some(), |element| {
-                element.child(self.render_text_field_context_menu(cx))
             })
             .when(
                 self.sort_popover_open && self.page == AppPage::Downloads,

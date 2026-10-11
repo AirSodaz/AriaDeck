@@ -3,6 +3,8 @@
     windows_subsystem = "windows"
 )]
 
+extern crate gpui_kit as gpui;
+
 mod metadata;
 mod platform;
 mod workspace;
@@ -13,7 +15,7 @@ use gpui::{
     App, AppContext as _, Bounds, Point, TitlebarOptions, WindowBounds, WindowDecorations,
     WindowOptions, px, size,
 };
-use gpui_platform::application;
+use gpui_kit::application;
 use tokio::runtime::Builder;
 
 use ariadeck_ipc::{
@@ -74,7 +76,7 @@ fn main() {
             .detach();
 
             let window_bounds = restored_window_bounds(cx);
-            let open_result = cx.open_window(
+            let open_result = gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(window_bounds),
                     titlebar: Some(platform_titlebar()),
@@ -84,6 +86,7 @@ fn main() {
                     icon: window_icon(),
                     ..WindowOptions::default()
                 },
+                cx,
                 {
                     let runtime = runtime.clone();
                     let initial_request = initial_request.clone();

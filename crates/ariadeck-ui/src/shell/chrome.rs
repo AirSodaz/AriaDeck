@@ -49,10 +49,11 @@ impl AppShell {
                     .items_center()
                     .child(titlebar_drag_region())
                     .child(
-                        div()
-                            .w(px(search_width))
-                            .flex_none()
-                            .child(self.search_input.clone()),
+                        div().w(px(search_width)).flex_none().child(
+                            Input::new(&self.search_input)
+                                .cleanable(true)
+                                .prefix(Icon::new(IconName::Search)),
+                        ),
                     )
                     .child(titlebar_drag_region()),
             )
@@ -771,129 +772,6 @@ impl AppShell {
             )
     }
 
-    pub(crate) fn render_text_field_context_menu(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = self.theme.colors;
-        let Some(menu) = self.text_field_context_menu.as_ref() else {
-            return div().into_any_element();
-        };
-        let field = menu.field.clone();
-        let position = menu.position;
-        let field_state = field.read(cx);
-        let has_selection = field_state.has_selection();
-        let secure = field_state.is_secure_field();
-        let is_empty = field_state.is_empty();
-        let can_copy = has_selection && !secure;
-        let can_cut = can_copy;
-        let can_paste = true;
-        let can_select_all = !is_empty;
-        let left = f32::from(position.x).max(8.0);
-        let top = f32::from(position.y).max(8.0);
-
-        let item = |action: TextFieldContextAction, label: String, enabled: bool| {
-            let id = match action {
-                TextFieldContextAction::Cut => "shell-text-ctx-cut",
-                TextFieldContextAction::Copy => "shell-text-ctx-copy",
-                TextFieldContextAction::Paste => "shell-text-ctx-paste",
-                TextFieldContextAction::SelectAll => "shell-text-ctx-select-all",
-            };
-            div()
-                .id(id)
-                .role(Role::MenuItem)
-                .aria_label(label.clone())
-                .focusable()
-                .tab_stop(enabled)
-                .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
-                .w_full()
-                .px_3()
-                .py_1p5()
-                .rounded_sm()
-                .text_sm()
-                .text_color(if enabled {
-                    colors.text_primary
-                } else {
-                    colors.text_muted
-                })
-                .when(enabled, |element| {
-                    element
-                        .cursor_pointer()
-                        .hover(|style| style.bg(colors.surface_active))
-                        .on_mouse_down(MouseButton::Left, {
-                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                cx.stop_propagation();
-                                window.prevent_default();
-                                let _ = event;
-                                this.activate_text_field_context_action(action, window, cx);
-                            })
-                        })
-                        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                            if event.is_keyboard() {
-                                cx.stop_propagation();
-                                window.prevent_default();
-                                this.activate_text_field_context_action(action, window, cx);
-                            }
-                        }))
-                })
-                .child(label)
-        };
-
-        div()
-            .id("text-field-context-menu-layer")
-            .absolute()
-            .inset_0()
-            .occlude()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.close_text_field_context_menu(cx)),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(|this, _, _, cx| this.close_text_field_context_menu(cx)),
-            )
-            .child(
-                div()
-                    .id("text-field-context-menu")
-                    .role(Role::Menu)
-                    .aria_label(self.t("text-field-menu"))
-                    .absolute()
-                    .left(px(left))
-                    .top(px(top))
-                    .min_w(px(168.0))
-                    .py_1()
-                    .px_1()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(colors.border_strong)
-                    .bg(colors.elevated_surface)
-                    .shadow_md()
-                    .flex()
-                    .flex_col()
-                    .gap_0p5()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                    .child(item(
-                        TextFieldContextAction::Cut,
-                        self.t("text-cut"),
-                        can_cut,
-                    ))
-                    .child(item(
-                        TextFieldContextAction::Copy,
-                        self.t("text-copy"),
-                        can_copy,
-                    ))
-                    .child(item(
-                        TextFieldContextAction::Paste,
-                        self.t("text-paste"),
-                        can_paste,
-                    ))
-                    .child(item(
-                        TextFieldContextAction::SelectAll,
-                        self.t("select-all"),
-                        can_select_all,
-                    )),
-            )
-            .into_any_element()
-    }
-
     pub(crate) fn render_activity_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = self.theme.colors;
         let entries = self.activity_log.clone();
@@ -1197,10 +1075,8 @@ impl AppShell {
                                 .style(ButtonStyle::Secondary)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.query.filter = WorkspaceFilter::All;
-                                    this.search_input
-                                        .update(cx, |input, cx| input.set_text("", cx));
+                                    this.set_search_query("", window, cx);
                                     window.focus(&this.focus_handle, cx);
-                                    this.emit_query(cx);
                                 }))
                                 .render(colors),
                         )

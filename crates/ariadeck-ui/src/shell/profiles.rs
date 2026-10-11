@@ -108,6 +108,7 @@ impl AppShell {
     pub fn set_save_profile_catalog_result(
         &mut self,
         result: SaveProfileCatalogResultView,
+        window: Option<&mut Window>,
         cx: &mut Context<Self>,
     ) {
         match result.outcome {
@@ -115,9 +116,11 @@ impl AppShell {
                 self.profiles = result.catalog;
                 self.settings_page.profile_secret_updates.clear();
                 self.settings_page.clear_profile_rpc_secret = false;
-                self.settings_inputs.profile_secret.update(cx, |input, cx| {
-                    input.set_text(String::new(), cx);
-                });
+                if let Some(window) = window {
+                    self.settings_inputs.profile_secret.update(cx, |input, cx| {
+                        input.set_value(String::new(), window, cx);
+                    });
+                }
                 self.show_notice(self.t("notice-profile-saved"), false, cx);
             }
             SaveProfileCatalogOutcomeView::Failure(error) => {
@@ -127,7 +130,7 @@ impl AppShell {
         cx.notify();
     }
 
-    pub(crate) fn add_draft_local_profile(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn add_draft_local_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let id = format!("draft-local-{}", self.allocate_request_id().get());
         let download_dir = self.settings.download_directory.clone();
         let name = format!("Local {}", self.profiles.profiles.len() + 1);
@@ -141,7 +144,7 @@ impl AppShell {
             endpoint: String::new(),
             has_secret: false,
         });
-        self.open_profile_editor(id, cx);
+        self.open_profile_editor(id, window, cx);
         self.show_notice(
             "Local profile draft added (uses managed core). Edit fields, Apply, then Save profiles.",
             false,
@@ -149,7 +152,7 @@ impl AppShell {
         );
     }
 
-    pub(crate) fn add_draft_remote_profile(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn add_draft_remote_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let id = format!("draft-remote-{}", self.allocate_request_id().get());
         let download_dir = self.settings.download_directory.clone();
         let name = format!("Remote {}", self.profiles.profiles.len() + 1);
@@ -162,7 +165,7 @@ impl AppShell {
             endpoint: "wss://127.0.0.1:6800/jsonrpc".into(),
             has_secret: false,
         });
-        self.open_profile_editor(id, cx);
+        self.open_profile_editor(id, window, cx);
         self.show_notice(
             "Remote profile draft added. Set the endpoint, Apply, then Save profiles.",
             false,
@@ -170,7 +173,12 @@ impl AppShell {
         );
     }
 
-    pub(crate) fn open_profile_editor(&mut self, profile_id: String, cx: &mut Context<Self>) {
+    pub(crate) fn open_profile_editor(
+        &mut self,
+        profile_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(profile) = self
             .profiles
             .profiles
@@ -184,35 +192,35 @@ impl AppShell {
         self.settings_page.editing_profile_id = Some(profile.profile_id);
         self.settings_page.draft_profile_kind = profile.kind;
         self.settings_inputs.profile_name.update(cx, |input, cx| {
-            input.set_text(profile.name, cx);
+            input.set_value(profile.name, window, cx);
         });
         self.settings_inputs
             .profile_executable
             .update(cx, |input, cx| {
-                input.set_text(profile.executable, cx);
+                input.set_value(profile.executable, window, cx);
             });
         self.settings_inputs
             .profile_endpoint
             .update(cx, |input, cx| {
-                input.set_text(profile.endpoint, cx);
+                input.set_value(profile.endpoint, window, cx);
             });
         self.settings_inputs.profile_secret.update(cx, |input, cx| {
-            input.set_text(String::new(), cx);
+            input.set_value(String::new(), window, cx);
         });
         self.settings_page.clear_profile_rpc_secret = false;
         cx.notify();
     }
 
-    pub(crate) fn close_profile_editor(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn close_profile_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings_page.editing_profile_id = None;
         self.settings_page.clear_profile_rpc_secret = false;
         self.settings_inputs.profile_secret.update(cx, |input, cx| {
-            input.set_text(String::new(), cx);
+            input.set_value(String::new(), window, cx);
         });
         cx.notify();
     }
 
-    pub(crate) fn apply_profile_editor(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn apply_profile_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(profile_id) = self.settings_page.editing_profile_id.clone() else {
             self.show_notice(self.t("notice-profile-none-editing"), true, cx);
             return;
@@ -221,7 +229,7 @@ impl AppShell {
             .settings_inputs
             .profile_name
             .read(cx)
-            .text()
+            .value()
             .trim()
             .to_owned();
         if name.is_empty() {
@@ -233,14 +241,14 @@ impl AppShell {
             .settings_inputs
             .profile_executable
             .read(cx)
-            .text()
+            .value()
             .trim()
             .to_owned();
         let endpoint = self
             .settings_inputs
             .profile_endpoint
             .read(cx)
-            .text()
+            .value()
             .trim()
             .to_owned();
         if kind == ProfileKindView::RemoteRpc && endpoint.is_empty() {
@@ -277,7 +285,7 @@ impl AppShell {
                 .settings_inputs
                 .profile_secret
                 .read(cx)
-                .text()
+                .value()
                 .trim()
                 .to_owned();
             let update = if self.settings_page.clear_profile_rpc_secret {
@@ -311,7 +319,7 @@ impl AppShell {
         self.settings_page.editing_profile_id = None;
         self.settings_page.clear_profile_rpc_secret = false;
         self.settings_inputs.profile_secret.update(cx, |input, cx| {
-            input.set_text(String::new(), cx);
+            input.set_value(String::new(), window, cx);
         });
         self.show_notice(
             "Profile updated in the draft catalog. Click Save profiles to persist.",
@@ -392,11 +400,15 @@ impl AppShell {
         self.request_save_profile_catalog(catalog, cx);
     }
 
-    pub(crate) fn toggle_clear_profile_rpc_secret(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_clear_profile_rpc_secret(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let clear = !self.settings_page.clear_profile_rpc_secret;
         if clear {
             self.settings_inputs.profile_secret.update(cx, |input, cx| {
-                input.set_text(String::new(), cx);
+                input.set_value(String::new(), window, cx);
             });
         }
         self.settings_page.clear_profile_rpc_secret = clear;
@@ -406,13 +418,14 @@ impl AppShell {
     pub(crate) fn select_profile_editor_kind(
         &mut self,
         kind: ProfileKindView,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.settings_page.draft_profile_kind = kind;
         if kind == ProfileKindView::LocalManaged {
             self.settings_page.clear_profile_rpc_secret = false;
             self.settings_inputs.profile_secret.update(cx, |input, cx| {
-                input.set_text(String::new(), cx);
+                input.set_value(String::new(), window, cx);
             });
         }
         cx.notify();
@@ -481,7 +494,7 @@ impl AppShell {
             .settings_inputs
             .core_path
             .read(cx)
-            .text()
+            .value()
             .trim()
             .to_owned();
         if path.is_empty() {
@@ -496,7 +509,7 @@ impl AppShell {
             .settings_inputs
             .core_path
             .read(cx)
-            .text()
+            .value()
             .trim()
             .to_owned();
         if path.is_empty() {
