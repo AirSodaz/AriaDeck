@@ -120,3 +120,7 @@ ui-output-name-restart = 更改活动任务的输出文件名可能会重启传�
 ui-reconnect-refresh-details = 重新连接以刷新当前引擎会话的文件信息。
 ui-requesting-details = 正在从此 aria2 会话请求文件元数据。
 filter-category-all = 全部分类
+power-status-label = 完成后：{ $action }
+power-status-aria = 下载完成后：{ $action }
+power-popover-title = 全部下载完成后
+power-keep-awake = 下载时阻止系统休眠

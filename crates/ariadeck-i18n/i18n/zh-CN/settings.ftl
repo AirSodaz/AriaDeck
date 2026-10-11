@@ -113,6 +113,16 @@ settings-close-minimize = 最小化到托盘
 settings-close-quit = 退出
 settings-tray-hint = 托盘菜单：显示 AriaDeck、全部暂停、全部继续、退出。本进程托管的 aria2 会在退出时停止；远程配置的引擎保持运行。
 
+settings-power = 电源管理
+settings-keep-awake = 下载时阻止系统休眠
+settings-keep-awake-desc = 存在活动下载任务时保持计算机处于唤醒状态。
+settings-action-after-done = 全部下载完成后
+settings-action-after-done-desc = 所有活动下载完成后的执行操作。
+settings-action-none = 无
+settings-action-sleep = 睡眠
+settings-action-hibernate = 休眠
+settings-action-shutdown = 关机
+
 settings-bridge = 浏览器接管
 settings-bridge-auto-submit = 无需确认直接添加
 settings-bridge-auto-submit-desc = 浏览器扩展交来的下载直接开始，不再填入「添加下载」对话框。每次添加仍会留下提示和活动记录。

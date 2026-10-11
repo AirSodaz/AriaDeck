@@ -63,7 +63,7 @@ Legend: **Have** · **Partial** · **Missing** · **Won’t** (non-goal)
 | SQLite history beyond aria2 memory | Have | Next: Have | N/A | D-039; D-021 still engine paging |
 | Auto tracker list update | Have (opt-in) | Have | Manual | D1 / D-041; default off, explicit consent |
 | UPnP / port map UI | Missing | Have | Options raw | Gate on capabilities |
-| Keep-awake / shutdown after done | Missing | Next | N/A | Power integration |
+| Keep-awake / shutdown after done | Have | Next | N/A | Power integration (D5) |
 | In-app auto-update | Missing | Have | N/A | Deferred productization |
 | Export/import settings | Have | AriaNg | Have | Ops convenience |
 | Diagnostic zip | Have | Next | N/A | SEC-safe export |
@@ -131,7 +131,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | D2 | Richer peer/tracker presentation (already partial details) | AriaNg depth |
 | D3 | UPnP/NAT-PMP **if** engine exposes/supports—capability gated | Motrix feature |
 | D4 | Live per-file progress after add (D-013 extension) | Selective download UX |
-| D5 | Keep-awake while active; optional “action after all complete” | Power users |
+| D5 | **Done** — Keep-awake while active; completion power actions (sleep/hibernate/shutdown with 30s countdown & auto-disarm) | Motrix parity; power users |
 
 **Exit:** BT sessions need fewer external tools; still no ED2K unless upstream aria2 does.
 

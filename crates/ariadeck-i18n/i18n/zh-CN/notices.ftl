@@ -116,3 +116,7 @@ cmd-remove-files-success = 任务已移除，本地文件已移到回收站。
 notice-core-downloading = 正在下载并校验 aria2……
 notice-core-download-installed = 已下载并校验 aria2 { $version }。请在“设置 > 引擎”中启用，然后重启 AriaDeck。
 notice-core-download-unavailable = 该平台没有可校验的 aria2 官方下载。
+
+# D5 — 完成后电源操作
+notice-power-action-cancelled = 已取消计划的电源操作。
+notice-power-action-armed = 全部下载完成后将{ $action }。

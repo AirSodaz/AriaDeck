@@ -36,12 +36,13 @@ use ariadeck_rpc::{
     WebSocketTransport,
 };
 use ariadeck_settings::{
-    AppSettings, CloseBehavior, ColorScheme, DownloadProxyMode, DownloadProxySettings,
-    FileAllocationSetting, JsonSettingsStore, JsonWindowGeometryStore, LanguagePreference,
-    ListFilterPreference, ListSortDirectionPreference, ListSortKeyPreference, NotificationSettings,
-    NotificationVolume, PlatformSettings, ProfileEnvironment, ProfileEnvironmentStore,
-    ProxyCredentialRef, ProxyCredentialStore, SpeedLimitSettings, SystemProxyCredentialStore,
-    TransferPolicySettings, UiPreferences, WindowGeometry, resolve_system_proxy,
+    AppSettings, CloseBehavior, ColorScheme, CompletionPowerAction, DownloadProxyMode,
+    DownloadProxySettings, FileAllocationSetting, JsonSettingsStore, JsonWindowGeometryStore,
+    LanguagePreference, ListFilterPreference, ListSortDirectionPreference, ListSortKeyPreference,
+    NotificationSettings, NotificationVolume, PlatformSettings, ProfileEnvironment,
+    ProfileEnvironmentStore, ProxyCredentialRef, ProxyCredentialStore, SpeedLimitSettings,
+    SystemProxyCredentialStore, TransferPolicySettings, UiPreferences, WindowGeometry,
+    resolve_system_proxy,
 };
 use ariadeck_ui::{
     AddDownloadAdvancedOptionsView, AddDownloadItemResultView, AddDownloadMetadataFileView,
@@ -51,31 +52,32 @@ use ariadeck_ui::{
     AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView, AppShell, AppShellEvent,
     BatchCommandOutcomeView, BatchTaskCommandRequestView, BatchTaskCommandResultView,
     BatchTaskCommandView, BatchTaskFailureView, BridgeDownloadView, BrowserBridgeSettingsView,
-    CloseBehaviorView, ColorSchemeView, CommandOutcomeView, ConnectionView, CoreCommandOutcomeView,
-    CoreCommandRequestView, CoreCommandResultView, CoreCommandView, CoreDiscoveryOriginView,
-    CoreDiscoveryResultView, CoreDownloadOfferView, CoreDownloadResultView, CoreInstallStatusView,
-    CoreInstallationView, CoreRegistryView, CoreSourceView, DiagnosticExportOutcomeView,
-    DiagnosticExportRequestView, DiagnosticExportResultView, DiscoveredCoreView,
-    DownloadCategoryView, DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView,
-    EngineHealthView, EngineSessionView, FileAllocationView, FileConflictPolicyView,
-    GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView,
-    LanguagePreferenceView, NotificationSettingsView, NotificationVolumeView, OperationErrorView,
-    PlatformSettingsView, ProfileCatalogView, ProfileEntryView, ProfileKindView,
-    ProfileRpcSecretUpdateView, ProxyModeView, ProxyPasswordUpdateView,
-    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
-    SecretStringView, SettingsExportOutcomeView, SettingsExportRequestView,
-    SettingsExportResultView, SettingsImportOutcomeView, SettingsImportRequestView,
-    SettingsImportResultView, SettingsSaveOutcomeView, SettingsSaveRequestView,
-    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView,
-    StoppedHistoryView, SwitchProfileOutcomeView, SwitchProfileRequestView,
-    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
-    TaskCountsView, TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView,
-    TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity, TaskNameStateView,
-    TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
-    TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
-    TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TrackerListSettingsView,
-    TrackerListSourceView, TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery,
-    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, format_speed_limit_field,
+    CloseBehaviorView, ColorSchemeView, CommandOutcomeView, CompletionPowerActionView,
+    ConnectionView, CoreCommandOutcomeView, CoreCommandRequestView, CoreCommandResultView,
+    CoreCommandView, CoreDiscoveryOriginView, CoreDiscoveryResultView, CoreDownloadOfferView,
+    CoreDownloadResultView, CoreInstallStatusView, CoreInstallationView, CoreRegistryView,
+    CoreSourceView, DiagnosticExportOutcomeView, DiagnosticExportRequestView,
+    DiagnosticExportResultView, DiscoveredCoreView, DownloadCategoryView,
+    DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView, EngineHealthView,
+    EngineSessionView, FileAllocationView, FileConflictPolicyView, GlobalTaskCommandRequestView,
+    GlobalTaskCommandResultView, GlobalTaskCommandView, LanguagePreferenceView,
+    NotificationSettingsView, NotificationVolumeView, OperationErrorView, PlatformSettingsView,
+    ProfileCatalogView, ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView,
+    ProxyModeView, ProxyPasswordUpdateView, SaveProfileCatalogOutcomeView,
+    SaveProfileCatalogRequestView, SaveProfileCatalogResultView, SecretStringView,
+    SettingsExportOutcomeView, SettingsExportRequestView, SettingsExportResultView,
+    SettingsImportOutcomeView, SettingsImportRequestView, SettingsImportResultView,
+    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
+    SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView, SwitchProfileOutcomeView,
+    SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
+    TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
+    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
+    TaskIdentity, TaskNameStateView, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
+    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
+    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
+    TrackerListSettingsView, TrackerListSourceView, TransferPolicySettingsView, WorkspaceFilter,
+    WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    format_speed_limit_field,
 };
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
 #[cfg(target_os = "windows")]
@@ -142,6 +144,7 @@ pub struct DesktopRoot {
     core_store: CoreStore,
     tray: Option<SystemTray>,
     window_hidden_to_tray: bool,
+    is_keep_awake: bool,
     window_geometry_store: JsonWindowGeometryStore,
     last_saved_geometry: Option<WindowGeometry>,
     pending_geometry: Option<WindowGeometry>,
@@ -516,6 +519,20 @@ impl DesktopRoot {
                         cx,
                     );
                 }
+                AppShellEvent::CompletionPowerActionRequested(action) => {
+                    let app_action = mapping::map_view_completion_power_action_to_app(*action);
+                    tracing::info!(?app_action, "executing completion power action");
+                    match platform::execute_power_action(app_action) {
+                        Ok(()) => {
+                            if *action == CompletionPowerActionView::Shutdown {
+                                this.quit_application(cx);
+                            }
+                        }
+                        Err(error) => {
+                            tracing::error!(%error, "failed to execute completion power action");
+                        }
+                    }
+                }
             },
         );
         let window_geometry_store = JsonWindowGeometryStore::new(data_dir.join("window.json"));
@@ -610,6 +627,7 @@ impl DesktopRoot {
             core_store,
             tray,
             window_hidden_to_tray: false,
+            is_keep_awake: false,
             window_geometry_store,
             last_saved_geometry,
             pending_geometry: None,
@@ -741,6 +759,15 @@ impl DesktopRoot {
         self.workspace.update(cx, |shell, cx| {
             shell.report_disk_space(free, cx);
         });
+
+        // Keep-awake management based on active downloads and user preference (D5).
+        let has_active_downloads = self.workspace.read(cx).has_active_downloads();
+        let should_keep_awake =
+            self.settings.platform.keep_awake_while_active && has_active_downloads;
+        if should_keep_awake != self.is_keep_awake {
+            platform::set_keep_awake(should_keep_awake);
+            self.is_keep_awake = should_keep_awake;
+        }
     }
 
     /// Remaining slots before the shared launch-item flood cap is reached.
@@ -1862,6 +1889,10 @@ impl Drop for DesktopRoot {
     fn drop(&mut self) {
         TRAY_SESSION_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
         self.window_hidden_to_tray = false;
+        if self.is_keep_awake {
+            platform::set_keep_awake(false);
+            self.is_keep_awake = false;
+        }
         self.tray.take();
         self.settings_sender.take();
         self.tracker_list_sender.take();

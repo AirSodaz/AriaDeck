@@ -3855,3 +3855,172 @@ fn identical_snapshot_is_a_no_op_for_selection_and_details(cx: &mut TestAppConte
         assert_eq!(shell.snapshot.source_revision, 1);
     });
 }
+
+#[gpui::test]
+fn power_action_armed_with_zero_tasks_does_not_trigger(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    view.update(cx, |shell, cx| {
+        shell.select_completion_action(CompletionPowerActionView::Shutdown, cx);
+        let mut snap = snapshot(0);
+        snap.counts.active = 0;
+        snap.counts.waiting = 0;
+        shell.set_snapshot(snap, cx);
+        assert!(shell.power_countdown.is_none());
+        assert_eq!(
+            shell.settings.platform.action_after_done,
+            CompletionPowerActionView::Shutdown
+        );
+    });
+}
+
+#[gpui::test]
+fn power_action_triggers_when_active_tasks_complete(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    view.update(cx, |shell, cx| {
+        shell.select_completion_action(CompletionPowerActionView::Shutdown, cx);
+        let mut snap = snapshot(1);
+        snap.counts.active = 1;
+        shell.set_snapshot(snap, cx);
+        assert!(shell.power_countdown.is_none());
+        assert!(shell.power_had_active_tasks);
+
+        let mut done_snap = snapshot(1);
+        done_snap.source_revision = 2;
+        done_snap.counts.active = 0;
+        done_snap.counts.waiting = 0;
+        shell.set_snapshot(done_snap, cx);
+        assert!(shell.power_countdown.is_some());
+        let cd = shell.power_countdown.expect("countdown active");
+        assert_eq!(cd.action, CompletionPowerActionView::Shutdown);
+        assert_eq!(cd.remaining_seconds, 30);
+    });
+}
+
+#[gpui::test]
+fn power_action_countdown_cancelled_by_user(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    view.update(cx, |shell, cx| {
+        shell.select_completion_action(CompletionPowerActionView::Shutdown, cx);
+        let mut snap = snapshot(1);
+        snap.counts.active = 1;
+        shell.set_snapshot(snap, cx);
+
+        let mut done_snap = snapshot(1);
+        done_snap.source_revision = 2;
+        done_snap.counts.active = 0;
+        done_snap.counts.waiting = 0;
+        shell.set_snapshot(done_snap, cx);
+        assert!(shell.power_countdown.is_some());
+
+        shell.cancel_power_countdown(cx);
+        assert!(shell.power_countdown.is_none());
+        assert_eq!(
+            shell.settings.platform.action_after_done,
+            CompletionPowerActionView::None
+        );
+    });
+}
+
+#[gpui::test]
+fn power_action_countdown_cancelled_by_new_task(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    view.update(cx, |shell, cx| {
+        shell.select_completion_action(CompletionPowerActionView::Shutdown, cx);
+        let mut snap = snapshot(1);
+        snap.counts.active = 1;
+        shell.set_snapshot(snap, cx);
+
+        let mut done_snap = snapshot(1);
+        done_snap.source_revision = 2;
+        done_snap.counts.active = 0;
+        done_snap.counts.waiting = 0;
+        shell.set_snapshot(done_snap, cx);
+        assert!(shell.power_countdown.is_some());
+
+        let mut new_snap = snapshot(2);
+        new_snap.source_revision = 3;
+        new_snap.counts.active = 1;
+        shell.set_snapshot(new_snap, cx);
+        assert!(shell.power_countdown.is_none());
+        assert!(shell.power_had_active_tasks);
+    });
+}
+
+#[gpui::test]
+fn power_action_countdown_ticks_and_emits_on_zero(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    view.update(cx, |shell, cx| {
+        shell.power_countdown = Some(PowerCountdownState {
+            action: CompletionPowerActionView::Hibernate,
+            remaining_seconds: 2,
+        });
+        assert!(shell.tick_power_countdown(cx));
+        assert_eq!(
+            shell
+                .power_countdown
+                .expect("countdown active")
+                .remaining_seconds,
+            1
+        );
+
+        assert!(!shell.tick_power_countdown(cx));
+        assert!(shell.power_countdown.is_none());
+        assert_eq!(
+            shell.settings.platform.action_after_done,
+            CompletionPowerActionView::None
+        );
+    });
+}
+
+#[gpui::test]
+fn power_popover_toggles(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    view.update(cx, |shell, cx| {
+        assert!(!shell.power_popover_open);
+        shell.toggle_power_popover(cx);
+        assert!(shell.power_popover_open);
+        shell.close_power_popover(cx);
+        assert!(!shell.power_popover_open);
+    });
+}
+
+#[gpui::test]
+fn power_countdown_cancelled_by_escape(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.power_countdown = Some(PowerCountdownState {
+            action: CompletionPowerActionView::Shutdown,
+            remaining_seconds: 30,
+        });
+        shell.clear_search(&ClearSearch, window, cx);
+        assert!(shell.power_countdown.is_none());
+        assert_eq!(
+            shell.settings.platform.action_after_done,
+            CompletionPowerActionView::None
+        );
+    });
+}
+
+#[gpui::test]
+fn power_action_change_during_countdown_updates_action(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    view.update(cx, |shell, cx| {
+        shell.power_countdown = Some(PowerCountdownState {
+            action: CompletionPowerActionView::Sleep,
+            remaining_seconds: 30,
+        });
+        shell.select_completion_action(CompletionPowerActionView::Shutdown, cx);
+        assert_eq!(
+            shell.power_countdown.expect("countdown active").action,
+            CompletionPowerActionView::Shutdown
+        );
+    });
+}

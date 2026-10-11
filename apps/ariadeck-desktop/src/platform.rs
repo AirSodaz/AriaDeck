@@ -196,6 +196,172 @@ pub fn available_disk_space(directory: &std::path::Path) -> Option<u64> {
         .map(|disk| disk.available_space())
 }
 
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn SetThreadExecutionState(es_flags: u32) -> u32;
+}
+
+#[cfg(windows)]
+#[link(name = "powrprof")]
+unsafe extern "system" {
+    fn SetSuspendState(hibernate: u8, force_critical: u8, disable_wake_event: u8) -> u8;
+}
+
+#[cfg(windows)]
+const ES_SYSTEM_REQUIRED: u32 = 0x0000_0001;
+#[cfg(windows)]
+const ES_AWAYMODE_REQUIRED: u32 = 0x0000_0040;
+#[cfg(windows)]
+const ES_CONTINUOUS: u32 = 0x8000_0000;
+
+/// Prevent or allow operating system sleep during active downloads (D5).
+#[cfg(windows)]
+pub fn set_keep_awake(enabled: bool) {
+    unsafe {
+        if enabled {
+            let res =
+                SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
+            if res == 0 {
+                SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
+            }
+        } else {
+            SetThreadExecutionState(ES_CONTINUOUS);
+        }
+    }
+}
+
+/// Prevent or allow operating system sleep during active downloads (D5).
+#[cfg(not(windows))]
+pub fn set_keep_awake(_enabled: bool) {
+    // Safe stub for non-Windows platforms
+}
+
+/// Execute completion power action (D5).
+pub fn execute_power_action(
+    action: ariadeck_settings::CompletionPowerAction,
+) -> Result<(), String> {
+    match action {
+        ariadeck_settings::CompletionPowerAction::None => Ok(()),
+        ariadeck_settings::CompletionPowerAction::Shutdown => {
+            #[cfg(windows)]
+            {
+                let status = ariadeck_engine::console_free_command("shutdown")
+                    .args(["/s", "/t", "0"])
+                    .status()
+                    .map_err(|e| format!("failed to invoke shutdown: {e}"))?;
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("shutdown command exited with {status}"))
+                }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let status = std::process::Command::new("osascript")
+                    .args(["-e", "tell app \"System Events\" to shut down"])
+                    .status()
+                    .map_err(|e| format!("failed to invoke shutdown: {e}"))?;
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("shutdown exited with {status}"))
+                }
+            }
+            #[cfg(all(not(windows), not(target_os = "macos")))]
+            {
+                let status = std::process::Command::new("systemctl")
+                    .arg("poweroff")
+                    .status()
+                    .map_err(|e| format!("failed to invoke poweroff: {e}"))?;
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("systemctl poweroff exited with {status}"))
+                }
+            }
+        }
+        ariadeck_settings::CompletionPowerAction::Sleep => {
+            #[cfg(windows)]
+            {
+                let res = unsafe { SetSuspendState(0, 0, 0) };
+                if res != 0 {
+                    Ok(())
+                } else {
+                    Err("SetSuspendState(0, 0, 0) failed".to_string())
+                }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let status = std::process::Command::new("pmset")
+                    .arg("sleepnow")
+                    .status()
+                    .map_err(|e| format!("failed to invoke sleep: {e}"))?;
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("pmset sleepnow exited with {status}"))
+                }
+            }
+            #[cfg(all(not(windows), not(target_os = "macos")))]
+            {
+                let status = std::process::Command::new("systemctl")
+                    .arg("suspend")
+                    .status()
+                    .map_err(|e| format!("failed to invoke suspend: {e}"))?;
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("systemctl suspend exited with {status}"))
+                }
+            }
+        }
+        ariadeck_settings::CompletionPowerAction::Hibernate => {
+            #[cfg(windows)]
+            {
+                let res = unsafe { SetSuspendState(1, 0, 0) };
+                if res != 0 {
+                    Ok(())
+                } else {
+                    let status = ariadeck_engine::console_free_command("shutdown")
+                        .arg("/h")
+                        .status()
+                        .map_err(|e| format!("failed to invoke shutdown /h: {e}"))?;
+                    if status.success() {
+                        Ok(())
+                    } else {
+                        Err(format!("hibernate command exited with {status}"))
+                    }
+                }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let status = std::process::Command::new("pmset")
+                    .arg("sleepnow")
+                    .status()
+                    .map_err(|e| format!("failed to invoke sleep: {e}"))?;
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("pmset sleepnow exited with {status}"))
+                }
+            }
+            #[cfg(all(not(windows), not(target_os = "macos")))]
+            {
+                let status = std::process::Command::new("systemctl")
+                    .arg("hibernate")
+                    .status()
+                    .map_err(|e| format!("failed to invoke hibernate: {e}"))?;
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("systemctl hibernate exited with {status}"))
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +423,15 @@ mod tests {
         let root = tempfile::tempdir().expect("temp");
         // On some CI images the temp mount may not be listed; accept either.
         let _ = available_disk_space(root.path());
+    }
+
+    #[test]
+    fn platform_power_action_none_is_ok() {
+        assert!(execute_power_action(ariadeck_settings::CompletionPowerAction::None).is_ok());
+    }
+
+    #[test]
+    fn platform_set_keep_awake_does_not_panic() {
+        set_keep_awake(false);
     }
 }

@@ -25,9 +25,9 @@ use crate::{
     BatchTaskFailureView, BridgeDownloadView, BrowserBridgeSettingsView, Button, ButtonStyle,
     ClearSearch, CloseAddDownload, CloseBatchFailures, CloseBehaviorView, CloseCoreSetup,
     CloseSettings, CloseTaskOptions, CloseTaskOutputName, CloseTaskSpeedLimit, ColorSchemeView,
-    CommandOutcomeView, ConnectionView, CoreCommandOutcomeView, CoreCommandRequestView,
-    CoreCommandResultView, CoreCommandView, CoreDiscoveryResultView, CoreDownloadOfferView,
-    CoreDownloadResultView, CoreRegistryView, DiagnosticExportOutcomeView,
+    CommandOutcomeView, CompletionPowerActionView, ConnectionView, CoreCommandOutcomeView,
+    CoreCommandRequestView, CoreCommandResultView, CoreCommandView, CoreDiscoveryResultView,
+    CoreDownloadOfferView, CoreDownloadResultView, CoreRegistryView, DiagnosticExportOutcomeView,
     DiagnosticExportRequestView, DiagnosticExportResultView, Dialog, DiscoveredCoreView,
     DownloadProxySettingsView, DownloadRowView, EngineHealthView, EngineSessionView,
     FileAllocationView, FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch,
@@ -67,12 +67,14 @@ mod core_setup;
 mod details;
 mod dialogs_add;
 mod helpers;
+mod power;
 mod profiles;
 mod settings;
 mod task_list;
 use core_setup::CoreSetupState;
 #[allow(unused_imports)]
 use helpers::*;
+pub use power::PowerCountdownState;
 
 const SPEED_CHART_SAMPLES: usize = 120;
 const TITLEBAR_HEIGHT: f32 = 52.0;
@@ -197,7 +199,8 @@ pub enum AppShellEvent {
     ShowFromTrayRequested,
     /// Fully quit AriaDeck (stops a managed engine on drop).
     QuitRequested,
-    /// Emit an OS-native notification when preference-gated (PLAT-001).
+    /// Execute power action (sleep, hibernate, shutdown) after completion countdown (D5).
+    CompletionPowerActionRequested(CompletionPowerActionView),
     OsNotificationRequested {
         title: String,
         body: String,
@@ -356,6 +359,8 @@ pub(crate) struct SettingsPage {
     draft_close_behavior: CloseBehaviorView,
     draft_show_tray_icon: bool,
     draft_start_minimized_to_tray: bool,
+    draft_keep_awake_while_active: bool,
+    draft_action_after_done: CompletionPowerActionView,
     /// Browser bridge drafts (D-045); saved with System.
     draft_bridge_allow_cookies: bool,
     draft_bridge_auto_submit: bool,
@@ -701,6 +706,13 @@ pub struct AppShell {
     speed_popover_previous_focus: Option<WeakFocusHandle>,
     sort_popover_open: bool,
     context_menu: Option<TaskContextMenu>,
+    power_popover_open: bool,
+    power_countdown: Option<PowerCountdownState>,
+    power_had_active_tasks: bool,
+    power_countdown_dialog_focus: FocusHandle,
+    power_countdown_cancel_focus: FocusHandle,
+    power_countdown_submit_focus: FocusHandle,
+    power_countdown_generation: u64,
     status_notice: Option<StatusNotice>,
     next_notice_id: u64,
     activity_log: Vec<ActivityEntryView>,
@@ -1079,6 +1091,8 @@ impl AppShell {
                 draft_close_behavior: settings.platform.close_behavior,
                 draft_show_tray_icon: settings.platform.show_tray_icon,
                 draft_start_minimized_to_tray: settings.platform.start_minimized_to_tray,
+                draft_keep_awake_while_active: settings.platform.keep_awake_while_active,
+                draft_action_after_done: settings.platform.action_after_done,
                 draft_bridge_allow_cookies: settings.browser_bridge.allow_cookies,
                 draft_bridge_auto_submit: settings.browser_bridge.auto_submit,
                 draft_categories: settings.categories.clone(),
@@ -1127,6 +1141,13 @@ impl AppShell {
             speed_popover_open: false,
             speed_popover_previous_focus: None,
             sort_popover_open: false,
+            power_popover_open: false,
+            power_countdown: None,
+            power_had_active_tasks: false,
+            power_countdown_dialog_focus: cx.focus_handle(),
+            power_countdown_cancel_focus: cx.focus_handle().tab_stop(true),
+            power_countdown_submit_focus: cx.focus_handle().tab_stop(true),
+            power_countdown_generation: 0,
             context_menu: None,
             status_notice: None,
             next_notice_id: 1,
@@ -1186,6 +1207,7 @@ impl AppShell {
             self.snapshot.stopped_history = snapshot.stopped_history;
             self.snapshot.capabilities = snapshot.capabilities;
             self.snapshot.local_path_actions_available = snapshot.local_path_actions_available;
+            self.check_power_action_trigger(cx);
             cx.notify();
             return;
         }
@@ -1349,6 +1371,7 @@ impl AppShell {
             // Revision-only refreshes are rate-limited; session/follow always run.
             self.request_current_details(!force_details_refresh && details_revision_advanced, cx);
         }
+        self.check_power_action_trigger(cx);
         cx.notify();
     }
 
@@ -2253,7 +2276,9 @@ impl AppShell {
     }
 
     fn clear_search(&mut self, _: &ClearSearch, window: &mut Window, cx: &mut Context<Self>) {
-        if self.context_menu.take().is_some() {
+        if self.power_countdown.is_some() {
+            self.cancel_power_countdown(cx);
+        } else if self.context_menu.take().is_some() {
             cx.notify();
         } else if self.activity_panel_open {
             self.close_activity_panel(window, cx);
@@ -2261,6 +2286,8 @@ impl AppShell {
             self.close_sort_popover(cx);
         } else if self.speed_popover_open {
             self.close_speed_popover(window, cx);
+        } else if self.power_popover_open {
+            self.close_power_popover(cx);
         } else if self.output_name_dialog.is_some() {
             self.close_task_output_name(window, cx);
         } else if self.task_speed_limit_dialog.is_some() {
@@ -2545,6 +2572,11 @@ impl AppShell {
         self.snapshot.tray_tooltip()
     }
 
+    #[must_use]
+    pub fn has_active_downloads(&self) -> bool {
+        self.snapshot.has_active_downloads()
+    }
+
     /// Surface a low-disk warning once per free-space recovery (PLAT-001).
     pub fn report_disk_space(&mut self, available_bytes: Option<u64>, cx: &mut Context<Self>) {
         let prefs = self.settings.notifications;
@@ -2712,6 +2744,12 @@ impl Render for AppShell {
             })
             .when(self.speed_popover_open, |element| {
                 element.child(self.render_speed_popover(cx))
+            })
+            .when(self.power_popover_open, |element| {
+                element.child(self.render_power_popover(cx))
+            })
+            .when(self.power_countdown.is_some(), |element| {
+                element.child(self.render_power_countdown_dialog(cx))
             })
             .when(self.activity_panel_open, |element| {
                 element.child(self.render_activity_panel(cx))

@@ -484,6 +484,11 @@ impl Default for WorkspaceSnapshot {
 }
 
 impl WorkspaceSnapshot {
+    #[must_use]
+    pub fn has_active_downloads(&self) -> bool {
+        self.counts.active > 0
+    }
+
     /// Compact transfer summary for the system-tray tooltip (PLAT-001).
     #[must_use]
     pub fn tray_tooltip(&self) -> String {
@@ -512,7 +517,6 @@ impl WorkspaceSnapshot {
         self.connection.is_connected() && !self.stale && self.engine_session().is_some()
     }
 }
-
 /// Opaque UI representation of one exact engine connection session.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct EngineSessionView {
@@ -1739,12 +1743,58 @@ impl CloseBehaviorView {
     }
 }
 
-/// Platform window/tray preferences (PLAT-001).
+/// Action to perform when all active downloads complete.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CompletionPowerActionView {
+    #[default]
+    None,
+    Sleep,
+    Hibernate,
+    Shutdown,
+}
+
+impl CompletionPowerActionView {
+    pub const ALL: [Self; 4] = [Self::None, Self::Sleep, Self::Hibernate, Self::Shutdown];
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Sleep => "sleep",
+            Self::Hibernate => "hibernate",
+            Self::Shutdown => "shutdown",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::None => "Do nothing",
+            Self::Sleep => "Sleep",
+            Self::Hibernate => "Hibernate",
+            Self::Shutdown => "Shut down",
+        }
+    }
+
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::None => "settings-action-none",
+            Self::Sleep => "settings-action-sleep",
+            Self::Hibernate => "settings-action-hibernate",
+            Self::Shutdown => "settings-action-shutdown",
+        }
+    }
+
+    pub const fn is_armed(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
+/// Platform window/tray and power preferences (PLAT-001).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PlatformSettingsView {
     pub close_behavior: CloseBehaviorView,
     pub show_tray_icon: bool,
     pub start_minimized_to_tray: bool,
+    pub keep_awake_while_active: bool,
+    pub action_after_done: CompletionPowerActionView,
 }
 
 impl Default for PlatformSettingsView {
@@ -1753,6 +1803,8 @@ impl Default for PlatformSettingsView {
             close_behavior: CloseBehaviorView::MinimizeToTray,
             show_tray_icon: true,
             start_minimized_to_tray: false,
+            keep_awake_while_active: true,
+            action_after_done: CompletionPowerActionView::None,
         }
     }
 }

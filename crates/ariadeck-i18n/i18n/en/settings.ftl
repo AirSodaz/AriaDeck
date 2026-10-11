@@ -113,6 +113,16 @@ settings-close-minimize = Minimize to tray
 settings-close-quit = Quit
 settings-tray-hint = Tray menu: Show AriaDeck, Pause all, Resume all, Quit. Managed aria2 is owned by this process and stops on quit; remote profiles keep their engines running.
 
+settings-power = Power management
+settings-keep-awake = Prevent sleep while downloading
+settings-keep-awake-desc = Keep the computer awake while downloads are active.
+settings-action-after-done = When all downloads complete
+settings-action-after-done-desc = Choose an action to perform after all active downloads finish.
+settings-action-none = Do nothing
+settings-action-sleep = Sleep
+settings-action-hibernate = Hibernate
+settings-action-shutdown = Shut down
+
 settings-bridge = Browser bridge
 settings-bridge-auto-submit = Add without confirming
 settings-bridge-auto-submit-desc = Start downloads handed over by the browser extension immediately instead of filling the Add Download dialog. Every add still leaves a notice and an activity entry.

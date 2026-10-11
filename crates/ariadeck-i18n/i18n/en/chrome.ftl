@@ -124,3 +124,7 @@ ui-output-name-restart = Changing an active task's output name may restart its t
 ui-reconnect-refresh-details = Reconnect to refresh files for the current engine session.
 ui-requesting-details = Requesting file metadata from this aria2 session.
 filter-category-all = All categories
+power-status-label = On completion: { $action }
+power-status-aria = When downloads complete: { $action }
+power-popover-title = When downloads complete
+power-keep-awake = Keep awake while downloading

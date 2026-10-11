@@ -193,3 +193,15 @@ dialog-core-setup-open-settings = Open engine settings
 dialog-core-setup-open-settings-aria = Close this guide and open Settings, Engine
 dialog-core-setup-dismiss = Not now
 dialog-core-setup-dismiss-aria = Close the aria2 setup guide without choosing a core
+
+# D5 — completion power actions
+dialog-power-countdown-title = All downloads completed
+dialog-power-countdown-desc = The computer will { $action } in { $seconds } seconds.
+dialog-power-cancel = Cancel
+dialog-power-execute-now = { $action } now
+power-action-verb-sleep = enter sleep mode
+power-action-verb-hibernate = hibernate
+power-action-verb-shutdown = shut down
+power-action-btn-sleep = Sleep now
+power-action-btn-hibernate = Hibernate now
+power-action-btn-shutdown = Shut down now

@@ -2026,6 +2026,28 @@ fn settings_mapping_allocates_a_credential_reference_without_exposing_the_passwo
 }
 
 #[test]
+fn settings_mapping_round_trips_platform_power_settings() {
+    let mut app = AppSettings::new("D:/Downloads");
+    app.platform.keep_awake_while_active = false;
+    app.platform.action_after_done = CompletionPowerAction::Shutdown;
+
+    let view = map_settings(&app);
+    assert!(!view.platform.keep_awake_while_active);
+    assert_eq!(
+        view.platform.action_after_done,
+        CompletionPowerActionView::Shutdown
+    );
+
+    let (round_tripped, _) = map_settings_request(&view, &app, ProxyPasswordUpdateView::Unchanged)
+        .expect("map settings request");
+    assert!(!round_tripped.platform.keep_awake_while_active);
+    assert_eq!(
+        round_tripped.platform.action_after_done,
+        CompletionPowerAction::Shutdown
+    );
+}
+
+#[test]
 fn settings_mapping_clears_the_credential_only_when_explicitly_requested() {
     let credential = ProxyCredentialRef::new();
     let mut current = AppSettings::new("D:/Downloads");

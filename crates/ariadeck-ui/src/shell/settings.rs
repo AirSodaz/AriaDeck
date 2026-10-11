@@ -165,6 +165,9 @@ impl AppShell {
         self.settings_page.draft_show_tray_icon = settings.platform.show_tray_icon;
         self.settings_page.draft_start_minimized_to_tray =
             settings.platform.start_minimized_to_tray;
+        self.settings_page.draft_keep_awake_while_active =
+            settings.platform.keep_awake_while_active;
+        self.settings_page.draft_action_after_done = settings.platform.action_after_done;
         self.settings_page.draft_bridge_allow_cookies = settings.browser_bridge.allow_cookies;
         self.settings_page.draft_bridge_auto_submit = settings.browser_bridge.auto_submit;
         self.settings_page.draft_tracker_enabled = settings.tracker_list.enabled;
@@ -360,6 +363,8 @@ impl AppShell {
             draft_close_behavior: self.settings.platform.close_behavior,
             draft_show_tray_icon: self.settings.platform.show_tray_icon,
             draft_start_minimized_to_tray: self.settings.platform.start_minimized_to_tray,
+            draft_keep_awake_while_active: self.settings.platform.keep_awake_while_active,
+            draft_action_after_done: self.settings.platform.action_after_done,
             draft_bridge_allow_cookies: self.settings.browser_bridge.allow_cookies,
             draft_bridge_auto_submit: self.settings.browser_bridge.auto_submit,
             draft_categories: self.settings.categories.clone(),
@@ -992,6 +997,8 @@ impl AppShell {
             close_behavior: self.settings_page.draft_close_behavior,
             show_tray_icon: self.settings_page.draft_show_tray_icon,
             start_minimized_to_tray: self.settings_page.draft_start_minimized_to_tray,
+            keep_awake_while_active: self.settings_page.draft_keep_awake_while_active,
+            action_after_done: self.settings_page.draft_action_after_done,
         };
         let bridge_draft = self.browser_bridge_draft();
         if draft == self.settings.platform && bridge_draft == self.settings.browser_bridge {
@@ -1114,6 +1121,31 @@ impl AppShell {
         }
         self.settings_page.draft_start_minimized_to_tray =
             !self.settings_page.draft_start_minimized_to_tray;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+    pub(crate) fn select_draft_completion_action(
+        &mut self,
+        action: CompletionPowerActionView,
+        cx: &mut Context<Self>,
+    ) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        if self.settings_page.draft_action_after_done == action {
+            return;
+        }
+        self.settings_page.draft_action_after_done = action;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_draft_keep_awake(&mut self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+            return;
+        }
+        self.settings_page.draft_keep_awake_while_active =
+            !self.settings_page.draft_keep_awake_while_active;
         self.settings_page.error = None;
         cx.notify();
     }
@@ -1681,6 +1713,8 @@ impl AppShell {
                     close_behavior: self.settings_page.draft_close_behavior,
                     show_tray_icon: self.settings_page.draft_show_tray_icon,
                     start_minimized_to_tray: self.settings_page.draft_start_minimized_to_tray,
+                    keep_awake_while_active: self.settings_page.draft_keep_awake_while_active,
+                    action_after_done: self.settings_page.draft_action_after_done,
                 };
                 let dirty = platform_draft != self.settings.platform
                     || self.browser_bridge_draft() != self.settings.browser_bridge;
@@ -3575,6 +3609,54 @@ impl AppShell {
     pub(crate) fn render_settings_system(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
         let pending = self.pending_settings_save.is_some();
+        let draft_keep_awake = self.settings_page.draft_keep_awake_while_active;
+        let action_after_done_selected = CompletionPowerActionView::ALL
+            .iter()
+            .position(|action| *action == self.settings_page.draft_action_after_done)
+            .unwrap_or(0);
+        let action_shell = cx.entity().downgrade();
+        let action_control = SegmentedControl::new(
+            "settings-action-after-done",
+            CompletionPowerActionView::ALL.map(|action| Segment::new(self.t(action.message_key()))),
+            action_after_done_selected,
+            self.theme,
+        )
+        .aria_label(self.t("settings-action-after-done"))
+        .disabled(pending)
+        .on_select(move |index, _window, cx| {
+            let action = CompletionPowerActionView::ALL
+                .get(index)
+                .copied()
+                .unwrap_or_default();
+            action_shell
+                .update(cx, |shell, cx| {
+                    shell.select_draft_completion_action(action, cx)
+                })
+                .ok();
+        });
+        let s_power = cx.entity().downgrade();
+        let power_section = settings_section_owned(self.t("settings-power"), colors)
+            .child(settings_section_row_owned(
+                self.t("settings-keep-awake"),
+                Some(self.t("settings-keep-awake-desc")),
+                Toggle::new("toggle-keep-awake", draft_keep_awake)
+                    .aria_label(self.t("settings-keep-awake"))
+                    .disabled(pending)
+                    .on_click(move |_, _, cx| {
+                        s_power
+                            .update(cx, |shell, cx| shell.toggle_draft_keep_awake(cx))
+                            .ok();
+                    })
+                    .render(colors),
+                colors,
+            ))
+            .child(settings_section_row_owned(
+                self.t("settings-action-after-done"),
+                Some(self.t("settings-action-after-done-desc")),
+                action_control,
+                colors,
+            ));
+
         let draft_show_tray = self.settings_page.draft_show_tray_icon;
         let draft_start_minimized = self.settings_page.draft_start_minimized_to_tray;
         let close_behavior_selected = CloseBehaviorView::all()
@@ -3691,6 +3773,7 @@ impl AppShell {
             .flex()
             .flex_col()
             .gap_6()
+            .child(power_section)
             .child(tray_section)
             .child(bridge_section)
     }

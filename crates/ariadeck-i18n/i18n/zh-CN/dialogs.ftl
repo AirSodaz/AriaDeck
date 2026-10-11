@@ -175,3 +175,15 @@ dialog-core-setup-open-settings = 打开引擎设置
 dialog-core-setup-open-settings-aria = 关闭本引导并打开“设置 > 引擎”
 dialog-core-setup-dismiss = 暂不设置
 dialog-core-setup-dismiss-aria = 不选择核心，关闭 aria2 设置引导
+
+# D5 — 完成后电源操作
+dialog-power-countdown-title = 全部下载已完成
+dialog-power-countdown-desc = 计算机将在 { $seconds } 秒后{ $action }。
+dialog-power-cancel = 取消
+dialog-power-execute-now = 立即{ $action }
+power-action-verb-sleep = 进入睡眠
+power-action-verb-hibernate = 进入休眠
+power-action-verb-shutdown = 关机
+power-action-btn-sleep = 立即睡眠
+power-action-btn-hibernate = 立即休眠
+power-action-btn-shutdown = 立即关机

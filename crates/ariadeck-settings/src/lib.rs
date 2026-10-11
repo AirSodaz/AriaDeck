@@ -665,13 +665,43 @@ pub enum CloseBehavior {
     Quit,
 }
 
-/// Platform window/tray preferences (schema v6).
+/// What power management action to take when all active downloads finish.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionPowerAction {
+    #[default]
+    None,
+    Sleep,
+    Hibernate,
+    Shutdown,
+}
+
+impl CompletionPowerAction {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Sleep => "sleep",
+            Self::Hibernate => "hibernate",
+            Self::Shutdown => "shutdown",
+        }
+    }
+
+    pub const fn is_armed(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
+/// Platform window/tray and power preferences (schema v6).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformSettings {
     pub close_behavior: CloseBehavior,
     pub show_tray_icon: bool,
     pub start_minimized_to_tray: bool,
+    #[serde(default = "default_true")]
+    pub keep_awake_while_active: bool,
+    #[serde(default)]
+    pub action_after_done: CompletionPowerAction,
 }
 
 impl Default for PlatformSettings {
@@ -680,6 +710,8 @@ impl Default for PlatformSettings {
             close_behavior: CloseBehavior::MinimizeToTray,
             show_tray_icon: true,
             start_minimized_to_tray: false,
+            keep_awake_while_active: true,
+            action_after_done: CompletionPowerAction::None,
         }
     }
 }
@@ -858,7 +890,10 @@ impl SettingsExportDocument {
             speed_limits: settings.speed_limits,
             transfer_policy: settings.transfer_policy,
             notifications: settings.notifications,
-            platform: settings.platform,
+            platform: PlatformSettings {
+                action_after_done: CompletionPowerAction::None,
+                ..settings.platform
+            },
             browser_bridge: SettingsExportBrowserBridge::from(&settings.browser_bridge),
             ui: settings.ui,
             categories: settings.categories.clone(),
@@ -907,7 +942,10 @@ impl SettingsExportDocument {
             speed_limits: self.speed_limits,
             transfer_policy: self.transfer_policy,
             notifications: self.notifications,
-            platform: self.platform,
+            platform: PlatformSettings {
+                action_after_done: CompletionPowerAction::None,
+                ..self.platform
+            },
             browser_bridge: BrowserBridgeSettings {
                 // An import never turns cookie forwarding on; see
                 // SettingsExportBrowserBridge.
@@ -1727,6 +1765,18 @@ mod tests {
     }
 
     #[test]
+    fn platform_settings_default_keep_awake_and_action() {
+        let defaults = PlatformSettings::default();
+        assert!(defaults.keep_awake_while_active);
+        assert_eq!(defaults.action_after_done, CompletionPowerAction::None);
+        assert!(!defaults.action_after_done.is_armed());
+        assert_eq!(defaults.action_after_done.as_str(), "none");
+        assert!(CompletionPowerAction::Sleep.is_armed());
+        assert!(CompletionPowerAction::Hibernate.is_armed());
+        assert!(CompletionPowerAction::Shutdown.is_armed());
+    }
+
+    #[test]
     fn platform_settings_round_trip() {
         let root = tempfile::tempdir().expect("temporary directory");
         let store = JsonSettingsStore::new(root.path().join("settings.json"));
@@ -1735,6 +1785,8 @@ mod tests {
             close_behavior: CloseBehavior::Quit,
             show_tray_icon: false,
             start_minimized_to_tray: true,
+            keep_awake_while_active: false,
+            action_after_done: CompletionPowerAction::Shutdown,
         };
         expected.notifications.os_notifications = false;
         expected.notifications.notify_on_low_disk = false;
@@ -1744,6 +1796,41 @@ mod tests {
         assert_eq!(store.load().expect("load platform settings"), expected);
     }
 
+    #[test]
+    fn platform_settings_backward_compatibility_when_fields_missing() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let store = JsonSettingsStore::new(root.path().join("settings.json"));
+        let legacy_json = concat!(
+            r#"{"schema_version":1,"color_scheme":"dark","language":"system","download_directory":"downloads","#,
+            r#""download_proxy":{"mode":"disabled","all_proxy":null,"http_proxy":null,"https_proxy":null,"ftp_proxy":null,"no_proxy":[],"username":null,"credential":null,"check_certificate":true},"#,
+            r#""speed_limits":{"download_limit":0,"upload_limit":0},"#,
+            r#""transfer_policy":{"max_concurrent_downloads":5,"max_connection_per_server":1,"split":5,"min_split_size":20971520,"file_allocation":"prealloc","check_integrity":false},"#,
+            r#""notifications":{"volume":"normal","notify_on_completion":true,"notify_on_error":true,"notify_on_engine_events":true,"os_notifications":false,"notify_on_low_disk":true,"low_disk_threshold_bytes":1073741824},"#,
+            r#""platform":{"close_behavior":"minimize_to_tray","show_tray_icon":true,"start_minimized_to_tray":false},"#,
+            r#""ui":{"list_filter":"all","list_sort_key":"queue","list_sort_direction":"ascending"},"#,
+            r#""categories":[{"id":"00000000-0000-4000-8000-000000000001","name":"General","directory":"downloads","extensions":[],"is_fallback":true}],"#,
+            r#""tracker_list":{"enabled":false,"source":"curated","custom_url":null,"auto_refresh":false,"last_refreshed_at":null,"list_text":""}}"#
+        );
+        std::fs::write(store.path(), legacy_json).expect("seed legacy settings");
+        let loaded = store.load().expect("load legacy settings");
+        assert!(loaded.platform.keep_awake_while_active);
+        assert_eq!(
+            loaded.platform.action_after_done,
+            CompletionPowerAction::None
+        );
+    }
+
+    #[test]
+    fn platform_settings_export_sanitizes_armed_action() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let mut source = settings(root.path());
+        source.platform.action_after_done = CompletionPowerAction::Shutdown;
+        let exported = export_settings_json(&source).expect("export settings");
+        assert!(
+            exported.contains(r#""action_after_done": "none""#),
+            "{exported}"
+        );
+    }
     #[test]
     fn browser_bridge_settings_default_off_and_round_trip() {
         assert_eq!(

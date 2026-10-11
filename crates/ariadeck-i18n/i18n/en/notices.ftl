@@ -117,3 +117,7 @@ cmd-remove-files-success = Task removed and local files moved to the Recycle Bin
 notice-core-downloading = Downloading and verifying aria2...
 notice-core-download-installed = aria2 { $version } downloaded and verified. Activate it in Settings > Engine, then restart AriaDeck.
 notice-core-download-unavailable = No verified aria2 download is published for this platform.
+
+# D5 — completion power actions
+notice-power-action-cancelled = Scheduled power action cancelled.
+notice-power-action-armed = Will { $action } when all downloads complete.

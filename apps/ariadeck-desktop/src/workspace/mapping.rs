@@ -1034,6 +1034,28 @@ pub(crate) fn map_profile_catalog_request(
     Ok(catalog)
 }
 
+pub(crate) fn map_completion_power_action_to_view(
+    action: CompletionPowerAction,
+) -> CompletionPowerActionView {
+    match action {
+        CompletionPowerAction::None => CompletionPowerActionView::None,
+        CompletionPowerAction::Sleep => CompletionPowerActionView::Sleep,
+        CompletionPowerAction::Hibernate => CompletionPowerActionView::Hibernate,
+        CompletionPowerAction::Shutdown => CompletionPowerActionView::Shutdown,
+    }
+}
+
+pub(crate) fn map_view_completion_power_action_to_app(
+    action: CompletionPowerActionView,
+) -> CompletionPowerAction {
+    match action {
+        CompletionPowerActionView::None => CompletionPowerAction::None,
+        CompletionPowerActionView::Sleep => CompletionPowerAction::Sleep,
+        CompletionPowerActionView::Hibernate => CompletionPowerAction::Hibernate,
+        CompletionPowerActionView::Shutdown => CompletionPowerAction::Shutdown,
+    }
+}
+
 pub(crate) fn map_settings(settings: &AppSettings) -> SettingsView {
     SettingsView {
         color_scheme: match settings.color_scheme {
@@ -1121,6 +1143,10 @@ pub(crate) fn map_settings(settings: &AppSettings) -> SettingsView {
             },
             show_tray_icon: settings.platform.show_tray_icon,
             start_minimized_to_tray: settings.platform.start_minimized_to_tray,
+            keep_awake_while_active: settings.platform.keep_awake_while_active,
+            action_after_done: map_completion_power_action_to_view(
+                settings.platform.action_after_done,
+            ),
         },
         browser_bridge: BrowserBridgeSettingsView {
             allow_cookies: settings.browser_bridge.allow_cookies,
@@ -1267,6 +1293,8 @@ pub(crate) fn map_settings_request(
             },
             show_tray_icon: settings.platform.show_tray_icon,
             start_minimized_to_tray: settings.platform.start_minimized_to_tray,
+            keep_awake_while_active: settings.platform.keep_awake_while_active,
+            action_after_done: map_view_completion_power_action_to_app(settings.platform.action_after_done),
         },
         browser_bridge: ariadeck_settings::BrowserBridgeSettings {
             allow_cookies: settings.browser_bridge.allow_cookies,

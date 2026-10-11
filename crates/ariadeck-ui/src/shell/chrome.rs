@@ -656,6 +656,7 @@ impl AppShell {
                     )
                 },
             )
+            .child(self.render_power_status_bar_item(cx))
             .child({
                 let activity_count = self.activity_log.len();
                 let activity_label = if activity_count == 0 {
@@ -670,7 +671,6 @@ impl AppShell {
                     .role(Role::Button)
                     .aria_label(activity_label)
                     .aria_expanded(self.activity_panel_open)
-                    .ml_auto()
                     .h_full()
                     .px_2()
                     .flex()
