@@ -1183,38 +1183,12 @@ impl AppShell {
             &[("name", FluentValue::from(display_name))],
         );
         let file_choice = if local_files_available {
-            div()
-                .id("remove-task-files")
-                .role(Role::CheckBox)
-                .aria_label(self.t("dialog-remove-files-aria"))
-                .aria_toggled(if delete_files {
-                    Toggled::True
-                } else {
-                    Toggled::False
-                })
-                .focusable()
-                .tab_stop(true)
-                .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
-                .flex()
-                .items_start()
-                .gap_2()
-                .cursor_pointer()
+            Checkbox::new("remove-task-files")
+                .checked(delete_files)
+                .accessibility_label(self.t("dialog-remove-files-aria"))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.toggle_remove_files(cx);
                 }))
-                .child(
-                    Icon::new(if delete_files {
-                        IconName::SquareCheckBig
-                    } else {
-                        IconName::Square
-                    })
-                    .size(IconSize::Small)
-                    .color(if delete_files {
-                        colors.danger
-                    } else {
-                        colors.text_muted
-                    }),
-                )
                 .child(
                     div()
                         .flex()

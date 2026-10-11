@@ -29,9 +29,10 @@ pub use actions::{
 };
 pub use app_assets::Assets;
 pub use components::{
-    Button, ButtonStyle, ButtonVariant, Dialog, Icon, IconButton, IconName, IconSize,
-    LoadingIndicator, Segment, SegmentedControl, StatusIndicator, Toast, ToastKind, Toggle,
-    Tooltip,
+    Badge, Button, ButtonStyle, ButtonVariant, Checkbox, Dialog, Icon, IconButton, IconName,
+    IconSize, Kbd, LoadingIndicator, Notification, Progress, ProgressCircle, Segment,
+    SegmentedControl, Spinner, StatusIndicator, Switch, Tab, TabBar, TabVariant, Tag, TagVariant,
+    Toast, ToastKind, Toggle, Tooltip,
 };
 pub use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 pub use model::{

@@ -1,6 +1,7 @@
 //! Free functions and small UI helpers used by AppShell render/logic paths.
 
 use super::*;
+use gpui_kit::component::Sizable as _;
 // Re-exported via parent `use helpers::*` for AppShell and tests.
 
 pub(crate) fn titlebar_drag_region() -> Div {
@@ -678,7 +679,15 @@ pub(crate) fn task_overview_summary(task: &DownloadRowView, colors: crate::Theme
                         .child(eta_label),
                 ),
         )
-        .child(task_progress_bar(progress, task.status, colors).h(px(5.0)))
+        .child(
+            task_progress_bar_with_id(
+                SharedString::from(format!("task-overview-progress-{}", task.identity.gid)),
+                progress,
+                task.status,
+                colors,
+            )
+            .h(px(5.0)),
+        )
         .child(
             div()
                 .flex()
@@ -1027,7 +1036,17 @@ pub(crate) fn task_status_color(status: TaskStatusView, colors: crate::ThemeColo
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn task_progress_bar(
+    progress: f32,
+    status: TaskStatusView,
+    colors: crate::ThemeColors,
+) -> Div {
+    task_progress_bar_with_id("task-progress", progress, status, colors)
+}
+
+pub(crate) fn task_progress_bar_with_id(
+    id: impl Into<gpui::ElementId>,
     progress: f32,
     status: TaskStatusView,
     colors: crate::ThemeColors,
@@ -1038,19 +1057,13 @@ pub(crate) fn task_progress_bar(
         TaskStatusView::Seeding => colors.progress_upload,
         _ => colors.progress_download,
     };
-    div()
-        .h(px(4.0))
-        .w_full()
-        .rounded_full()
-        .overflow_hidden()
-        .bg(colors.progress_track)
-        .child(
-            div()
-                .h_full()
-                .w(relative(progress.clamp(0.0, 1.0)))
-                .rounded_full()
-                .bg(fill),
-        )
+    div().h(px(4.0)).w_full().overflow_hidden().child(
+        gpui_kit::component::progress::Progress::new(id)
+            .with_size(gpui_kit::component::Size::XSmall)
+            .h_full()
+            .value(progress.clamp(0.0, 1.0) * 100.0)
+            .color(fill),
+    )
 }
 
 pub(crate) fn task_table_value(width: f32, value: String, colors: crate::ThemeColors) -> Div {

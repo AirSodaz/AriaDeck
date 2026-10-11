@@ -592,12 +592,12 @@ impl AppShell {
                     .disabled(!commands_available)
                     .loading(pending_global == Some(GlobalTaskCommandView::PauseAll))
                     .tooltip(Tooltip::new(self.t("action-pause-all")))
-                    .render(colors)
                     .when(commands_available, |button| {
                         button.on_click(cx.listener(|this, _, _, cx| {
                             this.begin_global_task_command(GlobalTaskCommandView::PauseAll, cx);
                         }))
-                    }),
+                    })
+                    .render(colors),
             )
             .child(
                 IconButton::new("force-pause-all-action", IconName::Square)
@@ -615,7 +615,6 @@ impl AppShell {
                                 .to_owned()
                         },
                     ))
-                    .render(colors)
                     .when(
                         commands_available && self.snapshot.capabilities.force_pause_all,
                         |button| {
@@ -626,7 +625,8 @@ impl AppShell {
                                 );
                             }))
                         },
-                    ),
+                    )
+                    .render(colors),
             )
             .child(
                 IconButton::new("resume-all-action", IconName::Play)
@@ -635,12 +635,12 @@ impl AppShell {
                     .disabled(!commands_available)
                     .loading(pending_global == Some(GlobalTaskCommandView::ResumeAll))
                     .tooltip(Tooltip::new(self.t("action-resume-all")))
-                    .render(colors)
                     .when(commands_available, |button| {
                         button.on_click(cx.listener(|this, _, _, cx| {
                             this.begin_global_task_command(GlobalTaskCommandView::ResumeAll, cx);
                         }))
-                    }),
+                    })
+                    .render(colors),
             )
             .child(
                 div()
@@ -1603,7 +1603,12 @@ impl AppShell {
                         .text_xs()
                         .text_color(colors.text_secondary)
                         .child(progress_label)
-                        .child(task_progress_bar(progress, task.status, colors)),
+                        .child(task_progress_bar_with_id(
+                            SharedString::from(format!("task-wide-progress-{}", task.identity.gid)),
+                            progress,
+                            task.status,
+                            colors,
+                        )),
                 )
                 .child(task_table_value(88.0, rate_label, colors))
                 .child(task_table_value(124.0, size_label, colors))
@@ -1651,7 +1656,15 @@ impl AppShell {
                         .text_xs()
                         .text_color(colors.text_secondary)
                         .child(progress_label)
-                        .child(task_progress_bar(progress, task.status, colors)),
+                        .child(task_progress_bar_with_id(
+                            SharedString::from(format!(
+                                "task-compact-progress-{}",
+                                task.identity.gid
+                            )),
+                            progress,
+                            task.status,
+                            colors,
+                        )),
                 )
                 .child(
                     div()

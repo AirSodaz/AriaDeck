@@ -23,7 +23,7 @@ use crate::{
     AddDownloadResultView, AddDownloadSourceView, BatchCommandOutcomeView,
     BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
     BatchTaskFailureView, BridgeDownloadView, BrowserBridgeSettingsView, Button, ButtonStyle,
-    ClearSearch, CloseAddDownload, CloseBatchFailures, CloseBehaviorView, CloseCoreSetup,
+    Checkbox, ClearSearch, CloseAddDownload, CloseBatchFailures, CloseBehaviorView, CloseCoreSetup,
     CloseSettings, CloseTaskOptions, CloseTaskOutputName, CloseTaskSpeedLimit, ColorSchemeView,
     CommandOutcomeView, CompletionPowerActionView, ConnectionView, CoreCommandOutcomeView,
     CoreCommandRequestView, CoreCommandResultView, CoreCommandView, CoreDiscoveryResultView,
