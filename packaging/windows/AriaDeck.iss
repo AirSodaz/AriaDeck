@@ -9,7 +9,7 @@
 #define MyAppName "AriaDeck"
 ; Fallback only — both packaging scripts pass /DMyAppVersion from Cargo.toml.
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.1"
+  #define MyAppVersion "0.1.2"
 #endif
 #define MyAppPublisher "AriaDeck contributors"
 #define MyAppExeName "ariadeck-desktop.exe"
