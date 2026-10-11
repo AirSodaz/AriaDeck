@@ -421,6 +421,7 @@ dependencies = [
  "ariadeck-domain",
  "ariadeck-i18n",
  "gpui-kit",
+ "rust-embed",
 ]
 
 [[package]]

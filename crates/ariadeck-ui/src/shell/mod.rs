@@ -464,11 +464,11 @@ impl SettingsCategory {
     const fn icon(self) -> crate::IconName {
         match self {
             Self::General => crate::IconName::Sun,
-            Self::Profiles => crate::IconName::List,
-            Self::Engine => crate::IconName::Activity,
+            Self::Profiles => crate::IconName::Server,
+            Self::Engine => crate::IconName::Cpu,
             Self::Network => crate::IconName::Wifi,
             Self::Transfers => crate::IconName::ArrowDown,
-            Self::Notifications => crate::IconName::Info,
+            Self::Notifications => crate::IconName::Bell,
             Self::System => crate::IconName::Settings,
             Self::About => crate::IconName::CircleHelp,
         }
@@ -784,8 +784,9 @@ impl AppShell {
         }
         theme.sync_to_kit(Some(window), cx);
 
-        let search_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search downloads or GID"));
+        let initial_translator = translator_for_language(settings.language);
+        let search_placeholder = initial_translator.t("search-placeholder");
+        let search_input = cx.new(|cx| InputState::new(window, cx).placeholder(search_placeholder));
         let search_subscription = cx.subscribe(
             &search_input,
             |this: &mut Self, input, event: &InputEvent, cx| {
@@ -800,8 +801,8 @@ impl AppShell {
                 }
             },
         );
-        let add_input =
-            cx.new(|cx| TextareaState::new(window, cx).placeholder("Paste one or more URLs"));
+        let add_placeholder = initial_translator.t("dialog-add-url-placeholder");
+        let add_input = cx.new(|cx| TextareaState::new(window, cx).placeholder(add_placeholder));
         let add_subscription = cx.subscribe(
             &add_input,
             |this: &mut Self, _input, event: &InputEvent, cx| {

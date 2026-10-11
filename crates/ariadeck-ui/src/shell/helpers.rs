@@ -1,7 +1,6 @@
 //! Free functions and small UI helpers used by AppShell render/logic paths.
 
 use super::*;
-use gpui_kit::component::Sizable as _;
 // Re-exported via parent `use helpers::*` for AppShell and tests.
 
 pub(crate) fn titlebar_drag_region() -> Div {
@@ -146,7 +145,7 @@ pub(crate) fn window_control_button(
         .tooltip(Tooltip::text(label, None, colors))
         // Match toolbar IconButton optical size (Medium / 16px) so caption
         // glyphs and chrome actions feel consistent.
-        .child(Icon::new(icon).size(IconSize::Medium).color(idle))
+        .child(Icon::new(icon).size(IconSize::Medium))
 }
 
 pub(crate) fn speed_chart_column(
@@ -1036,17 +1035,7 @@ pub(crate) fn task_status_color(status: TaskStatusView, colors: crate::ThemeColo
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn task_progress_bar(
-    progress: f32,
-    status: TaskStatusView,
-    colors: crate::ThemeColors,
-) -> Div {
-    task_progress_bar_with_id("task-progress", progress, status, colors)
-}
-
-pub(crate) fn task_progress_bar_with_id(
-    id: impl Into<gpui::ElementId>,
     progress: f32,
     status: TaskStatusView,
     colors: crate::ThemeColors,
@@ -1057,13 +1046,25 @@ pub(crate) fn task_progress_bar_with_id(
         TaskStatusView::Seeding => colors.progress_upload,
         _ => colors.progress_download,
     };
-    div().h(px(4.0)).w_full().overflow_hidden().child(
-        gpui_kit::component::progress::Progress::new(id)
-            .with_size(gpui_kit::component::Size::XSmall)
-            .h_full()
-            .value(progress.clamp(0.0, 1.0) * 100.0)
-            .color(fill),
-    )
+    let ratio = progress.clamp(0.0, 1.0);
+    div()
+        .h(px(4.0))
+        .w_full()
+        .rounded_full()
+        .bg(colors.progress_track)
+        .overflow_hidden()
+        .child(div().h_full().w(relative(ratio)).rounded_full().bg(fill))
+}
+
+pub(crate) fn task_progress_bar_with_id(
+    id: impl Into<gpui::ElementId>,
+    progress: f32,
+    status: TaskStatusView,
+    colors: crate::ThemeColors,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .child(task_progress_bar(progress, status, colors))
 }
 
 pub(crate) fn task_table_value(width: f32, value: String, colors: crate::ThemeColors) -> Div {
@@ -1170,4 +1171,108 @@ pub(crate) fn settings_info_row_owned(
                 .text_color(colors.text_secondary)
                 .child(value),
         )
+}
+
+pub(crate) fn category_icon(name: &str) -> IconName {
+    match name.to_ascii_lowercase().as_str() {
+        "compressed" | "压缩包" => IconName::FolderArchive,
+        "documents" | "文档" => IconName::FileText,
+        "music" | "音乐" => IconName::Music,
+        "video" | "视频" => IconName::Video,
+        "programs" | "程序" => IconName::AppWindow,
+        "images" | "图片" => IconName::Image,
+        _ => IconName::FolderDown,
+    }
+}
+
+pub(crate) fn file_type_icon(filename: &str) -> IconName {
+    let ext = filename
+        .rsplit_once('.')
+        .map(|(_, ext)| ext)
+        .unwrap_or_default();
+    if ext.eq_ignore_ascii_case("zip")
+        || ext.eq_ignore_ascii_case("tar")
+        || ext.eq_ignore_ascii_case("gz")
+        || ext.eq_ignore_ascii_case("7z")
+        || ext.eq_ignore_ascii_case("rar")
+        || ext.eq_ignore_ascii_case("bz2")
+        || ext.eq_ignore_ascii_case("xz")
+        || ext.eq_ignore_ascii_case("zst")
+        || ext.eq_ignore_ascii_case("iso")
+        || ext.eq_ignore_ascii_case("cab")
+        || ext.eq_ignore_ascii_case("dmg")
+        || ext.eq_ignore_ascii_case("torrent")
+    {
+        IconName::FolderArchive
+    } else if ext.eq_ignore_ascii_case("mp4")
+        || ext.eq_ignore_ascii_case("mkv")
+        || ext.eq_ignore_ascii_case("avi")
+        || ext.eq_ignore_ascii_case("mov")
+        || ext.eq_ignore_ascii_case("wmv")
+        || ext.eq_ignore_ascii_case("flv")
+        || ext.eq_ignore_ascii_case("webm")
+        || ext.eq_ignore_ascii_case("m4v")
+        || ext.eq_ignore_ascii_case("rmvb")
+    {
+        IconName::Video
+    } else if ext.eq_ignore_ascii_case("mp3")
+        || ext.eq_ignore_ascii_case("flac")
+        || ext.eq_ignore_ascii_case("wav")
+        || ext.eq_ignore_ascii_case("aac")
+        || ext.eq_ignore_ascii_case("ogg")
+        || ext.eq_ignore_ascii_case("m4a")
+        || ext.eq_ignore_ascii_case("wma")
+        || ext.eq_ignore_ascii_case("ape")
+    {
+        IconName::Music
+    } else if ext.eq_ignore_ascii_case("pdf")
+        || ext.eq_ignore_ascii_case("doc")
+        || ext.eq_ignore_ascii_case("docx")
+        || ext.eq_ignore_ascii_case("txt")
+        || ext.eq_ignore_ascii_case("md")
+        || ext.eq_ignore_ascii_case("epub")
+        || ext.eq_ignore_ascii_case("mobi")
+        || ext.eq_ignore_ascii_case("ppt")
+        || ext.eq_ignore_ascii_case("pptx")
+        || ext.eq_ignore_ascii_case("xls")
+        || ext.eq_ignore_ascii_case("xlsx")
+        || ext.eq_ignore_ascii_case("csv")
+    {
+        IconName::FileText
+    } else if ext.eq_ignore_ascii_case("exe")
+        || ext.eq_ignore_ascii_case("msi")
+        || ext.eq_ignore_ascii_case("pkg")
+        || ext.eq_ignore_ascii_case("deb")
+        || ext.eq_ignore_ascii_case("rpm")
+        || ext.eq_ignore_ascii_case("apk")
+        || ext.eq_ignore_ascii_case("appimage")
+    {
+        IconName::AppWindow
+    } else if ext.eq_ignore_ascii_case("jpg")
+        || ext.eq_ignore_ascii_case("jpeg")
+        || ext.eq_ignore_ascii_case("png")
+        || ext.eq_ignore_ascii_case("gif")
+        || ext.eq_ignore_ascii_case("webp")
+        || ext.eq_ignore_ascii_case("svg")
+        || ext.eq_ignore_ascii_case("bmp")
+        || ext.eq_ignore_ascii_case("ico")
+        || ext.eq_ignore_ascii_case("tiff")
+    {
+        IconName::Image
+    } else {
+        IconName::File
+    }
+}
+
+pub(crate) fn category_display_name(name: &str, shell: &AppShell) -> String {
+    match name.to_ascii_lowercase().as_str() {
+        "general" => shell.t("category-general"),
+        "compressed" => shell.t("category-compressed"),
+        "documents" => shell.t("category-documents"),
+        "music" => shell.t("category-music"),
+        "video" => shell.t("category-video"),
+        "programs" => shell.t("category-programs"),
+        "images" => shell.t("category-images"),
+        _ => name.to_owned(),
+    }
 }

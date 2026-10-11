@@ -23,7 +23,7 @@ impl AppShell {
             Toggled::Mixed => IconName::SquareMinus,
         };
         let header = div()
-            .h(px(32.0))
+            .h(px(36.0))
             .flex_none()
             .flex()
             .items_center()
@@ -34,7 +34,7 @@ impl AppShell {
             .bg(colors.toolbar_surface)
             .text_xs()
             .font_weight(FontWeight::MEDIUM)
-            .text_color(colors.text_muted)
+            .text_color(colors.text_secondary)
             .child(
                 div()
                     .id("select-all-tasks")
@@ -124,39 +124,40 @@ impl AppShell {
         let task_count = self.snapshot.tasks.len();
         let selected_count = self.visible_selected_task_count();
         let hidden_selected_count = self.selected_tasks.len().saturating_sub(selected_count);
-        let content =
-            if task_count == 0 {
-                self.render_empty_state(cx)
-            } else {
-                div()
-                    .id("download-task-list")
-                    .role(Role::List)
-                    .aria_label(self.t_count(
-                        "download-list-aria",
-                        u64::try_from(task_count).unwrap_or(u64::MAX),
-                    ))
-                    .size_full()
-                    .child(
-                        uniform_list(
-                            "download-tasks",
-                            task_count,
-                            cx.processor(move |this, range: Range<usize>, _window, cx| {
-                                this.rendered_range = range.clone();
-                                range
-                                    .filter_map(|index| {
-                                        this.snapshot.tasks.get(index).cloned().map(|task| {
-                                            this.render_task_row(index, task, layout, cx)
-                                        })
-                                    })
-                                    .collect::<Vec<_>>()
-                            }),
-                        )
-                        .track_scroll(&self.list_scroll)
-                        .h_full()
-                        .w_full(),
+        let content = if task_count == 0 {
+            self.render_empty_state(cx)
+        } else {
+            div()
+                .id("download-task-list")
+                .role(Role::List)
+                .aria_label(self.t_count(
+                    "download-list-aria",
+                    u64::try_from(task_count).unwrap_or(u64::MAX),
+                ))
+                .size_full()
+                .overflow_hidden()
+                .child(
+                    uniform_list(
+                        "download-tasks",
+                        task_count,
+                        cx.processor(move |this, range: Range<usize>, _window, cx| {
+                            this.rendered_range = range.clone();
+                            range
+                                .filter_map(|index| {
+                                    this.snapshot
+                                        .tasks
+                                        .get(index)
+                                        .map(|task| this.render_task_row(index, task, layout, cx))
+                                })
+                                .collect::<Vec<_>>()
+                        }),
                     )
-                    .into_any_element()
-            };
+                    .track_scroll(&self.list_scroll)
+                    .h_full()
+                    .w_full(),
+                )
+                .into_any_element()
+        };
 
         let center = div()
             .flex_1()
@@ -1311,19 +1312,15 @@ impl AppShell {
     }
 
     pub(crate) fn render_task_row(
-        &mut self,
+        &self,
         index: usize,
-        task: DownloadRowView,
+        task: &DownloadRowView,
         layout: TaskLayoutMode,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> Stateful<Div> {
         let colors = self.theme.colors;
         let focused = self.selected.as_ref() == Some(&task.identity);
         let selected = self.selected_tasks.contains(&task.identity);
-        let stable_id = SharedString::from(format!(
-            "task-row:{}:{}",
-            task.identity.profile_id, task.identity.gid
-        ));
         let task_count = self.snapshot.tasks.len();
         let basis_points = task.progress_basis_points();
         let progress = f32::from(basis_points.unwrap_or(0)) / 10_000.0;
@@ -1331,7 +1328,7 @@ impl AppShell {
         let share_ratio = format_share_ratio(task.share_ratio_milli());
         let observed_seeding = format_eta(task.observed_seeding_seconds);
         let status_color = task_status_color(task.status, colors);
-        let display_name = task_display_name(&task);
+        let display_name = task_display_name(task);
         let size_label = if task.total_bytes == 0 {
             format_bytes(task.completed_bytes)
         } else {
@@ -1355,82 +1352,6 @@ impl AppShell {
                 },
             )
         });
-        let aria_label = if seeding {
-            self.t_args(
-                "task-seeding-aria",
-                &[
-                    ("name", FluentValue::from(display_name.as_str())),
-                    ("status", FluentValue::from(self.t("task-status-seeding"))),
-                    ("ratio", FluentValue::from(share_ratio.as_str())),
-                    (
-                        "uploaded",
-                        FluentValue::from(format_bytes(task.uploaded_bytes)),
-                    ),
-                    ("rate", FluentValue::from(format_rate(task.upload_rate))),
-                    ("time", FluentValue::from(observed_seeding.as_str())),
-                ],
-            )
-        } else {
-            self.t_args(
-                "task-row-aria",
-                &[
-                    ("name", FluentValue::from(display_name.as_str())),
-                    (
-                        "status",
-                        FluentValue::from(self.t(task.status.message_key())),
-                    ),
-                    ("progress", FluentValue::from(format_percent(basis_points))),
-                    ("rate", FluentValue::from(format_rate(task.download_rate))),
-                    ("eta", FluentValue::from(format_eta(task.eta_seconds))),
-                ],
-            )
-        };
-        let aria_label = task_error_label
-            .as_ref()
-            .map_or(aria_label.clone(), |error| {
-                self.t_args(
-                    "task-row-with-error-aria",
-                    &[
-                        ("task", FluentValue::from(aria_label.as_str())),
-                        ("error", FluentValue::from(error.as_str())),
-                    ],
-                )
-            });
-        let wide_secondary_label = task_error_label.clone().unwrap_or_else(|| {
-            self.t_args(
-                "task-gid-label",
-                &[("gid", FluentValue::from(task.identity.gid.as_str()))],
-            )
-        });
-        let compact_secondary_label = task_error_label.clone().unwrap_or_else(|| {
-            if seeding {
-                self.t_args(
-                    "task-seeding-secondary",
-                    &[
-                        (
-                            "uploaded",
-                            FluentValue::from(format_bytes(task.uploaded_bytes)),
-                        ),
-                        ("rate", FluentValue::from(format_rate(task.upload_rate))),
-                        ("time", FluentValue::from(observed_seeding.as_str())),
-                    ],
-                )
-            } else {
-                self.t_args(
-                    "task-download-secondary",
-                    &[
-                        ("size", FluentValue::from(size_label.as_str())),
-                        ("rate", FluentValue::from(format_rate(task.download_rate))),
-                        ("eta", FluentValue::from(format_eta(task.eta_seconds))),
-                    ],
-                )
-            }
-        });
-        let secondary_color = if task_error_label.is_some() {
-            colors.danger
-        } else {
-            colors.text_muted
-        };
         let progress_label = if seeding {
             self.t_args(
                 "task-ratio-label",
@@ -1448,14 +1369,67 @@ impl AppShell {
             format_rate(task.download_rate)
         };
         let eta_label = if seeding {
-            observed_seeding
+            observed_seeding.clone()
         } else {
             format_eta(task.eta_seconds)
+        };
+        let aria_label = if seeding {
+            format!(
+                "{display_name}, {}, {share_ratio}, {}, {rate_label}, {eta_label}",
+                self.t("task-status-seeding"),
+                format_bytes(task.uploaded_bytes),
+            )
+        } else {
+            format!(
+                "{display_name}, {}, {progress_label}, {rate_label}, {eta_label}",
+                self.t(task.status.message_key()),
+            )
+        };
+        let aria_label = if let Some(error) = &task_error_label {
+            format!("{aria_label}, {error}")
+        } else {
+            aria_label
+        };
+        let wide_secondary_label = task_error_label
+            .clone()
+            .unwrap_or_else(|| format!("GID {}", task.identity.gid));
+        let compact_secondary_label = if layout == TaskLayoutMode::Compact {
+            Some(task_error_label.clone().unwrap_or_else(|| {
+                if seeding {
+                    self.t_args(
+                        "task-seeding-secondary",
+                        &[
+                            (
+                                "uploaded",
+                                FluentValue::from(format_bytes(task.uploaded_bytes)),
+                            ),
+                            ("rate", FluentValue::from(format_rate(task.upload_rate))),
+                            ("time", FluentValue::from(observed_seeding.as_str())),
+                        ],
+                    )
+                } else {
+                    self.t_args(
+                        "task-download-secondary",
+                        &[
+                            ("size", FluentValue::from(size_label.as_str())),
+                            ("rate", FluentValue::from(format_rate(task.download_rate))),
+                            ("eta", FluentValue::from(format_eta(task.eta_seconds))),
+                        ],
+                    )
+                }
+            }))
+        } else {
+            None
+        };
+        let secondary_color = if task_error_label.is_some() {
+            colors.danger
+        } else {
+            colors.text_muted
         };
         let status_badge =
             task_status_badge(task.status, self.t(task.status.message_key()), colors);
         let row = div()
-            .id(stable_id)
+            .id(("task-row", index))
             .role(Role::ListItem)
             .aria_label(aria_label)
             .aria_selected(selected)
@@ -1500,10 +1474,7 @@ impl AppShell {
             }))
             .child(
                 div()
-                    .id(SharedString::from(format!(
-                        "task-select:{}:{}",
-                        task.identity.profile_id, task.identity.gid
-                    )))
+                    .id(("task-select", index))
                     .role(Role::CheckBox)
                     .aria_label(if selected {
                         self.t_args(
@@ -1561,7 +1532,7 @@ impl AppShell {
                     .border_color(colors.border)
                     .bg(colors.elevated_surface)
                     .child(
-                        Icon::new(task_status_icon(task.status))
+                        Icon::new(file_type_icon(&display_name))
                             .size(IconSize::Small)
                             .color(status_color),
                     ),
@@ -1603,12 +1574,7 @@ impl AppShell {
                         .text_xs()
                         .text_color(colors.text_secondary)
                         .child(progress_label)
-                        .child(task_progress_bar_with_id(
-                            SharedString::from(format!("task-wide-progress-{}", task.identity.gid)),
-                            progress,
-                            task.status,
-                            colors,
-                        )),
+                        .child(task_progress_bar(progress, task.status, colors)),
                 )
                 .child(task_table_value(88.0, rate_label, colors))
                 .child(task_table_value(124.0, size_label, colors))
@@ -1642,7 +1608,7 @@ impl AppShell {
                                 .font_features(tabular_numbers())
                                 .text_xs()
                                 .text_color(secondary_color)
-                                .child(compact_secondary_label),
+                                .child(compact_secondary_label.unwrap_or_default()),
                         ),
                 )
                 .child(
@@ -1656,15 +1622,7 @@ impl AppShell {
                         .text_xs()
                         .text_color(colors.text_secondary)
                         .child(progress_label)
-                        .child(task_progress_bar_with_id(
-                            SharedString::from(format!(
-                                "task-compact-progress-{}",
-                                task.identity.gid
-                            )),
-                            progress,
-                            task.status,
-                            colors,
-                        )),
+                        .child(task_progress_bar(progress, task.status, colors)),
                 )
                 .child(
                     div()

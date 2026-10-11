@@ -811,18 +811,23 @@ impl AppShell {
             .unwrap_or_else(|| self.t("dialog-add-category-auto").to_string());
         let selected = self.add_dialog.category_id.clone();
         let label = self.t("dialog-add-category");
+        let auto_display = category_display_name(&auto_name, self);
         let auto_label = self.t_args(
             "dialog-add-category-auto-named",
-            &[("name", ariadeck_i18n::FluentValue::from(auto_name.as_str()))],
+            &[(
+                "name",
+                ariadeck_i18n::FluentValue::from(auto_display.as_str()),
+            )],
         );
         let mut row = div()
             .flex()
             .flex_wrap()
             .items_center()
-            .gap_2()
+            .gap_1p5()
             .child(div().text_xs().text_color(colors.text_muted).child(label))
             .child(
                 Button::new("add-category-auto", auto_label)
+                    .compact()
                     .style(if selected.is_none() {
                         ButtonStyle::Primary
                     } else {
@@ -838,18 +843,23 @@ impl AppShell {
             let id = category.id.clone();
             let is_selected = selected.as_deref() == Some(id.as_str());
             let name = category.name.clone();
+            let display_name = category_display_name(&name, self);
             row = row.child(
-                Button::new(SharedString::from(format!("add-category-{id}")), name)
-                    .style(if is_selected {
-                        ButtonStyle::Primary
-                    } else {
-                        ButtonStyle::Secondary
-                    })
-                    .disabled(pending)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.set_add_category(Some(id.clone()), cx);
-                    }))
-                    .render(colors),
+                Button::new(
+                    SharedString::from(format!("add-category-{id}")),
+                    display_name,
+                )
+                .compact()
+                .style(if is_selected {
+                    ButtonStyle::Primary
+                } else {
+                    ButtonStyle::Secondary
+                })
+                .disabled(pending)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_add_category(Some(id.clone()), cx);
+                }))
+                .render(colors),
             );
         }
         row
@@ -871,8 +881,10 @@ impl AppShell {
         let input_mode_control = SegmentedControl::new(
             "add-download-input-mode",
             [
-                Segment::new(self.t(AddDownloadInputModeView::Links.message_key())),
-                Segment::new(self.t(AddDownloadInputModeView::MetadataFiles.message_key())),
+                Segment::new(self.t(AddDownloadInputModeView::Links.message_key()))
+                    .icon(IconName::Link),
+                Segment::new(self.t(AddDownloadInputModeView::MetadataFiles.message_key()))
+                    .icon(IconName::FolderArchive),
             ],
             usize::from(input_mode == AddDownloadInputModeView::MetadataFiles),
             self.theme,
@@ -1116,13 +1128,24 @@ impl AppShell {
                     )
                     .child(
                         div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
                             .text_xs()
                             .text_color(colors.text_muted)
                             .child(if open {
                                 self.t("dialog-add-hide-advanced")
                             } else {
                                 self.t("dialog-add-show-advanced")
-                            }),
+                            })
+                            .child(
+                                Icon::new(if open {
+                                    IconName::ChevronUp
+                                } else {
+                                    IconName::ChevronDown
+                                })
+                                .size(IconSize::XSmall),
+                            ),
                     ),
             )
             .when(open, |element| {
@@ -1439,10 +1462,21 @@ impl AppShell {
                                                 div()
                                                     .flex_1()
                                                     .min_w_0()
-                                                    .truncate()
-                                                    .text_xs()
-                                                    .text_color(colors.text_secondary)
-                                                    .child(file.path),
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .child(
+                                                        Icon::new(file_type_icon(&file.path))
+                                                            .size(IconSize::Small)
+                                                            .color(colors.text_muted),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .truncate()
+                                                            .text_xs()
+                                                            .text_color(colors.text_secondary)
+                                                            .child(file.path),
+                                                    ),
                                             )
                                             .child(
                                                 div()

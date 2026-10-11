@@ -25,8 +25,8 @@ use crate::{Theme, ThemeColors};
 type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 type SelectionHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
-const CONTROL_RADIUS: f32 = 4.0;
-const OVERLAY_RADIUS: f32 = 6.0;
+const CONTROL_RADIUS: f32 = 6.0;
+const OVERLAY_RADIUS: f32 = 10.0;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, IntoElement)]
 pub enum IconName {
     Search,
@@ -75,6 +75,18 @@ pub enum IconName {
     ChevronsUp,
     ChevronsDown,
     Check,
+    Bell,
+    FolderArchive,
+    FileText,
+    Music,
+    Video,
+    AppWindow,
+    Image,
+    File,
+    Cpu,
+    Server,
+    Users,
+    HardDrive,
     /// Windows caption glyphs.
     WindowMinimize,
     WindowMaximize,
@@ -132,6 +144,18 @@ impl IconName {
             Self::ChevronsUp => "icons/chevrons-up.svg",
             Self::ChevronsDown => "icons/chevrons-down.svg",
             Self::Check => "icons/check.svg",
+            Self::Bell => "icons/bell.svg",
+            Self::FolderArchive => "icons/folder-archive.svg",
+            Self::FileText => "icons/file-text.svg",
+            Self::Music => "icons/music.svg",
+            Self::Video => "icons/video.svg",
+            Self::AppWindow => "icons/app-window.svg",
+            Self::Image => "icons/image.svg",
+            Self::File => "icons/file.svg",
+            Self::Cpu => "icons/cpu.svg",
+            Self::Server => "icons/server.svg",
+            Self::Users => "icons/users.svg",
+            Self::HardDrive => "icons/hard-drive.svg",
             Self::WindowMinimize => "icons/window-minimize.svg",
             Self::WindowMaximize => "icons/window-maximize.svg",
             Self::WindowRestore => "icons/window-restore.svg",
@@ -223,15 +247,13 @@ impl Icon {
 }
 
 impl RenderOnce for Icon {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let mut element = svg()
+    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
+        let color = self.color.unwrap_or_else(|| window.text_style().color);
+        svg()
             .path(self.name.path())
             .size(px(self.size.pixels()))
-            .flex_none();
-        if let Some(color) = self.color {
-            element = element.text_color(color);
-        }
-        element
+            .flex_none()
+            .text_color(color)
     }
 }
 
@@ -1200,7 +1222,7 @@ impl RenderOnce for Dialog {
             .flex()
             .items_center()
             .justify_center()
-            .bg(gpui::rgba(0x00_00_00_aa))
+            .bg(gpui::rgba(0x00_00_00_66))
             .child(animated_card)
             .with_animation(
                 "dialog-scrim-fade",

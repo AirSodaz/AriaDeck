@@ -10,6 +10,7 @@ license.workspace = true
 ariadeck-domain = { path = "../ariadeck-domain" }
 ariadeck-i18n = { path = "../ariadeck-i18n" }
 gpui-kit = { workspace = true }
+rust-embed = { workspace = true }
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }

@@ -66,7 +66,7 @@ impl AppShell {
                     .items_center()
                     .justify_end()
                     .gap_2()
-                    .when(cfg!(target_os = "windows"), |element| element.pl_2().pr_2())
+                    .when(cfg!(target_os = "windows"), |element| element.pl_2().pr_3())
                     .when(!cfg!(target_os = "windows"), |element| {
                         element.w(px(TITLEBAR_SIDE_WIDTH))
                     })
@@ -79,6 +79,7 @@ impl AppShell {
                         .items_center()
                         .justify_end()
                         .child(actions)
+                        .child(div().w(px(1.0)).h(px(16.0)).mr_1().bg(colors.border))
                         .child(self.render_window_controls(_window))
                 }
                 #[cfg(not(target_os = "windows"))]
@@ -266,19 +267,35 @@ impl AppShell {
                             .px_3()
                             .py_2()
                             .rounded_md()
-                            .bg(colors.surface_active)
+                            .border_1()
+                            .border_color(colors.border)
+                            .bg(colors.toolbar_surface)
+                            .shadow_xs()
+                            .flex()
+                            .items_center()
+                            .gap_2p5()
                             .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(colors.text_primary)
-                                    .child(active_profile_name),
+                                Icon::new(IconName::Activity)
+                                    .size(IconSize::Small)
+                                    .color(colors.accent),
                             )
                             .child(
                                 div()
-                                    .text_xs()
-                                    .text_color(colors.text_muted)
-                                    .child(profile_summary),
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(colors.text_primary)
+                                            .child(active_profile_name),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(colors.text_muted)
+                                            .child(profile_summary),
+                                    ),
                             ),
                     )
                     .child(div().flex().flex_col().gap_1().children(filters))
@@ -358,6 +375,7 @@ impl AppShell {
                     .px_3()
                     .flex()
                     .items_center()
+                    .gap_3()
                     .rounded_md()
                     .text_xs()
                     .text_color(if all_selected {
@@ -373,24 +391,34 @@ impl AppShell {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.set_category_filter(None, window, cx);
                     }))
+                    .child(Icon::new(IconName::FolderDown).size(IconSize::Small).color(
+                        if all_selected {
+                            colors.accent
+                        } else {
+                            colors.text_muted
+                        },
+                    ))
                     .child(self.t("filter-category-all")),
             );
         for category in categories {
             let id = category.id.clone();
             let is_selected = selected.as_deref() == Some(id.as_str());
             let name = category.name.clone();
+            let display_name = category_display_name(&name, self);
+            let icon = category_icon(&name);
             list = list.child(
                 div()
                     .id(SharedString::from(format!("sidebar-category-{id}")))
                     .focusable()
                     .tab_stop(true)
                     .role(gpui::Role::Button)
-                    .aria_label(name.clone())
+                    .aria_label(display_name.clone())
                     .h(px(32.0))
                     .w_full()
                     .px_3()
                     .flex()
                     .items_center()
+                    .gap_3()
                     .rounded_md()
                     .text_xs()
                     .text_color(if is_selected {
@@ -406,7 +434,12 @@ impl AppShell {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.set_category_filter(Some(id.clone()), window, cx);
                     }))
-                    .child(name),
+                    .child(Icon::new(icon).size(IconSize::Small).color(if is_selected {
+                        colors.accent
+                    } else {
+                        colors.text_muted
+                    }))
+                    .child(display_name),
             );
         }
         list
@@ -421,17 +454,31 @@ impl AppShell {
             .max()
             .unwrap_or(0);
         let scale = max_rate.max(1) as f32;
-        let mut columns = Vec::with_capacity(SPEED_CHART_SAMPLES);
-        columns.extend(
-            (visible.len()..SPEED_CHART_SAMPLES).map(|_| speed_chart_column(0.0, 0.0, colors)),
-        );
-        columns.extend(visible.iter().map(|sample| {
-            speed_chart_column(
-                sample.download_rate as f32 / scale,
-                sample.upload_rate as f32 / scale,
-                colors,
-            )
-        }));
+        let columns = if visible.is_empty() {
+            vec![
+                div()
+                    .h_full()
+                    .w_full()
+                    .flex()
+                    .items_end()
+                    .child(div().h(px(1.0)).w_full().bg(with_alpha(colors.border, 0.4)))
+                    .into_any_element(),
+            ]
+        } else {
+            let step = if visible.len() > 60 { 2 } else { 1 };
+            visible
+                .iter()
+                .step_by(step)
+                .map(|sample| {
+                    speed_chart_column(
+                        sample.download_rate as f32 / scale,
+                        sample.upload_rate as f32 / scale,
+                        colors,
+                    )
+                    .into_any_element()
+                })
+                .collect()
+        };
 
         div()
             .id("speed-history-chart")
@@ -537,7 +584,7 @@ impl AppShell {
             .items_center()
             .gap_1()
             .text_xs()
-            .text_color(colors.text_muted)
+            .text_color(colors.text_secondary)
             .child(StatusIndicator::new(connection_color).icon(
                 if self.snapshot.connection.is_connected() {
                     IconName::Wifi
@@ -575,7 +622,7 @@ impl AppShell {
                     .items_center()
                     .gap_1()
                     .text_xs()
-                    .text_color(colors.text_muted)
+                    .text_color(colors.text_secondary)
                     .child(
                         StatusIndicator::new(engine_health_color(&self.engine_health, colors))
                             .icon(match &self.engine_health {
@@ -1048,25 +1095,29 @@ impl AppShell {
                     .text_center()
                     .child(
                         div()
-                            .size(px(48.0))
+                            .size(px(56.0))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded_md()
+                            .rounded_xl()
                             .border_1()
                             .border_color(colors.border)
-                            .bg(colors.elevated_surface)
-                            .child(
-                                Icon::new(icon)
-                                    .size(IconSize::Large)
-                                    .color(colors.text_muted),
-                            ),
+                            .bg(colors.surface)
+                            .shadow_xs()
+                            .child(Icon::new(icon).size(IconSize::Large).color(colors.accent)),
                     )
                     .child(
                         div()
                             .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(colors.text_primary)
                             .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(self.t("empty-state-subtitle")),
                     )
                     .when(show_clear, |element| {
                         element.child(

@@ -2045,7 +2045,7 @@ impl AppShell {
                     .py_2()
                     .rounded_md()
                     .border_1()
-                    .border_color(if is_fallback || is_editing {
+                    .border_color(if is_editing {
                         colors.accent
                     } else {
                         colors.border
@@ -2059,15 +2059,35 @@ impl AppShell {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .text_sm()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(colors.text_primary)
-                                    .child(name),
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        Icon::new(category_icon(&name))
+                                            .size(IconSize::Small)
+                                            .color(if is_editing {
+                                                colors.accent
+                                            } else {
+                                                colors.text_muted
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(colors.text_primary)
+                                            .child(category_display_name(&name, self)),
+                                    ),
                             )
                             .when(is_fallback, |row| {
                                 row.child(
                                     div()
                                         .text_xs()
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded_full()
+                                        .bg(with_alpha(colors.accent, 0.12))
                                         .text_color(colors.accent)
                                         .child(fallback_badge.clone()),
                                 )
@@ -2077,6 +2097,8 @@ impl AppShell {
                                     SharedString::from(format!("category-edit-{index}")),
                                     edit_label.clone(),
                                 )
+                                .compact()
+                                .icon(IconName::Pencil)
                                 .style(if is_editing {
                                     ButtonStyle::Primary
                                 } else {
@@ -2088,18 +2110,22 @@ impl AppShell {
                                 }))
                                 .render(colors),
                             )
-                            .child(
-                                Button::new(
-                                    SharedString::from(format!("category-remove-{index}")),
-                                    remove_label.clone(),
+                            .when(!is_fallback, |row| {
+                                row.child(
+                                    Button::new(
+                                        SharedString::from(format!("category-remove-{index}")),
+                                        remove_label.clone(),
+                                    )
+                                    .compact()
+                                    .icon(IconName::Trash2)
+                                    .style(ButtonStyle::Ghost)
+                                    .disabled(pending || categories.len() <= 1)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.remove_download_category(index, cx);
+                                    }))
+                                    .render(colors),
                                 )
-                                .style(ButtonStyle::Secondary)
-                                .disabled(pending || is_fallback || categories.len() <= 1)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.remove_download_category(index, cx);
-                                }))
-                                .render(colors),
-                            ),
+                            }),
                     )
                     .when(!is_editing, |row| {
                         row.child(div().text_xs().text_color(colors.text_muted).child(
@@ -2165,8 +2191,8 @@ impl AppShell {
             .child(
                 div().mt_2().child(
                     Button::new("add-download-category", add_label)
+                        .icon(IconName::Plus)
                         .style(ButtonStyle::Secondary)
-                        .disabled(pending || self.settings_page.draft_categories.len() >= 32)
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.add_download_category(window, cx);
                         }))

@@ -65,6 +65,11 @@ impl ThemeColors {
     #[must_use]
     pub fn from_kit(kit: &gpui_kit::component::Theme) -> Self {
         let is_dark = kit.mode.is_dark();
+        let fallback = if is_dark {
+            Theme::dark().colors
+        } else {
+            Theme::light().colors
+        };
         Self {
             background: kit.background,
             surface: if is_dark {
@@ -79,28 +84,20 @@ impl ThemeColors {
             text_primary: kit.foreground,
             text_secondary: kit.secondary_foreground,
             text_muted: kit.muted_foreground,
-            text_inverse: if is_dark {
-                color(0x121416)
-            } else {
-                color(0xffffff)
-            },
+            text_inverse: fallback.text_inverse,
             border: kit.border,
             border_strong: kit.border,
-            focus_ring: kit.ring,
-            accent: kit.primary,
-            accent_hover: kit.primary_hover,
-            accent_active: kit.primary_active,
+            focus_ring: fallback.focus_ring,
+            accent: fallback.accent,
+            accent_hover: fallback.accent_hover,
+            accent_active: fallback.accent_active,
             success: kit.success,
             warning: kit.warning,
             danger: kit.danger,
             information: kit.info,
-            progress_track: if is_dark {
-                color(0x30373e)
-            } else {
-                color(0xdce2e8)
-            },
-            progress_download: kit.primary,
-            progress_upload: kit.success,
+            progress_track: fallback.progress_track,
+            progress_download: fallback.progress_download,
+            progress_upload: fallback.progress_upload,
         }
     }
 }
@@ -204,6 +201,20 @@ impl Theme {
             },
         };
         gpui_kit::component::Theme::change(mode, window, cx);
+        let kit = gpui_kit::component::Theme::global_mut(cx);
+        kit.primary = self.colors.accent;
+        kit.primary_hover = self.colors.accent_hover;
+        kit.primary_active = self.colors.accent_active;
+        kit.primary_foreground = self.colors.text_inverse;
+        kit.button_primary = self.colors.accent;
+        kit.button_primary_hover = self.colors.accent_hover;
+        kit.button_primary_active = self.colors.accent_active;
+        kit.button_primary_foreground = self.colors.text_inverse;
+        kit.tokens.button_primary = self.colors.accent.into();
+        kit.tokens.button_primary_hover = self.colors.accent_hover.into();
+        kit.tokens.button_primary_active = self.colors.accent_active.into();
+        kit.tokens.button_primary_foreground = self.colors.text_inverse.into();
+        kit.ring = self.colors.focus_ring;
     }
 }
 
