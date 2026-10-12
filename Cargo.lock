@@ -229,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-application"
-version = "0.1.2"
+version = "0.1.2-pre.1"
 dependencies = [
  "ariadeck-domain",
  "async-trait",
@@ -243,7 +243,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-bridge"
-version = "0.1.2"
+version = "0.1.2-pre.1"
 dependencies = [
  "ariadeck-ipc",
  "secrecy",
@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-desktop"
-version = "0.1.2"
+version = "0.1.2-pre.1"
 dependencies = [
  "ariadeck-application",
  "ariadeck-domain",
@@ -298,7 +298,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-domain"
-version = "0.1.2"
+version = "0.1.2-pre.1"
 dependencies = [
  "bitflags 2.13.1",
  "data-encoding",
@@ -310,7 +310,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-engine"
-version = "0.1.2"
+version = "0.1.2-pre.1"
 dependencies = [
  "ariadeck-application",
  "ariadeck-domain",
@@ -329,7 +329,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-history"
-version = "0.1.2"
+version = "0.1.2-pre.1"
 dependencies = [
  "ariadeck-application",
  "ariadeck-domain",
@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-i18n"
-version = "0.1.2"
+version = "0.1.2-pre.1"
 dependencies = [
  "fluent-bundle",
  "rust-embed",
@@ -351,7 +351,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-ipc"
-version = "0.1.2"
+version = "0.1.2-pre.1"
 dependencies = [
  "ariadeck-domain",
  "data-encoding",
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-rpc"
-version = "0.1.2"
+version = "0.1.2-pre.1"
 dependencies = [
  "ariadeck-application",
  "ariadeck-domain",
@@ -392,7 +392,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-settings"
-version = "0.1.2"
+version = "0.1.2-pre.1"
 dependencies = [
  "ariadeck-domain",
  "keyring",
@@ -408,7 +408,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-telemetry"
-version = "0.1.2"
+version = "0.1.2-pre.1"
 dependencies = [
  "tracing",
  "tracing-subscriber",
@@ -416,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-ui"
-version = "0.1.2"
+version = "0.1.2-pre.1"
 dependencies = [
  "ariadeck-domain",
  "ariadeck-i18n",
