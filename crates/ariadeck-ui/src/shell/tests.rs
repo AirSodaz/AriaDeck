@@ -3168,9 +3168,9 @@ fn language_preference_selection_emits_settings_save_and_switches_catalog(cx: &m
     };
     let (view, cx) =
         cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
-    view.update(cx, |shell, cx| {
+    view.update_in(cx, |shell, window, cx| {
         assert_eq!(shell.t("filter-active"), "Active");
-        shell.select_language(LanguagePreferenceView::ChineseSimplified, cx);
+        shell.select_language(LanguagePreferenceView::ChineseSimplified, window, cx);
         let pending = shell
             .pending_settings_save
             .as_ref()

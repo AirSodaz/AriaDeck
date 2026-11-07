@@ -151,6 +151,12 @@ impl AppShell {
         self.settings_page.draft_category_edit_index = None;
         self.settings_page.draft_language = settings.language;
         self.set_language_runtime(settings.language);
+        if let Some(window) = window.as_deref_mut() {
+            let placeholder = self.t("search-placeholder");
+            self.search_input.update(cx, |input, cx| {
+                input.set_placeholder(placeholder, window, cx);
+            });
+        }
         self.settings_page.draft_file_allocation = settings.transfer_policy.file_allocation;
         self.settings_page.draft_check_certificate = settings.download_proxy.check_certificate;
         self.settings_page.draft_check_integrity = settings.transfer_policy.check_integrity;
@@ -513,6 +519,7 @@ impl AppShell {
     pub(crate) fn select_language(
         &mut self,
         language: LanguagePreferenceView,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.pending_settings_save.is_some() || language == self.settings.language {
@@ -521,6 +528,10 @@ impl AppShell {
         self.settings_page.draft_language = language;
         // Apply immediately so chrome switches language before save returns.
         self.set_language_runtime(language);
+        let placeholder = self.t("search-placeholder");
+        self.search_input.update(cx, |input, cx| {
+            input.set_placeholder(placeholder, window, cx);
+        });
         let mut settings = self.settings.clone();
         settings.language = language;
         self.request_settings_save(
@@ -1975,13 +1986,13 @@ impl AppShell {
         )
         .aria_label(self.t("settings-language-aria"))
         .disabled(pending)
-        .on_select(move |index, _window, cx| {
+        .on_select(move |index, window, cx| {
             let language = LanguagePreferenceView::ALL
                 .get(index)
                 .copied()
                 .unwrap_or_default();
             language_shell
-                .update(cx, |shell, cx| shell.select_language(language, cx))
+                .update(cx, |shell, cx| shell.select_language(language, window, cx))
                 .ok();
         });
         let appearance_title = self.t("settings-appearance");
