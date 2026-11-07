@@ -103,6 +103,7 @@ mod mapping;
 mod ops;
 mod settings_bridge;
 mod tracker_list;
+mod updates;
 
 // Re-export so DesktopRoot methods and tests keep short names.
 #[allow(unused_imports)]
@@ -117,6 +118,8 @@ pub(crate) use ops::*;
 pub(crate) use settings_bridge::*;
 #[allow(unused_imports)]
 pub(crate) use tracker_list::*;
+#[allow(unused_imports)]
+pub(crate) use updates::*;
 
 /// Process-wide flag: true while AriaDeck is intentionally hidden to tray with
 /// no open window. Prevents `on_window_closed` from quitting the app.
@@ -142,6 +145,8 @@ pub struct DesktopRoot {
     profile_env_store: ProfileEnvironmentStore,
     profile_catalog: ProfileCatalog,
     core_store: CoreStore,
+    update_offer: Option<UpdateOffer>,
+    verified_update_installer: Option<PathBuf>,
     tray: Option<SystemTray>,
     window_hidden_to_tray: bool,
     is_keep_awake: bool,
@@ -492,6 +497,15 @@ impl DesktopRoot {
                 AppShellEvent::CoreDownloadRequested { request_id } => {
                     this.enqueue_core_download(*request_id, cx);
                 }
+                AppShellEvent::CheckForUpdatesRequested { request_id } => {
+                    this.spawn_update_check(*request_id, window, cx);
+                }
+                AppShellEvent::DownloadUpdateRequested { request_id } => {
+                    this.spawn_update_download(*request_id, window, cx);
+                }
+                AppShellEvent::InstallUpdateRequested => {
+                    this.install_verified_update(cx);
+                }
                 AppShellEvent::CoreSetupOnboardingDismissed => {
                     this.persist_core_setup_dismissal(cx);
                 }
@@ -638,6 +652,8 @@ impl DesktopRoot {
             profile_env_store,
             profile_catalog,
             core_store,
+            update_offer: None,
+            verified_update_installer: None,
             tray,
             window_hidden_to_tray: false,
             is_keep_awake: false,
@@ -655,6 +671,15 @@ impl DesktopRoot {
             elapsed_ms = startup_started.elapsed().as_millis(),
             "desktop window state constructed"
         );
+
+        let updates_enabled = updates_supported();
+        let portable_install = is_portable_install();
+        root.workspace.update(cx, |shell, cx| {
+            shell.configure_updates(updates_enabled, portable_install, cx);
+            if updates_enabled {
+                shell.request_update_check(cx);
+            }
+        });
 
         // Poll tray interactions and free-space checks on a short UI timer.
         cx.spawn_in(window, async move |this, cx| {
@@ -2205,6 +2230,179 @@ fn bridge_view(download: &BridgeDownload) -> BridgeDownloadView {
             .map(|cookie| SecretStringView::new(cookie.expose_secret())),
         filename: download.filename.clone(),
         file_size: download.file_size,
+    }
+}
+
+impl DesktopRoot {
+    fn spawn_update_check(
+        &mut self,
+        request_id: ariadeck_ui::RequestId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let version = env!("CARGO_PKG_VERSION").to_owned();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = check_latest_release(&version).await;
+            this.update_in(cx, |this, _window, cx| {
+                let view_result = match result {
+                    Ok(offer) => {
+                        this.update_offer = offer.clone();
+                        Ok(offer.map(|offer| ariadeck_ui::UpdateOfferView {
+                            version: offer.version,
+                            title: offer.title,
+                            notes: offer.notes,
+                            release_url: offer.release_url,
+                            installer_available: offer.installer_url.is_some()
+                                && offer.checksums_url.is_some(),
+                        }))
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "update check failed");
+                        this.update_offer = None;
+                        Err(error)
+                    }
+                };
+                this.workspace.update(cx, |shell, cx| {
+                    shell.set_update_check_result(request_id, view_result, cx);
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn spawn_update_download(
+        &mut self,
+        request_id: ariadeck_ui::RequestId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if is_portable_install() {
+            return;
+        }
+        let Some(offer) = self.update_offer.clone() else {
+            self.workspace.update(cx, |shell, cx| {
+                shell.set_update_download_result(
+                    request_id,
+                    Err("Update metadata is no longer available. Check again.".into()),
+                    cx,
+                );
+            });
+            return;
+        };
+        let version = offer.version.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = match download_verified_installer(&offer).await {
+                Ok(bytes) => {
+                    let version_for_file = version.clone();
+                    tokio::task::spawn_blocking(move || {
+                        save_installer(
+                            &bytes,
+                            &std::env::temp_dir().join("AriaDeck-updates"),
+                            &version_for_file,
+                        )
+                    })
+                    .await
+                    .map_err(|error| format!("Installer save task failed: {error}"))
+                    .and_then(|result| result)
+                }
+                Err(error) => Err(error),
+            };
+            this.update_in(cx, |this, _window, cx| {
+                let view_result = match result {
+                    Ok(path) => {
+                        this.verified_update_installer = Some(path);
+                        Ok(version)
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "update installer download failed");
+                        Err(error)
+                    }
+                };
+                this.workspace.update(cx, |shell, cx| {
+                    shell.set_update_download_result(request_id, view_result, cx);
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn install_verified_update(&mut self, cx: &mut Context<Self>) {
+        let Some(installer) = self.verified_update_installer.take() else {
+            return;
+        };
+        let executable = match env::current_exe() {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::error!(%error, "cannot locate the running executable for update restart");
+                self.workspace.update(cx, |shell, cx| {
+                    shell.set_update_install_error(error.to_string(), cx);
+                });
+                return;
+            }
+        };
+        match launch_verified_installer(installer, executable) {
+            Ok(()) => self.quit_application(cx),
+            Err(error) => {
+                tracing::error!(%error, "could not start the verified update installer");
+                self.workspace.update(cx, |shell, cx| {
+                    shell.set_update_install_error(error, cx);
+                });
+            }
+        }
+    }
+}
+
+fn updates_supported() -> bool {
+    supports_updates(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        option_env!("ARIADECK_BUILD_CHANNEL"),
+    )
+}
+
+fn is_portable_install() -> bool {
+    env::current_exe()
+        .ok()
+        .and_then(|executable| executable.parent().map(Path::to_path_buf))
+        .is_some_and(|directory| directory.join(ariadeck_ipc::PORTABLE_MARKER_FILE).is_file())
+}
+
+fn launch_verified_installer(installer: PathBuf, executable: PathBuf) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut child = std::process::Command::new(&installer)
+            .spawn()
+            .map_err(|error| format!("Could not start the installer: {error}"))?;
+        std::thread::spawn(move || {
+            match child.wait() {
+                Ok(status) if status.success() => {
+                    if let Err(error) = std::process::Command::new(executable).spawn() {
+                        tracing::error!(%error, "updated app could not be restarted");
+                    }
+                }
+                Ok(status) => {
+                    tracing::warn!(%status, "update installer was cancelled or failed; restarting the existing app");
+                    if let Err(error) = std::process::Command::new(executable).spawn() {
+                        tracing::error!(%error, "existing app could not be restarted after update cancellation");
+                    }
+                }
+                Err(error) => {
+                    tracing::error!(%error, "could not wait for update installer; restarting the existing app");
+                    if let Err(error) = std::process::Command::new(executable).spawn() {
+                        tracing::error!(%error, "existing app could not be restarted after update failure");
+                    }
+                }
+            }
+            let _ = std::fs::remove_file(installer);
+        });
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (installer, executable);
+        Err("Application updates are supported only on Windows.".into())
     }
 }
 

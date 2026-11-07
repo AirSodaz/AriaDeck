@@ -14,6 +14,10 @@ use std::{
 };
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=ARIADECK_BUILD_CHANNEL");
+    let build_channel = std::env::var("ARIADECK_BUILD_CHANNEL").unwrap_or_else(|_| "dev".into());
+    println!("cargo:rustc-env=ARIADECK_BUILD_CHANNEL={build_channel}");
+
     let manifest_dir = PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo"),
     );

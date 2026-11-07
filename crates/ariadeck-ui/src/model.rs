@@ -541,6 +541,37 @@ impl RequestId {
     }
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum UpdateStatusView {
+    #[default]
+    Disabled,
+    Checking,
+    Current,
+    Available {
+        version: String,
+        title: String,
+        notes: String,
+        release_url: String,
+        installer_available: bool,
+    },
+    Downloading {
+        version: String,
+    },
+    Downloaded {
+        version: String,
+    },
+    Failed(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpdateOfferView {
+    pub version: String,
+    pub title: String,
+    pub notes: String,
+    pub release_url: String,
+    pub installer_available: bool,
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum TaskCommandView {
     Pause,

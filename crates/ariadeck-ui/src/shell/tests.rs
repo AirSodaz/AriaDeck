@@ -737,6 +737,52 @@ fn queue_reordering_is_authoritative_only_for_the_unfiltered_ascending_queue(
 }
 
 #[gpui::test]
+fn update_checks_are_single_flight_and_portable_offers_never_download(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let _subscription = view.update(cx, |_, cx| {
+        cx.subscribe(&view, move |_, _, event: &AppShellEvent, _| {
+            sink.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(event.clone());
+        })
+    });
+
+    view.update(cx, |shell, cx| {
+        shell.configure_updates(true, true, cx);
+        shell.request_update_check(cx);
+        shell.request_update_check(cx);
+        let request_id = shell.pending_update_check.expect("check is pending");
+        shell.set_update_check_result(
+            request_id,
+            Ok(Some(crate::UpdateOfferView {
+                version: "0.3.0".into(),
+                title: "AriaDeck 0.3.0".into(),
+                notes: "Release notes".into(),
+                release_url: "https://github.com/AirSodaz/AriaDeck/releases/tag/v0.3.0".into(),
+                installer_available: true,
+            })),
+            cx,
+        );
+        shell.request_update_download(cx);
+        assert!(matches!(
+            shell.update_status,
+            crate::UpdateStatusView::Available { .. }
+        ));
+    });
+
+    let events = events
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(events.len(), 1, "duplicate checks are merged");
+    assert!(matches!(
+        events[0],
+        AppShellEvent::CheckForUpdatesRequested { .. }
+    ));
+}
+
+#[gpui::test]
 fn load_more_stopped_history_is_single_flight_and_gated(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut shell = AppShell::new(Theme::dark(), window, cx);

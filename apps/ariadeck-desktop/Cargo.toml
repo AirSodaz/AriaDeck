@@ -24,6 +24,7 @@ notify-rust.workspace = true
 quick-xml.workspace = true
 reqwest.workspace = true
 secrecy.workspace = true
+semver.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sysinfo.workspace = true

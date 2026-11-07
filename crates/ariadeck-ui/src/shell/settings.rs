@@ -3,6 +3,113 @@
 use super::*;
 
 impl AppShell {
+    pub fn configure_updates(&mut self, enabled: bool, portable: bool, cx: &mut Context<Self>) {
+        self.update_enabled = enabled;
+        self.update_portable = portable;
+        self.update_status = if enabled {
+            crate::UpdateStatusView::Checking
+        } else {
+            crate::UpdateStatusView::Disabled
+        };
+        cx.notify();
+    }
+
+    pub fn request_update_check(&mut self, cx: &mut Context<Self>) {
+        if !self.update_enabled
+            || self.pending_update_check.is_some()
+            || self.pending_update_download.is_some()
+            || matches!(
+                self.update_status,
+                crate::UpdateStatusView::Downloaded { .. }
+            )
+        {
+            return;
+        }
+        let request_id = self.allocate_request_id();
+        self.pending_update_check = Some(request_id);
+        self.update_status = crate::UpdateStatusView::Checking;
+        cx.emit(AppShellEvent::CheckForUpdatesRequested { request_id });
+        cx.notify();
+    }
+
+    pub fn set_update_check_result(
+        &mut self,
+        request_id: RequestId,
+        result: Result<Option<crate::UpdateOfferView>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_update_check != Some(request_id) {
+            return;
+        }
+        self.pending_update_check = None;
+        self.update_status = match result {
+            Ok(None) => crate::UpdateStatusView::Current,
+            Ok(Some(offer)) => crate::UpdateStatusView::Available {
+                version: offer.version,
+                title: offer.title,
+                notes: offer.notes,
+                release_url: offer.release_url,
+                installer_available: offer.installer_available,
+            },
+            Err(error) => crate::UpdateStatusView::Failed(error),
+        };
+        cx.notify();
+    }
+
+    pub fn request_update_download(&mut self, cx: &mut Context<Self>) {
+        let crate::UpdateStatusView::Available {
+            version,
+            installer_available: true,
+            ..
+        } = &self.update_status
+        else {
+            return;
+        };
+        if self.update_portable || self.pending_update_download.is_some() {
+            return;
+        }
+        let version = version.clone();
+        let request_id = self.allocate_request_id();
+        self.pending_update_download = Some(request_id);
+        self.update_status = crate::UpdateStatusView::Downloading { version };
+        cx.emit(AppShellEvent::DownloadUpdateRequested { request_id });
+        cx.notify();
+    }
+
+    pub fn set_update_download_result(
+        &mut self,
+        request_id: RequestId,
+        result: Result<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_update_download != Some(request_id) {
+            return;
+        }
+        self.pending_update_download = None;
+        self.update_status = match result {
+            Ok(version) => crate::UpdateStatusView::Downloaded { version },
+            Err(error) => crate::UpdateStatusView::Failed(error),
+        };
+        cx.notify();
+    }
+
+    pub fn request_update_install(&mut self, cx: &mut Context<Self>) {
+        if self.update_portable
+            || !matches!(
+                self.update_status,
+                crate::UpdateStatusView::Downloaded { .. }
+            )
+        {
+            return;
+        }
+        cx.emit(AppShellEvent::InstallUpdateRequested);
+    }
+
+    pub fn set_update_install_error(&mut self, error: String, cx: &mut Context<Self>) {
+        self.update_status = crate::UpdateStatusView::Failed(error);
+        cx.notify();
+    }
+
     // --- set_settings_save_result..set_settings_save_result ---
     pub fn set_settings_save_result(
         &mut self,
@@ -3895,6 +4002,105 @@ impl AppShell {
                     .update(cx, |shell, cx| shell.import_settings_file(window, cx))
                     .ok();
             });
+        let update_check_shell = cx.entity().downgrade();
+        let update_check_button = Button::new("check-for-updates", self.t("settings-update-check"))
+            .icon(IconName::RefreshCw)
+            .loading(matches!(
+                self.update_status,
+                crate::UpdateStatusView::Checking
+            ))
+            .disabled(
+                !self.update_enabled
+                    || matches!(
+                        self.update_status,
+                        crate::UpdateStatusView::Checking
+                            | crate::UpdateStatusView::Downloading { .. }
+                            | crate::UpdateStatusView::Downloaded { .. }
+                    ),
+            )
+            .on_click(move |_, _, cx| {
+                update_check_shell
+                    .update(cx, |shell, cx| shell.request_update_check(cx))
+                    .ok();
+            });
+        let update_info = match &self.update_status {
+            crate::UpdateStatusView::Disabled => self.t("settings-update-disabled"),
+            crate::UpdateStatusView::Checking => self.t("settings-update-checking"),
+            crate::UpdateStatusView::Current => self.t("settings-update-current"),
+            crate::UpdateStatusView::Downloading { .. } => self.t("settings-update-downloading"),
+            crate::UpdateStatusView::Downloaded { .. } => self.t("settings-update-downloaded"),
+            crate::UpdateStatusView::Failed(_) => self.t("settings-update-failed"),
+            crate::UpdateStatusView::Available { version, .. } => self.t_args(
+                "settings-update-available",
+                &[("version", FluentValue::from(version.as_str()))],
+            ),
+        };
+        let update_actions = match &self.update_status {
+            crate::UpdateStatusView::Available {
+                release_url,
+                installer_available,
+                ..
+            } => {
+                let release_link = Link::new("open-release-page")
+                    .href(release_url.clone())
+                    .child(self.t("settings-update-open-release"));
+                let mut actions = div().flex().flex_row().gap_2().child(release_link);
+                if *installer_available && !self.update_portable {
+                    let download_shell = cx.entity().downgrade();
+                    actions = actions.child(
+                        Button::new(
+                            "download-update-installer",
+                            self.t("settings-update-download-install"),
+                        )
+                        .icon(IconName::Download)
+                        .primary()
+                        .on_click(move |_, _, cx| {
+                            download_shell
+                                .update(cx, |shell, cx| shell.request_update_download(cx))
+                                .ok();
+                        }),
+                    );
+                }
+                actions
+            }
+            crate::UpdateStatusView::Downloaded { .. } if !self.update_portable => {
+                let install_shell = cx.entity().downgrade();
+                div().flex().child(
+                    Button::new("install-update", self.t("settings-update-install"))
+                        .icon(IconName::Check)
+                        .primary()
+                        .on_click(move |_, _, cx| {
+                            install_shell
+                                .update(cx, |shell, cx| shell.request_update_install(cx))
+                                .ok();
+                        }),
+                )
+            }
+            _ => div(),
+        };
+        let update_details = match &self.update_status {
+            crate::UpdateStatusView::Available { title, notes, .. } => div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(title.clone()),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(colors.text_muted)
+                        .child(notes.clone()),
+                ),
+            crate::UpdateStatusView::Failed(error) => div()
+                .text_sm()
+                .text_color(colors.danger)
+                .child(error.clone()),
+            _ => div(),
+        };
 
         div()
             .flex()
@@ -3934,6 +4140,24 @@ impl AppShell {
                         colors,
                     )),
             )
+            .when(self.update_enabled, |content| {
+                content.child(
+                    settings_section_owned(self.t("settings-update-title"), colors).child(
+                        settings_section_row_owned(
+                            self.t("settings-update-status"),
+                            Some(update_info),
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .child(update_check_button.render(colors))
+                                .child(update_actions)
+                                .child(update_details),
+                            colors,
+                        ),
+                    ),
+                )
+            })
             .child(
                 settings_section_owned(transfer_title, colors)
                     .child(settings_section_row_owned(

@@ -7,9 +7,9 @@ Acceptance contract for portable packages, optional installer, data dirs, signin
 
 | In | Out (deferred) |
 | --- | --- |
-| Windows x64 portable zip | In-app auto-update product |
+| Windows x64 portable zip | macOS/Linux as primary artifacts |
 | Optional Inno Setup installer | Network download of official aria2 |
-| Portable vs installed data dirs | macOS/Linux as primary artifacts |
+| Portable vs installed data dirs | Store distribution |
 | Uninstall keeps user data by default | Store distribution |
 | MIT + third-party notices | Production certs in-repo |
 
@@ -110,7 +110,14 @@ Unsigned builds may hit SmartScreen. No certs in-repo.
 
 - Upgrade: overwrite portable or reinstall; settings migrate on load.
 - Downgrade: newer `schema_version` fails closed (`UnsupportedSchemaVersion`).
-- Cores: `CoreStore` activate/rollback—not app auto-update.
+- Cores: `CoreStore` activate/rollback, separately from application updates.
+
+## Application updates
+
+- Official Windows x64 release builds check GitHub Releases once at startup; About also has a manual check. Development/CI builds and other platforms do not contact the update feed.
+- Portable builds only show the available version and release notes, with a link to the GitHub Release page. They never download or replace application files.
+- Installed builds download the matching `*-windows-x64-setup.exe` only after the user chooses Download installer. The app verifies its SHA-256 against `SHA256SUMS.txt` from that release before offering Install and restart.
+- The Inno installer upgrades the existing per-user installation; AriaDeck application data remains under `%LOCALAPPDATA%\AriaDeck`. Cancelling or failing the installer does not change that data.
 
 ## Acceptance
 
@@ -127,6 +134,7 @@ Unsigned builds may hit SmartScreen. No certs in-repo.
 | Magnet protocol | Explicit default-unchecked Inno task; `--open-magnet` fills links without submission |
 | Windows DPI awareness | GPUI `windows-manifest` is explicit; release EXE contains `PerMonitorV2` + `true/pm` |
 | Reparse-point containment | Windows junction regression tests reject destination components and Trash task directories |
+| Application update | Release-only feed; portable is notice/link only; installed setup must match same-release SHA-256 before launch |
 
 ## Manual checklist
 
@@ -146,3 +154,5 @@ Unsigned builds may hit SmartScreen. No certs in-repo.
 14. Run `pwsh -File scripts/verify-windows-a3.ps1`; it tests real directory junctions, builds the release EXE, and verifies its embedded Per-Monitor V2 manifest. Windows CI repeats the automated portion after its release build.
 15. At Windows 125% scale, run the script again with `-SkipBuild -ExpectedScale 125`, launch the printed EXE, and inspect the main task list, Add Download, task details, Settings, Profiles, and first-run core setup at the 960x620 minimum and maximized. Text must not clip or overlap; controls and modal actions must remain visible and usable.
 16. Repeat step 15 at 150% with `-ExpectedScale 150`. When two monitors with different scales are available, drag the open window between them and confirm it redraws sharply without changing its logical minimum size or losing pointer alignment.
+17. On a portable release build, confirm startup/manual checks only show version, notes, and the Release page link.
+18. On an installed release build, confirm installer download requires user action, checksum failure prevents installation, and the verified installer is offered for explicit confirmation.

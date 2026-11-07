@@ -305,6 +305,7 @@ dependencies = [
  "reqwest",
  "resvg 0.49.0",
  "secrecy",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.11.1",

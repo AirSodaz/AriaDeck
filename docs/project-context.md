@@ -126,7 +126,7 @@ Env knobs: see root `README.md` (`ARIADECK_RPC_*`).
 | D-031 | Theme System/Light/Dark; debounced window geometry |
 | D-032 | **SEC-001:** redact secrets in UI/clipboard/notices/Debug/diagnostics (`domain::privacy`) |
 | D-033 | **PERF-001:** tray → Background poll; virtualize; details coalesce ≥500ms; 10k stress |
-| D-034 | **RELEASE-001:** Windows portable (+ Inno); MIT + notices; no in-app auto-update |
+| D-034 | **RELEASE-001:** Windows portable (+ Inno); MIT + notices. Official Windows x64 release builds check GitHub Releases; portable builds show a notice/link only, installed builds offer a SHA-256-verified Inno installer after user confirmation |
 | D-035 | Diagnostic export is an explicit user-chosen ZIP containing only the redacted runtime snapshot + privacy notice; no settings, logs, task/source data, paths, or credentials |
 | D-036 | Settings transfer uses a separate versioned JSON format with no password or credential reference; import is strictly validated, preserves local keychain secrets, and applies through the normal settings transaction |
 | D-037 | Windows metadata associations are explicit installer opt-ins. `.torrent`, `.metalink`, and `.meta4` launch `--open-metadata <path>` into the existing preview/confirmation flow; a bounded, versioned per-data-directory local socket forwards to and activates the running instance without lossy path conversion |
@@ -194,7 +194,7 @@ Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, ad
 
 ### Explicitly deferred
 
-Automatic / silent aria2 package channels (D-046 is explicit and user-initiated; no update feed, no background fetch) · History retention/analytics policies (C3) · Hot profile switch without restart (engine rebind) · HTTP JSON-RPC as first-class transport · Pause/resume **scheduling** · Freeform multi-tags (beyond folder categories) · Browser **blanket download interception** (D-045 is per-download opt-in; taking over every browser download needs its own UX pass) · Firefox extension port · Extra locales · Remote path mapping · In-app auto-update productization
+Automatic / silent aria2 package channels (D-046 is explicit and user-initiated; no background fetch) · History retention/analytics policies (C3) · Hot profile switch without restart (engine rebind) · HTTP JSON-RPC as first-class transport · Pause/resume **scheduling** · Freeform multi-tags (beyond folder categories) · Browser **blanket download interception** (D-045 is per-download opt-in; taking over every browser download needs its own UX pass) · Firefox extension port · Extra locales · Remote path mapping · Silent application updates
 
 
 → Prioritized product roadmap: [`docs/roadmap.md`](roadmap.md)

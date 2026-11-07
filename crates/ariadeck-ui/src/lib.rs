@@ -36,6 +36,7 @@ pub use components::{
     Toast, ToastKind, Toggle, Tooltip,
 };
 pub use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
+pub use gpui_kit::component::link::Link;
 pub use model::{
     ActivityEntryView, ActivityKindView, AddDownloadAdvancedOptionsView, AddDownloadInputModeView,
     AddDownloadItemResultView, AddDownloadMetadataFileView, AddDownloadMetadataKindView,
@@ -69,10 +70,10 @@ pub use model::{
     TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
     TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskSourceKindView,
     TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView, TrackerListSettingsView,
-    TrackerListSourceView, TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery,
-    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, active_format_options,
-    format_bytes, format_bytes_with, format_eta, format_eta_with, format_percent,
-    format_percent_with, format_rate, format_rate_with, format_relative_time,
+    TrackerListSourceView, TransferPolicySettingsView, UpdateOfferView, UpdateStatusView,
+    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    active_format_options, format_bytes, format_bytes_with, format_eta, format_eta_with,
+    format_percent, format_percent_with, format_rate, format_rate_with, format_relative_time,
     format_relative_time_with, format_share_ratio, format_share_ratio_with,
     format_speed_limit_field, parse_speed_limit_field, set_active_format_options,
 };

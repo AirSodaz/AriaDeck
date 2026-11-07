@@ -33,7 +33,7 @@ use crate::{
     DownloadProxySettingsView, DownloadRowView, EngineHealthView, EngineSessionView,
     FileAllocationView, FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch,
     GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView, Icon,
-    IconButton, IconName, IconSize, LanguagePreferenceView, LocaleId, MoveTaskDownInQueue,
+    IconButton, IconName, IconSize, LanguagePreferenceView, Link, LocaleId, MoveTaskDownInQueue,
     MoveTaskToQueueBottom, MoveTaskToQueueTop, MoveTaskUpInQueue, NotificationSettingsView,
     NotificationVolumeView, OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName,
     OpenTaskSpeedLimit, OperationErrorView, PauseSelectedTask, PlatformSettingsView,
@@ -191,6 +191,13 @@ pub enum AppShellEvent {
     CoreDownloadRequested {
         request_id: RequestId,
     },
+    CheckForUpdatesRequested {
+        request_id: RequestId,
+    },
+    DownloadUpdateRequested {
+        request_id: RequestId,
+    },
+    InstallUpdateRequested,
     /// The first-run core-setup guide was closed; persist that it was shown so it
     /// does not reopen on its own (B4).
     CoreSetupOnboardingDismissed,
@@ -692,6 +699,11 @@ pub struct AppShell {
     settings_page: SettingsPage,
     /// Discovery / verified-download state for the shared Get-aria2 panel (B4).
     core_setup: CoreSetupState,
+    update_status: crate::UpdateStatusView,
+    update_enabled: bool,
+    update_portable: bool,
+    pending_update_check: Option<RequestId>,
+    pending_update_download: Option<RequestId>,
     core_setup_dialog_focus: FocusHandle,
     core_setup_settings_focus: FocusHandle,
     core_setup_dismiss_focus: FocusHandle,
@@ -1128,6 +1140,11 @@ impl AppShell {
                 ..SettingsPage::default()
             },
             core_setup: CoreSetupState::default(),
+            update_status: crate::UpdateStatusView::Disabled,
+            update_enabled: false,
+            update_portable: false,
+            pending_update_check: None,
+            pending_update_download: None,
             core_setup_dialog_focus: cx.focus_handle(),
             core_setup_settings_focus: cx.focus_handle().tab_stop(true),
             core_setup_dismiss_focus: cx.focus_handle().tab_stop(true),

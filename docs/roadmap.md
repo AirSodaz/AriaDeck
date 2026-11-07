@@ -64,7 +64,7 @@ Legend: **Have** · **Partial** · **Missing** · **Won’t** (non-goal)
 | Auto tracker list update | Have (opt-in) | Have | Manual | D1 / D-041; default off, explicit consent |
 | UPnP / port map UI | Missing | Have | Options raw | Gate on capabilities |
 | Keep-awake / shutdown after done | Have | Next | N/A | Power integration (D5) |
-| In-app auto-update | Missing | Have | N/A | Deferred productization |
+| In-app auto-update | Have | Have | N/A | Windows x64 release only; portable notice/link, installed checksum-verified installer |
 | Export/import settings | Have | AriaNg | Have | Ops convenience |
 | Diagnostic zip | Have | Next | N/A | SEC-safe export |
 | Remote path mapping | Won’t (near term) | Rare | N/A | Keep non-goal |
@@ -150,7 +150,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 
 | ID | Work | Guardrail |
 | --- | --- | --- |
-| F1 | In-app auto-update | Explicit product decision; signing required |
+| F1 | **Done** — GitHub Release checks on Windows x64 release builds; portable gets a notice/link only, installed builds require explicit download and install confirmation after SHA-256 verification | Release assets must include setup.exe and SHA256SUMS.txt |
 | F2 | Hot profile switch without restart | Hard; needs session rebind design |
 | F3 | **Done** — D-043 frozen: bag schema v1 at `profiles/<id>/environment.json` (categories/dirs, proxy, speed/transfer, trackers); client-wide prefs in `settings.json`; activate dual-writes previous/next bag + settings mirror; save settings dual-writes active bag; Profiles UI local vs remote host paths | Engine reconnect still restart-bound (F2); export/import is active-env only |
 | — | **System download proxy mode** (OS/env static; no PAC) | **Done** (settings + apply path; Manual/Disabled retained) |
