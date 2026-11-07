@@ -9,8 +9,10 @@ const RELEASE_API: &str = "https://api.github.com/repos/AirSodaz/AriaDeck/releas
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_METADATA_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CHECKSUM_BYTES: usize = 1024 * 1024;
+const MAX_SIGNATURE_BYTES: usize = 16 * 1024;
 const MAX_INSTALLER_BYTES: usize = 512 * 1024 * 1024;
 const USER_AGENT: &str = concat!("AriaDeck/", env!("CARGO_PKG_VERSION"));
+const UPDATE_PUBLIC_KEY: Option<&str> = option_env!("ARIADECK_UPDATE_PUBLIC_KEY");
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub(crate) struct ReleaseAsset {
@@ -37,6 +39,7 @@ pub(crate) struct UpdateOffer {
     pub(crate) notes: String,
     pub(crate) release_url: String,
     pub(crate) installer_url: Option<String>,
+    pub(crate) installer_signature_url: Option<String>,
     pub(crate) checksums_url: Option<String>,
 }
 
@@ -64,6 +67,13 @@ pub(crate) fn parse_update_offer(
         .assets
         .iter()
         .find(|asset| asset.name.ends_with("-windows-x64-setup.exe"));
+    let installer_signature = installer.and_then(|installer| {
+        let expected_name = format!("{}.minisig", installer.name);
+        release
+            .assets
+            .iter()
+            .find(|asset| asset.name == expected_name)
+    });
     let checksums = release
         .assets
         .iter()
@@ -78,6 +88,9 @@ pub(crate) fn parse_update_offer(
         notes: release.body,
         release_url,
         installer_url: installer
+            .map(|asset| validated_github_url(&asset.browser_download_url))
+            .transpose()?,
+        installer_signature_url: installer_signature
             .map(|asset| validated_github_url(&asset.browser_download_url))
             .transpose()?,
         checksums_url: checksums
@@ -193,17 +206,51 @@ pub(crate) async fn download_verified_installer(offer: &UpdateOffer) -> Result<V
         .checksums_url
         .as_deref()
         .ok_or_else(|| "This release has no SHA256SUMS.txt.".to_owned())?;
+    let signature_url = offer
+        .installer_signature_url
+        .as_deref()
+        .ok_or_else(|| "This release has no installer signature.".to_owned())?;
     let installer_name = url::Url::parse(installer_url)
         .ok()
         .and_then(|url| url.path_segments()?.next_back().map(str::to_owned))
         .filter(|name| name.ends_with("-windows-x64-setup.exe"))
         .ok_or_else(|| "The installer asset name is invalid.".to_owned())?;
-    let (checksums, installer) = tokio::try_join!(
+    let (checksums, signature, installer) = tokio::try_join!(
         fetch_bounded(checksums_url, MAX_CHECKSUM_BYTES, "Checksum file"),
+        fetch_bounded(signature_url, MAX_SIGNATURE_BYTES, "Installer signature"),
         fetch_bounded(installer_url, MAX_INSTALLER_BYTES, "Installer"),
     )?;
+    verify_minisign(&signature, &installer)?;
     verify_sha256sum(&checksums, &installer_name, &installer)?;
     Ok(installer)
+}
+
+fn verify_minisign(signature: &[u8], bytes: &[u8]) -> Result<(), String> {
+    let public_key = UPDATE_PUBLIC_KEY
+        .ok_or_else(|| "This build has no trusted update signing key.".to_owned())?;
+    verify_minisign_with_key(public_key, signature, bytes)
+}
+
+fn verify_minisign_with_key(
+    public_key: &str,
+    signature: &[u8],
+    bytes: &[u8],
+) -> Result<(), String> {
+    let encoded_key = public_key
+        .lines()
+        .filter(|line| !line.starts_with("untrusted comment:"))
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .ok_or_else(|| "The trusted update signing key is invalid.".to_owned())?;
+    let public_key = minisign_verify::PublicKey::from_base64(encoded_key)
+        .map_err(|_| "The trusted update signing key is invalid.".to_owned())?;
+    let signature = std::str::from_utf8(signature)
+        .map_err(|_| "Installer signature is not valid UTF-8.".to_owned())?;
+    let signature = minisign_verify::Signature::decode(signature)
+        .map_err(|_| "Installer signature is invalid.".to_owned())?;
+    public_key
+        .verify(bytes, &signature, true)
+        .map_err(|_| "Installer signature verification failed.".to_owned())
 }
 
 pub(crate) fn verify_sha256sum(
@@ -269,6 +316,16 @@ mod tests {
                     ),
                 },
                 ReleaseAsset {
+                    name: format!(
+                        "AriaDeck-{}-windows-x64-setup.exe.minisig",
+                        tag.trim_start_matches('v')
+                    ),
+                    browser_download_url: format!(
+                        "https://github.com/AirSodaz/AriaDeck/releases/download/{tag}/AriaDeck-{}-windows-x64-setup.exe.minisig",
+                        tag.trim_start_matches('v')
+                    ),
+                },
+                ReleaseAsset {
                     name: "SHA256SUMS.txt".into(),
                     browser_download_url: format!(
                         "https://github.com/AirSodaz/AriaDeck/releases/download/{tag}/SHA256SUMS.txt"
@@ -292,6 +349,7 @@ mod tests {
                 .ends_with("setup.exe")
         );
         assert!(offer.checksums_url.is_some());
+        assert!(offer.installer_signature_url.is_some());
     }
 
     #[test]
@@ -333,6 +391,7 @@ mod tests {
             .expect("valid release metadata")
             .expect("newer version");
         assert!(offer.installer_url.is_none());
+        assert!(offer.installer_signature_url.is_none());
         assert!(offer.checksums_url.is_none());
     }
 
@@ -354,5 +413,21 @@ mod tests {
         );
         assert!(verify_sha256sum(b"bad-hash  setup.exe\n", "setup.exe", bytes).is_err());
         assert!(verify_sha256sum(b"", "setup.exe", bytes).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_minisign_inputs() {
+        assert!(verify_minisign(b"not a signature", b"installer").is_err());
+    }
+
+    #[test]
+    fn verifies_minisign_signature_and_rejects_modified_payload() {
+        let public_key = "untrusted comment: minisign public key E7620F1842B4E81F\nRWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
+        let signature = br#"untrusted comment: signature from minisign secret key
+RWQf6LRCGA9i59SLOFxz6NxvASXDJeRtuZykwQepbDEGt87ig1BNpWaVWuNrm73YiIiJbq71Wi+dP9eKL8OC351vwIasSSbXxwA=
+trusted comment: timestamp:1555779966	file:test
+QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfNQUaOAA=="#;
+        assert!(verify_minisign_with_key(public_key, signature, b"test").is_ok());
+        assert!(verify_minisign_with_key(public_key, signature, b"tampered").is_err());
     }
 }

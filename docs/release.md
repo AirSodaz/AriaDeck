@@ -7,8 +7,8 @@ Acceptance contract for portable packages, optional installer, data dirs, signin
 
 | In | Out (deferred) |
 | --- | --- |
-| Windows x64 portable zip + installer; macOS arm64 and x86_64 app bundles | macOS code signing and notarization |
-| Linux x86_64 AppImage + Debian package | ARM64, RPM, and Flatpak packages |
+| Windows x64 portable zip + installer; macOS arm64 and x86_64 app bundles; Linux x86_64 AppImage + Debian package | macOS code signing and notarization |
+| Signed update packages and Windows updater signature verification | ARM64, RPM, and Flatpak packages |
 | Optional Inno Setup installer | Network download of official aria2 |
 | Portable and installed data directories; uninstall keeps data by default | Store distribution |
 | MIT + third-party notices | Production certs in-repo |
@@ -30,7 +30,7 @@ Installer: exe + licenses (**no** portable marker). **No** bundled aria2—impor
 
 Linux AppImage and `.deb`: desktop binary, launcher, icon, license, and third-party notices. The `.deb` declares runtime dependencies from the Ubuntu 22.04 build. AppImage bundles discoverable shared-library dependencies; GTK 3 and other desktop-system components remain host requirements. Linux native-messaging registration is not available yet, so `ariadeck-bridge` is not included.
 
-Each macOS DMG contains a native `.app` bundle with the desktop binary, version metadata, and license notices. The binaries target macOS 12.0 or later and are built separately on Apple Silicon and Intel runners. They are unsigned and not notarized; on first launch, use Finder's Open command to bypass Gatekeeper's unidentified-developer prompt. aria2 is not bundled.
+Each macOS DMG contains a native `.app` bundle with the desktop binary, version metadata, and license notices. The binaries target macOS 12.0 or later and are built separately on Apple Silicon and Intel runners. The DMGs have Minisign signatures for download verification; the app bundles are not code-signed or notarized, so on first launch use Finder's Open command to bypass Gatekeeper's unidentified-developer prompt. aria2 is not bundled.
 
 ## Data directory
 
@@ -62,7 +62,7 @@ Local build (mirrors CI packaging steps):
 python scripts/gen_third_party_notices.py
 powershell -ExecutionPolicy Bypass -File scripts/package-windows-portable.ps1
 
-# Optional sign
+# Optional Windows Authenticode sign
 $env:ARIADECK_SIGN_CERT_THUMBPRINT = "<thumbprint>"
 powershell -ExecutionPolicy Bypass -File scripts/package-windows-portable.ps1 -Sign
 
@@ -105,12 +105,25 @@ The script verifies the app bundle metadata, license files, and binary architect
 
 | Workflow | When | What |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` → job `Windows packages (portable + installer)` | Push to `main` / `master` (after `verify`) | Notices → portable → `choco install innosetup` → installer `-SkipStage` → drop staging dir → assert zip + setup.exe → artifact `ariadeck-windows-x64` (zip + setup only) |
-| `.github/workflows/release.yml` | Tag `v*` | Windows, Ubuntu 22.04 x86_64, macOS arm64, and macOS x86_64 jobs verify the version and upload artifacts; publish waits for all jobs, checks six packages, creates `SHA256SUMS.txt`, and attaches all packages to the GitHub Release |
+| `.github/workflows/ci.yml` | Push to `main` / `master` (after `verify`) | Native Windows, Ubuntu 22.04, and macOS arm64/x86_64 package jobs; final job signs all six packages, writes `SHA256SUMS.txt`, and uploads `ariadeck-all-platforms-signed` |
+| `.github/workflows/release.yml` | Tag `v*` | Windows, Ubuntu 22.04 x86_64, macOS arm64, and macOS x86_64 jobs build packages; publish signs all six packages, writes `SHA256SUMS.txt`, and attaches packages and signatures to GitHub Release |
 
 PR / non-main branches run **verify only** (fmt/test/clippy/release build); they do not produce installers.
 
-### Signing env
+### Update package signatures
+
+Minisign signatures authenticate the exact package bytes. The Windows in-app updater requires the setup `.minisig` before it accepts the existing SHA-256 entry. Linux and macOS package signatures are available for manual verification; in-app updates for those platforms are not implemented. These signatures do not provide Windows Authenticode reputation or macOS Gatekeeper trust/notarization.
+
+Create a Minisign key pair with `minisign -G -W -s ariadeck-update.key -p ariadeck-update.pub`. Store the complete private-key file as the GitHub Actions secret `ARIADECK_UPDATE_SIGNING_KEY`, and the complete public-key file as the repository Actions variable `ARIADECK_UPDATE_PUBLIC_KEY`. Package jobs fail if the public key is missing; signing jobs fail if the private key is missing or does not match. Never commit the private key.
+
+Verify a downloaded package and then the published checksum list:
+
+```sh
+minisign -Vm AriaDeck-<version>-x86_64.AppImage -x AriaDeck-<version>-x86_64.AppImage.minisig -p ariadeck-update.pub
+sha256sum -c SHA256SUMS.txt
+```
+
+### Windows Authenticode env
 
 | Variable | Purpose |
 | --- | --- |
@@ -120,7 +133,7 @@ PR / non-main branches run **verify only** (fmt/test/clippy/release build); they
 | `ARIADECK_SIGN_DESCRIPTION` | `/d` (default `AriaDeck`) |
 | `ARIADECK_INNO_SETUP` | Optional full path to `ISCC.exe` |
 
-Unsigned builds may hit SmartScreen. No certs in-repo.
+Without an Authenticode certificate, Windows builds may hit SmartScreen. No certificates or update private keys are stored in-repo.
 
 ## Licenses
 
@@ -148,7 +161,7 @@ Unsigned builds may hit SmartScreen. No certs in-repo.
 
 - Official Windows x64 release builds check GitHub Releases once at startup; About also has a manual check. Development/CI builds and other platforms do not contact the update feed.
 - Portable builds only show the available version and release notes, with a link to the GitHub Release page. They never download or replace application files.
-- Installed builds download the matching `*-windows-x64-setup.exe` only after the user chooses Download installer. The app verifies its SHA-256 against `SHA256SUMS.txt` from that release before offering Install and restart.
+- Installed builds download the matching `*-windows-x64-setup.exe` only after the user chooses Download installer. The app verifies the Minisign signature and then its SHA-256 against `SHA256SUMS.txt` from that release before offering Install and restart.
 - The Inno installer upgrades the existing per-user installation; AriaDeck application data remains under `%LOCALAPPDATA%\AriaDeck`. Cancelling or failing the installer does not change that data.
 
 ## Acceptance
@@ -157,7 +170,7 @@ Unsigned builds may hit SmartScreen. No certs in-repo.
 | --- | --- |
 | Linux AppImage | AppImage extraction, launcher/icon/license contents, and dependency checks in `scripts/package-linux.sh` |
 | Linux Debian package | `dpkg-deb` metadata, runtime dependencies, launcher/icon/license contents in `scripts/package-linux.sh` |
-| Release asset set | Publish job requires exactly four packages and hashes all four |
+| Release asset set | Publish job requires six packages, signs each, and writes SHA256 checksums |
 | Portable isolation | `resolve_data_dir_*` + marker |
 | Installed path | LocalAppData without marker |
 | Settings v1…current | migration tests |

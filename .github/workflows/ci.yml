@@ -116,6 +116,8 @@ jobs:
     runs-on: windows-latest
     needs: verify
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    env:
+      ARIADECK_UPDATE_PUBLIC_KEY: ${{ vars.ARIADECK_UPDATE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v5
 
@@ -132,6 +134,10 @@ jobs:
 
       - name: Generate third-party notices
         run: python scripts/gen_third_party_notices.py
+
+      - name: Require update verification key
+        shell: pwsh
+        run: if (-not $env:ARIADECK_UPDATE_PUBLIC_KEY) { throw "Set the ARIADECK_UPDATE_PUBLIC_KEY repository variable" }
 
       - name: Package portable
         shell: pwsh
@@ -175,7 +181,7 @@ jobs:
             Write-Host "OK $($f.Name) ($mb MB)"
           }
 
-      - name: Upload Windows artifacts
+      - name: Upload Windows packages
         # v5 still targets Node 20; v6+ is node24-native.
         uses: actions/upload-artifact@v6
         with:
@@ -183,3 +189,121 @@ jobs:
           path: |
             dist/*-windows-x64-portable.zip
             dist/*-windows-x64-setup.exe
+
+  linux-packages:
+    name: Linux packages (AppImage + deb)
+    runs-on: ubuntu-22.04
+    needs: verify
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    env:
+      ARIADECK_UPDATE_PUBLIC_KEY: ${{ vars.ARIADECK_UPDATE_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Require update verification key
+        run: test -n "$ARIADECK_UPDATE_PUBLIC_KEY"
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake desktop-file-utils dpkg-dev file \
+            libasound2-dev libdbus-1-dev libfontconfig-dev libfuse2 libgtk-3-dev \
+            libssl-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev libzstd-dev libayatana-appindicator3-dev \
+            libsecret-1-dev pkg-config squashfs-tools
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-22.04
+          shared-key: workspace
+      - run: python3 scripts/gen_third_party_notices.py
+      - run: cargo build --locked -p ariadeck-desktop --release
+      - name: Download linuxdeploy
+        run: |
+          curl --fail --location --retry 3 https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage --output "$RUNNER_TEMP/linuxdeploy-x86_64.AppImage"
+          chmod +x "$RUNNER_TEMP/linuxdeploy-x86_64.AppImage"
+      - name: Package and verify Linux artifacts
+        run: |
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = \"\([^\"]*\)\"/\1/p' Cargo.toml | head -n 1)"
+          bash scripts/package-linux.sh "$version" "$RUNNER_TEMP/linuxdeploy-x86_64.AppImage"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ariadeck-linux-x64
+          path: |
+            dist/AriaDeck-*-x86_64.AppImage
+            dist/ariadeck_*_amd64.deb
+          if-no-files-found: error
+
+  macos-packages:
+    name: macOS ${{ matrix.arch }} package
+    needs: verify
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    env:
+      ARIADECK_UPDATE_PUBLIC_KEY: ${{ vars.ARIADECK_UPDATE_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Require update verification key
+        run: test -n "$ARIADECK_UPDATE_PUBLIC_KEY"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-${{ matrix.arch }}
+          shared-key: workspace
+      - run: python3 scripts/gen_third_party_notices.py
+      - run: cargo build --locked -p ariadeck-desktop --release
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+      - name: Package and verify macOS app
+        run: bash scripts/package-macos.sh "$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = \"\([^\"]*\)\"/\1/p' Cargo.toml | head -n 1)" "${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ariadeck-macos-${{ matrix.arch }}
+          path: dist/AriaDeck-*-macos-*.dmg
+          if-no-files-found: error
+
+  sign-main-packages:
+    name: Sign main CI packages
+    runs-on: ubuntu-latest
+    needs: [windows-packages, linux-packages, macos-packages]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v6
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+      - name: Sign and verify packages
+        shell: bash
+        env:
+          ARIADECK_UPDATE_SIGNING_KEY: ${{ secrets.ARIADECK_UPDATE_SIGNING_KEY }}
+          ARIADECK_UPDATE_PUBLIC_KEY: ${{ vars.ARIADECK_UPDATE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          mapfile -t packages < <(find dist -maxdepth 1 -type f \
+            \( -name '*.zip' -o -name '*-setup.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.dmg' \) -print | sort)
+          test "${#packages[@]}" -eq 6 || { echo "Expected six package files, found ${#packages[@]}" >&2; exit 1; }
+          bash scripts/sign-artifacts.sh "${packages[@]}"
+          (cd dist && sha256sum *.zip *-setup.exe *.AppImage *.deb *.dmg > SHA256SUMS.txt)
+          (cd dist && sha256sum --check SHA256SUMS.txt)
+          test "$(find dist -maxdepth 1 -type f -name '*.minisig' | wc -l)" -eq 6
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ariadeck-all-platforms-signed
+          path: dist/*
+          if-no-files-found: error

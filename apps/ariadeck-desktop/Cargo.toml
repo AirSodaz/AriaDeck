@@ -20,6 +20,7 @@ ariadeck-ui = { path = "../../crates/ariadeck-ui" }
 data-encoding.workspace = true
 gpui-kit = { workspace = true }
 lava_torrent.workspace = true
+minisign-verify.workspace = true
 notify-rust.workspace = true
 quick-xml.workspace = true
 reqwest.workspace = true

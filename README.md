@@ -11,7 +11,7 @@ Native Rust desktop client for [aria2](https://aria2.github.io/). GPUI UI; indep
 
 - Rust 1.96.0 (`rust-toolchain.toml`)
 - Windows (primary, packaged) / macOS / Linux — all three CI-verified (fmt/test/clippy/build)
-- CI (`.github/workflows/ci.yml`): verify on Windows, macOS, and Ubuntu; on `main` push, also build Windows portable zip + Inno installer (artifact `ariadeck-windows-x64`)
+- CI (`.github/workflows/ci.yml`): verify on Windows, macOS, and Ubuntu; on `main` push, also build and Minisign-sign Windows, macOS, and Linux packages (artifact `ariadeck-all-platforms-signed`)
 
 ```sh
 cargo run -p ariadeck-desktop
@@ -39,7 +39,7 @@ Plain `ws://` defaults to loopback; remote plaintext needs `ARIADECK_RPC_ALLOW_I
 
 ## Releases
 
-Windows x64 portable zip and Inno installer, Linux x86_64 AppImage and Ubuntu/Debian package, plus macOS arm64 and x86_64 DMGs. macOS bundles are unsigned and not notarized. **No** bundled aria2—import a core in Settings or use `ARIADECK_RPC_URL`.
+Windows x64 portable zip and Inno installer, Linux x86_64 AppImage and Ubuntu/Debian package, plus macOS arm64 and x86_64 DMGs. Packages carry Minisign signatures for download verification; macOS bundles are not code-signed or notarized. **No** bundled aria2—import a core in Settings or use `ARIADECK_RPC_URL`.
 
 ```powershell
 python scripts/gen_third_party_notices.py
@@ -52,8 +52,8 @@ powershell -ExecutionPolicy Bypass -File scripts/package-windows-installer.ps1 -
 
 | Trigger | Artifacts |
 | --- | --- |
-| Push to `main` | CI artifact `ariadeck-windows-x64` (portable `*.zip` + `*-setup.exe` only) |
-| Tag `v*` | GitHub Release attaches Windows, Linux, and macOS packages, plus SHA256 checksums |
+| Push to `main` | CI artifact `ariadeck-all-platforms-signed` (Windows, macOS, and Linux packages with `.minisig` signatures and SHA256 checksums) |
+| Tag `v*` | GitHub Release attaches Windows, Linux, and macOS packages, `.minisig` signatures, and SHA256 checksums |
 
 Details: [`docs/release.md`](docs/release.md).
 

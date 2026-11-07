@@ -11,8 +11,13 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
+    env:
+      ARIADECK_UPDATE_PUBLIC_KEY: ${{ vars.ARIADECK_UPDATE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v5
+      - name: Require update verification key
+        shell: pwsh
+        run: if (-not $env:ARIADECK_UPDATE_PUBLIC_KEY) { throw "Set the ARIADECK_UPDATE_PUBLIC_KEY repository variable" }
       - name: Assert version tag
         shell: pwsh
         run: |
@@ -81,8 +86,12 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: read
+    env:
+      ARIADECK_UPDATE_PUBLIC_KEY: ${{ vars.ARIADECK_UPDATE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v5
+      - name: Require update verification key
+        run: test -n "$ARIADECK_UPDATE_PUBLIC_KEY"
       - name: Assert version tag
         shell: bash
         run: |
@@ -133,8 +142,12 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
+    env:
+      ARIADECK_UPDATE_PUBLIC_KEY: ${{ vars.ARIADECK_UPDATE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v5
+      - name: Require update verification key
+        run: test -n "$ARIADECK_UPDATE_PUBLIC_KEY"
       - name: Assert version tag
         shell: bash
         run: |
@@ -166,10 +179,26 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v6
         with:
           path: dist
           merge-multiple: true
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+      - name: Sign packages with Minisign
+        shell: bash
+        env:
+          ARIADECK_UPDATE_SIGNING_KEY: ${{ secrets.ARIADECK_UPDATE_SIGNING_KEY }}
+          ARIADECK_UPDATE_PUBLIC_KEY: ${{ vars.ARIADECK_UPDATE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          mapfile -t packages < <(find dist -maxdepth 1 -type f \
+            \( -name '*.zip' -o -name '*-setup.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.dmg' \) -print | sort)
+          test "${#packages[@]}" -eq 6 || { echo "Expected six package files, found ${#packages[@]}" >&2; exit 1; }
+          bash scripts/sign-artifacts.sh "${packages[@]}"
       - name: Verify artifacts and write SHA256 checksums
         shell: bash
         run: |
@@ -183,6 +212,7 @@ jobs:
           done
           (cd dist && sha256sum *.zip *-setup.exe *.AppImage *.deb *.dmg > SHA256SUMS.txt)
           (cd dist && sha256sum --check SHA256SUMS.txt)
+          test "$(find dist -maxdepth 1 -type f -name '*.minisig' | wc -l)" -eq 6
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
@@ -193,14 +223,16 @@ jobs:
             dist/*.deb
             dist/*-macos-arm64.dmg
             dist/*-macos-x86_64.dmg
+            dist/*.minisig
             dist/SHA256SUMS.txt
           body: |
             AriaDeck is available for Windows x64, Linux x86_64, and macOS arm64 and x86_64.
             Linux: make the x86_64 AppImage executable and run it; it requires a compatible GTK 3 desktop runtime.
             Alternatively, install the amd64 deb on Ubuntu/Debian.
             Install the deb with sudo apt install ./ariadeck_<ver>_amd64.deb.
-            Windows packages are unsigned and may show SmartScreen; until signing is available, verify downloads against SHA256SUMS.txt.
-            macOS app bundles are unsigned and not notarized. To open one, use Finder's Open command on first launch; verify downloads against SHA256SUMS.txt.
+            Windows packages include Minisign update signatures, but are not Authenticode-signed and may show SmartScreen.
+            macOS app bundles are not code-signed or notarized. To open one, use Finder's Open command on first launch.
+            Verify package signatures with the AriaDeck update public key; SHA256SUMS.txt provides an additional integrity check.
             aria2 is not bundled. Import or download a core under Settings > Engine,
             or use ARIADECK_RPC_URL with ARIADECK_RPC_SECRET for an existing instance.
             Linux browser native messaging registration is not supported yet.
