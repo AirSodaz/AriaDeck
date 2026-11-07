@@ -74,7 +74,10 @@ mod tests {
         assert_eq!(archive.len(), 2);
         let names = archive
             .file_names()
-            .map(ToOwned::to_owned)
+            .map(|name| {
+                name.expect("valid diagnostic archive entry name")
+                    .into_owned()
+            })
             .collect::<Vec<_>>();
         assert_eq!(names, ["diagnostics.json", "README.txt"]);
 

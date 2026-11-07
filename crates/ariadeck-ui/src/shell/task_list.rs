@@ -136,7 +136,7 @@ impl AppShell {
                 ))
                 .size_full()
                 .overflow_hidden()
-                .on_scroll_wheel({
+                .on_scroll({
                     let handle = self.list_scroll.0.borrow().base_handle.clone();
                     cx.listener(move |this, event, window, cx| {
                         this.smooth_discrete_scroll(
@@ -1516,7 +1516,7 @@ impl AppShell {
                 this.select_at_with_modifiers(
                     index,
                     modifiers.shift,
-                    modifiers.secondary(),
+                    modifiers.secondary(cx),
                     window,
                     cx,
                 );

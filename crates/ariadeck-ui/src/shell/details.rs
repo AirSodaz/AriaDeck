@@ -389,7 +389,7 @@ impl AppShell {
                                 .expect("details drawer exists while rendering info")
                                 .info_scroll,
                         )
-                        .on_scroll_wheel({
+                        .on_scroll({
                             let handle = self
                                 .details_drawer
                                 .as_ref()
@@ -591,7 +591,7 @@ impl AppShell {
                                 )
                                 .flex_1()
                                 .min_h_0()
-                                .on_scroll_wheel({
+                                .on_scroll({
                                     let handle = self
                                         .details_drawer
                                         .as_ref()
@@ -715,7 +715,7 @@ impl AppShell {
                                 .expect("details drawer exists while rendering network")
                                 .network_scroll,
                         )
-                        .on_scroll_wheel({
+                        .on_scroll({
                             let handle = self
                                 .details_drawer
                                 .as_ref()
@@ -862,7 +862,7 @@ impl AppShell {
                             .expect("details drawer exists while rendering options")
                             .options_scroll,
                     )
-                    .on_scroll_wheel({
+                    .on_scroll({
                         let handle = self
                             .details_drawer
                             .as_ref()

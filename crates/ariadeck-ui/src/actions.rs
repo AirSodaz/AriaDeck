@@ -1,4 +1,4 @@
-use gpui::{App, KeyBinding, actions};
+use gpui::{App, KeyBinding, OperatingSystem, actions};
 
 actions!(
     ariadeck,
@@ -54,8 +54,13 @@ actions!(
 /// Shared key context for every `TextField` so paste/copy/select-all work everywhere.
 pub const TEXT_FIELD_KEY_CONTEXT: &str = "TextField";
 
-fn text_field_bindings() -> Vec<KeyBinding> {
+fn text_field_bindings(cx: &App) -> Vec<KeyBinding> {
     let context = Some(TEXT_FIELD_KEY_CONTEXT);
+    let modifier = if cx.platform_info().os == OperatingSystem::Mac {
+        "cmd"
+    } else {
+        "ctrl"
+    };
     vec![
         KeyBinding::new("backspace", Backspace, context),
         KeyBinding::new("delete", Delete, context),
@@ -63,27 +68,43 @@ fn text_field_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("right", MoveRight, context),
         KeyBinding::new("shift-left", SelectLeft, context),
         KeyBinding::new("shift-right", SelectRight, context),
-        KeyBinding::new("secondary-a", SelectAll, context),
+        KeyBinding::new(
+            if modifier == "cmd" { "cmd-a" } else { "ctrl-a" },
+            SelectAll,
+            context,
+        ),
         KeyBinding::new("home", MoveHome, context),
         KeyBinding::new("end", MoveEnd, context),
-        KeyBinding::new("secondary-v", Paste, context),
-        KeyBinding::new("secondary-x", Cut, context),
-        KeyBinding::new("secondary-c", Copy, context),
-        // Common Windows/Linux aliases for clipboard when secondary-* is unavailable.
-        KeyBinding::new("ctrl-v", Paste, context),
-        KeyBinding::new("ctrl-c", Copy, context),
-        KeyBinding::new("ctrl-x", Cut, context),
-        KeyBinding::new("ctrl-a", SelectAll, context),
+        KeyBinding::new(
+            if modifier == "cmd" { "cmd-v" } else { "ctrl-v" },
+            Paste,
+            context,
+        ),
+        KeyBinding::new(
+            if modifier == "cmd" { "cmd-x" } else { "ctrl-x" },
+            Cut,
+            context,
+        ),
+        KeyBinding::new(
+            if modifier == "cmd" { "cmd-c" } else { "ctrl-c" },
+            Copy,
+            context,
+        ),
         KeyBinding::new("shift-enter", InsertNewline, context),
     ]
 }
 
 pub fn init(cx: &mut App) {
     gpui_kit::init(cx);
-    let mut bindings = text_field_bindings();
+    let mut bindings = text_field_bindings(cx);
+    let select_all = if cx.platform_info().os == OperatingSystem::Mac {
+        "cmd-a"
+    } else {
+        "ctrl-a"
+    };
     bindings.extend([
         KeyBinding::new("cmd-f", FocusSearch, None),
-        KeyBinding::new("secondary-a", SelectAllTasks, Some("DownloadWorkspace")),
+        KeyBinding::new(select_all, SelectAllTasks, Some("DownloadWorkspace")),
         KeyBinding::new("cmd-n", OpenAddDownload, Some("DownloadWorkspace")),
         KeyBinding::new("escape", CloseAddDownload, Some("AddDownloadDialog")),
         KeyBinding::new("enter", SubmitAddDownload, Some("AddDownloadDialog")),

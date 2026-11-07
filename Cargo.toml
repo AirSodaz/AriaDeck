@@ -31,9 +31,7 @@ rust-embed = "8.11.0"
 fluent-bundle = "0.16.0"
 futures = "0.3.31"
 futures-util = "0.3.31"
-gpui-kit = { version = "0.7.1", default-features = true }
-gpui-component = "0.7.1"
-gpui-base = "0.7.1"
+gpui-kit = { version = "0.9.0", default-features = true }
 image = { version = "0.25.10", default-features = false }
 interprocess = { version = "2.4.2", features = ["tokio"] }
 keyring = "4.1.5"
@@ -50,7 +48,7 @@ sys-locale = "0.3.2"
 sysinfo = "0.31.4"
 tempfile = "3.23.0"
 thiserror = "2.0.17"
-tokio = { version = "1.48.0", features = ["macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.54.1", features = ["macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite = { version = "0.28.0", default-features = false, features = ["connect", "handshake", "rustls-tls-native-roots"] }
 trash = "5.2.3"
 tracing = "0.1.44"
@@ -62,7 +60,7 @@ uuid = { version = "1.18.1", features = ["serde", "v4"] }
 winreg = "0.55"
 # `deflate` is required to read upstream aria2 release archives (B4). The
 # diagnostic export still writes `Stored` entries only.
-zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
+zip = { version = "9.4.1", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

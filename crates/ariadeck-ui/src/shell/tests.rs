@@ -7,6 +7,14 @@ use crate::{
     TaskCountsView, TaskNameStateView, TaskSourceKindView, TaskStatusView,
 };
 
+fn secondary_modifier() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    }
+}
+
 fn task(index: usize) -> DownloadRowView {
     DownloadRowView {
         identity: TaskIdentity {
@@ -329,7 +337,7 @@ fn select_all_shortcut_selects_the_current_loaded_query(cx: &mut TestAppContext)
         shell
     });
 
-    cx.simulate_keystrokes("secondary-a");
+    cx.simulate_keystrokes(&format!("{}-a", secondary_modifier()));
     view.read_with(cx, |shell, _| {
         assert_eq!(shell.visible_selected_task_count(), 4);
         assert_eq!(shell.selected_task_count(), 4);
@@ -1526,7 +1534,11 @@ fn add_download_dialog_supports_standard_clipboard_shortcuts(cx: &mut TestAppCon
             input.set_value("https://example.com/file", window, cx);
         });
     });
-    cx.simulate_keystrokes("secondary-a secondary-c");
+    cx.simulate_keystrokes(&format!(
+        "{}-a {}-c",
+        secondary_modifier(),
+        secondary_modifier()
+    ));
     assert_eq!(
         cx.read_from_clipboard().and_then(|item| item.text()),
         Some("https://example.com/file".to_owned())
@@ -1535,12 +1547,16 @@ fn add_download_dialog_supports_standard_clipboard_shortcuts(cx: &mut TestAppCon
     cx.write_to_clipboard(ClipboardItem::new_string(
         "magnet:?xt=urn:btih:test".to_owned(),
     ));
-    cx.simulate_keystrokes("secondary-v");
+    cx.simulate_keystrokes(&format!("{}-v", secondary_modifier()));
     view.read_with(cx, |shell, cx| {
         assert_eq!(shell.add_input.read(cx).value(), "magnet:?xt=urn:btih:test");
     });
 
-    cx.simulate_keystrokes("secondary-a secondary-x");
+    cx.simulate_keystrokes(&format!(
+        "{}-a {}-x",
+        secondary_modifier(),
+        secondary_modifier()
+    ));
     view.read_with(cx, |shell, cx| {
         assert!(shell.add_input.read(cx).value().is_empty());
     });
@@ -1563,7 +1579,7 @@ fn add_download_input_preserves_pasted_lines_and_shift_enter(cx: &mut TestAppCon
     cx.write_to_clipboard(ClipboardItem::new_string(
         "https://example.test/one\r\nhttps://example.test/two".into(),
     ));
-    cx.simulate_keystrokes("secondary-v shift-enter");
+    cx.simulate_keystrokes(&format!("{}-v shift-enter", secondary_modifier()));
     cx.simulate_input("magnet:?xt=urn:btih:abc");
 
     view.read_with(cx, |shell, cx| {

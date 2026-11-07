@@ -12,7 +12,7 @@
 //! registers it like any other managed core (D-029).
 
 use std::{
-    io::{Cursor, Read as _, Write as _},
+    io::{Cursor, Write as _},
     path::{Path, PathBuf},
     time::Duration,
 };

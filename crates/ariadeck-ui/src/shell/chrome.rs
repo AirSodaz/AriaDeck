@@ -911,7 +911,7 @@ impl AppShell {
                             .max_h(px(320.0))
                             .overflow_y_scroll()
                             .track_scroll(&self.activity_scroll)
-                            .on_scroll_wheel({
+                            .on_scroll({
                                 let handle = self.activity_scroll.clone();
                                 cx.listener(move |this, event, window, cx| {
                                     this.smooth_discrete_scroll(

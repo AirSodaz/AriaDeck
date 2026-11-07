@@ -10,8 +10,8 @@ use ariadeck_i18n::{FluentArgs, FluentValue};
 use gpui::{
     AnyElement, App, ClickEvent, ClipboardItem, Context, Div, ElementId, Entity, ExternalPaths,
     FocusHandle, Focusable, FontFeatures, FontWeight, Hsla, IntoElement, MouseButton,
-    MouseDownEvent, PathPromptOptions, Pixels, Point, Render, Role, ScrollDelta, ScrollHandle,
-    ScrollStrategy, ScrollWheelEvent, SharedString, Stateful, Subscription, Toggled,
+    MouseDownEvent, PathPromptOptions, Pixels, Point, Render, Role, ScrollDelta, ScrollEvent,
+    ScrollHandle, ScrollStrategy, SharedString, Stateful, Subscription, Toggled,
     UniformListScrollHandle, WeakFocusHandle, Window, WindowControlArea, div, img, point,
     prelude::*, px, relative, uniform_list,
 };
@@ -1205,7 +1205,7 @@ impl AppShell {
         &mut self,
         area: SmoothScrollArea,
         handle: ScrollHandle,
-        event: &ScrollWheelEvent,
+        event: &ScrollEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
