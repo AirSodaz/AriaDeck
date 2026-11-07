@@ -1,4 +1,4 @@
-# AriaDeck release (Windows)
+# AriaDeck release (Windows + Linux)
 
 Acceptance contract for portable packages, optional installer, data dirs, signing, licenses.  
 **Roadmap residual (signing, multi-OS):** [`roadmap.md`](roadmap.md) Phase A/E.
@@ -7,10 +7,10 @@ Acceptance contract for portable packages, optional installer, data dirs, signin
 
 | In | Out (deferred) |
 | --- | --- |
-| Windows x64 portable zip | macOS/Linux as primary artifacts |
+| Windows x64 portable zip + installer | macOS app bundle and notarization |
+| Linux x86_64 AppImage + Debian package | ARM64, RPM, and Flatpak packages |
 | Optional Inno Setup installer | Network download of official aria2 |
-| Portable vs installed data dirs | Store distribution |
-| Uninstall keeps user data by default | Store distribution |
+| Portable and installed data directories; uninstall keeps data by default | Store distribution |
 | MIT + third-party notices | Production certs in-repo |
 
 ## Artifacts
@@ -19,10 +19,14 @@ Acceptance contract for portable packages, optional installer, data dirs, signin
 | --- | --- |
 | Portable | `dist/AriaDeck-<ver>-windows-x64-portable/` + `.zip` |
 | Installer | `dist/AriaDeck-<ver>-windows-x64-setup.exe` |
-| Checksums | `dist/SHA256SUMS.txt` (tag builds only; `sha256sum -c` format, LF, no BOM) |
+| Linux AppImage | `dist/AriaDeck-<ver>-x86_64.AppImage` |
+| Debian package | `dist/ariadeck_<ver>_amd64.deb` |
+| Checksums | `dist/SHA256SUMS.txt` (tag builds only; `sha256sum -c` format, LF) |
 
 Portable: `ariadeck-desktop.exe`, `ariadeck.portable`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `README-portable.txt`.  
 Installer: exe + licenses (**no** portable marker). **No** bundled aria2—import core or `ARIADECK_RPC_URL`.
+
+Linux AppImage and `.deb`: desktop binary, launcher, icon, license, and third-party notices. The `.deb` declares runtime dependencies from the Ubuntu 22.04 build. AppImage bundles discoverable shared-library dependencies; GTK 3 and other desktop-system components remain host requirements. Linux native-messaging registration is not available yet, so `ariadeck-bridge` is not included.
 
 ## Data directory
 
@@ -68,13 +72,25 @@ Expected outputs under `dist/`:
 
 - `AriaDeck-<ver>-windows-x64-portable/` + `.zip`
 - `AriaDeck-<ver>-windows-x64-setup.exe`
+- `AriaDeck-<ver>-x86_64.AppImage`
+- `ariadeck_<ver>_amd64.deb`
+
+Linux build and package verification (Ubuntu 22.04, x86_64):
+
+```sh
+python3 scripts/gen_third_party_notices.py
+cargo build --locked -p ariadeck-desktop --release
+bash scripts/package-linux.sh <version> /path/to/linuxdeploy-x86_64.AppImage
+```
+
+The package script verifies AppImage extraction, bundled binary dependencies, Debian metadata, and required package contents. `linuxdeploy` is pinned in the release workflow.
 
 ## GitHub Actions
 
 | Workflow | When | What |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` → job `Windows packages (portable + installer)` | Push to `main` / `master` (after `verify`) | Notices → portable → `choco install innosetup` → installer `-SkipStage` → drop staging dir → assert zip + setup.exe → artifact `ariadeck-windows-x64` (zip + setup only) |
-| `.github/workflows/release.yml` | Tag `v*` | Assert tag == `workspace.package.version` (fails before the build) → same packaging (optional Authenticode via secrets) → `SHA256SUMS.txt` → artifact + GitHub Release attaching `dist/*.zip`, `dist/*-setup.exe`, `dist/SHA256SUMS.txt`, with a fixed install/SmartScreen body plus auto-generated commit notes |
+| `.github/workflows/release.yml` | Tag `v*` | Windows and Ubuntu 22.04 x86_64 package jobs verify the version and upload artifacts; a publish job waits for both, checks all four packages, creates `SHA256SUMS.txt`, and attaches the Windows zip/setup, Linux AppImage/deb, and checksums to the GitHub Release |
 
 PR / non-main branches run **verify only** (fmt/test/clippy/release build); they do not produce installers.
 
@@ -98,7 +114,7 @@ Unsigned builds may hit SmartScreen. No certs in-repo.
 
 ## Browser bridge (D-045)
 
-- Both packages ship `ariadeck-bridge.exe`; it is inert until registered.
+- Both Windows packages ship `ariadeck-bridge.exe`; it is inert until registered.
 - Installer offers an opt-in task, defaulted off, **only** when built with a valid
   `ARIADECK_EXTENSION_ID` (32 chars, `a`–`p`). Without it the task is omitted —
   registering with an empty `allowed_origins` would accept any extension.
@@ -123,6 +139,9 @@ Unsigned builds may hit SmartScreen. No certs in-repo.
 
 | Scenario | Guard |
 | --- | --- |
+| Linux AppImage | AppImage extraction, launcher/icon/license contents, and dependency checks in `scripts/package-linux.sh` |
+| Linux Debian package | `dpkg-deb` metadata, runtime dependencies, launcher/icon/license contents in `scripts/package-linux.sh` |
+| Release asset set | Publish job requires exactly four packages and hashes all four |
 | Portable isolation | `resolve_data_dir_*` + marker |
 | Installed path | LocalAppData without marker |
 | Settings v1…current | migration tests |
@@ -156,3 +175,5 @@ Unsigned builds may hit SmartScreen. No certs in-repo.
 16. Repeat step 15 at 150% with `-ExpectedScale 150`. When two monitors with different scales are available, drag the open window between them and confirm it redraws sharply without changing its logical minimum size or losing pointer alignment.
 17. On a portable release build, confirm startup/manual checks only show version, notes, and the Release page link.
 18. On an installed release build, confirm installer download requires user action, checksum failure prevents installation, and the verified installer is offered for explicit confirmation.
+19. On Ubuntu 22.04 x86_64, extract the AppImage and confirm its launcher, icon, license, and desktop binary are present; launch it in a desktop session.
+20. Install the .deb on Ubuntu 22.04 x86_64, confirm apt resolves its declared dependencies, launch AriaDeck, then remove the package and confirm user data remains under the XDG data directory.

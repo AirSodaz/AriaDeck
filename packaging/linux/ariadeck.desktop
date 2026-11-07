@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=AriaDeck
+Comment=Native desktop client for aria2
+Exec=ariadeck-desktop %U
+Icon=ariadeck
+Terminal=false
+Categories=Network;FileTransfer;
+StartupNotify=true

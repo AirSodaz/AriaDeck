@@ -140,11 +140,11 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 | ID | Work | Why |
 | --- | --- | --- |
 | E1 | macOS app bundle + notarization path (when signing ready) | Motrix matrix |
-| E2 | Linux AppImage and/or deb/rpm or Flatpak | Reach |
-| E3 | CI matrix for non-Windows smoke | **Done (verify)** — `ci.yml` runs fmt/test/clippy/desktop release on windows-latest, macos-latest, ubuntu-latest; Windows portable zip + Inno installer on `main` push / `v*` tags |
+| E2 | **Done** — Linux x86_64 AppImage + Debian package on Ubuntu 22.04 tag releases; checksums cover every platform package | Reach |
+| E3 | CI matrix for non-Windows smoke | **Done (verify)** — `ci.yml` runs fmt/test/clippy/desktop release on windows-latest, macos-latest, ubuntu-latest; Windows portable zip + Inno installer on `main` push / `v*` tags, Linux AppImage + Debian package on `v*` tags |
 | E4 | Optional offline **aria2 core pack** (checksummed, user-initiated) | B4/D-046 already covers the online half on Windows; this is the no-network case, plus targets upstream ships no binary for |
 
-**Exit:** Primary artifacts documented per OS; Windows remains best-supported until E1–E2 land.
+**Exit:** Primary artifacts documented per OS; Windows remains best-supported until E1 lands.
 
 ### Phase F — Optional / later
 
@@ -178,7 +178,7 @@ Priorities assume **Windows-first users** who already have (or import) aria2, th
 M1  Ship trust     → A1, A6 residual (+ signing / a11y manual QA)
 M2  OS hooks       → B5; B1/B2/B3/B4/B6 done (B3 needs a published extension ID)
 M3  Org/cleanup    → C2 (C1 done; C3 if demand); F3/D-043 done
-M4  BT depth / dist → D2–D5, E1 or E2 as capacity allows; D1 done
+M4  BT depth / dist → D2–D5, E1 as capacity allows; D1 and E2 done
 ```
 
 Each milestone should land with: tests or live-check notes for engine paths, `project-context` contract updates when user-visible rules change, and release notes under `docs/release.md` when packaging changes.
