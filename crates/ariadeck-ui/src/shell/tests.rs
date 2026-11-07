@@ -3063,6 +3063,7 @@ fn diagnostic_snapshot_redacts_the_active_remote_endpoint(cx: &mut TestAppContex
 
     view.read_with(cx, |shell, _cx| {
         let diagnostics = shell.diagnostic_snapshot(9);
+        assert_eq!(diagnostics.app_version, crate::app_version());
         assert_eq!(
             diagnostics.redacted_rpc_endpoint.as_deref(),
             Some("wss://rpc.example:6800/jsonrpc")

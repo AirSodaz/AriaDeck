@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [dependencies]
 ariadeck-domain = { path = "../ariadeck-domain" }

@@ -2196,7 +2196,7 @@ impl AppShell {
         .filter(|supported| *supported)
         .count() as u32;
         ariadeck_domain::DiagnosticSnapshot {
-            app_version: env!("CARGO_PKG_VERSION").to_owned(),
+            app_version: crate::app_version(),
             platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
             engine_version: (!self.snapshot.capabilities.version.trim().is_empty())
                 .then(|| self.snapshot.capabilities.version.clone()),

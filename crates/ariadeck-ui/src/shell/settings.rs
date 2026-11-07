@@ -3907,7 +3907,7 @@ impl AppShell {
                     ))
                     .child(settings_section_info_row_owned(
                         version_label,
-                        env!("CARGO_PKG_VERSION"),
+                        crate::app_version(),
                         colors,
                     ))
                     .child(settings_section_info_row_owned(

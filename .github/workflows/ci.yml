@@ -10,6 +10,8 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
   CARGO_INCREMENTAL: "0"
+  ARIADECK_BUILD_CHANNEL: ci
+  ARIADECK_BUILD_NUMBER: ${{ github.run_number }}
 
 jobs:
   verify:

@@ -12,6 +12,7 @@ mod components;
 mod model;
 mod shell;
 mod theme;
+mod version;
 
 pub use accessibility::{prefers_reduced_motion, set_prefers_reduced_motion_override};
 pub use ariadeck_i18n::{LanguagePreference, LocaleId, Translator};
@@ -77,3 +78,4 @@ pub use model::{
 };
 pub use shell::{AppShell, AppShellEvent};
 pub use theme::{Theme, ThemeColors, ThemeMode};
+pub(crate) use version::app_version;
