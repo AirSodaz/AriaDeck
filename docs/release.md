@@ -1,4 +1,4 @@
-# AriaDeck release (Windows + Linux)
+# AriaDeck release (Windows + Linux + macOS)
 
 Acceptance contract for portable packages, optional installer, data dirs, signing, licenses.  
 **Roadmap residual (signing, multi-OS):** [`roadmap.md`](roadmap.md) Phase A/E.
@@ -7,7 +7,7 @@ Acceptance contract for portable packages, optional installer, data dirs, signin
 
 | In | Out (deferred) |
 | --- | --- |
-| Windows x64 portable zip + installer | macOS app bundle and notarization |
+| Windows x64 portable zip + installer; macOS arm64 and x86_64 app bundles | macOS code signing and notarization |
 | Linux x86_64 AppImage + Debian package | ARM64, RPM, and Flatpak packages |
 | Optional Inno Setup installer | Network download of official aria2 |
 | Portable and installed data directories; uninstall keeps data by default | Store distribution |
@@ -21,12 +21,16 @@ Acceptance contract for portable packages, optional installer, data dirs, signin
 | Installer | `dist/AriaDeck-<ver>-windows-x64-setup.exe` |
 | Linux AppImage | `dist/AriaDeck-<ver>-x86_64.AppImage` |
 | Debian package | `dist/ariadeck_<ver>_amd64.deb` |
+| macOS Apple Silicon | `dist/AriaDeck-<ver>-macos-arm64.dmg` containing `AriaDeck.app` |
+| macOS Intel | `dist/AriaDeck-<ver>-macos-x86_64.dmg` containing `AriaDeck.app` |
 | Checksums | `dist/SHA256SUMS.txt` (tag builds only; `sha256sum -c` format, LF) |
 
 Portable: `ariadeck-desktop.exe`, `ariadeck.portable`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `README-portable.txt`.  
 Installer: exe + licenses (**no** portable marker). **No** bundled aria2—import core or `ARIADECK_RPC_URL`.
 
 Linux AppImage and `.deb`: desktop binary, launcher, icon, license, and third-party notices. The `.deb` declares runtime dependencies from the Ubuntu 22.04 build. AppImage bundles discoverable shared-library dependencies; GTK 3 and other desktop-system components remain host requirements. Linux native-messaging registration is not available yet, so `ariadeck-bridge` is not included.
+
+Each macOS DMG contains a native `.app` bundle with the desktop binary, version metadata, and license notices. The binaries target macOS 12.0 or later and are built separately on Apple Silicon and Intel runners. They are unsigned and not notarized; on first launch, use Finder's Open command to bypass Gatekeeper's unidentified-developer prompt. aria2 is not bundled.
 
 ## Data directory
 
@@ -74,6 +78,8 @@ Expected outputs under `dist/`:
 - `AriaDeck-<ver>-windows-x64-setup.exe`
 - `AriaDeck-<ver>-x86_64.AppImage`
 - `ariadeck_<ver>_amd64.deb`
+- `AriaDeck-<ver>-macos-arm64.dmg`
+- `AriaDeck-<ver>-macos-x86_64.dmg`
 
 Linux build and package verification (Ubuntu 22.04, x86_64):
 
@@ -85,12 +91,22 @@ bash scripts/package-linux.sh <version> /path/to/linuxdeploy-x86_64.AppImage
 
 The package script verifies AppImage extraction, bundled binary dependencies, Debian metadata, and required package contents. `linuxdeploy` is pinned in the release workflow.
 
+macOS build and package verification (run natively on the target architecture):
+
+```sh
+python3 scripts/gen_third_party_notices.py
+cargo build --locked -p ariadeck-desktop --release
+bash scripts/package-macos.sh <version> arm64 # or x86_64
+```
+
+The script verifies the app bundle metadata, license files, and binary architecture inside the generated DMG.
+
 ## GitHub Actions
 
 | Workflow | When | What |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` → job `Windows packages (portable + installer)` | Push to `main` / `master` (after `verify`) | Notices → portable → `choco install innosetup` → installer `-SkipStage` → drop staging dir → assert zip + setup.exe → artifact `ariadeck-windows-x64` (zip + setup only) |
-| `.github/workflows/release.yml` | Tag `v*` | Windows and Ubuntu 22.04 x86_64 package jobs verify the version and upload artifacts; a publish job waits for both, checks all four packages, creates `SHA256SUMS.txt`, and attaches the Windows zip/setup, Linux AppImage/deb, and checksums to the GitHub Release |
+| `.github/workflows/release.yml` | Tag `v*` | Windows, Ubuntu 22.04 x86_64, macOS arm64, and macOS x86_64 jobs verify the version and upload artifacts; publish waits for all jobs, checks six packages, creates `SHA256SUMS.txt`, and attaches all packages to the GitHub Release |
 
 PR / non-main branches run **verify only** (fmt/test/clippy/release build); they do not produce installers.
 

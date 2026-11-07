@@ -39,7 +39,7 @@ Plain `ws://` defaults to loopback; remote plaintext needs `ARIADECK_RPC_ALLOW_I
 
 ## Releases
 
-Windows x64 portable zip and Inno installer, plus Linux x86_64 AppImage and Ubuntu/Debian package. **No** bundled aria2—import a core in Settings or use `ARIADECK_RPC_URL`.
+Windows x64 portable zip and Inno installer, Linux x86_64 AppImage and Ubuntu/Debian package, plus macOS arm64 and x86_64 DMGs. macOS bundles are unsigned and not notarized. **No** bundled aria2—import a core in Settings or use `ARIADECK_RPC_URL`.
 
 ```powershell
 python scripts/gen_third_party_notices.py
@@ -53,7 +53,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package-windows-installer.ps1 -
 | Trigger | Artifacts |
 | --- | --- |
 | Push to `main` | CI artifact `ariadeck-windows-x64` (portable `*.zip` + `*-setup.exe` only) |
-| Tag `v*` | GitHub Release attaches Windows portable/installer and Linux AppImage/`.deb`, plus SHA256 checksums |
+| Tag `v*` | GitHub Release attaches Windows, Linux, and macOS packages, plus SHA256 checksums |
 
 Details: [`docs/release.md`](docs/release.md).
 
