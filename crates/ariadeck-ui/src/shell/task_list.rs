@@ -136,6 +136,18 @@ impl AppShell {
                 ))
                 .size_full()
                 .overflow_hidden()
+                .on_scroll_wheel({
+                    let handle = self.list_scroll.0.borrow().base_handle.clone();
+                    cx.listener(move |this, event, window, cx| {
+                        this.smooth_discrete_scroll(
+                            SmoothScrollArea::TaskList,
+                            handle.clone(),
+                            event,
+                            window,
+                            cx,
+                        );
+                    })
+                })
                 .child(
                     uniform_list(
                         "download-tasks",

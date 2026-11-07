@@ -4,7 +4,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::{Arc, mpsc::Receiver},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use ariadeck_application::{
@@ -28,7 +28,7 @@ use ariadeck_engine::{
     CoreDiscoveryOrigin, CoreInstallStatus, CoreSource, CoreStore, DiscoveredCore,
     ExternalEngineProfile, JsonProfileStore, LocalDownloadDestinationGateway,
     LocalDownloadRootRegistry, LocalEngineHealth, LocalEngineHealthHandle, LocalEngineSupervisor,
-    LocalTaskFileGateway, ProfileCatalog, ProfileEntry, ProfileKind, console_free_command,
+    LocalTaskFileGateway, ProfileCatalog, ProfileEntry, ProfileKind,
 };
 use ariadeck_i18n::{LocaleId, Translator};
 use ariadeck_rpc::{
@@ -204,6 +204,7 @@ impl DesktopRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let startup_started = Instant::now();
         let data_dir = default_data_dir();
         let defaults = AppSettings::new(default_download_dir());
         let settings_store = JsonSettingsStore::new(data_dir.join("settings.json"));
@@ -234,6 +235,10 @@ impl DesktopRoot {
                     )
                 }
             };
+        tracing::info!(
+            elapsed_ms = startup_started.elapsed().as_millis(),
+            "settings loaded"
+        );
 
         // D-043: catalog first, then active profile env bag, then optional
         // ARIADECK_DOWNLOAD_DIR override (dev/smoke; not persisted into the bag
@@ -293,6 +298,10 @@ impl DesktopRoot {
                     )
                 }
             };
+        tracing::info!(
+            elapsed_ms = startup_started.elapsed().as_millis(),
+            "profile catalog loaded"
+        );
 
         let profile_env_store = ProfileEnvironmentStore::new(&data_dir);
         let mut profile_env_notice = None;
@@ -351,6 +360,10 @@ impl DesktopRoot {
                     (None, None, snapshot, None)
                 }
             };
+        tracing::info!(
+            elapsed_ms = startup_started.elapsed().as_millis(),
+            "engine and sync configured"
+        );
         let local_engine_health = local_engine
             .as_ref()
             .map(LocalEngineSupervisor::health_handle);
@@ -638,6 +651,10 @@ impl DesktopRoot {
             geometry_save_generation: 0,
             _workspace_subscription: workspace_subscription,
         };
+        tracing::info!(
+            elapsed_ms = startup_started.elapsed().as_millis(),
+            "desktop window state constructed"
+        );
 
         // Poll tray interactions and free-space checks on a short UI timer.
         cx.spawn_in(window, async move |this, cx| {
@@ -1894,28 +1911,61 @@ impl Drop for DesktopRoot {
             self.is_keep_awake = false;
         }
         self.tray.take();
-        self.settings_sender.take();
         self.tracker_list_sender.take();
-        if let Some(task) = self.settings_task.take()
-            && let Err(error) = self.runtime.block_on(task)
-        {
-            tracing::warn!(%error, "settings persistence worker did not stop cleanly");
-        }
-        if let Some(handle) = self.sync.take() {
-            self.runtime.block_on(handle.stop());
-        }
-        if let Some(mut process) = self.local_engine.take() {
-            process.stop_monitoring();
-            if let Err(error) = self
-                .runtime
-                .block_on(request_local_engine_shutdown(&process))
+        self.core_download_sender.take();
+        let settings_sender = self.settings_sender.take();
+        let settings_task = self.settings_task.take();
+        let sync = self.sync.take();
+        let local_engine = self.local_engine.take();
+        let runtime = self.runtime.clone();
+        let runtime_keepalive = runtime.clone();
+        let cleanup_started = Instant::now();
+        runtime.spawn(async move {
+            let _runtime = runtime_keepalive;
+            drop(settings_sender);
+            if let Some(task) = settings_task
+                && let Err(error) = task.await
             {
-                tracing::debug!(%error, "local aria2 graceful shutdown request was not completed");
+                tracing::warn!(%error, "settings persistence worker did not stop cleanly");
             }
-            if let Err(error) = process.shutdown() {
-                tracing::warn!(%error, "failed to stop the local aria2 process cleanly");
+            if let Some(handle) = sync
+                && tokio::time::timeout(Duration::from_secs(2), handle.stop())
+                    .await
+                    .is_err()
+            {
+                tracing::warn!("sync coordinator did not stop within 2 seconds");
             }
-        }
+            if let Some(mut process) = local_engine {
+                match tokio::time::timeout(
+                    Duration::from_secs(2),
+                    request_local_engine_shutdown(&process),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        tracing::debug!(%error, "local aria2 graceful shutdown request failed")
+                    }
+                    Err(_) => tracing::warn!("aria2 shutdown request exceeded 2 seconds"),
+                }
+                match tokio::task::spawn_blocking(move || {
+                    process.stop_monitoring();
+                    process.shutdown()
+                })
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        tracing::warn!(%error, "failed to stop the local aria2 process cleanly")
+                    }
+                    Err(error) => tracing::warn!(%error, "aria2 shutdown worker failed"),
+                }
+            }
+            tracing::info!(
+                elapsed_ms = cleanup_started.elapsed().as_millis(),
+                "background shutdown cleanup complete"
+            );
+        });
     }
 }
 

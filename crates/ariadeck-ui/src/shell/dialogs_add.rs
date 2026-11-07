@@ -1500,6 +1500,18 @@ impl AppShell {
                         }),
                     )
                     .track_scroll(&self.metadata_file_scroll)
+                    .on_scroll_wheel({
+                        let handle = self.metadata_file_scroll.0.borrow().base_handle.clone();
+                        cx.listener(move |this, event, window, cx| {
+                            this.smooth_discrete_scroll(
+                                SmoothScrollArea::MetadataFiles,
+                                handle.clone(),
+                                event,
+                                window,
+                                cx,
+                            );
+                        })
+                    })
                     .size_full(),
                 )
                 .border_1()

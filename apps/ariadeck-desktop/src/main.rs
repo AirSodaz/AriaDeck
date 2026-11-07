@@ -9,7 +9,7 @@ mod metadata;
 mod platform;
 mod workspace;
 
-use std::{env, ffi::OsString, path::PathBuf, sync::Arc};
+use std::{env, ffi::OsString, path::PathBuf, sync::Arc, time::Instant};
 
 use gpui::{
     App, AppContext as _, Bounds, Point, TitlebarOptions, WindowBounds, WindowDecorations,
@@ -26,6 +26,7 @@ use ariadeck_settings::{JsonWindowGeometryStore, WINDOW_DEFAULT_HEIGHT, WINDOW_D
 use crate::workspace::DesktopRoot;
 
 fn main() {
+    let startup_started = Instant::now();
     ariadeck_telemetry::init("ariadeck=info");
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting AriaDeck");
 
@@ -40,6 +41,10 @@ fn main() {
             return;
         }
     };
+    tracing::info!(
+        elapsed_ms = startup_started.elapsed().as_millis(),
+        "async runtime initialized"
+    );
 
     let current_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let initial_request = launch_request_from_args(env::args_os().skip(1), &current_dir);
@@ -55,6 +60,10 @@ fn main() {
             None
         }
     };
+    tracing::info!(
+        elapsed_ms = startup_started.elapsed().as_millis(),
+        "instance coordination complete"
+    );
 
     application()
         .with_assets(ariadeck_ui::Assets)
@@ -76,6 +85,10 @@ fn main() {
             .detach();
 
             let window_bounds = restored_window_bounds(cx);
+            tracing::info!(
+                elapsed_ms = startup_started.elapsed().as_millis(),
+                "opening primary window"
+            );
             let open_result = gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(window_bounds),

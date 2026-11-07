@@ -273,17 +273,10 @@ pub(crate) fn discover_aria2_executable() -> Option<PathBuf> {
     if let Some(home) = env::var_os("HOME") {
         candidates.push(PathBuf::from(home).join("scoop/apps/aria2/current/aria2c.exe"));
     }
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .or_else(|| {
-            console_free_command("aria2c")
-                .arg("--version")
-                .output()
-                .ok()
-                .filter(|output| output.status.success())
-                .map(|_| PathBuf::from("aria2c"))
-        })
+    // Do not spawn `aria2c --version` during window construction. The actual
+    // engine start reports a useful error, while the first-run availability
+    // probe already runs after the first frame.
+    candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
 /// Resolve the aria2 binary for a local managed profile.

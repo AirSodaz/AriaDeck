@@ -10,9 +10,10 @@ use ariadeck_i18n::{FluentArgs, FluentValue};
 use gpui::{
     AnyElement, App, ClickEvent, ClipboardItem, Context, Div, ElementId, Entity, ExternalPaths,
     FocusHandle, Focusable, FontFeatures, FontWeight, Hsla, IntoElement, MouseButton,
-    MouseDownEvent, PathPromptOptions, Pixels, Point, Render, Role, ScrollHandle, ScrollStrategy,
-    SharedString, Stateful, Subscription, Toggled, UniformListScrollHandle, WeakFocusHandle,
-    Window, WindowControlArea, div, img, point, prelude::*, px, relative, uniform_list,
+    MouseDownEvent, PathPromptOptions, Pixels, Point, Render, Role, ScrollDelta, ScrollHandle,
+    ScrollStrategy, ScrollWheelEvent, SharedString, Stateful, Subscription, Toggled,
+    UniformListScrollHandle, WeakFocusHandle, Window, WindowControlArea, div, img, point,
+    prelude::*, px, relative, uniform_list,
 };
 
 use crate::{
@@ -316,11 +317,33 @@ struct TaskDetailsDrawer {
     open_pending: Option<PendingTaskOpen>,
     tab: TaskDetailsTab,
     file_scroll: UniformListScrollHandle,
+    info_scroll: ScrollHandle,
+    network_scroll: ScrollHandle,
+    options_scroll: ScrollHandle,
     rendered_file_range: Range<usize>,
     /// Last time a ready→ready details RPC was emitted (coalesce rapid revisions).
     last_ready_refresh_at: Option<Instant>,
     /// True when a revision-driven refresh was deferred by the min interval.
     refresh_coalesced: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum SmoothScrollArea {
+    TaskList,
+    Settings,
+    MetadataFiles,
+    DetailsInfo,
+    DetailsFiles,
+    DetailsNetwork,
+    DetailsOptions,
+    Activity,
+}
+
+#[derive(Clone, Copy)]
+struct SmoothScrollTarget {
+    offset: Point<Pixels>,
+    generation: u64,
+    active: bool,
 }
 
 struct StatusNotice {
@@ -718,6 +741,7 @@ pub struct AppShell {
     activity_log: Vec<ActivityEntryView>,
     next_activity_id: u64,
     activity_panel_open: bool,
+    activity_scroll: ScrollHandle,
     /// Suppresses repeated low-disk warnings until free space recovers.
     low_disk_active: bool,
     known_task_status: HashMap<TaskIdentity, TaskStatusView>,
@@ -725,6 +749,7 @@ pub struct AppShell {
     list_scroll: UniformListScrollHandle,
     settings_scroll: ScrollHandle,
     metadata_file_scroll: UniformListScrollHandle,
+    smooth_scroll_targets: HashMap<SmoothScrollArea, SmoothScrollTarget>,
     focus_handle: FocusHandle,
     rendered_range: Range<usize>,
     _search_subscription: Subscription,
@@ -1155,12 +1180,14 @@ impl AppShell {
             activity_log: Vec::new(),
             next_activity_id: 1,
             activity_panel_open: false,
+            activity_scroll: ScrollHandle::new(),
             low_disk_active: false,
             known_task_status: HashMap::new(),
             next_request_id: 1,
             list_scroll: UniformListScrollHandle::new(),
             settings_scroll: ScrollHandle::new(),
             metadata_file_scroll: UniformListScrollHandle::new(),
+            smooth_scroll_targets: HashMap::new(),
             focus_handle,
             rendered_range: 0..0,
             _search_subscription: search_subscription,
@@ -1172,6 +1199,104 @@ impl AppShell {
             _settings_subscriptions: settings_subscriptions,
             _window_bounds_subscription: window_bounds_subscription,
         }
+    }
+
+    fn smooth_discrete_scroll(
+        &mut self,
+        area: SmoothScrollArea,
+        handle: ScrollHandle,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if crate::accessibility::prefers_reduced_motion() {
+            return;
+        }
+        let ScrollDelta::Lines(lines) = event.delta else {
+            return;
+        };
+        let mut delta = event.delta.pixel_delta(window.line_height());
+        if delta.x != px(0.0) && delta.y != px(0.0) {
+            if lines.x.abs() > lines.y.abs() {
+                delta.y = px(0.0);
+            } else {
+                delta.x = px(0.0);
+            }
+        }
+        let after_native_scroll = handle.offset();
+        let start = Point {
+            x: after_native_scroll.x - delta.x,
+            y: after_native_scroll.y - delta.y,
+        };
+        let max = handle.max_offset();
+        let start = Point {
+            x: start.x.clamp(-max.x, px(0.0)),
+            y: start.y.clamp(-max.y, px(0.0)),
+        };
+        if start == after_native_scroll {
+            return;
+        }
+        let state = self
+            .smooth_scroll_targets
+            .entry(area)
+            .or_insert(SmoothScrollTarget {
+                offset: after_native_scroll,
+                generation: 0,
+                active: false,
+            });
+        let mut target = if state.active {
+            Point {
+                x: state.offset.x + delta.x,
+                y: state.offset.y + delta.y,
+            }
+        } else {
+            after_native_scroll
+        };
+        target.x = target.x.clamp(-max.x, px(0.0));
+        target.y = target.y.clamp(-max.y, px(0.0));
+        state.offset = target;
+        state.generation = state.generation.wrapping_add(1);
+        state.active = true;
+        let generation = state.generation;
+        handle.set_offset(start);
+        cx.stop_propagation();
+
+        cx.spawn(async move |this, cx| {
+            let began = Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+                let progress = (began.elapsed().as_secs_f32() / 0.14).min(1.0);
+                let eased = 1.0 - (1.0 - progress).powi(3);
+                let offset = Point {
+                    x: start.x + (target.x - start.x) * eased,
+                    y: start.y + (target.y - start.y) * eased,
+                };
+                let done = this
+                    .update(cx, |this, cx| {
+                        let Some(state) = this.smooth_scroll_targets.get_mut(&area) else {
+                            return true;
+                        };
+                        if state.generation != generation {
+                            return true;
+                        }
+                        handle.set_offset(offset);
+                        cx.notify();
+                        if progress >= 1.0 {
+                            state.active = false;
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(true);
+                if done {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     pub fn set_snapshot(&mut self, snapshot: WorkspaceSnapshot, cx: &mut Context<Self>) {

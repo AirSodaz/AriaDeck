@@ -1471,6 +1471,18 @@ impl AppShell {
                                             .py_6()
                                             .overflow_y_scroll()
                                             .track_scroll(&self.settings_scroll)
+                                            .on_scroll_wheel({
+                                                let handle = self.settings_scroll.clone();
+                                                cx.listener(move |this, event, window, cx| {
+                                                    this.smooth_discrete_scroll(
+                                                        SmoothScrollArea::Settings,
+                                                        handle.clone(),
+                                                        event,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                })
+                                            })
                                             .child(
                                                 div()
                                                     .w_full()

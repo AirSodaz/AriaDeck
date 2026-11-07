@@ -72,6 +72,9 @@ impl AppShell {
             open_pending: None,
             tab: TaskDetailsTab::Info,
             file_scroll: UniformListScrollHandle::new(),
+            info_scroll: ScrollHandle::new(),
+            network_scroll: ScrollHandle::new(),
+            options_scroll: ScrollHandle::new(),
             rendered_file_range: 0..0,
             last_ready_refresh_at: None,
             refresh_coalesced: false,
@@ -379,6 +382,30 @@ impl AppShell {
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scroll()
+                        .track_scroll(
+                            &self
+                                .details_drawer
+                                .as_ref()
+                                .expect("details drawer exists while rendering info")
+                                .info_scroll,
+                        )
+                        .on_scroll_wheel({
+                            let handle = self
+                                .details_drawer
+                                .as_ref()
+                                .expect("details drawer exists while rendering info")
+                                .info_scroll
+                                .clone();
+                            cx.listener(move |this, event, window, cx| {
+                                this.smooth_discrete_scroll(
+                                    SmoothScrollArea::DetailsInfo,
+                                    handle.clone(),
+                                    event,
+                                    window,
+                                    cx,
+                                );
+                            })
+                        })
                         .p_4()
                         .flex()
                         .flex_col()
@@ -564,6 +591,26 @@ impl AppShell {
                                 )
                                 .flex_1()
                                 .min_h_0()
+                                .on_scroll_wheel({
+                                    let handle = self
+                                        .details_drawer
+                                        .as_ref()
+                                        .expect("details drawer exists while rendering files")
+                                        .file_scroll
+                                        .0
+                                        .borrow()
+                                        .base_handle
+                                        .clone();
+                                    cx.listener(move |this, event, window, cx| {
+                                        this.smooth_discrete_scroll(
+                                            SmoothScrollArea::DetailsFiles,
+                                            handle.clone(),
+                                            event,
+                                            window,
+                                            cx,
+                                        );
+                                    })
+                                })
                                 .child(
                                     uniform_list(
                                         list_id,
@@ -661,6 +708,30 @@ impl AppShell {
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scroll()
+                        .track_scroll(
+                            &self
+                                .details_drawer
+                                .as_ref()
+                                .expect("details drawer exists while rendering network")
+                                .network_scroll,
+                        )
+                        .on_scroll_wheel({
+                            let handle = self
+                                .details_drawer
+                                .as_ref()
+                                .expect("details drawer exists while rendering network")
+                                .network_scroll
+                                .clone();
+                            cx.listener(move |this, event, window, cx| {
+                                this.smooth_discrete_scroll(
+                                    SmoothScrollArea::DetailsNetwork,
+                                    handle.clone(),
+                                    event,
+                                    window,
+                                    cx,
+                                );
+                            })
+                        })
                         .p_4()
                         .flex()
                         .flex_col()
@@ -784,6 +855,30 @@ impl AppShell {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .track_scroll(
+                        &self
+                            .details_drawer
+                            .as_ref()
+                            .expect("details drawer exists while rendering options")
+                            .options_scroll,
+                    )
+                    .on_scroll_wheel({
+                        let handle = self
+                            .details_drawer
+                            .as_ref()
+                            .expect("details drawer exists while rendering options")
+                            .options_scroll
+                            .clone();
+                        cx.listener(move |this, event, window, cx| {
+                            this.smooth_discrete_scroll(
+                                SmoothScrollArea::DetailsOptions,
+                                handle.clone(),
+                                event,
+                                window,
+                                cx,
+                            );
+                        })
+                    })
                     .p_4()
                     .into_any_element(),
                 };
