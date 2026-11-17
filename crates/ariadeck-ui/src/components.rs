@@ -2,9 +2,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AnimationExt as _, AnyElement, AnyView, App, AppContext as _, ClickEvent, ElementId,
-    FocusHandle, Hsla, IntoElement, Render, RenderOnce, Role, SharedString, Stateful, Window, div,
-    prelude::*, px, svg,
+    AnimationExt as _, AnyElement, AnyView, App, AppContext as _, ClickEvent, DefiniteLength,
+    ElementId, FocusHandle, Hsla, IntoElement, Render, RenderOnce, Role, ScrollEvent, ScrollHandle,
+    SharedString, Stateful, Window, div, prelude::*, px, svg,
 };
 
 pub use gpui_kit::component::badge::Badge;
@@ -24,6 +24,7 @@ pub use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _};
 use crate::{Theme, ThemeColors};
 type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 type SelectionHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+type ScrollEventHandler = Rc<dyn Fn(&ScrollEvent, &mut Window, &mut App)>;
 
 const CONTROL_RADIUS: f32 = 6.0;
 const OVERLAY_RADIUS: f32 = 10.0;
@@ -87,6 +88,8 @@ pub enum IconName {
     Server,
     Users,
     HardDrive,
+    /// Resize grip corner for resizable panels and inputs.
+    ResizeCorner,
     /// Windows caption glyphs.
     WindowMinimize,
     WindowMaximize,
@@ -156,6 +159,7 @@ impl IconName {
             Self::Server => "icons/server.svg",
             Self::Users => "icons/users.svg",
             Self::HardDrive => "icons/hard-drive.svg",
+            Self::ResizeCorner => "icons/resize-corner.svg",
             Self::WindowMinimize => "icons/window-minimize.svg",
             Self::WindowMaximize => "icons/window-maximize.svg",
             Self::WindowRestore => "icons/window-restore.svg",
@@ -1082,6 +1086,10 @@ pub struct Dialog {
     body: Vec<AnyElement>,
     actions: Vec<AnyElement>,
     width: f32,
+    max_height: Option<DefiniteLength>,
+    scrollable: bool,
+    scroll_handle: Option<ScrollHandle>,
+    scroll_handler: Option<ScrollEventHandler>,
     theme: Theme,
     key_context: Option<&'static str>,
     focus: Option<FocusHandle>,
@@ -1097,6 +1105,10 @@ impl Dialog {
             body: Vec::new(),
             actions: Vec::new(),
             width: 480.0,
+            max_height: None,
+            scrollable: false,
+            scroll_handle: None,
+            scroll_handler: None,
             theme,
             key_context: None,
             focus: None,
@@ -1112,6 +1124,33 @@ impl Dialog {
     #[must_use]
     pub fn width(mut self, width: f32) -> Self {
         self.width = width;
+        self
+    }
+
+    #[must_use]
+    pub fn max_h(mut self, max_height: impl Into<DefiniteLength>) -> Self {
+        self.max_height = Some(max_height.into());
+        self
+    }
+
+    #[must_use]
+    pub fn scrollable(mut self, scrollable: bool) -> Self {
+        self.scrollable = scrollable;
+        self
+    }
+
+    #[must_use]
+    pub fn track_scroll(mut self, scroll_handle: ScrollHandle) -> Self {
+        self.scroll_handle = Some(scroll_handle);
+        self
+    }
+
+    #[must_use]
+    pub fn on_scroll(
+        mut self,
+        on_scroll: impl Fn(&ScrollEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.scroll_handler = Some(Rc::new(on_scroll));
         self
     }
 
@@ -1154,6 +1193,7 @@ impl RenderOnce for Dialog {
             .aria_label(self.title.clone())
             .w(px(self.width))
             .max_w(px(720.0))
+            .when_some(self.max_height, |card, max_h| card.max_h(max_h))
             .flex()
             .flex_col()
             .gap_4()
@@ -1166,6 +1206,7 @@ impl RenderOnce for Dialog {
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
+                    .flex_shrink_0()
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -1184,19 +1225,47 @@ impl RenderOnce for Dialog {
                                 .child(desc),
                         )
                     }),
-            )
-            .children(self.body)
-            .when(!self.actions.is_empty(), |card| {
-                card.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .gap_3()
-                        .pt_2()
-                        .children(self.actions),
-                )
-            });
+            );
+
+        if self.scrollable {
+            let body_id = ElementId::NamedChild(
+                ElementId::Name(self.id.clone()).into(),
+                "scroll-body".into(),
+            );
+            let mut body_container = div()
+                .id(body_id)
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap_4()
+                .px_1();
+            if let Some(scroll_handle) = self.scroll_handle {
+                body_container = body_container.track_scroll(&scroll_handle);
+            }
+            if let Some(scroll_handler) = self.scroll_handler {
+                body_container = body_container.on_scroll(move |event, window, cx| {
+                    scroll_handler(event, window, cx);
+                });
+            }
+            card = card.child(body_container.children(self.body));
+        } else {
+            card = card.children(self.body);
+        }
+
+        if !self.actions.is_empty() {
+            card = card.child(
+                div()
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap_3()
+                    .pt_2()
+                    .children(self.actions),
+            );
+        }
 
         if let Some(key_context) = self.key_context {
             card = card.key_context(key_context);

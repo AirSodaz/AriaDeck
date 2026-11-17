@@ -14,6 +14,7 @@ dialog-add-input-type-aria = Download source type
 dialog-add-mode-aria = Multiple link handling
 dialog-add-file-conflict-aria = Existing file handling
 dialog-add-cancel-aria = Cancel adding a download
+dialog-add-resize-links-input-aria = Drag to resize link input height, double-click to reset
 dialog-add-url-or-magnet = URL or magnet link
 dialog-add-no-sources = No sources detected
 dialog-add-sources-detected = { $n ->

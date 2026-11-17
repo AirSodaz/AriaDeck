@@ -136,4 +136,4 @@ category-video = Video
 category-programs = Programs
 category-images = Images
 empty-state-subtitle = Click the button below or press Ctrl+N to add new downloads
-dialog-add-url-placeholder = Paste one or more download URLs (HTTP, HTTPS, FTP, magnet)
+dialog-add-url-placeholder = Paste one or more download URLs (one per line, supports HTTP, HTTPS, FTP, magnet)

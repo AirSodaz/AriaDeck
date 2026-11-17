@@ -8,8 +8,8 @@ use std::{
 
 use ariadeck_i18n::{FluentArgs, FluentValue};
 use gpui::{
-    Anchor, AnyElement, App, ClickEvent, ClipboardItem, Context, Div, ElementId, Entity,
-    ExternalPaths, FocusHandle, Focusable, FontFeatures, FontWeight, Hsla, IntoElement,
+    Anchor, AnyElement, App, ClickEvent, ClipboardItem, Context, Div, DragMoveEvent, ElementId,
+    Entity, ExternalPaths, FocusHandle, Focusable, FontFeatures, FontWeight, Hsla, IntoElement,
     MouseButton, MouseDownEvent, PathPromptOptions, Pixels, Point, Render, Role, ScrollDelta,
     ScrollEvent, ScrollHandle, ScrollStrategy, SharedString, Stateful, Subscription, Toggled,
     UniformListScrollHandle, WeakFocusHandle, Window, WindowControlArea, anchored, deferred, div,
@@ -334,6 +334,19 @@ struct TaskDetailsDrawer {
     refresh_coalesced: bool,
 }
 
+pub(crate) const DEFAULT_LINKS_INPUT_HEIGHT: f32 = 120.0;
+pub(crate) const MIN_LINKS_INPUT_HEIGHT: f32 = 80.0;
+pub(crate) const MAX_LINKS_INPUT_HEIGHT: f32 = 360.0;
+
+#[derive(Clone)]
+pub(crate) struct ResizeLinkInput;
+
+impl Render for ResizeLinkInput {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum SmoothScrollArea {
     TaskList,
@@ -344,6 +357,7 @@ enum SmoothScrollArea {
     DetailsNetwork,
     DetailsOptions,
     Activity,
+    AddDownload,
 }
 
 #[derive(Clone, Copy)]
@@ -758,6 +772,9 @@ pub struct AppShell {
     low_disk_active: bool,
     known_task_status: HashMap<TaskIdentity, TaskStatusView>,
     next_request_id: u64,
+    links_input_height: f32,
+    links_input_drag_origin: Option<(Pixels, f32)>,
+    add_dialog_scroll: ScrollHandle,
     list_scroll: UniformListScrollHandle,
     settings_scroll: ScrollHandle,
     metadata_file_scroll: UniformListScrollHandle,
@@ -1201,6 +1218,9 @@ impl AppShell {
             low_disk_active: false,
             known_task_status: HashMap::new(),
             next_request_id: 1,
+            links_input_height: DEFAULT_LINKS_INPUT_HEIGHT,
+            links_input_drag_origin: None,
+            add_dialog_scroll: ScrollHandle::new(),
             list_scroll: UniformListScrollHandle::new(),
             settings_scroll: ScrollHandle::new(),
             metadata_file_scroll: UniformListScrollHandle::new(),

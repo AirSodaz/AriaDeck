@@ -14,6 +14,7 @@ dialog-add-input-type-aria = 下载来源类型
 dialog-add-mode-aria = 多链接处理方式
 dialog-add-file-conflict-aria = 已有文件处理方式
 dialog-add-cancel-aria = 取消添加下载
+dialog-add-resize-links-input-aria = 拖拽调整链接输入框高度，双击重置为默认高度
 dialog-add-url-or-magnet = URL 或磁力链接
 dialog-add-no-sources = 未检测到来源
 dialog-add-sources-detected = 检测到 { $n } 个来源

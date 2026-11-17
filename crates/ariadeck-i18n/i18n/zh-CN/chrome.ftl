@@ -132,4 +132,4 @@ category-video = 视频
 category-programs = 程序
 category-images = 图片
 empty-state-subtitle = 点击下方按钮或按 Ctrl+N 快速新建下载任务
-dialog-add-url-placeholder = 粘贴一个或多个下载链接（支持 HTTP、HTTPS、FTP、磁力链接）
+dialog-add-url-placeholder = 粘贴一个或多个下载链接（每行一个，支持 HTTP、HTTPS、FTP、磁力链接）

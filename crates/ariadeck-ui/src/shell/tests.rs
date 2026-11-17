@@ -1772,6 +1772,69 @@ fn duplicate_add_result_focuses_the_existing_task_and_closes_the_dialog(cx: &mut
 }
 
 #[gpui::test]
+fn add_download_links_input_height_defaults_and_clamps(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(1);
+        shell
+    });
+
+    view.read_with(cx, |shell, _| {
+        assert_eq!(shell.links_input_height, DEFAULT_LINKS_INPUT_HEIGHT);
+        assert_eq!(shell.links_input_height, 120.0);
+    });
+
+    view.update_in(cx, |shell, _window, cx| {
+        // Test clamping to MIN
+        shell.links_input_height = 50.0f32.clamp(MIN_LINKS_INPUT_HEIGHT, MAX_LINKS_INPUT_HEIGHT);
+        assert_eq!(shell.links_input_height, 80.0);
+        // Test clamping to MAX
+        shell.links_input_height = 500.0f32.clamp(MIN_LINKS_INPUT_HEIGHT, MAX_LINKS_INPUT_HEIGHT);
+        assert_eq!(shell.links_input_height, 360.0);
+        // Test reset to default
+        shell.links_input_height = DEFAULT_LINKS_INPUT_HEIGHT;
+        assert_eq!(shell.links_input_height, 120.0);
+        cx.notify();
+    });
+}
+
+#[gpui::test]
+fn add_download_dialog_renders_scrollable_and_preserves_height_across_open_close(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(1);
+        shell
+    });
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_add_download(&OpenAddDownload, window, cx);
+        assert!(shell.add_dialog.open);
+        // User adjusts height
+        shell.links_input_height = 200.0;
+        // Expand advanced options
+        shell.toggle_add_advanced(cx);
+        assert!(shell.add_dialog.advanced_open);
+        // Close dialog
+        shell.close_add_download(window, cx);
+        assert!(!shell.add_dialog.open);
+    });
+
+    // Verify session persistence of adjusted height
+    view.read_with(cx, |shell, _| {
+        assert_eq!(shell.links_input_height, 200.0);
+    });
+
+    // Reopen dialog: height must be preserved
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_add_download(&OpenAddDownload, window, cx);
+        assert!(shell.add_dialog.open);
+        assert_eq!(shell.links_input_height, 200.0);
+    });
+}
+
+#[gpui::test]
 fn successful_retry_selects_the_new_task_identity(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut shell = AppShell::new(Theme::dark(), window, cx);

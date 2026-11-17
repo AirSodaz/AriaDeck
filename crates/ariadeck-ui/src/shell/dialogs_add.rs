@@ -156,6 +156,7 @@ impl AppShell {
         {
             return;
         }
+        self.links_input_drag_origin = None;
         let restore_focus = self.add_dialog_focus.contains_focused(window, cx)
             || self.add_input.focus_handle(cx).is_focused(window);
         let previous_focus = self.add_dialog.previous_focus.take();
@@ -877,6 +878,7 @@ impl AppShell {
         let file_conflict = self.add_dialog.file_conflict;
         let shell = cx.entity().downgrade();
         let input_shell = shell.clone();
+        let mode_shell = shell.clone();
         let conflict_shell = shell.clone();
         let input_mode_control = SegmentedControl::new(
             "add-download-input-mode",
@@ -918,7 +920,7 @@ impl AppShell {
             } else {
                 AddDownloadModeView::Mirrors
             };
-            shell
+            mode_shell
                 .update(cx, |shell, cx| shell.set_add_download_mode(mode, cx))
                 .ok();
         });
@@ -951,10 +953,31 @@ impl AppShell {
                 .ok();
         });
         let category_picker = self.render_add_category_picker(cx);
+        let links_input_height = self.links_input_height;
+        let is_resizing = self.links_input_drag_origin.is_some();
         let content = div()
             .flex()
             .flex_col()
             .gap_2()
+            .on_drag_move(
+                cx.listener(|this, e: &DragMoveEvent<ResizeLinkInput>, _window, cx| {
+                    if let Some((origin_y, origin_h)) = this.links_input_drag_origin {
+                        let delta: f32 = (e.event.position.y - origin_y).into();
+                        let new_h = (origin_h + delta)
+                            .clamp(MIN_LINKS_INPUT_HEIGHT, MAX_LINKS_INPUT_HEIGHT);
+                        if (new_h - this.links_input_height).abs() > 0.5 {
+                            this.links_input_height = new_h;
+                            cx.notify();
+                        }
+                    }
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| {
+                    this.links_input_drag_origin = None;
+                }),
+            )
             .child(input_mode_control)
             .child(category_picker)
             .child(match input_mode {
@@ -969,7 +992,65 @@ impl AppShell {
                             .text_color(colors.text_secondary)
                             .child(self.t("dialog-add-url-or-magnet")),
                     )
-                    .child(Textarea::new(&self.add_input))
+                    .child(
+                        div()
+                            .id("links-input-container")
+                            .relative()
+                            .w_full()
+                            .child(
+                                Textarea::new(&self.add_input)
+                                    .h(px(links_input_height))
+                                    .font_family("monospace"),
+                            )
+                            .child(
+                                div()
+                                    .id("links-input-resize-grip")
+                                    .role(Role::Button)
+                                    .aria_label(self.t("dialog-add-resize-links-input-aria"))
+                                    .tooltip(Tooltip::text(
+                                        self.t("dialog-add-resize-links-input-aria"),
+                                        None,
+                                        colors,
+                                    ))
+                                    .absolute()
+                                    .bottom(px(3.0))
+                                    .right(px(3.0))
+                                    .size(px(14.0))
+                                    .flex()
+                                    .items_end()
+                                    .justify_end()
+                                    .p(px(1.0))
+                                    .text_color(if is_resizing {
+                                        colors.accent
+                                    } else {
+                                        colors.text_muted
+                                    })
+                                    .hover(|style| style.text_color(colors.text_secondary))
+                                    .cursor(gpui::CursorStyle::ResizeUpLeftDownRight)
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(
+                                            move |this, e: &MouseDownEvent, _window, cx| {
+                                                if e.click_count == 2 {
+                                                    this.links_input_height =
+                                                        DEFAULT_LINKS_INPUT_HEIGHT;
+                                                    this.links_input_drag_origin = None;
+                                                    cx.notify();
+                                                    return;
+                                                }
+                                                this.links_input_drag_origin =
+                                                    Some((e.position.y, this.links_input_height));
+                                            },
+                                        ),
+                                    )
+                                    .on_drag(ResizeLinkInput, |_, _, _, cx| {
+                                        cx.new(|_| ResizeLinkInput)
+                                    })
+                                    .child(
+                                        Icon::new(IconName::ResizeCorner).size(IconSize::XSmall),
+                                    ),
+                            ),
+                    )
                     .child(
                         div()
                             .flex()
@@ -1038,6 +1119,8 @@ impl AppShell {
                 )
             });
 
+        let scroll_shell = shell.clone();
+        let scroll_handle = self.add_dialog_scroll.clone();
         Dialog::new(
             "add-download-dialog",
             self.t("dialog-add-download"),
@@ -1051,6 +1134,23 @@ impl AppShell {
             640.0
         } else {
             560.0
+        })
+        .scrollable(true)
+        .max_h(relative(0.88))
+        .track_scroll(self.add_dialog_scroll.clone())
+        .on_scroll(move |event, window, cx| {
+            let handle = scroll_handle.clone();
+            scroll_shell
+                .update(cx, |this, cx| {
+                    this.smooth_discrete_scroll(
+                        SmoothScrollArea::AddDownload,
+                        handle,
+                        event,
+                        window,
+                        cx,
+                    );
+                })
+                .ok();
         })
         .child(content)
         .action(
