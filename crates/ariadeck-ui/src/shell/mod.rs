@@ -8,12 +8,12 @@ use std::{
 
 use ariadeck_i18n::{FluentArgs, FluentValue};
 use gpui::{
-    AnyElement, App, ClickEvent, ClipboardItem, Context, Div, ElementId, Entity, ExternalPaths,
-    FocusHandle, Focusable, FontFeatures, FontWeight, Hsla, IntoElement, MouseButton,
-    MouseDownEvent, PathPromptOptions, Pixels, Point, Render, Role, ScrollDelta, ScrollEvent,
-    ScrollHandle, ScrollStrategy, SharedString, Stateful, Subscription, Toggled,
-    UniformListScrollHandle, WeakFocusHandle, Window, WindowControlArea, div, img, point,
-    prelude::*, px, relative, uniform_list,
+    Anchor, AnyElement, App, ClickEvent, ClipboardItem, Context, Div, ElementId, Entity,
+    ExternalPaths, FocusHandle, Focusable, FontFeatures, FontWeight, Hsla, IntoElement,
+    MouseButton, MouseDownEvent, PathPromptOptions, Pixels, Point, Render, Role, ScrollDelta,
+    ScrollEvent, ScrollHandle, ScrollStrategy, SharedString, Stateful, Subscription, Toggled,
+    UniformListScrollHandle, WeakFocusHandle, Window, WindowControlArea, anchored, deferred, div,
+    img, point, prelude::*, px, relative, uniform_list,
 };
 
 use crate::{
@@ -2902,7 +2902,7 @@ impl Render for AppShell {
             })
             .when(
                 self.sort_popover_open && self.page == AppPage::Downloads,
-                |element| element.child(self.render_sort_popover(cx)),
+                |element| element.child(self.render_sort_popover_layer(cx)),
             )
             .when(self.status_notice.is_some(), |element| {
                 element.child(self.render_toast(cx))

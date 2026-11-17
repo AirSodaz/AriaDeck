@@ -4090,3 +4090,54 @@ fn power_action_change_during_countdown_updates_action(cx: &mut TestAppContext) 
         );
     });
 }
+
+#[gpui::test]
+fn sort_popover_toggles_and_renders_anchored_menu(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    view.update(cx, |shell, cx| {
+        assert!(!shell.sort_popover_open);
+        shell.toggle_sort_popover(cx);
+        assert!(shell.sort_popover_open);
+
+        // Verify layer and menu can both be rendered without panic
+        let layer = shell.render_sort_popover_layer(cx);
+        let _ = layer;
+        let menu = shell.render_sort_menu(cx);
+        let _ = menu;
+
+        shell.close_sort_popover(cx);
+        assert!(!shell.sort_popover_open);
+    });
+}
+
+#[gpui::test]
+fn sort_popover_closes_on_escape_and_when_sort_key_selected(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    // Test Escape closing sort popover
+    view.update_in(cx, |shell, window, cx| {
+        shell.sort_popover_open = true;
+        shell.clear_search(&ClearSearch, window, cx);
+        assert!(!shell.sort_popover_open);
+    });
+
+    // Test selecting a sort key closes sort popover
+    view.update(cx, |shell, cx| {
+        shell.sort_popover_open = true;
+        shell.set_sort_key(WorkspaceSortKey::Name, cx);
+        assert!(!shell.sort_popover_open);
+        assert_eq!(shell.query.sort_key, WorkspaceSortKey::Name);
+    });
+
+    // Test selecting a direction keeps sort popover open
+    view.update(cx, |shell, cx| {
+        shell.sort_popover_open = true;
+        shell.set_sort_direction(WorkspaceSortDirection::Descending, cx);
+        assert!(shell.sort_popover_open);
+        assert_eq!(
+            shell.query.sort_direction,
+            WorkspaceSortDirection::Descending
+        );
+    });
+}

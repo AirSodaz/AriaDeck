@@ -685,11 +685,34 @@ impl AppShell {
                             .size(IconSize::Small)
                             .color(colors.text_muted),
                     )
-                    .child(sort_label),
+                    .child(sort_label)
+                    .when(self.sort_popover_open, |trigger| {
+                        trigger.child(
+                            deferred(
+                                anchored()
+                                    .anchor(Anchor::TopLeft)
+                                    .offset(point(px(0.0), px(32.0)))
+                                    .snap_to_window_with_margin(px(8.0))
+                                    .child(self.render_sort_menu(cx)),
+                            )
+                            .with_priority(1),
+                        )
+                    }),
             )
     }
 
-    pub(crate) fn render_sort_popover(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(crate) fn render_sort_popover_layer(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+        div()
+            .id("sort-popover-layer")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.close_sort_popover(cx);
+            }))
+    }
+
+    pub(crate) fn render_sort_menu(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let colors = self.theme.colors;
         let current_key = self.query.sort_key;
         let current_direction = self.query.sort_direction;
@@ -698,15 +721,13 @@ impl AppShell {
             .id("sort-menu")
             .role(Role::Menu)
             .aria_label(self.t("sort-downloads-aria"))
-            .absolute()
-            .right(px(12.0))
-            .top(px(96.0))
             .w(px(220.0))
             .on_click(|_, _, cx| cx.stop_propagation())
             .bg(colors.elevated_surface)
             .border_1()
             .border_color(colors.border)
             .rounded_lg()
+            .shadow_lg()
             .p_1()
             .flex()
             .flex_col()
@@ -830,15 +851,7 @@ impl AppShell {
             );
         }
 
-        div()
-            .id("sort-popover-layer")
-            .absolute()
-            .inset_0()
-            .occlude()
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.close_sort_popover(cx);
-            }))
-            .child(menu)
+        menu
     }
 
     pub(crate) fn render_task_toolbar(&mut self, cx: &mut Context<Self>) -> Div {
