@@ -71,9 +71,34 @@ impl AppShell {
         let version = version.clone();
         let request_id = self.allocate_request_id();
         self.pending_update_download = Some(request_id);
-        self.update_status = crate::UpdateStatusView::Downloading { version };
+        self.update_status = crate::UpdateStatusView::Downloading {
+            version,
+            downloaded_bytes: 0,
+            total_bytes: None,
+        };
         cx.emit(AppShellEvent::DownloadUpdateRequested { request_id });
         cx.notify();
+    }
+
+    pub fn set_update_download_progress(
+        &mut self,
+        request_id: RequestId,
+        downloaded_bytes: u64,
+        total_bytes: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_update_download != Some(request_id) {
+            return;
+        }
+        if let crate::UpdateStatusView::Downloading { version, .. } = &self.update_status {
+            let version = version.clone();
+            self.update_status = crate::UpdateStatusView::Downloading {
+                version,
+                downloaded_bytes,
+                total_bytes,
+            };
+            cx.notify();
+        }
     }
 
     pub fn set_update_download_result(
@@ -4027,6 +4052,25 @@ impl AppShell {
             crate::UpdateStatusView::Disabled => self.t("settings-update-disabled"),
             crate::UpdateStatusView::Checking => self.t("settings-update-checking"),
             crate::UpdateStatusView::Current => self.t("settings-update-current"),
+            crate::UpdateStatusView::Downloading {
+                downloaded_bytes,
+                total_bytes: Some(total),
+                ..
+            } if *total > 0 => {
+                let percent =
+                    ((*downloaded_bytes as f64 / *total as f64) * 100.0).clamp(0.0, 100.0) as u64;
+                self.t_args(
+                    "settings-update-download-progress",
+                    &[
+                        (
+                            "downloaded",
+                            FluentValue::from(crate::format_bytes(*downloaded_bytes)),
+                        ),
+                        ("total", FluentValue::from(crate::format_bytes(*total))),
+                        ("percent", FluentValue::from(percent.to_string())),
+                    ],
+                )
+            }
             crate::UpdateStatusView::Downloading { .. } => self.t("settings-update-downloading"),
             crate::UpdateStatusView::Downloaded { .. } => self.t("settings-update-downloaded"),
             crate::UpdateStatusView::Failed(_) => self.t("settings-update-failed"),
@@ -4079,6 +4123,28 @@ impl AppShell {
             _ => div(),
         };
         let update_details = match &self.update_status {
+            crate::UpdateStatusView::Downloading {
+                downloaded_bytes,
+                total_bytes: Some(total),
+                ..
+            } if *total > 0 => {
+                let ratio = (*downloaded_bytes as f32 / *total as f32).clamp(0.0, 1.0);
+                div().w_full().pt_1().child(
+                    div()
+                        .h(px(4.0))
+                        .w_full()
+                        .rounded_full()
+                        .bg(colors.progress_track)
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .h_full()
+                                .w(relative(ratio))
+                                .rounded_full()
+                                .bg(colors.progress_download),
+                        ),
+                )
+            }
             crate::UpdateStatusView::Available { title, notes, .. } => div()
                 .flex()
                 .flex_col()

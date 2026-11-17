@@ -556,6 +556,8 @@ pub enum UpdateStatusView {
     },
     Downloading {
         version: String,
+        downloaded_bytes: u64,
+        total_bytes: Option<u64>,
     },
     Downloaded {
         version: String,

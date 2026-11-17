@@ -783,6 +783,53 @@ fn update_checks_are_single_flight_and_portable_offers_never_download(cx: &mut T
 }
 
 #[gpui::test]
+fn download_progress_and_completion_update_view_state(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+    view.update(cx, |shell, cx| {
+        shell.configure_updates(true, false, cx);
+        let check_id = shell.allocate_request_id();
+        shell.pending_update_check = Some(check_id);
+        shell.set_update_check_result(
+            check_id,
+            Ok(Some(crate::UpdateOfferView {
+                version: "0.3.0".into(),
+                title: "AriaDeck 0.3.0".into(),
+                notes: "Release notes".into(),
+                release_url: "https://github.com/AirSodaz/AriaDeck/releases/tag/v0.3.0".into(),
+                installer_available: true,
+            })),
+            cx,
+        );
+        shell.request_update_download(cx);
+        let request_id = shell.pending_update_download.expect("download is pending");
+        assert!(matches!(
+            shell.update_status,
+            crate::UpdateStatusView::Downloading {
+                downloaded_bytes: 0,
+                total_bytes: None,
+                ..
+            }
+        ));
+        shell.set_update_download_progress(request_id, 500, Some(1000), cx);
+        assert_eq!(
+            shell.update_status,
+            crate::UpdateStatusView::Downloading {
+                version: "0.3.0".into(),
+                downloaded_bytes: 500,
+                total_bytes: Some(1000),
+            }
+        );
+        shell.set_update_download_result(request_id, Ok("0.3.0".into()), cx);
+        assert_eq!(
+            shell.update_status,
+            crate::UpdateStatusView::Downloaded {
+                version: "0.3.0".into()
+            }
+        );
+    });
+}
+
+#[gpui::test]
 fn load_more_stopped_history_is_single_flight_and_gated(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut shell = AppShell::new(Theme::dark(), window, cx);

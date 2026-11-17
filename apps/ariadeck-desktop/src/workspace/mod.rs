@@ -673,9 +673,9 @@ impl DesktopRoot {
         );
 
         let updates_enabled = updates_supported();
-        let portable_install = is_portable_install();
+        let read_only_install = is_read_only_update_install();
         root.workspace.update(cx, |shell, cx| {
-            shell.configure_updates(updates_enabled, portable_install, cx);
+            shell.configure_updates(updates_enabled, read_only_install, cx);
             if updates_enabled {
                 shell.request_update_check(cx);
             }
@@ -2241,8 +2241,10 @@ impl DesktopRoot {
         cx: &mut Context<Self>,
     ) {
         let version = env!("CARGO_PKG_VERSION").to_owned();
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
         cx.spawn_in(window, async move |this, cx| {
-            let result = check_latest_release(&version).await;
+            let result = check_latest_release(&version, os, arch).await;
             this.update_in(cx, |this, _window, cx| {
                 let view_result = match result {
                     Ok(offer) => {
@@ -2252,8 +2254,9 @@ impl DesktopRoot {
                             title: offer.title,
                             notes: offer.notes,
                             release_url: offer.release_url,
-                            installer_available: offer.installer_url.is_some()
-                                && offer.checksums_url.is_some(),
+                            installer_available: offer.package_url.is_some()
+                                && (offer.signature_data.is_some()
+                                    || offer.signature_url.is_some()),
                         }))
                     }
                     Err(error) => {
@@ -2277,7 +2280,7 @@ impl DesktopRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if is_portable_install() {
+        if is_read_only_update_install() {
             return;
         }
         let Some(offer) = self.update_offer.clone() else {
@@ -2291,23 +2294,48 @@ impl DesktopRoot {
             return;
         };
         let version = offer.version.clone();
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
         cx.spawn_in(window, async move |this, cx| {
-            let result = match download_verified_installer(&offer).await {
-                Ok(bytes) => {
+            let (progress_tx, mut progress_rx) =
+                tokio::sync::mpsc::unbounded_channel::<(u64, Option<u64>)>();
+            let offer_clone = offer.clone();
+            let download_task = tokio::spawn(async move {
+                download_verified_package(&offer_clone, move |downloaded, total| {
+                    let _ = progress_tx.send((downloaded, total));
+                })
+                .await
+            });
+
+            while let Some((downloaded, total)) = progress_rx.recv().await {
+                this.update_in(cx, |this, _window, cx| {
+                    this.workspace.update(cx, |shell, cx| {
+                        shell.set_update_download_progress(request_id, downloaded, total, cx);
+                    });
+                })
+                .ok();
+            }
+
+            let result = match download_task.await {
+                Ok(Ok(bytes)) => {
                     let version_for_file = version.clone();
                     tokio::task::spawn_blocking(move || {
-                        save_installer(
+                        save_package(
                             &bytes,
                             &std::env::temp_dir().join("AriaDeck-updates"),
                             &version_for_file,
+                            os,
+                            arch,
                         )
                     })
                     .await
-                    .map_err(|error| format!("Installer save task failed: {error}"))
+                    .map_err(|error| format!("Package save task failed: {error}"))
                     .and_then(|result| result)
                 }
-                Err(error) => Err(error),
+                Ok(Err(error)) => Err(error),
+                Err(panic_err) => Err(format!("Download task panicked: {panic_err}")),
             };
+
             this.update_in(cx, |this, _window, cx| {
                 let view_result = match result {
                     Ok(path) => {
@@ -2315,7 +2343,7 @@ impl DesktopRoot {
                         Ok(version)
                     }
                     Err(error) => {
-                        tracing::warn!(%error, "update installer download failed");
+                        tracing::warn!(%error, "update package download failed");
                         Err(error)
                     }
                 };
@@ -2342,7 +2370,7 @@ impl DesktopRoot {
                 return;
             }
         };
-        match launch_verified_installer(installer, executable) {
+        match launch_verified_update(installer, executable) {
             Ok(()) => self.quit_application(cx),
             Err(error) => {
                 tracing::error!(%error, "could not start the verified update installer");
@@ -2369,40 +2397,111 @@ fn is_portable_install() -> bool {
         .is_some_and(|directory| directory.join(ariadeck_ipc::PORTABLE_MARKER_FILE).is_file())
 }
 
-fn launch_verified_installer(installer: PathBuf, executable: PathBuf) -> Result<(), String> {
+fn is_read_only_update_install() -> bool {
+    if is_portable_install() {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("APPIMAGE").is_none() {
+            return true;
+        }
+    }
+    false
+}
+
+fn launch_verified_update(package: PathBuf, executable: PathBuf) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let mut child = std::process::Command::new(&installer)
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let cmd_line = format!(
+            "ping 127.0.0.1 -n 2 >nul & start /wait \"\" \"{}\" /SILENT /CLOSEAPPLICATIONS & start \"\" \"{}\" & del /f /q \"{}\"",
+            package.display(),
+            executable.display(),
+            package.display()
+        );
+        std::process::Command::new("cmd")
+            .args(["/c", &cmd_line])
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn()
-            .map_err(|error| format!("Could not start the installer: {error}"))?;
-        std::thread::spawn(move || {
-            match child.wait() {
-                Ok(status) if status.success() => {
-                    if let Err(error) = std::process::Command::new(executable).spawn() {
-                        tracing::error!(%error, "updated app could not be restarted");
-                    }
-                }
-                Ok(status) => {
-                    tracing::warn!(%status, "update installer was cancelled or failed; restarting the existing app");
-                    if let Err(error) = std::process::Command::new(executable).spawn() {
-                        tracing::error!(%error, "existing app could not be restarted after update cancellation");
-                    }
-                }
-                Err(error) => {
-                    tracing::error!(%error, "could not wait for update installer; restarting the existing app");
-                    if let Err(error) = std::process::Command::new(executable).spawn() {
-                        tracing::error!(%error, "existing app could not be restarted after update failure");
-                    }
-                }
-            }
-            let _ = std::fs::remove_file(installer);
-        });
+            .map_err(|error| format!("Could not start the update installer: {error}"))?;
         Ok(())
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
-        let _ = (installer, executable);
-        Err("Application updates are supported only on Windows.".into())
+        let bundle_path = executable
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent);
+        let Some(bundle_path) =
+            bundle_path.filter(|p| p.extension().is_some_and(|ext| ext == "app"))
+        else {
+            return Err("In-app update on macOS requires running from an .app bundle.".into());
+        };
+        let staging_dir =
+            std::env::temp_dir().join(format!("AriaDeck-update-stage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&staging_dir);
+        std::fs::create_dir_all(&staging_dir)
+            .map_err(|e| format!("Could not create macOS update staging directory: {e}"))?;
+
+        let tar_status = std::process::Command::new("/usr/bin/tar")
+            .args(["-xzf"])
+            .arg(&package)
+            .args(["-C"])
+            .arg(&staging_dir)
+            .status()
+            .map_err(|e| format!("Could not unpack update package: {e}"))?;
+        if !tar_status.success() {
+            return Err("Unpacking update package failed.".into());
+        }
+
+        let staged_app = staging_dir.join("AriaDeck.app");
+        if !staged_app.is_dir() {
+            return Err("Unpacked update does not contain AriaDeck.app.".into());
+        }
+
+        std::process::Command::new("sh")
+            .args([
+                "-c",
+                r#"sleep 1; rm -rf "$1" && mv "$2" "$1" && xattr -dr com.apple.quarantine "$1" 2>/dev/null; open -n "$1"; rm -rf "$3" "$4""#,
+                "updater",
+            ])
+            .arg(&bundle_path)
+            .arg(&staged_app)
+            .arg(&staging_dir)
+            .arg(&package)
+            .spawn()
+            .map_err(|e| format!("Could not spawn update helper: {e}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let appimage_target = std::env::var_os("APPIMAGE").map(PathBuf::from);
+        let Some(target) = appimage_target else {
+            return Err(
+                "In-app update on Linux is supported only for AppImage installations.".into(),
+            );
+        };
+        std::fs::set_permissions(&package, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("Could not set executable permissions: {e}"))?;
+        std::process::Command::new("sh")
+            .args([
+                "-c",
+                r#"sleep 1; mv -f "$1" "$2" && chmod +x "$2" && "$2" &"#,
+                "updater",
+            ])
+            .arg(&package)
+            .arg(&target)
+            .spawn()
+            .map_err(|e| format!("Could not spawn update helper: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (package, executable);
+        Err("Application updates are not supported on this platform.".into())
     }
 }
 
