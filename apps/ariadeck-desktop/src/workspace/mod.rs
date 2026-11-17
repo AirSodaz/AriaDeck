@@ -2467,7 +2467,7 @@ fn launch_verified_update(package: PathBuf, executable: PathBuf) -> Result<(), S
                 r#"sleep 1; rm -rf "$1" && mv "$2" "$1" && xattr -dr com.apple.quarantine "$1" 2>/dev/null; open -n "$1"; rm -rf "$3" "$4""#,
                 "updater",
             ])
-            .arg(&bundle_path)
+            .arg(bundle_path)
             .arg(&staged_app)
             .arg(&staging_dir)
             .arg(&package)
@@ -2477,6 +2477,7 @@ fn launch_verified_update(package: PathBuf, executable: PathBuf) -> Result<(), S
     }
     #[cfg(target_os = "linux")]
     {
+        let _ = executable;
         use std::os::unix::fs::PermissionsExt;
         let appimage_target = std::env::var_os("APPIMAGE").map(PathBuf::from);
         let Some(target) = appimage_target else {
