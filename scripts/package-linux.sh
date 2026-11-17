@@ -34,7 +34,7 @@ install -m 0755 "$binary" "$appdir/usr/bin/ariadeck-desktop"
 install -m 0644 "$icon_file" "$work/ariadeck.svg"
 install -m 0644 "$root/LICENSE" "$root/THIRD_PARTY_NOTICES.md" "$appdir/usr/share/doc/ariadeck/"
 
-appimage="$dist/AriaDeck-$version-x86_64.AppImage"
+appimage="$dist/AriaDeck_${version}_amd64.AppImage"
 (
   cd "$work"
   APPIMAGE_EXTRACT_AND_RUN=1 \
@@ -93,8 +93,29 @@ Description: Native desktop client for aria2
  AriaDeck is a native Rust desktop client that controls aria2 over JSON-RPC.
 EOF
 
-deb="$dist/ariadeck_$version"_amd64.deb
+deb="$dist/AriaDeck_${version}_amd64.deb"
 dpkg-deb --build --root-owner-group "$debroot" "$deb"
+
+rpm_out="$dist/AriaDeck_${version}_x86_64.rpm"
+rpm_work="$work/rpmbuild"
+mkdir -p "$rpm_work/BUILD" "$rpm_work/RPMS" "$rpm_work/SOURCES" "$rpm_work/SPECS" "$rpm_work/SRPMS"
+cp "$binary" "$rpm_work/SOURCES/ariadeck-desktop"
+cp "$desktop_file" "$rpm_work/SOURCES/ariadeck.desktop"
+cp "$icon_file" "$rpm_work/SOURCES/ariadeck.svg"
+cp "$root/LICENSE" "$rpm_work/SOURCES/LICENSE"
+cp "$root/THIRD_PARTY_NOTICES.md" "$rpm_work/SOURCES/THIRD_PARTY_NOTICES.md"
+
+rpmbuild -bb \
+  --define "_topdir $rpm_work" \
+  --define "version $version" \
+  "$root/packaging/linux/ariadeck.spec"
+
+generated_rpm="$(find "$rpm_work/RPMS" -type f -name '*.rpm' -print -quit)"
+if [[ -z "$generated_rpm" ]]; then
+  echo "rpmbuild did not produce an RPM package" >&2
+  exit 1
+fi
+mv "$generated_rpm" "$rpm_out"
 
 verify_appdir="$work/appimage-extract"
 mkdir -p "$verify_appdir"
@@ -133,4 +154,17 @@ for path in \
   grep -Fq "$path" <<<"$deb_contents" || { echo "Debian package is missing $path" >&2; exit 1; }
 done
 
-printf 'Created and verified %s\n%s\n' "$appimage" "$deb"
+if command -v rpm >/dev/null; then
+  rpm -qpi "$rpm_out" >/dev/null
+  rpm_contents="$(rpm -qpl "$rpm_out")"
+  for path in \
+    /usr/bin/ariadeck-desktop \
+    /usr/share/applications/ariadeck.desktop \
+    /usr/share/icons/hicolor/scalable/apps/ariadeck.svg \
+    /usr/share/doc/ariadeck/LICENSE \
+    /usr/share/doc/ariadeck/THIRD_PARTY_NOTICES.md; do
+    grep -Fq "$path" <<<"$rpm_contents" || { echo "RPM package is missing $path" >&2; exit 1; }
+  done
+fi
+
+printf 'Created and verified %s\n%s\n%s\n' "$appimage" "$deb" "$rpm_out"

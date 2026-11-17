@@ -17,13 +17,20 @@ Acceptance contract for portable packages, optional installer, data dirs, signin
 
 | Artifact | Layout |
 | --- | --- |
-| Portable | `dist/AriaDeck-<ver>-windows-x64-portable/` + `.zip` |
-| Installer | `dist/AriaDeck-<ver>-windows-x64-setup.exe` |
-| Linux AppImage | `dist/AriaDeck-<ver>-x86_64.AppImage` |
-| Debian package | `dist/ariadeck_<ver>_amd64.deb` |
-| macOS Apple Silicon | `dist/AriaDeck-<ver>-macos-arm64.dmg` containing `AriaDeck.app` |
-| macOS Intel | `dist/AriaDeck-<ver>-macos-x86_64.dmg` containing `AriaDeck.app` |
-| Checksums | `dist/SHA256SUMS.txt` (tag builds only; `sha256sum -c` format, LF) |
+| Linux RPM | `dist/AriaDeck_<ver>_x86_64.rpm` + `.sig` |
+| Linux Debian package | `dist/AriaDeck_<ver>_amd64.deb` + `.sig` |
+| Linux AppImage | `dist/AriaDeck_<ver>_amd64.AppImage` + `.sig` |
+| macOS Apple Silicon DMG | `dist/AriaDeck_<ver>_aarch64.dmg` (no signature) |
+| macOS Intel DMG | `dist/AriaDeck_<ver>_x64.dmg` (no signature) |
+| macOS Apple Silicon Updater | `dist/AriaDeck_<ver>_aarch64.app.tar.gz` + `.sig` |
+| macOS Intel Updater | `dist/AriaDeck_<ver>_x64.app.tar.gz` + `.sig` |
+| Windows ARM64 Setup | `dist/AriaDeck_<ver>_arm64-setup.exe` + `.sig` |
+| Windows x64 Setup | `dist/AriaDeck_<ver>_x64-setup.exe` + `.sig` |
+| Windows ARM64 MSI | `dist/AriaDeck_<ver>_arm64_en-US.msi` + `.sig` |
+| Windows x64 MSI | `dist/AriaDeck_<ver>_x64_en-US.msi` + `.sig` |
+| Universal Updater Manifest | `dist/updater.json` |
+| Windows Portable (supplement) | `dist/AriaDeck_<ver>_windows-x64-portable.zip` |
+| Checksums | `dist/SHA256SUMS.txt` (`sha256sum -c` format, LF) |
 
 Portable: `ariadeck-desktop.exe`, `ariadeck.portable`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `README-portable.txt`.  
 Installer: exe + licenses (**no** portable marker). **No** bundled aria2—import core or `ARIADECK_RPC_URL`.
@@ -74,12 +81,20 @@ powershell -ExecutionPolicy Bypass -File scripts/package-windows-installer.ps1 -
 
 Expected outputs under `dist/`:
 
-- `AriaDeck-<ver>-windows-x64-portable/` + `.zip`
-- `AriaDeck-<ver>-windows-x64-setup.exe`
-- `AriaDeck-<ver>-x86_64.AppImage`
-- `ariadeck_<ver>_amd64.deb`
-- `AriaDeck-<ver>-macos-arm64.dmg`
-- `AriaDeck-<ver>-macos-x86_64.dmg`
+- `AriaDeck_<ver>_x86_64.rpm` (+ `.sig`)
+- `AriaDeck_<ver>_amd64.deb` (+ `.sig`)
+- `AriaDeck_<ver>_amd64.AppImage` (+ `.sig`)
+- `AriaDeck_<ver>_aarch64.dmg`
+- `AriaDeck_<ver>_x64.dmg`
+- `AriaDeck_<ver>_aarch64.app.tar.gz` (+ `.sig`)
+- `AriaDeck_<ver>_x64.app.tar.gz` (+ `.sig`)
+- `AriaDeck_<ver>_arm64-setup.exe` (+ `.sig`)
+- `AriaDeck_<ver>_x64-setup.exe` (+ `.sig`)
+- `AriaDeck_<ver>_arm64_en-US.msi` (+ `.sig`)
+- `AriaDeck_<ver>_x64_en-US.msi` (+ `.sig`)
+- `updater.json`
+- `AriaDeck_<ver>_windows-x64-portable.zip`
+- `SHA256SUMS.txt`
 
 Linux build and package verification (Ubuntu 22.04, x86_64):
 

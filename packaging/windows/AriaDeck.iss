@@ -23,8 +23,12 @@
   #define BridgeExtensionId ""
 #endif
 
+#ifndef AppArch
+  #define AppArch "x64"
+#endif
+
 #ifndef SourceDir
-  #define SourceDir "..\..\dist\AriaDeck-" + MyAppVersion + "-windows-x64-portable"
+  #define SourceDir "..\..\dist\AriaDeck_" + MyAppVersion + "_windows-" + AppArch + "-portable"
 #endif
 
 [Setup]
@@ -36,10 +40,15 @@ DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+#if AppArch == "arm64"
+ArchitecturesAllowed=arm64
+ArchitecturesInstallIn64BitMode=arm64
+#else
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+#endif
 OutputDir=..\..\dist
-OutputBaseFilename=AriaDeck-{#MyAppVersion}-windows-x64-setup
+OutputBaseFilename=AriaDeck_{#MyAppVersion}_{#AppArch}-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

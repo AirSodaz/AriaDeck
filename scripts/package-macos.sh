@@ -7,10 +7,17 @@ if [[ $# -ne 2 ]]; then
 fi
 
 version="$1"
-arch="$2"
-case "$arch" in
-  arm64|x86_64) ;;
-  *) echo "unsupported macOS architecture: $arch" >&2; exit 2 ;;
+raw_arch="$2"
+case "$raw_arch" in
+  arm64|aarch64)
+    arch="arm64"
+    arch_tag="aarch64"
+    ;;
+  x86_64|x64)
+    arch="x86_64"
+    arch_tag="x64"
+    ;;
+  *) echo "unsupported macOS architecture: $raw_arch" >&2; exit 2 ;;
 esac
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -21,8 +28,10 @@ actual_arch="$(lipo -archs "$binary")"
 
 dist="$root/dist"
 mkdir -p "$dist"
-output="$dist/AriaDeck-$version-macos-$arch.dmg"
+output="$dist/AriaDeck_${version}_${arch_tag}.dmg"
+output_tar="$dist/AriaDeck_${version}_${arch_tag}.app.tar.gz"
 [[ ! -e "$output" ]] || { echo "refusing to overwrite existing artifact: $output" >&2; exit 1; }
+[[ ! -e "$output_tar" ]] || { echo "refusing to overwrite existing artifact: $output_tar" >&2; exit 1; }
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 app="$work/AriaDeck.app"
@@ -53,11 +62,11 @@ plutil -lint "$bundle/Info.plist"
 mkdir "$work/image"
 ditto "$app" "$work/image/AriaDeck.app"
 ln -s /Applications "$work/image/Applications"
-hdiutil create -quiet -volname AriaDeck -srcfolder "$work/image" -format UDZO "$work/AriaDeck-$version-macos-$arch.dmg"
-hdiutil verify "$work/AriaDeck-$version-macos-$arch.dmg"
+hdiutil create -quiet -volname AriaDeck -srcfolder "$work/image" -format UDZO "$work/AriaDeck.dmg"
+hdiutil verify "$work/AriaDeck.dmg"
 mount="$work/mount"
 mkdir "$mount"
-hdiutil attach -quiet -nobrowse -readonly -mountpoint "$mount" "$work/AriaDeck-$version-macos-$arch.dmg"
+hdiutil attach -quiet -nobrowse -readonly -mountpoint "$mount" "$work/AriaDeck.dmg"
 trap 'hdiutil detach -quiet "$mount" || true; rm -rf "$work"' EXIT
 verified_app="$mount/AriaDeck.app/Contents"
 for path in Info.plist MacOS/AriaDeck Resources/LICENSE Resources/THIRD_PARTY_NOTICES.md; do
@@ -65,5 +74,9 @@ for path in Info.plist MacOS/AriaDeck Resources/LICENSE Resources/THIRD_PARTY_NO
 done
 plutil -lint "$verified_app/Info.plist"
 [[ "$(lipo -archs "$verified_app/MacOS/AriaDeck")" == "$arch" ]] || { echo "packaged binary architecture mismatch" >&2; exit 1; }
-mv "$work/AriaDeck-$version-macos-$arch.dmg" "$output"
-echo "Created and verified $output"
+mv "$work/AriaDeck.dmg" "$output"
+
+tar -czf "$output_tar" -C "$work" AriaDeck.app
+tar -tzf "$output_tar" | grep -q 'AriaDeck.app/Contents/MacOS/AriaDeck' || { echo "app tarball verification failed" >&2; exit 1; }
+
+echo "Created and verified $output and $output_tar"

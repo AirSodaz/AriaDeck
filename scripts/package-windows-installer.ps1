@@ -13,9 +13,12 @@
   Sign the staged executable and final setup executable when credentials exist.
 #>
 param(
+    [string]$Arch = "x64",
     [switch]$SkipBuild,
     [switch]$SkipStage,
-    [switch]$Sign
+    [switch]$Sign,
+    [switch]$SkipMsi,
+    [switch]$SkipInno
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,6 +47,20 @@ function Find-InnoCompiler {
         if ($candidate -and (Test-Path $candidate)) { return $candidate }
     }
     throw "Inno Setup 6 compiler not found. Set ARIADECK_INNO_SETUP to ISCC.exe."
+}
+
+function Find-WixTool {
+    param([string]$ToolName)
+    $cmd = Get-Command $ToolName -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    foreach ($candidate in @(
+        (Join-Path ${env:ProgramFiles(x86)} "WiX Toolset v3.11\bin\$ToolName.exe"),
+        (Join-Path $env:ProgramFiles "WiX Toolset v3.11\bin\$ToolName.exe"),
+        (Join-Path $env:WIX "bin\$ToolName.exe")
+    )) {
+        if ($candidate -and (Test-Path $candidate)) { return $candidate }
+    }
+    return $null
 }
 
 function Invoke-OptionalSign {
@@ -75,9 +92,9 @@ function Invoke-OptionalSign {
 }
 
 $Version = Get-WorkspaceVersion
-$Stage = Join-Path $Root "dist\AriaDeck-$Version-windows-x64-portable"
+$Stage = Join-Path $Root "dist\AriaDeck_${Version}_windows-${Arch}-portable"
 if (-not $SkipStage) {
-    $arguments = @("-SkipZip")
+    $arguments = @("-Arch", $Arch, "-SkipZip")
     if ($SkipBuild) { $arguments += "-SkipBuild" }
     if ($Sign) { $arguments += "-Sign" }
     & (Join-Path $PSScriptRoot "package-windows-portable.ps1") @arguments
@@ -88,27 +105,65 @@ foreach ($name in @("ariadeck-desktop.exe", "ariadeck-bridge.exe")) {
     }
 }
 
-$compiler = Find-InnoCompiler
-$definitions = @("/DMyAppVersion=$Version")
+if (-not $SkipInno) {
+    $compiler = Find-InnoCompiler
+    $definitions = @("/DMyAppVersion=$Version", "/DAppArch=$Arch")
 
-# Browser bridge (D-045). Without a pinned extension ID the installer omits the
-# opt-in task entirely rather than offering a registration that would accept any
-# extension. Validated here so a typo fails the build, not a user's trust model.
-$extensionId = $env:ARIADECK_EXTENSION_ID
-if ($extensionId) {
-    if ($extensionId -notmatch '^[a-p]{32}$') {
-        throw "ARIADECK_EXTENSION_ID must be 32 characters in the range a-p (got '$extensionId')."
+    # Browser bridge (D-045). Without a pinned extension ID the installer omits the
+    # opt-in task entirely rather than offering a registration that would accept any
+    # extension. Validated here so a typo fails the build, not a user's trust model.
+    $extensionId = $env:ARIADECK_EXTENSION_ID
+    if ($extensionId) {
+        if ($extensionId -notmatch '^[a-p]{32}$') {
+            throw "ARIADECK_EXTENSION_ID must be 32 characters in the range a-p (got '$extensionId')."
+        }
+        $definitions += "/DBridgeExtensionId=$extensionId"
+        Write-Host "Browser bridge task enabled for extension $extensionId"
+    } else {
+        Write-Host "ARIADECK_EXTENSION_ID not set - installer omits the browser bridge task"
     }
-    $definitions += "/DBridgeExtensionId=$extensionId"
-    Write-Host "Browser bridge task enabled for extension $extensionId"
-} else {
-    Write-Host "ARIADECK_EXTENSION_ID not set - installer omits the browser bridge task"
+
+    & $compiler @definitions (Join-Path $Root "packaging\windows\AriaDeck.iss")
+    if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed (exit $LASTEXITCODE)" }
+
+    $setup = Join-Path $Root "dist\AriaDeck_${Version}_${Arch}-setup.exe"
+    if (-not (Test-Path $setup)) { throw "Missing setup executable: $setup" }
+    Invoke-OptionalSign -Path $setup
+    Write-Host "Installer ready: $setup"
 }
 
-& $compiler @definitions (Join-Path $Root "packaging\windows\AriaDeck.iss")
-if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed (exit $LASTEXITCODE)" }
+if (-not $SkipMsi) {
+    $candle = Find-WixTool -ToolName "candle"
+    $light = Find-WixTool -ToolName "light"
+    if (-not $candle -or -not $light) {
+        Write-Warning "WiX toolset (candle/light) not found. Checking if choco can install wixtoolset..."
+        if (Get-Command choco -ErrorAction SilentlyContinue) {
+            choco install wixtoolset --no-progress -y
+            $candle = Find-WixTool -ToolName "candle"
+            $light = Find-WixTool -ToolName "light"
+        }
+    }
 
-$setup = Join-Path $Root "dist\AriaDeck-$Version-windows-x64-setup.exe"
-if (-not (Test-Path $setup)) { throw "Missing setup executable: $setup" }
-Invoke-OptionalSign -Path $setup
-Write-Host "Installer ready: $setup"
+    if ($candle -and $light) {
+        Write-Host "Building MSI using WiX ($Arch)..."
+        $objDir = Join-Path $Root "dist\wix-obj-$Arch"
+        if (Test-Path $objDir) { Remove-Item -Recurse -Force $objDir }
+        New-Item -ItemType Directory -Path $objDir | Out-Null
+        $wixObj = Join-Path $objDir "AriaDeck.wixobj"
+        $wxsPath = Join-Path $Root "packaging\windows\AriaDeck.wxs"
+        $msiOut = Join-Path $Root "dist\AriaDeck_${Version}_${Arch}_en-US.msi"
+
+        & $candle -nologo -arch $Arch -dAppVersion=$Version -dPlatform=$Arch -dSourceDir=$Stage -out $wixObj $wxsPath
+        if ($LASTEXITCODE -ne 0) { throw "WiX candle failed (exit $LASTEXITCODE)" }
+
+        & $light -nologo -out $msiOut $wixObj
+        if ($LASTEXITCODE -ne 0) { throw "WiX light failed (exit $LASTEXITCODE)" }
+
+        if (-not (Test-Path $msiOut)) { throw "Missing MSI output: $msiOut" }
+        Invoke-OptionalSign -Path $msiOut
+        Write-Host "MSI ready: $msiOut"
+        Remove-Item -Recurse -Force $objDir
+    } else {
+        Write-Warning "WiX Toolset (candle/light) not found. Skipping MSI creation."
+    }
+}

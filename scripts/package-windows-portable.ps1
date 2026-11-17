@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Build a Windows x64 portable package for AriaDeck (RELEASE-001).
@@ -21,6 +21,7 @@
   Attempt Authenticode signing when ARIADECK_SIGN_TOOL / signtool is available.
 #>
 param(
+    [string]$Arch = "x64",
     [switch]$SkipBuild,
     [switch]$SkipZip,
     [switch]$Sign
@@ -80,19 +81,32 @@ function Invoke-OptionalSign {
 }
 
 $Version = Get-WorkspaceVersion
-$ArtifactName = "AriaDeck-$Version-windows-x64-portable"
+$ArtifactName = "AriaDeck_${Version}_windows-${Arch}-portable"
 $DistRoot = Join-Path $Root "dist"
 $Stage = Join-Path $DistRoot $ArtifactName
-$ExeSource = Join-Path $Root "target\release\ariadeck-desktop.exe"
-$BridgeSource = Join-Path $Root "target\release\ariadeck-bridge.exe"
+
+$target = ""
+if ($Arch -eq "arm64") {
+    $target = "aarch64-pc-windows-msvc"
+    $ExeSource = Join-Path $Root "target\$target\release\ariadeck-desktop.exe"
+    $BridgeSource = Join-Path $Root "target\$target\release\ariadeck-bridge.exe"
+} else {
+    $ExeSource = Join-Path $Root "target\release\ariadeck-desktop.exe"
+    $BridgeSource = Join-Path $Root "target\release\ariadeck-bridge.exe"
+}
 
 Write-Host "Workspace: $Root"
 Write-Host "Version:   $Version"
+Write-Host "Arch:      $Arch"
 Write-Host "Stage:     $Stage"
 
 if (-not $SkipBuild) {
     Write-Host "Building release binaries..."
-    cargo build -p ariadeck-desktop -p ariadeck-bridge --release
+    if ($target) {
+        cargo build -p ariadeck-desktop -p ariadeck-bridge --release --target $target
+    } else {
+        cargo build -p ariadeck-desktop -p ariadeck-bridge --release
+    }
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 }
 

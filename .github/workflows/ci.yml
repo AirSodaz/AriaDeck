@@ -112,10 +112,18 @@ jobs:
         run: ./scripts/verify-windows-a3.ps1 -SkipBuild
 
   windows-packages:
-    name: Windows packages (portable + installer)
+    name: Windows ${{ matrix.arch }} packages
     runs-on: windows-latest
     needs: verify
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            target: x86_64-pc-windows-msvc
+          - arch: arm64
+            target: aarch64-pc-windows-msvc
     env:
       ARIADECK_UPDATE_PUBLIC_KEY: ${{ vars.ARIADECK_UPDATE_PUBLIC_KEY }}
     steps:
@@ -125,11 +133,12 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96"
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: windows-latest
+          key: windows-${{ matrix.arch }}
           shared-key: workspace
 
       - name: Generate third-party notices
@@ -139,9 +148,15 @@ jobs:
         shell: pwsh
         run: if (-not $env:ARIADECK_UPDATE_PUBLIC_KEY) { throw "Set the ARIADECK_UPDATE_PUBLIC_KEY repository variable" }
 
-      - name: Package portable
+      - name: Package portable (x64)
+        if: matrix.arch == 'x64'
         shell: pwsh
-        run: ./scripts/package-windows-portable.ps1
+        run: ./scripts/package-windows-portable.ps1 -Arch x64
+
+      - name: Stage binaries (arm64)
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: ./scripts/package-windows-portable.ps1 -Arch arm64 -SkipZip
 
       - name: Install Inno Setup
         shell: pwsh
@@ -161,37 +176,38 @@ jobs:
           if (-not $iscc) { throw "ISCC.exe not found after installing Inno Setup" }
           Write-Host "ISCC: $iscc"
 
-      - name: Package installer
+      - name: Package installer and MSI
         shell: pwsh
-        run: ./scripts/package-windows-installer.ps1 -SkipStage
+        run: ./scripts/package-windows-installer.ps1 -Arch ${{ matrix.arch }} -SkipStage
 
       - name: Verify Windows package artifacts
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $zip = Get-ChildItem -Path dist -Filter "*-windows-x64-portable.zip" -File -ErrorAction SilentlyContinue
-          $setup = Get-ChildItem -Path dist -Filter "*-windows-x64-setup.exe" -File -ErrorAction SilentlyContinue
-          if (-not $zip) { throw "Missing portable zip under dist/" }
-          if (-not $setup) { throw "Missing Inno setup.exe under dist/" }
-          # Staging dir is only an Inno input; ship zip + setup.exe only.
-          Get-ChildItem -Path dist -Directory -Filter "*-windows-x64-portable" -ErrorAction SilentlyContinue |
-            Remove-Item -Recurse -Force
-          foreach ($f in @($zip[0], $setup[0])) {
-            $mb = [math]::Round($f.Length / 1MB, 2)
-            Write-Host "OK $($f.Name) ($mb MB)"
+          $setup = Get-ChildItem -Path dist -Filter "*_${{ matrix.arch }}-setup.exe" -File -ErrorAction SilentlyContinue
+          $msi = Get-ChildItem -Path dist -Filter "*_${{ matrix.arch }}_en-US.msi" -File -ErrorAction SilentlyContinue
+          if (-not $setup) { throw "Missing Inno setup.exe for ${{ matrix.arch }} under dist/" }
+          if (-not $msi) { throw "Missing WiX MSI for ${{ matrix.arch }} under dist/" }
+          if ("${{ matrix.arch }}" -eq "x64") {
+            $zip = Get-ChildItem -Path dist -Filter "*_windows-x64-portable.zip" -File -ErrorAction SilentlyContinue
+            if (-not $zip) { throw "Missing portable zip under dist/" }
           }
+          # Staging dir is only an installer input; ship packages only.
+          Get-ChildItem -Path dist -Directory -Filter "*_windows-*-portable" -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force
 
       - name: Upload Windows packages
-        # v5 still targets Node 20; v6+ is node24-native.
         uses: actions/upload-artifact@v6
         with:
-          name: ariadeck-windows-x64
+          name: ariadeck-windows-${{ matrix.arch }}
           path: |
-            dist/*-windows-x64-portable.zip
-            dist/*-windows-x64-setup.exe
+            dist/*_windows-x64-portable.zip
+            dist/*_${{ matrix.arch }}-setup.exe
+            dist/*_${{ matrix.arch }}_en-US.msi
+          if-no-files-found: warn
 
   linux-packages:
-    name: Linux packages (AppImage + deb)
+    name: Linux packages (AppImage + deb + rpm)
     runs-on: ubuntu-22.04
     needs: verify
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
@@ -209,7 +225,7 @@ jobs:
             libasound2-dev libdbus-1-dev libfontconfig-dev libfuse2 libgtk-3-dev \
             libssl-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-dev \
             libxkbcommon-x11-dev libzstd-dev libayatana-appindicator3-dev \
-            libsecret-1-dev pkg-config squashfs-tools
+            libsecret-1-dev pkg-config rpm squashfs-tools
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96"
@@ -231,12 +247,13 @@ jobs:
         with:
           name: ariadeck-linux-x64
           path: |
-            dist/AriaDeck-*-x86_64.AppImage
-            dist/ariadeck_*_amd64.deb
+            dist/*_amd64.AppImage
+            dist/*_amd64.deb
+            dist/*_x86_64.rpm
           if-no-files-found: error
 
   macos-packages:
-    name: macOS ${{ matrix.arch }} package
+    name: macOS ${{ matrix.arch }} packages
     needs: verify
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     strategy:
@@ -270,7 +287,9 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: ariadeck-macos-${{ matrix.arch }}
-          path: dist/AriaDeck-*-macos-*.dmg
+          path: |
+            dist/*.dmg
+            dist/*.app.tar.gz
           if-no-files-found: error
 
   sign-main-packages:
@@ -288,7 +307,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y minisign
-      - name: Sign and verify packages
+      - name: Sign packages with Minisign and create .sig
         shell: bash
         env:
           ARIADECK_UPDATE_SIGNING_KEY: ${{ secrets.ARIADECK_UPDATE_SIGNING_KEY }}
@@ -296,12 +315,39 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t packages < <(find dist -maxdepth 1 -type f \
-            \( -name '*.zip' -o -name '*-setup.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.dmg' \) -print | sort)
-          test "${#packages[@]}" -eq 6 || { echo "Expected six package files, found ${#packages[@]}" >&2; exit 1; }
+            \( -name '*.rpm' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.app.tar.gz' -o -name '*-setup.exe' -o -name '*.msi' \) -print | sort)
+          test "${#packages[@]}" -eq 9 || { echo "Expected 9 signed package files, found ${#packages[@]}" >&2; exit 1; }
           bash scripts/sign-artifacts.sh "${packages[@]}"
-          (cd dist && sha256sum *.zip *-setup.exe *.AppImage *.deb *.dmg > SHA256SUMS.txt)
+      - name: Generate updater.json manifest
+        run: python3 scripts/generate_updater_manifest.py --dist-dir dist
+      - name: Verify artifacts and write SHA256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          required_patterns=(
+            '*_x86_64.rpm' '*_x86_64.rpm.sig'
+            '*_amd64.deb' '*_amd64.deb.sig'
+            '*_amd64.AppImage' '*_amd64.AppImage.sig'
+            '*_aarch64.dmg'
+            '*_x64.dmg'
+            '*_aarch64.app.tar.gz' '*_aarch64.app.tar.gz.sig'
+            '*_x64.app.tar.gz' '*_x64.app.tar.gz.sig'
+            '*_arm64-setup.exe' '*_arm64-setup.exe.sig'
+            '*_x64-setup.exe' '*_x64-setup.exe.sig'
+            '*_arm64_en-US.msi' '*_arm64_en-US.msi.sig'
+            '*_x64_en-US.msi' '*_x64_en-US.msi.sig'
+            'updater.json'
+          )
+          for pattern in "${required_patterns[@]}"; do
+            count="$(find dist -maxdepth 1 -type f -name "$pattern" | wc -l)"
+            if [[ "$count" -ne 1 ]]; then
+              echo "Expected exactly one artifact matching $pattern, found $count" >&2
+              exit 1
+            fi
+          done
+          (cd dist && sha256sum $(find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%P\n' | sort) > SHA256SUMS.txt)
           (cd dist && sha256sum --check SHA256SUMS.txt)
-          test "$(find dist -maxdepth 1 -type f -name '*.minisig' | wc -l)" -eq 6
+          test "$(find dist -maxdepth 1 -type f -name '*.sig' | wc -l)" -eq 9
       - uses: actions/upload-artifact@v6
         with:
           name: ariadeck-all-platforms-signed

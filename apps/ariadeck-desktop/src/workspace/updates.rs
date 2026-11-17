@@ -66,13 +66,14 @@ pub(crate) fn parse_update_offer(
     let installer = release
         .assets
         .iter()
-        .find(|asset| asset.name.ends_with("-windows-x64-setup.exe"));
+        .find(|asset| asset.name.ends_with("x64-setup.exe"));
     let installer_signature = installer.and_then(|installer| {
-        let expected_name = format!("{}.minisig", installer.name);
+        let sig_name = format!("{}.sig", installer.name);
+        let minisig_name = format!("{}.minisig", installer.name);
         release
             .assets
             .iter()
-            .find(|asset| asset.name == expected_name)
+            .find(|asset| asset.name == sig_name || asset.name == minisig_name)
     });
     let checksums = release
         .assets
@@ -244,9 +245,27 @@ fn verify_minisign_with_key(
         .ok_or_else(|| "The trusted update signing key is invalid.".to_owned())?;
     let public_key = minisign_verify::PublicKey::from_base64(encoded_key)
         .map_err(|_| "The trusted update signing key is invalid.".to_owned())?;
-    let signature = std::str::from_utf8(signature)
+    let signature_str = std::str::from_utf8(signature)
         .map_err(|_| "Installer signature is not valid UTF-8.".to_owned())?;
-    let signature = minisign_verify::Signature::decode(signature)
+
+    let decoded_bytes;
+    let effective_sig_str = if !signature_str.contains('\n')
+        && !signature_str.starts_with("untrusted comment:")
+    {
+        use data_encoding::BASE64;
+        let trimmed = signature_str.trim();
+        if let Ok(bytes) = BASE64.decode(trimmed.as_bytes()) {
+            decoded_bytes = bytes;
+            std::str::from_utf8(&decoded_bytes)
+                .map_err(|_| "Installer signature Base64 payload is not valid UTF-8.".to_owned())?
+        } else {
+            signature_str
+        }
+    } else {
+        signature_str
+    };
+
+    let signature = minisign_verify::Signature::decode(effective_sig_str)
         .map_err(|_| "Installer signature is invalid.".to_owned())?;
     public_key
         .verify(bytes, &signature, true)
@@ -288,7 +307,7 @@ pub(crate) fn save_installer(
 ) -> Result<std::path::PathBuf, String> {
     std::fs::create_dir_all(directory)
         .map_err(|error| format!("Could not prepare the update directory: {error}"))?;
-    let path = directory.join(format!("AriaDeck-{version}-windows-x64-setup.exe"));
+    let path = directory.join(format!("AriaDeck_{version}_x64-setup.exe"));
     std::fs::write(&path, bytes)
         .map_err(|error| format!("Could not save the verified installer: {error}"))?;
     Ok(path)
@@ -429,5 +448,57 @@ trusted comment: timestamp:1555779966	file:test
 QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfNQUaOAA=="#;
         assert!(verify_minisign_with_key(public_key, signature, b"test").is_ok());
         assert!(verify_minisign_with_key(public_key, signature, b"tampered").is_err());
+    }
+
+    #[test]
+    fn verifies_base64_encoded_signature_and_rejects_modified_payload() {
+        let public_key = "untrusted comment: minisign public key E7620F1842B4E81F\nRWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
+        let signature = br#"untrusted comment: signature from minisign secret key
+RWQf6LRCGA9i59SLOFxz6NxvASXDJeRtuZykwQepbDEGt87ig1BNpWaVWuNrm73YiIiJbq71Wi+dP9eKL8OC351vwIasSSbXxwA=
+trusted comment: timestamp:1555779966	file:test
+QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfNQUaOAA=="#;
+        let base64_sig = data_encoding::BASE64.encode(signature);
+        assert!(verify_minisign_with_key(public_key, base64_sig.as_bytes(), b"test").is_ok());
+        assert!(verify_minisign_with_key(public_key, base64_sig.as_bytes(), b"tampered").is_err());
+    }
+
+    #[test]
+    fn identifies_new_naming_convention_and_sig_extension() {
+        let release_info = ReleaseInfo {
+            tag_name: "v0.4.0".into(),
+            name: "AriaDeck 0.4.0".into(),
+            body: "Notes".into(),
+            html_url: "https://github.com/AirSodaz/AriaDeck/releases/tag/v0.4.0".into(),
+            assets: vec![
+                ReleaseAsset {
+                    name: "AriaDeck_0.4.0_x64-setup.exe".into(),
+                    browser_download_url: "https://github.com/AirSodaz/AriaDeck/releases/download/v0.4.0/AriaDeck_0.4.0_x64-setup.exe".into(),
+                },
+                ReleaseAsset {
+                    name: "AriaDeck_0.4.0_x64-setup.exe.sig".into(),
+                    browser_download_url: "https://github.com/AirSodaz/AriaDeck/releases/download/v0.4.0/AriaDeck_0.4.0_x64-setup.exe.sig".into(),
+                },
+                ReleaseAsset {
+                    name: "SHA256SUMS.txt".into(),
+                    browser_download_url: "https://github.com/AirSodaz/AriaDeck/releases/download/v0.4.0/SHA256SUMS.txt".into(),
+                },
+            ],
+        };
+        let offer = parse_update_offer("0.2.0", release_info)
+            .expect("valid release")
+            .expect("newer release");
+        assert_eq!(offer.version, "0.4.0");
+        assert_eq!(
+            offer.installer_url.as_deref(),
+            Some(
+                "https://github.com/AirSodaz/AriaDeck/releases/download/v0.4.0/AriaDeck_0.4.0_x64-setup.exe"
+            )
+        );
+        assert_eq!(
+            offer.installer_signature_url.as_deref(),
+            Some(
+                "https://github.com/AirSodaz/AriaDeck/releases/download/v0.4.0/AriaDeck_0.4.0_x64-setup.exe.sig"
+            )
+        );
     }
 }
