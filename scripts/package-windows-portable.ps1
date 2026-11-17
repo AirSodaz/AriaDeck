@@ -103,6 +103,7 @@ Write-Host "Stage:     $Stage"
 if (-not $SkipBuild) {
     Write-Host "Building release binaries..."
     if ($target) {
+        rustup target add $target
         cargo build -p ariadeck-desktop -p ariadeck-bridge --release --target $target
     } else {
         cargo build -p ariadeck-desktop -p ariadeck-bridge --release

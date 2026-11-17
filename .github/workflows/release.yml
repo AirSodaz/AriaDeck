@@ -34,8 +34,11 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne "v$($Matches[1])") { throw "Tag does not match workspace version $($Matches[1])" }
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.96"
+          toolchain: "1.99.1"
           targets: ${{ matrix.target }}
+      - name: Add Rust target
+        shell: pwsh
+        run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: windows-${{ matrix.arch }}
@@ -140,7 +143,7 @@ jobs:
             libsecret-1-dev pkg-config rpm squashfs-tools
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.96"
+          toolchain: "1.99.1"
       - uses: Swatinem/rust-cache@v2
         with:
           key: ubuntu-22.04
@@ -189,7 +192,7 @@ jobs:
           test "$GITHUB_REF_NAME" = "v$version"
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.96"
+          toolchain: "1.99.1"
       - uses: Swatinem/rust-cache@v2
         with:
           key: macos-${{ matrix.arch }}

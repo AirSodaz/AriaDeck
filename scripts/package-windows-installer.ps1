@@ -153,10 +153,16 @@ if (-not $SkipMsi) {
         $wxsPath = Join-Path $Root "packaging\windows\AriaDeck.wxs"
         $msiOut = Join-Path $Root "dist\AriaDeck_${Version}_${Arch}_en-US.msi"
 
-        & $candle -nologo -arch $Arch -dAppVersion=$Version -dPlatform=$Arch -dSourceDir=$Stage -out $wixObj $wxsPath
+        # MSI requires a strictly numeric 3-4 part version (major.minor.build[.revision])
+        $msiVersion = ($Version -split '-')[0]
+        $parts = $msiVersion.Split('.')
+        while ($parts.Count -lt 3) { $parts += "0" }
+        $msiVersion = ($parts[0..2] -join '.')
+
+        & $candle -nologo -arch $Arch "-dAppVersion=$msiVersion" "-dPlatform=$Arch" "-dSourceDir=$Stage" -out $wixObj $wxsPath
         if ($LASTEXITCODE -ne 0) { throw "WiX candle failed (exit $LASTEXITCODE)" }
 
-        & $light -nologo -out $msiOut $wixObj
+        & $light -nologo -sval -out $msiOut $wixObj
         if ($LASTEXITCODE -ne 0) { throw "WiX light failed (exit $LASTEXITCODE)" }
 
         if (-not (Test-Path $msiOut)) { throw "Missing MSI output: $msiOut" }
