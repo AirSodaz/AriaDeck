@@ -763,6 +763,8 @@ impl DesktopRoot {
                 .ok();
             })
             .detach();
+        } else {
+            show_native_window(window);
         }
 
         root

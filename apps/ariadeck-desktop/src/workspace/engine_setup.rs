@@ -349,12 +349,18 @@ pub(crate) fn hide_show_win32(hwnd: isize, show: bool) -> bool {
     #[link(name = "user32")]
     unsafe extern "system" {
         fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
+        fn SetForegroundWindow(hwnd: isize) -> i32;
+        fn BringWindowToTop(hwnd: isize) -> i32;
     }
     const SW_HIDE: i32 = 0;
     const SW_RESTORE: i32 = 9;
     // SAFETY: hwnd is the live GPUI window handle for this process.
     unsafe {
         ShowWindow(hwnd, if show { SW_RESTORE } else { SW_HIDE });
+        if show {
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+        }
     }
     true
 }
