@@ -68,8 +68,10 @@ use super::{
         MemoryProxyCredentialStore as FakeProxyCredentialStore, MemoryProxyCredentialStore,
         RecordingGateway, connected_sync,
     },
-    updates::*,
 };
+
+#[cfg(target_os = "windows")]
+use super::updates::build_windows_update_command;
 
 struct UnknownAcceptedAddGateway {
     accepted: Arc<AtomicBool>,
