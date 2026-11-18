@@ -1,39 +1,25 @@
 use super::task::TaskCountsView;
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub enum WorkspaceFilter {
-    #[default]
-    All,
-    Active,
-    Waiting,
-    Paused,
-    Completed,
-    Failed,
-}
+/// Reuses [`ariadeck_domain::DownloadFilter`] directly to eliminate redundant
+/// DTO mirroring across the desktop boundary.
+pub type WorkspaceFilter = ariadeck_domain::DownloadFilter;
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub enum WorkspaceSortKey {
-    #[default]
-    Queue,
-    Name,
-    Status,
-    Progress,
-    DownloadSpeed,
-    Size,
-}
+/// Reuses [`ariadeck_domain::SortKey`] directly.
+pub type WorkspaceSortKey = ariadeck_domain::SortKey;
 
-impl WorkspaceSortKey {
-    pub const ALL: [Self; 6] = [
-        Self::Queue,
-        Self::Name,
-        Self::Status,
-        Self::Progress,
-        Self::DownloadSpeed,
-        Self::Size,
-    ];
+/// Reuses [`ariadeck_domain::SortDirection`] directly.
+pub type WorkspaceSortDirection = ariadeck_domain::SortDirection;
+
+pub trait WorkspaceSortKeyExt {
+    #[must_use]
+    fn label(self) -> &'static str;
 
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    fn key(self) -> &'static str;
+}
+
+impl WorkspaceSortKeyExt for WorkspaceSortKey {
+    fn label(self) -> &'static str {
         match self {
             Self::Queue => "Queue",
             Self::Name => "Name",
@@ -44,8 +30,7 @@ impl WorkspaceSortKey {
         }
     }
 
-    #[must_use]
-    pub const fn key(self) -> &'static str {
+    fn key(self) -> &'static str {
         match self {
             Self::Queue => "queue",
             Self::Name => "name",
@@ -57,43 +42,39 @@ impl WorkspaceSortKey {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub enum WorkspaceSortDirection {
-    #[default]
-    Ascending,
-    Descending,
+pub trait WorkspaceSortDirectionExt {
+    #[must_use]
+    fn label(self) -> &'static str;
 }
 
-impl WorkspaceSortDirection {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
+impl WorkspaceSortDirectionExt for WorkspaceSortDirection {
+    fn label(self) -> &'static str {
         match self {
             Self::Ascending => "Ascending",
             Self::Descending => "Descending",
         }
     }
-
-    #[must_use]
-    pub const fn toggled(self) -> Self {
-        match self {
-            Self::Ascending => Self::Descending,
-            Self::Descending => Self::Ascending,
-        }
-    }
 }
 
-impl WorkspaceFilter {
-    pub const ALL: [Self; 6] = [
-        Self::All,
-        Self::Active,
-        Self::Waiting,
-        Self::Paused,
-        Self::Completed,
-        Self::Failed,
-    ];
+pub trait WorkspaceFilterExt {
+    #[must_use]
+    fn label(self) -> &'static str;
 
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    fn short_label(self) -> &'static str;
+
+    #[must_use]
+    fn message_key(self) -> &'static str;
+
+    #[must_use]
+    fn count(self, counts: TaskCountsView) -> usize;
+
+    #[must_use]
+    fn key(self) -> &'static str;
+}
+
+impl WorkspaceFilterExt for WorkspaceFilter {
+    fn label(self) -> &'static str {
         match self {
             Self::All => "All tasks",
             Self::Active => "Active",
@@ -104,8 +85,7 @@ impl WorkspaceFilter {
         }
     }
 
-    #[must_use]
-    pub const fn short_label(self) -> &'static str {
+    fn short_label(self) -> &'static str {
         match self {
             Self::All => "All",
             Self::Active => "Active",
@@ -116,8 +96,7 @@ impl WorkspaceFilter {
         }
     }
 
-    #[must_use]
-    pub const fn message_key(self) -> &'static str {
+    fn message_key(self) -> &'static str {
         match self {
             Self::All => "filter-all",
             Self::Active => "filter-active",
@@ -128,8 +107,7 @@ impl WorkspaceFilter {
         }
     }
 
-    #[must_use]
-    pub const fn count(self, counts: TaskCountsView) -> usize {
+    fn count(self, counts: TaskCountsView) -> usize {
         match self {
             Self::All => counts.all,
             Self::Active => counts.active,
@@ -140,8 +118,7 @@ impl WorkspaceFilter {
         }
     }
 
-    #[must_use]
-    pub const fn key(self) -> &'static str {
+    fn key(self) -> &'static str {
         match self {
             Self::All => "all",
             Self::Active => "active",

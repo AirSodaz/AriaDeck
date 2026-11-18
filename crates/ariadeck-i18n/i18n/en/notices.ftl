@@ -174,3 +174,14 @@ notice-core-activated = Active aria2 core updated. Restart AriaDeck to start tha
 notice-core-rolled-back = Rolled back to the last working core. Restart AriaDeck to apply.
 notice-core-removed = aria2 core removed.
 notice-capability-force-pause-all-unsupported = The connected engine does not support force pause all.
+notice-power-action-failed = Could not execute power action: { $summary }
+
+# Startup recovery notices
+notice-startup-settings-reset = Invalid settings were reset; the original was preserved at { $path }.
+notice-startup-settings-load-failed = Settings could not be loaded and saving is disabled: { $summary }
+notice-startup-profiles-reset = Invalid profile catalog was reset; the original was preserved at { $path }.
+notice-startup-profiles-recovered = Profile catalog was recovered from a backup.
+notice-startup-profiles-load-failed = Profile catalog could not be loaded: { $summary }
+notice-startup-profile-env-failed = Profile environment could not be loaded ({ $summary }); using shared settings until fixed.
+notice-startup-session-recovered = Corrupt aria2 session data was reset so downloads could start; the original was preserved at { $path }.
+notice-startup-session-recovered-no-backup = Corrupt aria2 session data was reset so downloads could start.

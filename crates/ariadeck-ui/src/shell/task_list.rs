@@ -1177,148 +1177,19 @@ impl AppShell {
         let focused = self.selected.as_ref() == Some(&task.identity);
         let selected = self.selected_tasks.contains(&task.identity);
         let task_count = self.snapshot.tasks.len();
-        let basis_points = task.progress_basis_points();
-        let progress = f32::from(basis_points.unwrap_or(0)) / 10_000.0;
-        let seeding = task.status == TaskStatusView::Seeding;
-        let share_ratio = format_share_ratio(task.share_ratio_milli());
-        let observed_seeding = format_eta(task.observed_seeding_seconds);
-        let status_color = task_status_color(task.status, colors);
-        let display_name = task_display_name(task, &self.translator);
-        let size_label = if task.total_bytes == 0 {
-            format_bytes(task.completed_bytes)
-        } else {
-            format!(
-                "{} / {}",
-                format_bytes(task.completed_bytes),
-                format_bytes(task.total_bytes)
-            )
-        };
-        let task_error_label = task.error.as_ref().map(|error| {
-            error.code.map_or_else(
-                || error.summary.clone(),
-                |code| {
-                    self.t_args(
-                        "task-error-with-code",
-                        &[
-                            ("code", FluentValue::from(i64::from(code))),
-                            ("summary", FluentValue::from(error.summary.as_str())),
-                        ],
-                    )
-                },
-            )
-        });
-        let progress_label = if seeding {
+        let mut display = self.build_task_row_display(task, layout, colors);
+        let aria_label = std::mem::take(&mut display.aria_label);
+        let task_key = task.identity.element_key();
+        let checkbox_aria = if selected {
             self.t_args(
-                "task-ratio-label",
-                &[("ratio", FluentValue::from(share_ratio.as_str()))],
-            )
-        } else {
-            format_percent(basis_points)
-        };
-        let rate_label = if seeding {
-            self.t_args(
-                "task-upload-rate-label",
-                &[("rate", FluentValue::from(format_rate(task.upload_rate)))],
-            )
-        } else {
-            format_rate(task.download_rate)
-        };
-        let eta_label = if seeding {
-            observed_seeding.clone()
-        } else {
-            format_eta(task.eta_seconds)
-        };
-        let aria_label = if seeding {
-            self.t_args(
-                "task-seeding-aria",
-                &[
-                    ("name", FluentValue::from(display_name.as_str())),
-                    ("status", FluentValue::from(self.t("task-status-seeding"))),
-                    ("ratio", FluentValue::from(share_ratio.as_str())),
-                    (
-                        "uploaded",
-                        FluentValue::from(format_bytes(task.uploaded_bytes)),
-                    ),
-                    ("rate", FluentValue::from(format_rate(task.upload_rate))),
-                    ("time", FluentValue::from(observed_seeding.as_str())),
-                ],
+                "deselect-task-aria",
+                &[("name", FluentValue::from(display.display_name.as_str()))],
             )
         } else {
             self.t_args(
-                "task-row-aria",
-                &[
-                    ("name", FluentValue::from(display_name.as_str())),
-                    (
-                        "status",
-                        FluentValue::from(self.t(task.status.message_key())),
-                    ),
-                    ("progress", FluentValue::from(format_percent(basis_points))),
-                    ("rate", FluentValue::from(format_rate(task.download_rate))),
-                    ("eta", FluentValue::from(format_eta(task.eta_seconds))),
-                ],
+                "select-task-aria",
+                &[("name", FluentValue::from(display.display_name.as_str()))],
             )
-        };
-        let aria_label = task_error_label
-            .as_ref()
-            .map_or(aria_label.clone(), |error| {
-                self.t_args(
-                    "task-row-with-error-aria",
-                    &[
-                        ("task", FluentValue::from(aria_label.as_str())),
-                        ("error", FluentValue::from(error.as_str())),
-                    ],
-                )
-            });
-        let wide_secondary_label = if layout == TaskLayoutMode::Wide {
-            Some(task_error_label.clone().unwrap_or_else(|| {
-                self.t_args(
-                    "task-gid-label",
-                    &[("gid", FluentValue::from(task.identity.gid.as_str()))],
-                )
-            }))
-        } else {
-            None
-        };
-        let compact_secondary_label = if layout == TaskLayoutMode::Compact {
-            Some(task_error_label.clone().unwrap_or_else(|| {
-                if seeding {
-                    self.t_args(
-                        "task-seeding-secondary",
-                        &[
-                            (
-                                "uploaded",
-                                FluentValue::from(format_bytes(task.uploaded_bytes)),
-                            ),
-                            ("rate", FluentValue::from(format_rate(task.upload_rate))),
-                            ("time", FluentValue::from(observed_seeding.as_str())),
-                        ],
-                    )
-                } else {
-                    self.t_args(
-                        "task-download-secondary",
-                        &[
-                            ("size", FluentValue::from(size_label.as_str())),
-                            ("rate", FluentValue::from(format_rate(task.download_rate))),
-                            ("eta", FluentValue::from(format_eta(task.eta_seconds))),
-                        ],
-                    )
-                }
-            }))
-        } else {
-            None
-        };
-        let secondary_color = if task_error_label.is_some() {
-            colors.danger
-        } else {
-            colors.text_muted
-        };
-        let status_badge =
-            task_status_badge(task.status, self.t(task.status.message_key()), colors);
-        let task_key = {
-            use std::hash::{DefaultHasher, Hash, Hasher};
-            let mut hasher = DefaultHasher::new();
-            task.identity.hash(&mut hasher);
-            hasher.finish()
         };
         let row = div()
             .id(("task-row", task_key))
@@ -1367,17 +1238,7 @@ impl AppShell {
                     .child(
                         Checkbox::new(("task-select", task_key))
                             .checked(selected)
-                            .accessibility_label(if selected {
-                                self.t_args(
-                                    "deselect-task-aria",
-                                    &[("name", FluentValue::from(display_name.as_str()))],
-                                )
-                            } else {
-                                self.t_args(
-                                    "select-task-aria",
-                                    &[("name", FluentValue::from(display_name.as_str()))],
-                                )
-                            })
+                            .accessibility_label(checkbox_aria)
                             .on_change(cx.listener(move |this, _, window, cx| {
                                 this.select_at_with_modifiers(index, false, true, window, cx);
                             })),
@@ -1395,116 +1256,21 @@ impl AppShell {
                     .border_color(colors.border)
                     .bg(colors.elevated_surface)
                     .child(
-                        Icon::new(file_type_icon(&display_name))
+                        Icon::new(file_type_icon(&display.display_name))
                             .size(IconSize::Small)
-                            .color(status_color),
+                            .color(display.status_color),
                     ),
             );
 
+        let status_badge =
+            task_status_badge(task.status, self.t(task.status.message_key()), colors);
         let row = match layout {
-            TaskLayoutMode::Wide => row
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .truncate()
-                                .text_sm()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(display_name),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .font_features(tabular_numbers())
-                                .text_xs()
-                                .text_color(secondary_color)
-                                .child(wide_secondary_label.unwrap_or_default()),
-                        ),
-                )
-                .child(
-                    div()
-                        .w(px(132.0))
-                        .flex_none()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .font_features(tabular_numbers())
-                        .text_xs()
-                        .text_color(colors.text_secondary)
-                        .child(progress_label)
-                        .child(task_progress_bar_with_id(
-                            ("task-progress", task_key),
-                            progress,
-                            task.status,
-                            colors,
-                        )),
-                )
-                .child(task_table_value(88.0, rate_label, colors))
-                .child(task_table_value(124.0, size_label, colors))
-                .child(task_table_value(72.0, eta_label, colors))
-                .child(
-                    div()
-                        .w(px(86.0))
-                        .flex_none()
-                        .flex()
-                        .justify_center()
-                        .child(status_badge),
-                ),
-            TaskLayoutMode::Compact => row
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .truncate()
-                                .text_sm()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(display_name),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .font_features(tabular_numbers())
-                                .text_xs()
-                                .text_color(secondary_color)
-                                .child(compact_secondary_label.unwrap_or_default()),
-                        ),
-                )
-                .child(
-                    div()
-                        .w(px(112.0))
-                        .flex_none()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .font_features(tabular_numbers())
-                        .text_xs()
-                        .text_color(colors.text_secondary)
-                        .child(progress_label)
-                        .child(task_progress_bar_with_id(
-                            ("task-progress", task_key),
-                            progress,
-                            task.status,
-                            colors,
-                        )),
-                )
-                .child(
-                    div()
-                        .w(px(78.0))
-                        .flex_none()
-                        .flex()
-                        .justify_center()
-                        .child(status_badge),
-                ),
+            TaskLayoutMode::Wide => {
+                render_task_row_wide(row, task_key, task.status, display, status_badge, colors)
+            }
+            TaskLayoutMode::Compact => {
+                render_task_row_compact(row, task_key, task.status, display, status_badge, colors)
+            }
         };
         let shell = cx.entity().downgrade();
         let identity = task.identity.clone();
@@ -1527,6 +1293,291 @@ impl AppShell {
         })
         .into_any_element()
     }
+
+    fn build_task_row_display(
+        &self,
+        task: &DownloadRowView,
+        layout: TaskLayoutMode,
+        colors: crate::ThemeColors,
+    ) -> TaskRowDisplay {
+        let basis_points = task.progress_basis_points();
+        let progress = f32::from(basis_points.unwrap_or(0)) / 10_000.0;
+        let seeding = task.status == TaskStatusView::Seeding;
+        let status_color = task_status_color(task.status, colors);
+        let display_name = task_display_name(task, &self.translator);
+        let size_label = if task.total_bytes == 0 {
+            format_bytes(task.completed_bytes)
+        } else {
+            format!(
+                "{} / {}",
+                format_bytes(task.completed_bytes),
+                format_bytes(task.total_bytes)
+            )
+        };
+        let task_error_label = task.error.as_ref().map(|error| {
+            error.code.map_or_else(
+                || error.summary.clone(),
+                |code| {
+                    self.t_args(
+                        "task-error-with-code",
+                        &[
+                            ("code", FluentValue::from(i64::from(code))),
+                            ("summary", FluentValue::from(error.summary.as_str())),
+                        ],
+                    )
+                },
+            )
+        });
+        let (progress_label, rate_label, eta_label, uploaded_label, share_ratio) = if seeding {
+            let share_ratio = format_share_ratio(task.share_ratio_milli());
+            let observed_seeding = format_eta(task.observed_seeding_seconds);
+            let upload_rate = format_rate(task.upload_rate);
+            let uploaded = format_bytes(task.uploaded_bytes);
+            let progress_label = self.t_args(
+                "task-ratio-label",
+                &[("ratio", FluentValue::from(share_ratio.as_str()))],
+            );
+            let rate_label = self.t_args(
+                "task-upload-rate-label",
+                &[("rate", FluentValue::from(upload_rate.as_str()))],
+            );
+            (
+                progress_label,
+                rate_label,
+                observed_seeding,
+                Some((uploaded, upload_rate)),
+                Some(share_ratio),
+            )
+        } else {
+            (
+                format_percent(basis_points),
+                format_rate(task.download_rate),
+                format_eta(task.eta_seconds),
+                None,
+                None,
+            )
+        };
+
+        let base_aria = if let (Some((uploaded, upload_rate)), Some(ratio)) =
+            (uploaded_label.as_ref(), share_ratio.as_ref())
+        {
+            self.t_args(
+                "task-seeding-aria",
+                &[
+                    ("name", FluentValue::from(display_name.as_str())),
+                    ("status", FluentValue::from(self.t("task-status-seeding"))),
+                    ("ratio", FluentValue::from(ratio.as_str())),
+                    ("uploaded", FluentValue::from(uploaded.as_str())),
+                    ("rate", FluentValue::from(upload_rate.as_str())),
+                    ("time", FluentValue::from(eta_label.as_str())),
+                ],
+            )
+        } else {
+            self.t_args(
+                "task-row-aria",
+                &[
+                    ("name", FluentValue::from(display_name.as_str())),
+                    (
+                        "status",
+                        FluentValue::from(self.t(task.status.message_key())),
+                    ),
+                    ("progress", FluentValue::from(progress_label.as_str())),
+                    ("rate", FluentValue::from(rate_label.as_str())),
+                    ("eta", FluentValue::from(eta_label.as_str())),
+                ],
+            )
+        };
+        let aria_label = match task_error_label.as_deref() {
+            Some(error) => self.t_args(
+                "task-row-with-error-aria",
+                &[
+                    ("task", FluentValue::from(base_aria.as_str())),
+                    ("error", FluentValue::from(error)),
+                ],
+            ),
+            None => base_aria,
+        };
+        let secondary_color = if task_error_label.is_some() {
+            colors.danger
+        } else {
+            colors.text_muted
+        };
+        let secondary_label = match (layout, task_error_label) {
+            (_, Some(error)) => error,
+            (TaskLayoutMode::Wide, None) => self.t_args(
+                "task-gid-label",
+                &[("gid", FluentValue::from(task.identity.gid.as_str()))],
+            ),
+            (TaskLayoutMode::Compact, None) => {
+                if let Some((uploaded, upload_rate)) = uploaded_label.as_ref() {
+                    self.t_args(
+                        "task-seeding-secondary",
+                        &[
+                            ("uploaded", FluentValue::from(uploaded.as_str())),
+                            ("rate", FluentValue::from(upload_rate.as_str())),
+                            ("time", FluentValue::from(eta_label.as_str())),
+                        ],
+                    )
+                } else {
+                    self.t_args(
+                        "task-download-secondary",
+                        &[
+                            ("size", FluentValue::from(size_label.as_str())),
+                            ("rate", FluentValue::from(rate_label.as_str())),
+                            ("eta", FluentValue::from(eta_label.as_str())),
+                        ],
+                    )
+                }
+            }
+        };
+
+        TaskRowDisplay {
+            display_name,
+            secondary_label,
+            secondary_color,
+            status_color,
+            progress,
+            progress_label,
+            rate_label,
+            size_label,
+            eta_label,
+            aria_label,
+        }
+    }
+}
+
+struct TaskRowDisplay {
+    display_name: String,
+    secondary_label: String,
+    secondary_color: Hsla,
+    status_color: Hsla,
+    progress: f32,
+    progress_label: String,
+    rate_label: String,
+    size_label: String,
+    eta_label: String,
+    aria_label: String,
+}
+
+fn render_task_row_wide(
+    row: Stateful<Div>,
+    task_key: u64,
+    status: TaskStatusView,
+    display: TaskRowDisplay,
+    status_badge: impl IntoElement,
+    colors: crate::ThemeColors,
+) -> Stateful<Div> {
+    row.child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .truncate()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(display.display_name),
+            )
+            .child(
+                div()
+                    .truncate()
+                    .font_features(tabular_numbers())
+                    .text_xs()
+                    .text_color(display.secondary_color)
+                    .child(display.secondary_label),
+            ),
+    )
+    .child(
+        div()
+            .w(px(132.0))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .font_features(tabular_numbers())
+            .text_xs()
+            .text_color(colors.text_secondary)
+            .child(display.progress_label)
+            .child(task_progress_bar_with_id(
+                ("task-progress", task_key),
+                display.progress,
+                status,
+                colors,
+            )),
+    )
+    .child(task_table_value(88.0, display.rate_label, colors))
+    .child(task_table_value(124.0, display.size_label, colors))
+    .child(task_table_value(72.0, display.eta_label, colors))
+    .child(
+        div()
+            .w(px(86.0))
+            .flex_none()
+            .flex()
+            .justify_center()
+            .child(status_badge),
+    )
+}
+
+fn render_task_row_compact(
+    row: Stateful<Div>,
+    task_key: u64,
+    status: TaskStatusView,
+    display: TaskRowDisplay,
+    status_badge: impl IntoElement,
+    colors: crate::ThemeColors,
+) -> Stateful<Div> {
+    row.child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .truncate()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(display.display_name),
+            )
+            .child(
+                div()
+                    .truncate()
+                    .font_features(tabular_numbers())
+                    .text_xs()
+                    .text_color(display.secondary_color)
+                    .child(display.secondary_label),
+            ),
+    )
+    .child(
+        div()
+            .w(px(112.0))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .font_features(tabular_numbers())
+            .text_xs()
+            .text_color(colors.text_secondary)
+            .child(display.progress_label)
+            .child(task_progress_bar_with_id(
+                ("task-progress", task_key),
+                display.progress,
+                status,
+                colors,
+            )),
+    )
+    .child(
+        div()
+            .w(px(78.0))
+            .flex_none()
+            .flex()
+            .justify_center()
+            .child(status_badge),
+    )
 }
 
 fn sort_key_message_key(key: WorkspaceSortKey) -> &'static str {

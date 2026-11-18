@@ -7,6 +7,26 @@ pub struct TaskIdentity {
     pub gid: String,
 }
 
+impl TaskIdentity {
+    /// Construct from a strongly-typed domain task identity.
+    #[must_use]
+    pub fn from_domain(identity: ariadeck_domain::TaskIdentity) -> Self {
+        Self {
+            profile_id: identity.profile_id.to_string(),
+            gid: identity.gid.to_string(),
+        }
+    }
+
+    /// Stable process-local `u64` key for GPUI element identity.
+    #[must_use]
+    pub fn element_key(&self) -> u64 {
+        use std::hash::{DefaultHasher, Hash as _, Hasher as _};
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum TaskStatusView {
     Active,
@@ -21,43 +41,37 @@ pub enum TaskStatusView {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub enum TaskNameStateView {
-    #[default]
-    Resolving,
-    Resolved,
-    Custom,
+/// Reuses [`ariadeck_domain::TaskNameState`] directly.
+pub type TaskNameStateView = ariadeck_domain::TaskNameState;
+
+pub trait TaskNameStateExt {
+    #[must_use]
+    fn label(self) -> &'static str;
 }
 
-impl TaskNameStateView {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
+impl TaskNameStateExt for TaskNameStateView {
+    fn label(self) -> &'static str {
         match self {
             Self::Resolving => "Resolving filename",
             Self::Resolved => "Filename resolved",
             Self::Custom => "Custom filename",
         }
     }
-
-    #[must_use]
-    pub const fn is_resolving(self) -> bool {
-        matches!(self, Self::Resolving)
-    }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub enum TaskSourceKindView {
-    #[default]
-    Unknown,
-    DirectUri,
-    Magnet,
-    BitTorrent,
-    Metalink,
+/// Reuses [`ariadeck_domain::TaskSourceKind`] directly.
+pub type TaskSourceKindView = ariadeck_domain::TaskSourceKind;
+
+pub trait TaskSourceKindExt {
+    #[must_use]
+    fn label(self) -> &'static str;
+
+    #[must_use]
+    fn message_key(self) -> &'static str;
 }
 
-impl TaskSourceKindView {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
+impl TaskSourceKindExt for TaskSourceKindView {
+    fn label(self) -> &'static str {
         match self {
             Self::Unknown => "Unknown",
             Self::DirectUri => "Direct URL",
@@ -67,8 +81,7 @@ impl TaskSourceKindView {
         }
     }
 
-    #[must_use]
-    pub const fn message_key(self) -> &'static str {
+    fn message_key(self) -> &'static str {
         match self {
             Self::Unknown => "task-source-unknown",
             Self::DirectUri => "task-source-direct-uri",

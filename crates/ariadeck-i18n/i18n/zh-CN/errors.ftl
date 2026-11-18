@@ -42,3 +42,6 @@ error-profile-switch-failed = 无法切换当前配置。
 error-profile-save-failed = 无法保存配置。
 error-core-command-failed = aria2 核心操作失败。
 error-diagnostics-export-failed = 无法导出脱敏诊断 ZIP。
+error-persistence-unavailable = 当前会话无法持久化设置。
+error-core-download-unsupported-platform = 该平台没有可校验的 aria2 官方下载。请使用包管理器安装 aria2，然后在下方浏览选择。
+error-power-action-failed = 无法执行计划的电源操作。

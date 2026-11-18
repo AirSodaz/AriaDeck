@@ -35,16 +35,19 @@ pub(super) struct TaskDetailsPanelView {
 
 impl gpui::EventEmitter<TaskDetailsPanelEvent> for TaskDetailsPanelView {}
 
+pub(super) struct TaskDetailsPanelContext {
+    pub(super) theme: Theme,
+    pub(super) translator: Translator,
+    pub(super) commands_available: bool,
+    pub(super) local_path_actions_available: bool,
+    pub(super) drawer_width: f32,
+}
+
 impl TaskDetailsPanelView {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         task: DownloadRowView,
         session: EngineSessionView,
-        theme: Theme,
-        translator: Translator,
-        commands_available: bool,
-        local_path_actions_available: bool,
-        drawer_width: f32,
+        panel_cx: TaskDetailsPanelContext,
     ) -> Self {
         Self {
             identity: task.identity.clone(),
@@ -61,28 +64,24 @@ impl TaskDetailsPanelView {
             rendered_file_range: 0..0,
             last_ready_refresh_at: None,
             refresh_coalesced: false,
-            theme,
-            translator,
-            commands_available,
-            local_path_actions_available,
-            drawer_width,
+            theme: panel_cx.theme,
+            translator: panel_cx.translator,
+            commands_available: panel_cx.commands_available,
+            local_path_actions_available: panel_cx.local_path_actions_available,
+            drawer_width: panel_cx.drawer_width,
         }
     }
 
     pub(crate) fn sync_context(
         &mut self,
-        theme: Theme,
-        translator: Translator,
-        commands_available: bool,
-        local_path_actions_available: bool,
-        drawer_width: f32,
+        panel_cx: TaskDetailsPanelContext,
         cx: &mut Context<Self>,
     ) {
-        self.theme = theme;
-        self.translator = translator;
-        self.commands_available = commands_available;
-        self.local_path_actions_available = local_path_actions_available;
-        self.drawer_width = drawer_width;
+        self.theme = panel_cx.theme;
+        self.translator = panel_cx.translator;
+        self.commands_available = panel_cx.commands_available;
+        self.local_path_actions_available = panel_cx.local_path_actions_available;
+        self.drawer_width = panel_cx.drawer_width;
         cx.notify();
     }
 
@@ -893,22 +892,21 @@ impl AppShell {
         self._details_panel_sub = None;
     }
 
+    fn details_panel_context(&self) -> TaskDetailsPanelContext {
+        TaskDetailsPanelContext {
+            theme: self.theme,
+            translator: self.translator.clone(),
+            commands_available: self.snapshot.commands_available(),
+            local_path_actions_available: self.snapshot.local_path_actions_available,
+            drawer_width: self.details_drawer_width,
+        }
+    }
+
     pub(crate) fn sync_details_panel_context(&self, cx: &mut Context<Self>) {
         if let Some(panel) = &self.details_panel {
-            let theme = self.theme;
-            let translator = self.translator.clone();
-            let commands_available = self.snapshot.commands_available();
-            let local_path_actions_available = self.snapshot.local_path_actions_available;
-            let drawer_width = self.details_drawer_width;
+            let panel_cx = self.details_panel_context();
             panel.update(cx, |panel, cx| {
-                panel.sync_context(
-                    theme,
-                    translator,
-                    commands_available,
-                    local_path_actions_available,
-                    drawer_width,
-                    cx,
-                );
+                panel.sync_context(panel_cx, cx);
             });
         }
     }
@@ -935,22 +933,8 @@ impl AppShell {
                 session_id: String::new(),
                 generation: self.snapshot.generation,
             });
-        let theme = self.theme;
-        let translator = self.translator.clone();
-        let commands_available = self.snapshot.commands_available();
-        let local_path_actions_available = self.snapshot.local_path_actions_available;
-        let drawer_width = self.details_drawer_width;
-        let panel = cx.new(|_| {
-            TaskDetailsPanelView::new(
-                task,
-                session,
-                theme,
-                translator,
-                commands_available,
-                local_path_actions_available,
-                drawer_width,
-            )
-        });
+        let panel_cx = self.details_panel_context();
+        let panel = cx.new(|_| TaskDetailsPanelView::new(task, session, panel_cx));
         let sub = cx.subscribe(&panel, |this, _, event, cx| match event {
             TaskDetailsPanelEvent::Close => {
                 this.close_task_details_deferred(cx);

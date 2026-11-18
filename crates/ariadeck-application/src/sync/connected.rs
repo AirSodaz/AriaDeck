@@ -44,548 +44,669 @@ pub(super) struct ConnectedContext<'a> {
 }
 
 pub(super) async fn run_connected(ctx: ConnectedContext<'_>) -> ConnectedExit {
-    let ConnectedContext {
-        session,
-        command_gateway,
-        details_gateway,
-        connection_gateway,
-        mut notifications,
-        commands,
-        store,
-        generation,
-        state,
-        activity,
-        config,
-        events,
-        cancellation,
-        capabilities,
-    } = ctx;
-    let mut timers = PollTimers::new(config.refresh, *activity);
-    let mut pending_tasks = HashSet::new();
-    let mut pending_full = false;
-    let mut history_tracker = HistoryWriteTracker::default();
-    let history_writer = spawn_history_writer(Arc::clone(&config.history));
+    ConnectedRunner::new(ctx).run().await
+}
 
-    loop {
-        tokio::select! {
+struct ConnectedRunner<'a> {
+    ctx: ConnectedContext<'a>,
+    timers: PollTimers,
+    pending_tasks: HashSet<Gid>,
+    pending_full: bool,
+    history_tracker: HistoryWriteTracker,
+    history_writer: mpsc::Sender<Vec<crate::HistoryRecord>>,
+}
+
+impl<'a> ConnectedRunner<'a> {
+    fn new(ctx: ConnectedContext<'a>) -> Self {
+        let timers = PollTimers::new(ctx.config.refresh, *ctx.activity);
+        let history_writer = spawn_history_writer(Arc::clone(&ctx.config.history));
+        Self {
+            ctx,
+            timers,
+            pending_tasks: HashSet::new(),
+            pending_full: false,
+            history_tracker: HistoryWriteTracker::default(),
+            history_writer,
+        }
+    }
+
+    async fn run(&mut self) -> ConnectedExit {
+        loop {
+            enum Event {
+                Cancel,
+                Command(Box<Control>),
+                CommandsClosed,
+                Notification(Option<RefreshHint>),
+                NotificationTick,
+                GlobalTick,
+                LiveTick,
+                StoppedTick,
+            }
+
+            let event = tokio::select! {
+                biased;
+                () = wait_for_cancellation(self.ctx.cancellation) => Event::Cancel,
+                command = self.ctx.commands.recv() => match command {
+                    Some(control) => Event::Command(Box::new(control)),
+                    None => Event::CommandsClosed,
+                },
+                hint = self.ctx.notifications.recv() => Event::Notification(hint),
+                _ = self.timers.notification.tick() => Event::NotificationTick,
+                _ = self.timers.global.tick() => Event::GlobalTick,
+                _ = self.timers.live.tick() => Event::LiveTick,
+                _ = self.timers.stopped.tick() => Event::StoppedTick,
+            };
+
+            let exit = match event {
+                Event::Cancel | Event::CommandsClosed => Some(ConnectedExit::Stop),
+                Event::Command(control) => self.handle_control(*control).await,
+                Event::Notification(Some(RefreshHint::Task(gid))) => {
+                    self.pending_tasks.insert(gid);
+                    None
+                }
+                Event::Notification(Some(RefreshHint::Full)) => {
+                    self.pending_full = true;
+                    None
+                }
+                Event::Notification(None) => Some(ConnectedExit::Retry(SyncError::new(
+                    SyncErrorKind::Disconnected,
+                    "RPC notification stream closed",
+                    true,
+                ))),
+                Event::NotificationTick => self.handle_notification_tick().await,
+                Event::GlobalTick => self.handle_global_tick().await,
+                Event::LiveTick => self.handle_live_tick().await,
+                Event::StoppedTick => self.handle_stopped_tick().await,
+            };
+
+            if let Some(exit) = exit {
+                return exit;
+            }
+        }
+    }
+
+    async fn handle_control(&mut self, control: Control) -> Option<ConnectedExit> {
+        match control {
+            Control::SetActivity(mode) => {
+                *self.ctx.activity = mode;
+                self.timers = PollTimers::new(self.ctx.config.refresh, mode);
+                None
+            }
+            Control::ForceRefresh => self.handle_force_refresh().await,
+            Control::SetTaskCategory {
+                gid,
+                category_id,
+                sender,
+            } => {
+                persist_task_category(
+                    &self.ctx.config.history,
+                    self.ctx.config.profile_id,
+                    gid,
+                    category_id.clone(),
+                )
+                .await;
+                self.ctx
+                    .store
+                    .set_task_category_affiliation(gid, category_id);
+                let _ = sender.send(());
+                None
+            }
+            Control::LoadMoreStopped { sender } => self.handle_load_more_stopped(sender).await,
+            Control::Snapshot { query, sender } => {
+                let _ = sender.send(build_snapshot(
+                    self.ctx.store,
+                    self.ctx.state,
+                    &query,
+                    self.ctx.capabilities,
+                ));
+                None
+            }
+            Control::Execute {
+                session,
+                command,
+                sender,
+            } => self.handle_execute(session, command, sender).await,
+            Control::ApplyDownloadProxy {
+                session,
+                config: proxy,
+                sender,
+            } => {
+                self.handle_global_option(
+                    session,
+                    "The connected engine does not expose global proxy settings.",
+                    sender,
+                    |service| async move { service.apply_download_proxy(&proxy).await },
+                )
+                .await
+            }
+            Control::ApplySpeedLimit {
+                session,
+                config: speed_limit,
+                sender,
+            } => {
+                self.handle_global_option(
+                    session,
+                    "The connected engine does not expose global speed limits.",
+                    sender,
+                    |service| async move { service.apply_speed_limit(&speed_limit).await },
+                )
+                .await
+            }
+            Control::ApplyTransferPolicy {
+                session,
+                config: transfer_policy,
+                sender,
+            } => {
+                self.handle_global_option(
+                    session,
+                    "The connected engine does not expose transfer-policy settings.",
+                    sender,
+                    |service| async move { service.apply_transfer_policy(&transfer_policy).await },
+                )
+                .await
+            }
+            Control::ApplyBtTracker {
+                session,
+                trackers,
+                sender,
+            } => {
+                self.handle_global_option(
+                    session,
+                    "The connected engine does not expose global tracker settings.",
+                    sender,
+                    |service| async move { service.apply_bt_tracker(&trackers).await },
+                )
+                .await
+            }
+            Control::TaskDetails {
+                session,
+                task,
+                sender,
+            } => {
+                self.handle_task_details(session, task, sender);
+                None
+            }
+            Control::ConnectionDetails {
+                session,
+                task,
+                active,
+                is_bittorrent,
+                sender,
+            } => {
+                self.handle_connection_details(session, task, active, is_bittorrent, sender);
+                None
+            }
+        }
+    }
+
+    async fn handle_force_refresh(&mut self) -> Option<ConnectedExit> {
+        // Drain pre-queued refresh hints before starting the authoritative
+        // refresh so hints emitted prior to this call are subsumed, while hints
+        // arriving during or after `refresh_all` are preserved.
+        while self.ctx.notifications.try_recv().is_ok() {}
+        let result = tokio::select! {
             biased;
-            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
-            command = commands.recv() => {
-                match command {
-                    Some(Control::SetActivity(mode)) => {
-                        *activity = mode;
-                        timers = PollTimers::new(config.refresh, mode);
+            () = wait_for_cancellation(self.ctx.cancellation) => return Some(ConnectedExit::Stop),
+            result = refresh_all(
+                self.ctx.session,
+                self.ctx.store,
+                self.ctx.generation,
+                self.ctx.config.stopped_page_size,
+                self.ctx.events,
+                &self.ctx.config.history,
+                self.ctx.config.profile_id,
+            ) => result,
+        };
+        match result {
+            Ok(()) => {
+                self.pending_full = false;
+                self.pending_tasks.clear();
+                None
+            }
+            Err(error) => Some(ConnectedExit::Retry(error)),
+        }
+    }
+
+    async fn handle_load_more_stopped(
+        &mut self,
+        sender: tokio::sync::oneshot::Sender<crate::StoppedHistoryState>,
+    ) -> Option<ConnectedExit> {
+        let history = self.ctx.store.stopped_history();
+        if !history.can_load_more {
+            let _ = sender.send(history);
+            return None;
+        }
+        let offset = history.next_offset;
+        let page_size = self.ctx.config.stopped_page_size;
+        let result = tokio::select! {
+            biased;
+            () = wait_for_cancellation(self.ctx.cancellation) => return Some(ConnectedExit::Stop),
+            result = self.ctx.session.refresh_stopped_page(offset, page_size) => result,
+        };
+        match result {
+            Ok(page) => {
+                persist_terminal_snapshots(
+                    &self.ctx.config.history,
+                    self.ctx.config.profile_id,
+                    page.tasks.iter().cloned(),
+                )
+                .await;
+                match self.ctx.store.apply_stopped_page(
+                    self.ctx.generation,
+                    page.offset,
+                    Some(page.total),
+                    page.tasks,
+                ) {
+                    Ok(patch) => {
+                        emit_patch(self.ctx.events, patch);
+                        seed_history_into_store(
+                            self.ctx.store,
+                            self.ctx.generation,
+                            &self.ctx.config.history,
+                            self.ctx.config.profile_id,
+                            self.ctx.events,
+                        )
+                        .await;
+                        let _ = sender.send(self.ctx.store.stopped_history());
+                        None
                     }
-                    Some(Control::ForceRefresh) => {
-                        let result = tokio::select! {
-                            biased;
-                            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
-                            result = refresh_all(
-                                session,
-                                store,
-                                generation,
-                                config.stopped_page_size,
-                                events,
-                                &config.history,
-                                config.profile_id,
-                            ) => result,
-                        };
-                        if let Err(error) = result {
-                            return ConnectedExit::Retry(error);
-                        }
-                    }
-                    Some(Control::SetTaskCategory {
-                        gid,
-                        category_id,
-                        sender,
-                    }) => {
-                        persist_task_category(&config.history, config.profile_id, gid, category_id.clone()).await;
-                        store.set_task_category_affiliation(gid, category_id);
-                        let _ = sender.send(());
-                    }
-                    Some(Control::LoadMoreStopped { sender }) => {
-                        let history = store.stopped_history();
-                        if !history.can_load_more {
-                            let _ = sender.send(history);
-                            continue;
-                        }
-                        let offset = history.next_offset;
-                        let page_size = config.stopped_page_size;
-                        let result = tokio::select! {
-                            biased;
-                            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
-                            result = session.refresh_stopped_page(offset, page_size) => result,
-                        };
-                        match result {
-                            Ok(page) => {
-                                persist_terminal_snapshots(
-                                    &config.history,
-                                    config.profile_id,
-                                    page.tasks.iter().cloned(),
-                                )
-                                .await;
-                                match store.apply_stopped_page(
-                                    generation,
-                                    page.offset,
-                                    Some(page.total),
-                                    page.tasks,
-                                ) {
-                                    Ok(patch) => {
-                                        emit_patch(events, patch);
-                                        seed_history_into_store(
-                                            store,
-                                            generation,
-                                            &config.history,
-                                            config.profile_id,
-                                            events,
-                                        )
-                                        .await;
-                                        let _ = sender.send(store.stopped_history());
-                                    }
-                                    Err(error) => {
-                                        return ConnectedExit::Retry(SyncError::store(error));
-                                    }
-                                }
-                            }
-                            Err(error) => return ConnectedExit::Retry(error),
-                        }
-                    }
-                    Some(Control::Snapshot { query, sender }) => {
-                        let _ = sender.send(build_snapshot(store, state, &query, capabilities));
-                    }
-                    Some(Control::Execute {
-                        session: expected_session,
-                        command,
-                        sender,
-                    }) => {
-                        if expected_session != store.session() {
-                            let _ = sender.send(CommandOutcome::failure(stale_session_error()));
-                            continue;
-                        }
-                        let Some(gateway) = command_gateway else {
-                            let _ = sender.send(CommandOutcome::failure(unsupported_error(
-                                "The connected engine does not expose task commands.",
-                            )));
-                            continue;
-                        };
-                        let service = CommandService::new(
-                            config.profile_id,
-                            gateway.clone(),
-                            capabilities.clone(),
-                        );
-                        let task_contexts = match &command {
-                            AppCommand::PauseTasks(tasks)
-                            | AppCommand::ForcePauseTasks(tasks)
-                            | AppCommand::ResumeTasks(tasks) => Some(tasks.as_slice()),
-                            AppCommand::MoveTaskInQueue(request) => {
-                                Some(std::slice::from_ref(&request.task))
-                            }
-                            AppCommand::RemoveTasks(request)
-                            | AppCommand::ForceRemoveTasks(request) => {
-                                Some(request.tasks.as_slice())
-                            }
-                            AppCommand::RetryTasks(tasks) => Some(tasks.as_slice()),
-                            AppCommand::SetTaskOutputName(request) => {
-                                Some(std::slice::from_ref(&request.task))
-                            }
-                            AppCommand::SetTaskSpeedLimit(request) => {
-                                Some(std::slice::from_ref(&request.task))
-                            }
-                            AppCommand::SetTaskConnectionPolicy(request) => {
-                                Some(std::slice::from_ref(&request.task))
-                            }
-                            AppCommand::SetTaskOptions(request) => {
-                                Some(std::slice::from_ref(&request.task))
-                            }
-                            _ => None,
-                        }
-                        .map_or_else(HashMap::new, |tasks| {
-                            tasks
-                                .iter()
-                                .filter(|identity| identity.profile_id == config.profile_id)
-                                .filter_map(|identity| {
-                                    store.task(identity.gid).map(|task| {
-                                        (
-                                            *identity,
-                                            TaskCommandContext {
-                                                status: task.status,
-                                                metadata: task.metadata.clone(),
-                                            },
-                                        )
-                                    })
-                                })
-                                .collect::<HashMap<_, _>>()
-                        });
-                        let refresh_after_success = match &command {
-                            AppCommand::SetTaskOutputName(request) => {
-                                RefreshHint::Task(request.task.gid)
-                            }
-                            AppCommand::SetTaskSpeedLimit(request) => {
-                                RefreshHint::Task(request.task.gid)
-                            }
-                            AppCommand::SetTaskConnectionPolicy(request) => {
-                                RefreshHint::Task(request.task.gid)
-                            }
-                            AppCommand::SetTaskOptions(request) => {
-                                RefreshHint::Task(request.task.gid)
-                            }
-                            _ => RefreshHint::Full,
-                        };
-                        let custom_output_name = match &command {
-                            AppCommand::SetTaskOutputName(request) => {
-                                Some((request.task.gid, request.output_name.clone()))
-                            }
-                            _ => None,
-                        };
-                        let remove_gids = match &command {
-                            AppCommand::RemoveTasks(request)
-                            | AppCommand::ForceRemoveTasks(request) => request
-                                .tasks
-                                .iter()
-                                .filter(|identity| identity.profile_id == config.profile_id)
-                                .map(|identity| identity.gid)
-                                .collect::<Vec<_>>(),
-                            _ => Vec::new(),
-                        };
-                        let outcome = tokio::select! {
-                            biased;
-                            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
-                            outcome = service.execute(command, &task_contexts) => outcome,
-                        };
-                        let refresh_authoritative_state = outcome.has_successes()
-                            || outcome.has_unknown_outcome();
-                        if outcome.has_successes()
-                            && let Some((gid, output_name)) = custom_output_name
-                        {
-                            match store.set_custom_output_name(generation, gid, output_name) {
-                                Ok(patch) => emit_patch(events, patch),
-                                Err(error) => {
-                                    return ConnectedExit::Retry(SyncError::store(error));
-                                }
-                            }
-                        }
-                        if outcome.has_successes() && !remove_gids.is_empty() {
-                            let succeeded_gids = outcome
-                                .succeeded_tasks()
-                                .into_iter()
-                                .map(|identity| identity.gid)
-                                .collect::<HashSet<_>>();
-                            let deleted = remove_gids
-                                .into_iter()
-                                .filter(|gid| succeeded_gids.contains(gid))
-                                .collect::<Vec<_>>();
-                            if !deleted.is_empty() {
-                                history_tracker.forget(&deleted);
-                                delete_history_for_gids(
-                                    &config.history,
-                                    config.profile_id,
-                                    deleted.clone(),
-                                )
-                                .await;
-                                match store.remove_history_only(generation, &deleted) {
-                                    Ok(patch) => emit_patch(events, patch),
-                                    Err(error) => {
-                                        tracing::warn!(
-                                            %error,
-                                            "failed to drop history-only rows after remove"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        if refresh_authoritative_state {
-                            match refresh_after_success {
-                                RefreshHint::Task(gid) => {
-                                    pending_tasks.insert(gid);
-                                }
-                                RefreshHint::Full => pending_full = true,
-                            }
-                        }
-                        let _ = sender.send(outcome);
-                    }
-                    Some(Control::ApplyDownloadProxy {
-                        session: expected_session,
-                        config: proxy,
-                        sender,
-                    }) => {
-                        if expected_session != store.session() {
-                            let _ = sender.send(Err(stale_session_error()));
-                            continue;
-                        }
-                        let Some(gateway) = command_gateway else {
-                            let _ = sender.send(Err(unsupported_error(
-                                "The connected engine does not expose global proxy settings.",
-                            )));
-                            continue;
-                        };
-                        let service = CommandService::new(config.profile_id, gateway.clone(), capabilities.clone());
-                        let result = tokio::select! {
-                            biased;
-                            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
-                            result = service.apply_download_proxy(&proxy) => result,
-                        };
-                        let _ = sender.send(result);
-                    }
-                    Some(Control::ApplySpeedLimit {
-                        session: expected_session,
-                        config: speed_limit,
-                        sender,
-                    }) => {
-                        if expected_session != store.session() {
-                            let _ = sender.send(Err(stale_session_error()));
-                            continue;
-                        }
-                        let Some(gateway) = command_gateway else {
-                            let _ = sender.send(Err(unsupported_error(
-                                "The connected engine does not expose global speed limits.",
-                            )));
-                            continue;
-                        };
-                        let service = CommandService::new(config.profile_id, gateway.clone(), capabilities.clone());
-                        let result = tokio::select! {
-                            biased;
-                            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
-                            result = service.apply_speed_limit(&speed_limit) => result,
-                        };
-                        let _ = sender.send(result);
-                    }
-                    Some(Control::ApplyTransferPolicy {
-                        session: expected_session,
-                        config: transfer_policy,
-                        sender,
-                    }) => {
-                        if expected_session != store.session() {
-                            let _ = sender.send(Err(stale_session_error()));
-                            continue;
-                        }
-                        let Some(gateway) = command_gateway else {
-                            let _ = sender.send(Err(unsupported_error(
-                                "The connected engine does not expose transfer-policy settings.",
-                            )));
-                            continue;
-                        };
-                        let service = CommandService::new(config.profile_id, gateway.clone(), capabilities.clone());
-                        let result = tokio::select! {
-                            biased;
-                            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
-                            result = service.apply_transfer_policy(&transfer_policy) => result,
-                        };
-                        let _ = sender.send(result);
-                    }
-                    Some(Control::ApplyBtTracker {
-                        session: expected_session,
-                        trackers,
-                        sender,
-                    }) => {
-                        if expected_session != store.session() {
-                            let _ = sender.send(Err(stale_session_error()));
-                            continue;
-                        }
-                        let Some(gateway) = command_gateway else {
-                            let _ = sender.send(Err(unsupported_error(
-                                "The connected engine does not expose global tracker settings.",
-                            )));
-                            continue;
-                        };
-                        let service = CommandService::new(config.profile_id, gateway.clone(), capabilities.clone());
-                        let result = tokio::select! {
-                            biased;
-                            () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
-                            result = service.apply_bt_tracker(&trackers) => result,
-                        };
-                        let _ = sender.send(result);
-                    }
-                    Some(Control::TaskDetails {
-                        session: expected_session,
-                        task,
-                        sender,
-                    }) => {
-                        if expected_session != store.session() {
-                            let _ = sender.send(Err(stale_session_error()));
-                            continue;
-                        }
-                        if task.profile_id != config.profile_id {
-                            let _ = sender.send(Err(wrong_profile_error()));
-                            continue;
-                        }
-                        let Some(gateway) = details_gateway.cloned() else {
-                            let _ = sender.send(Err(unsupported_error(
-                                "The connected engine does not expose task details.",
-                            )));
-                            continue;
-                        };
-                        let mut cancel_rx = cancellation.clone();
-                        tokio::spawn(async move {
-                            let result = tokio::select! {
-                                biased;
-                                () = wait_for_cancellation(&mut cancel_rx) => return,
-                                result = gateway.task_details(task.gid) => result.map_err(Into::into),
-                            };
-                            let _ = sender.send(result);
-                        });
-                    }
-                    Some(Control::ConnectionDetails {
-                        session: expected_session,
-                        task,
-                        active,
-                        is_bittorrent,
-                        sender,
-                    }) => {
-                        if expected_session != store.session() {
-                            let _ = sender.send(Err(stale_session_error()));
-                            continue;
-                        }
-                        if task.profile_id != config.profile_id {
-                            let _ = sender.send(Err(wrong_profile_error()));
-                            continue;
-                        }
-                        let Some(gateway) = connection_gateway.cloned() else {
-                            let _ = sender.send(Err(unsupported_error(
-                                "The connected engine does not expose connection details.",
-                            )));
-                            continue;
-                        };
-                        let mut cancel_rx = cancellation.clone();
-                        tokio::spawn(async move {
-                            let result = tokio::select! {
-                                biased;
-                                () = wait_for_cancellation(&mut cancel_rx) => return,
-                                result = gateway.connection_details(task.gid, active, is_bittorrent)
-                                    => result.map_err(Into::into),
-                            };
-                            let _ = sender.send(result);
-                        });
-                    }
-                    None => return ConnectedExit::Stop,
+                    Err(error) => Some(ConnectedExit::Retry(SyncError::store(error))),
                 }
             }
-            hint = notifications.recv() => {
-                match hint {
-                    Some(RefreshHint::Task(gid)) => { pending_tasks.insert(gid); }
-                    Some(RefreshHint::Full) => pending_full = true,
-                    None => {
-                        return ConnectedExit::Retry(SyncError::new(
-                            SyncErrorKind::Disconnected,
-                            "RPC notification stream closed",
-                            true,
-                        ));
-                    }
-                }
+            Err(error) => Some(ConnectedExit::Retry(error)),
+        }
+    }
+
+    async fn handle_execute(
+        &mut self,
+        expected_session: ariadeck_domain::EngineSession,
+        command: AppCommand,
+        sender: tokio::sync::oneshot::Sender<CommandOutcome>,
+    ) -> Option<ConnectedExit> {
+        if expected_session != self.ctx.store.session() {
+            let _ = sender.send(CommandOutcome::failure(stale_session_error()));
+            return None;
+        }
+        let Some(gateway) = self.ctx.command_gateway else {
+            let _ = sender.send(CommandOutcome::failure(unsupported_error(
+                "The connected engine does not expose task commands.",
+            )));
+            return None;
+        };
+        let service = CommandService::new(
+            self.ctx.config.profile_id,
+            gateway.clone(),
+            self.ctx.capabilities.clone(),
+        );
+        let task_contexts =
+            build_task_contexts(self.ctx.store, self.ctx.config.profile_id, &command);
+        let refresh_after_success = refresh_hint_for_command(&command);
+        let custom_output_name = match &command {
+            AppCommand::SetTaskOutputName(request) => {
+                Some((request.task.gid, request.output_name.clone()))
             }
-            _ = timers.notification.tick() => {
-                if pending_full || !pending_tasks.is_empty() {
-                    let refresh = async {
-                        if pending_full {
-                            pending_full = false;
-                            pending_tasks.clear();
-                            refresh_all(
-                                session,
-                                store,
-                                generation,
-                                config.stopped_page_size,
-                                events,
-                                &config.history,
-                                config.profile_id,
-                            ).await
-                        } else {
-                            let gids = pending_tasks.drain().collect::<Vec<_>>();
-                            refresh_targeted(
-                                session,
-                                store,
-                                generation,
-                                &gids,
-                                events,
-                                &config.history,
-                                config.profile_id,
-                            ).await
-                        }
-                    };
-                    let result = tokio::select! {
-                        biased;
-                        () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
-                        result = refresh => result,
-                    };
-                    if let Err(error) = result {
-                        return ConnectedExit::Retry(error);
-                    }
-                }
+            _ => None,
+        };
+        let remove_gids = match &command {
+            AppCommand::RemoveTasks(request) | AppCommand::ForceRemoveTasks(request) => request
+                .tasks
+                .iter()
+                .filter(|identity| identity.profile_id == self.ctx.config.profile_id)
+                .map(|identity| identity.gid)
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        let outcome = tokio::select! {
+            biased;
+            () = wait_for_cancellation(self.ctx.cancellation) => return Some(ConnectedExit::Stop),
+            outcome = service.execute(command, &task_contexts) => outcome,
+        };
+        let refresh_authoritative_state = outcome.has_successes() || outcome.has_unknown_outcome();
+        if outcome.has_successes()
+            && let Some((gid, output_name)) = custom_output_name
+        {
+            match self
+                .ctx
+                .store
+                .set_custom_output_name(self.ctx.generation, gid, output_name)
+            {
+                Ok(patch) => emit_patch(self.ctx.events, patch),
+                Err(error) => return Some(ConnectedExit::Retry(SyncError::store(error))),
             }
-            _ = timers.global.tick() => {
-                let result = tokio::select! {
-                    biased;
-                    () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
-                    result = session.refresh_global_stat() => result,
-                };
-                match result {
-                    Ok(stat) => {
-                        if let Err(error) = store.record_speed_sample(generation, stat) {
-                            return ConnectedExit::Retry(SyncError::store(error));
-                        }
-                        match store.update_global_stat(generation, stat) {
-                            Ok(patch) => emit_global_update(events, patch),
-                            Err(error) => return ConnectedExit::Retry(SyncError::store(error)),
-                        }
-                    }
-                    Err(error) => return ConnectedExit::Retry(error),
-                }
-            }
-            _ = timers.live.tick() => {
-                let result = tokio::select! {
-                    biased;
-                    () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
-                    result = session.refresh_live() => result,
-                };
-                match result {
-                    Ok(live) => match store.reconcile_live(generation, live.active, live.waiting) {
-                        Ok(patch) => emit_patch(events, patch),
-                        Err(error) => return ConnectedExit::Retry(SyncError::store(error)),
-                    },
-                    Err(error) => return ConnectedExit::Retry(error),
-                }
-            }
-            _ = timers.stopped.tick() => {
-                // Refresh every already-loaded contiguous page so a prior
-                // "Load more" request is not discarded by the periodic poll
-                // (HISTORY-001). The first page also updates the authoritative
-                // total from aria2's numStoppedTotal.
-                let page_size = config.stopped_page_size.max(1);
-                let mut offset = 0usize;
-                let loaded_through = store.next_stopped_offset().max(page_size as usize);
-                loop {
-                    let result = tokio::select! {
-                        biased;
-                        () = wait_for_cancellation(cancellation) => return ConnectedExit::Stop,
-                        result = session.refresh_stopped_page(offset, page_size) => result,
-                    };
-                    match result {
-                        Ok(page) => {
-                            let total = page.total;
-                            let changed_records = history_tracker
-                                .collect_changed_records(config.profile_id, &page.tasks);
-                            if !changed_records.is_empty()
-                                && history_writer.try_send(changed_records).is_err()
-                            {
-                                tracing::debug!("history write queue full; deferring stopped page batch");
-                            }
-                            match store.apply_stopped_page(
-                                generation,
-                                page.offset,
-                                Some(total),
-                                page.tasks,
-                            ) {
-                                Ok(patch) => emit_patch(events, patch),
-                                Err(error) => return ConnectedExit::Retry(SyncError::store(error)),
-                            }
-                            offset = offset.saturating_add(page_size as usize);
-                            if offset >= loaded_through || offset >= total {
-                                break;
-                            }
-                        }
-                        Err(error) => return ConnectedExit::Retry(error),
+        }
+        if outcome.has_successes() && !remove_gids.is_empty() {
+            let succeeded_gids = outcome
+                .succeeded_tasks()
+                .into_iter()
+                .map(|identity| identity.gid)
+                .collect::<HashSet<_>>();
+            let deleted = remove_gids
+                .into_iter()
+                .filter(|gid| succeeded_gids.contains(gid))
+                .collect::<Vec<_>>();
+            if !deleted.is_empty() {
+                self.history_tracker.forget(&deleted);
+                delete_history_for_gids(
+                    &self.ctx.config.history,
+                    self.ctx.config.profile_id,
+                    deleted.clone(),
+                )
+                .await;
+                match self
+                    .ctx
+                    .store
+                    .remove_history_only(self.ctx.generation, &deleted)
+                {
+                    Ok(patch) => emit_patch(self.ctx.events, patch),
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to drop history-only rows after remove");
                     }
                 }
             }
         }
+        if refresh_authoritative_state {
+            match refresh_after_success {
+                RefreshHint::Task(gid) => {
+                    self.pending_tasks.insert(gid);
+                }
+                RefreshHint::Full => self.pending_full = true,
+            }
+        }
+        let _ = sender.send(outcome);
+        None
+    }
+
+    async fn handle_global_option<F, Fut>(
+        &mut self,
+        expected_session: ariadeck_domain::EngineSession,
+        unsupported_message: &'static str,
+        sender: tokio::sync::oneshot::Sender<Result<(), crate::ApplicationError>>,
+        apply: F,
+    ) -> Option<ConnectedExit>
+    where
+        F: FnOnce(CommandService) -> Fut,
+        Fut: std::future::Future<Output = Result<(), crate::ApplicationError>>,
+    {
+        if expected_session != self.ctx.store.session() {
+            let _ = sender.send(Err(stale_session_error()));
+            return None;
+        }
+        let Some(gateway) = self.ctx.command_gateway else {
+            let _ = sender.send(Err(unsupported_error(unsupported_message)));
+            return None;
+        };
+        let service = CommandService::new(
+            self.ctx.config.profile_id,
+            gateway.clone(),
+            self.ctx.capabilities.clone(),
+        );
+        let result = tokio::select! {
+            biased;
+            () = wait_for_cancellation(self.ctx.cancellation) => return Some(ConnectedExit::Stop),
+            result = apply(service) => result,
+        };
+        let _ = sender.send(result);
+        None
+    }
+
+    fn handle_task_details(
+        &self,
+        expected_session: ariadeck_domain::EngineSession,
+        task: ariadeck_domain::TaskIdentity,
+        sender: tokio::sync::oneshot::Sender<
+            Result<ariadeck_domain::TaskDetails, crate::ApplicationError>,
+        >,
+    ) {
+        if expected_session != self.ctx.store.session() {
+            let _ = sender.send(Err(stale_session_error()));
+            return;
+        }
+        if task.profile_id != self.ctx.config.profile_id {
+            let _ = sender.send(Err(wrong_profile_error()));
+            return;
+        }
+        let Some(gateway) = self.ctx.details_gateway.cloned() else {
+            let _ = sender.send(Err(unsupported_error(
+                "The connected engine does not expose task details.",
+            )));
+            return;
+        };
+        let mut cancel_rx = self.ctx.cancellation.clone();
+        tokio::spawn(async move {
+            let result = tokio::select! {
+                biased;
+                () = wait_for_cancellation(&mut cancel_rx) => return,
+                result = gateway.task_details(task.gid) => result.map_err(Into::into),
+            };
+            let _ = sender.send(result);
+        });
+    }
+
+    fn handle_connection_details(
+        &self,
+        expected_session: ariadeck_domain::EngineSession,
+        task: ariadeck_domain::TaskIdentity,
+        active: bool,
+        is_bittorrent: bool,
+        sender: tokio::sync::oneshot::Sender<
+            Result<ariadeck_domain::TaskConnectionDetails, crate::ApplicationError>,
+        >,
+    ) {
+        if expected_session != self.ctx.store.session() {
+            let _ = sender.send(Err(stale_session_error()));
+            return;
+        }
+        if task.profile_id != self.ctx.config.profile_id {
+            let _ = sender.send(Err(wrong_profile_error()));
+            return;
+        }
+        let Some(gateway) = self.ctx.connection_gateway.cloned() else {
+            let _ = sender.send(Err(unsupported_error(
+                "The connected engine does not expose connection details.",
+            )));
+            return;
+        };
+        let mut cancel_rx = self.ctx.cancellation.clone();
+        tokio::spawn(async move {
+            let result = tokio::select! {
+                biased;
+                () = wait_for_cancellation(&mut cancel_rx) => return,
+                result = gateway.connection_details(task.gid, active, is_bittorrent)
+                    => result.map_err(Into::into),
+            };
+            let _ = sender.send(result);
+        });
+    }
+
+    async fn handle_notification_tick(&mut self) -> Option<ConnectedExit> {
+        if !self.pending_full && self.pending_tasks.is_empty() {
+            return None;
+        }
+        let refresh = async {
+            if self.pending_full {
+                self.pending_full = false;
+                self.pending_tasks.clear();
+                refresh_all(
+                    self.ctx.session,
+                    self.ctx.store,
+                    self.ctx.generation,
+                    self.ctx.config.stopped_page_size,
+                    self.ctx.events,
+                    &self.ctx.config.history,
+                    self.ctx.config.profile_id,
+                )
+                .await
+            } else {
+                let gids = self.pending_tasks.drain().collect::<Vec<_>>();
+                refresh_targeted(
+                    self.ctx.session,
+                    self.ctx.store,
+                    self.ctx.generation,
+                    &gids,
+                    self.ctx.events,
+                    &self.ctx.config.history,
+                    self.ctx.config.profile_id,
+                )
+                .await
+            }
+        };
+        let result = tokio::select! {
+            biased;
+            () = wait_for_cancellation(self.ctx.cancellation) => return Some(ConnectedExit::Stop),
+            result = refresh => result,
+        };
+        result.err().map(ConnectedExit::Retry)
+    }
+
+    async fn handle_global_tick(&mut self) -> Option<ConnectedExit> {
+        let result = tokio::select! {
+            biased;
+            () = wait_for_cancellation(self.ctx.cancellation) => return Some(ConnectedExit::Stop),
+            result = self.ctx.session.refresh_global_stat() => result,
+        };
+        match result {
+            Ok(stat) => {
+                if let Err(error) = self
+                    .ctx
+                    .store
+                    .record_speed_sample(self.ctx.generation, stat)
+                {
+                    return Some(ConnectedExit::Retry(SyncError::store(error)));
+                }
+                match self.ctx.store.update_global_stat(self.ctx.generation, stat) {
+                    Ok(patch) => {
+                        emit_global_update(self.ctx.events, patch);
+                        None
+                    }
+                    Err(error) => Some(ConnectedExit::Retry(SyncError::store(error))),
+                }
+            }
+            Err(error) => Some(ConnectedExit::Retry(error)),
+        }
+    }
+
+    async fn handle_live_tick(&mut self) -> Option<ConnectedExit> {
+        let result = tokio::select! {
+            biased;
+            () = wait_for_cancellation(self.ctx.cancellation) => return Some(ConnectedExit::Stop),
+            result = self.ctx.session.refresh_live() => result,
+        };
+        match result {
+            Ok(live) => {
+                match self
+                    .ctx
+                    .store
+                    .reconcile_live(self.ctx.generation, live.active, live.waiting)
+                {
+                    Ok(patch) => {
+                        emit_patch(self.ctx.events, patch);
+                        None
+                    }
+                    Err(error) => Some(ConnectedExit::Retry(SyncError::store(error))),
+                }
+            }
+            Err(error) => Some(ConnectedExit::Retry(error)),
+        }
+    }
+
+    async fn handle_stopped_tick(&mut self) -> Option<ConnectedExit> {
+        // Refresh every already-loaded contiguous page so a prior
+        // "Load more" request is not discarded by the periodic poll
+        // (HISTORY-001). The first page also updates the authoritative
+        // total from aria2's numStoppedTotal.
+        let page_size = self.ctx.config.stopped_page_size.max(1);
+        let mut offset = 0usize;
+        let loaded_through = self.ctx.store.next_stopped_offset().max(page_size as usize);
+        loop {
+            let result = tokio::select! {
+                biased;
+                () = wait_for_cancellation(self.ctx.cancellation) => return Some(ConnectedExit::Stop),
+                result = self.ctx.session.refresh_stopped_page(offset, page_size) => result,
+            };
+            match result {
+                Ok(page) => {
+                    let total = page.total;
+                    let batch = self
+                        .history_tracker
+                        .diff_changed_records(self.ctx.config.profile_id, &page.tasks);
+                    if !batch.is_empty() {
+                        let (records, fingerprints) = batch.into_parts();
+                        match self.history_writer.try_send(records) {
+                            Ok(()) => self.history_tracker.commit_enqueued(fingerprints),
+                            Err(_) => {
+                                tracing::debug!(
+                                    "history write queue full; deferring stopped page batch"
+                                );
+                            }
+                        }
+                    }
+                    match self.ctx.store.apply_stopped_page(
+                        self.ctx.generation,
+                        page.offset,
+                        Some(total),
+                        page.tasks,
+                    ) {
+                        Ok(patch) => emit_patch(self.ctx.events, patch),
+                        Err(error) => return Some(ConnectedExit::Retry(SyncError::store(error))),
+                    }
+                    offset = offset.saturating_add(page_size as usize);
+                    if offset >= loaded_through || offset >= total {
+                        break;
+                    }
+                }
+                Err(error) => return Some(ConnectedExit::Retry(error)),
+            }
+        }
+        None
+    }
+}
+
+fn build_task_contexts(
+    store: &DownloadStore,
+    profile_id: ProfileId,
+    command: &AppCommand,
+) -> HashMap<ariadeck_domain::TaskIdentity, TaskCommandContext> {
+    let tasks = match command {
+        AppCommand::PauseTasks(tasks)
+        | AppCommand::ForcePauseTasks(tasks)
+        | AppCommand::ResumeTasks(tasks) => Some(tasks.as_slice()),
+        AppCommand::MoveTaskInQueue(request) => Some(std::slice::from_ref(&request.task)),
+        AppCommand::RemoveTasks(request) | AppCommand::ForceRemoveTasks(request) => {
+            Some(request.tasks.as_slice())
+        }
+        AppCommand::RetryTasks(tasks) => Some(tasks.as_slice()),
+        AppCommand::SetTaskOutputName(request) => Some(std::slice::from_ref(&request.task)),
+        AppCommand::SetTaskSpeedLimit(request) => Some(std::slice::from_ref(&request.task)),
+        AppCommand::SetTaskConnectionPolicy(request) => Some(std::slice::from_ref(&request.task)),
+        AppCommand::SetTaskOptions(request) => Some(std::slice::from_ref(&request.task)),
+        _ => None,
+    };
+    tasks.map_or_else(HashMap::new, |tasks| {
+        tasks
+            .iter()
+            .filter(|identity| identity.profile_id == profile_id)
+            .filter_map(|identity| {
+                store.task(identity.gid).map(|task| {
+                    (
+                        *identity,
+                        TaskCommandContext {
+                            status: task.status,
+                            metadata: task.metadata.clone(),
+                        },
+                    )
+                })
+            })
+            .collect()
+    })
+}
+
+fn refresh_hint_for_command(command: &AppCommand) -> RefreshHint {
+    match command {
+        AppCommand::SetTaskOutputName(request) => RefreshHint::Task(request.task.gid),
+        AppCommand::SetTaskSpeedLimit(request) => RefreshHint::Task(request.task.gid),
+        AppCommand::SetTaskConnectionPolicy(request) => RefreshHint::Task(request.task.gid),
+        AppCommand::SetTaskOptions(request) => RefreshHint::Task(request.task.gid),
+        _ => RefreshHint::Full,
     }
 }
 

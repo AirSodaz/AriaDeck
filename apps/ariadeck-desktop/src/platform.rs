@@ -32,18 +32,6 @@ pub struct SystemTray {
 }
 
 impl SystemTray {
-    /// Build a tray icon. Call only from the UI thread after the event loop is running.
-    #[allow(dead_code)]
-    pub fn try_new() -> Result<Self, String> {
-        Self::try_new_with_labels(
-            "Show AriaDeck",
-            "Pause all",
-            "Resume all",
-            "Quit AriaDeck",
-            "AriaDeck",
-        )
-    }
-
     /// Build a tray icon with localized menu labels.
     pub fn try_new_with_labels(
         show_label: &str,

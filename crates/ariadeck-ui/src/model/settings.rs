@@ -387,6 +387,23 @@ pub enum ProfileRpcSecretUpdateView {
     Set(SecretStringView),
 }
 
+/// Host OS capability flags injected by the desktop composition root so UI
+/// controls never present silent no-op switches on unsupported platforms.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PlatformCapabilitiesView {
+    pub keep_awake_supported: bool,
+    pub browser_bridge_supported: bool,
+}
+
+impl Default for PlatformCapabilitiesView {
+    fn default() -> Self {
+        Self {
+            keep_awake_supported: true,
+            browser_bridge_supported: true,
+        }
+    }
+}
+
 /// How loudly automatic completion/error surfaces appear.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum NotificationVolumeView {

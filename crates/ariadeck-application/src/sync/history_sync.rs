@@ -44,12 +44,27 @@ pub(super) async fn persist_task_category(
 }
 
 #[derive(Clone, Eq, PartialEq)]
-struct TerminalHistoryFingerprint {
+pub(super) struct TerminalHistoryFingerprint {
     status: ariadeck_domain::DownloadStatus,
     display_name: String,
     total_length: ariadeck_domain::ByteCount,
     completed_length: ariadeck_domain::ByteCount,
     error: Option<ariadeck_domain::TaskError>,
+}
+
+pub(super) struct PendingHistoryBatch {
+    pub(super) records: Vec<HistoryRecord>,
+    fingerprints: Vec<(Gid, TerminalHistoryFingerprint)>,
+}
+
+impl PendingHistoryBatch {
+    pub(super) fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    pub(super) fn into_parts(self) -> (Vec<HistoryRecord>, Vec<(Gid, TerminalHistoryFingerprint)>) {
+        (self.records, self.fingerprints)
+    }
 }
 
 #[derive(Default)]
@@ -64,13 +79,18 @@ impl HistoryWriteTracker {
         }
     }
 
-    pub(super) fn collect_changed_records(
-        &mut self,
+    /// Compute changed terminal records without marking them persisted yet.
+    /// Call [`Self::commit_enqueued`] only after the batch is accepted by the
+    /// writer channel so a full queue retries on the next tick instead of
+    /// permanently dropping the batch.
+    pub(super) fn diff_changed_records(
+        &self,
         profile_id: ProfileId,
         tasks: &[TaskSnapshot],
-    ) -> Vec<HistoryRecord> {
+    ) -> PendingHistoryBatch {
         let now = now_unix_ms();
         let mut records = Vec::new();
+        let mut fingerprints = Vec::new();
         for snapshot in tasks {
             if !matches!(
                 snapshot.status,
@@ -88,15 +108,24 @@ impl HistoryWriteTracker {
             if self.persisted.get(&snapshot.gid) == Some(&fingerprint) {
                 continue;
             }
-            if self.persisted.len() >= 12_000 {
-                self.persisted.clear();
-            }
-            self.persisted.insert(snapshot.gid, fingerprint);
             if let Some(record) = HistoryRecord::from_snapshot(profile_id, snapshot, now) {
                 records.push(record);
+                fingerprints.push((snapshot.gid, fingerprint));
             }
         }
-        records
+        PendingHistoryBatch {
+            records,
+            fingerprints,
+        }
+    }
+
+    pub(super) fn commit_enqueued(&mut self, fingerprints: Vec<(Gid, TerminalHistoryFingerprint)>) {
+        if self.persisted.len().saturating_add(fingerprints.len()) >= 12_000 {
+            self.persisted.clear();
+        }
+        for (gid, fingerprint) in fingerprints {
+            self.persisted.insert(gid, fingerprint);
+        }
     }
 }
 

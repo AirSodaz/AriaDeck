@@ -56,24 +56,25 @@ use crate::{
     LanguagePreferenceView, Link, LocaleId, MoveTaskDownInQueue, MoveTaskToQueueBottom,
     MoveTaskToQueueTop, MoveTaskUpInQueue, NotificationSettingsView, NotificationVolumeView,
     OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit,
-    OperationErrorView, PauseSelectedTask, PlatformSettingsView, ProfileCatalogView,
-    ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView,
-    ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask,
-    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
-    SaveSettings, SecretStringView, Segment, SegmentedControl, SelectAllTasks, SelectNextTask,
-    SelectPreviousTask, SettingsExportOutcomeView, SettingsExportRequestView,
-    SettingsExportResultView, SettingsImportOutcomeView, SettingsImportRequestView,
-    SettingsImportResultView, SettingsSaveOutcomeView, SettingsSaveRequestView,
-    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator,
-    SubmitAddDownload, SubmitTaskOptions, SubmitTaskOutputName, SubmitTaskSpeedLimit, Switch,
-    SwitchProfileOutcomeView, SwitchProfileRequestView, SwitchProfileResultView,
-    TaskCommandRequestView, TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView,
-    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity,
-    TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
-    TaskOptionView, TaskPathValidationView, TaskStatusView, Theme, ThemeMode,
-    TrackerListSettingsView, TrackerListSourceView, TransferPolicySettingsView, Translator,
-    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
-    format_bytes, format_eta, format_percent, format_rate, format_share_ratio,
+    OperationErrorView, PauseSelectedTask, PlatformCapabilitiesView, PlatformSettingsView,
+    ProfileCatalogView, ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView,
+    ProxyModeView, ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask,
+    RetrySelectedTask, SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView,
+    SaveProfileCatalogResultView, SaveSettings, SecretStringView, Segment, SegmentedControl,
+    SelectAllTasks, SelectNextTask, SelectPreviousTask, SettingsExportOutcomeView,
+    SettingsExportRequestView, SettingsExportResultView, SettingsImportOutcomeView,
+    SettingsImportRequestView, SettingsImportResultView, SettingsSaveOutcomeView,
+    SettingsSaveRequestView, SettingsSaveResultView, SettingsView, SpeedLimitSettingsView,
+    SpeedSampleView, StatusIndicator, SubmitAddDownload, SubmitTaskOptions, SubmitTaskOutputName,
+    SubmitTaskSpeedLimit, Switch, SwitchProfileOutcomeView, SwitchProfileRequestView,
+    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
+    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
+    TaskFileView, TaskIdentity, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
+    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskSourceKindExt as _,
+    TaskStatusView, Theme, ThemeMode, TrackerListSettingsView, TrackerListSourceView,
+    TransferPolicySettingsView, Translator, WorkspaceFilter, WorkspaceFilterExt as _,
+    WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, format_bytes,
+    format_eta, format_percent, format_rate, format_share_ratio,
 };
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 
@@ -102,8 +103,9 @@ use helpers::*;
 use modals::{ActiveModal, ModalKind};
 pub use power::PowerCountdownState;
 
+use crate::theme::TITLEBAR_HEIGHT;
+
 const SPEED_CHART_SAMPLES: usize = 120;
-const TITLEBAR_HEIGHT: f32 = 52.0;
 const TITLEBAR_SIDE_WIDTH: f32 = 240.0;
 const TITLEBAR_HORIZONTAL_PADDING: f32 = 12.0;
 const SEARCH_MIN_WIDTH: f32 = 300.0;
@@ -339,13 +341,8 @@ impl Render for ResizeDetailsDrawer {
 
 #[cfg_attr(not(test), allow(dead_code))]
 struct StatusNotice {
-    #[allow(dead_code)]
-    id: u64,
     message: String,
     is_error: bool,
-    /// When false, this is command feedback that Quiet mode still shows.
-    #[allow(dead_code)]
-    automatic: bool,
 }
 
 pub(crate) fn has_kit_root(window: &Window) -> bool {
@@ -373,20 +370,10 @@ pub(crate) struct SettingsPage {
     draft_check_certificate: bool,
     draft_file_allocation: FileAllocationView,
     draft_check_integrity: bool,
-    draft_notification_volume: NotificationVolumeView,
-    draft_notify_on_completion: bool,
-    draft_notify_on_error: bool,
-    draft_notify_on_engine_events: bool,
-    draft_os_notifications: bool,
-    draft_notify_on_low_disk: bool,
-    draft_close_behavior: CloseBehaviorView,
-    draft_show_tray_icon: bool,
-    draft_start_minimized_to_tray: bool,
-    draft_keep_awake_while_active: bool,
-    draft_action_after_done: CompletionPowerActionView,
+    draft_notifications: NotificationSettingsView,
+    draft_platform: PlatformSettingsView,
     /// Browser bridge drafts (D-045); saved with System.
-    draft_bridge_allow_cookies: bool,
-    draft_bridge_auto_submit: bool,
+    draft_browser_bridge: BrowserBridgeSettingsView,
     /// Working copy of download categories (C1 / D-042); saved with General.
     draft_categories: Vec<crate::DownloadCategoryView>,
     /// Which draft category row is bound to the shared name/extensions fields.
@@ -582,36 +569,6 @@ pub(crate) struct SettingsInputs {
     pub(crate) category_extensions: Entity<InputState>,
 }
 
-#[allow(dead_code)]
-impl SettingsInputs {
-    pub(crate) fn all(&self) -> [&Entity<InputState>; 22] {
-        [
-            &self.directory,
-            &self.profile_name,
-            &self.profile_executable,
-            &self.profile_endpoint,
-            &self.profile_secret,
-            &self.all_proxy,
-            &self.http_proxy,
-            &self.https_proxy,
-            &self.ftp_proxy,
-            &self.no_proxy,
-            &self.proxy_username,
-            &self.proxy_password,
-            &self.download_limit,
-            &self.upload_limit,
-            &self.max_concurrent,
-            &self.max_connection,
-            &self.split,
-            &self.min_split_size,
-            &self.tracker_custom_url,
-            &self.tracker_list_text,
-            &self.category_name,
-            &self.category_extensions,
-        ]
-    }
-}
-
 /// Add-download advanced option InputState entities (lazily owned by `AddDownloadDialogView`).
 pub(crate) struct AddInputs {
     pub(crate) referer: Entity<InputState>,
@@ -629,6 +586,7 @@ pub struct AppShell {
     /// Active Fluent translator for the resolved display language.
     translator: Translator,
     settings: SettingsView,
+    platform_capabilities: PlatformCapabilitiesView,
     profiles: ProfileCatalogView,
     cores: CoreRegistryView,
     page: AppPage,
@@ -669,7 +627,6 @@ pub struct AppShell {
     power_had_active_tasks: bool,
     power_countdown_generation: u64,
     status_notice: Option<StatusNotice>,
-    next_notice_id: u64,
     activity_log: Vec<ActivityEntryView>,
     next_activity_id: u64,
     activity_scroll: ScrollHandle,
@@ -777,6 +734,7 @@ impl AppShell {
             theme,
             translator: translator_for_language(settings.language),
             settings,
+            platform_capabilities: PlatformCapabilitiesView::default(),
             profiles: ProfileCatalogView::default(),
             cores: CoreRegistryView::default(),
             page: AppPage::Downloads,
@@ -813,7 +771,6 @@ impl AppShell {
             power_had_active_tasks: false,
             power_countdown_generation: 0,
             status_notice: None,
-            next_notice_id: 1,
             activity_log: Vec::new(),
             next_activity_id: 1,
             activity_scroll: ScrollHandle::new(),
@@ -1036,11 +993,13 @@ impl AppShell {
                     drawer.pending = None;
                 }
                 drawer.sync_context(
-                    theme,
-                    translator,
-                    commands_available,
-                    local_path_actions_available,
-                    drawer_width,
+                    details::TaskDetailsPanelContext {
+                        theme,
+                        translator,
+                        commands_available,
+                        local_path_actions_available,
+                        drawer_width,
+                    },
                     cx,
                 );
             });
@@ -1769,8 +1728,8 @@ impl AppShell {
         error.localized_summary(&self.translator)
     }
 
+    #[cfg(test)]
     #[must_use]
-    #[allow(dead_code)]
     pub(crate) fn translator(&self) -> &Translator {
         &self.translator
     }
@@ -1792,6 +1751,19 @@ impl AppShell {
 
     pub fn settings(&self) -> &SettingsView {
         &self.settings
+    }
+
+    pub fn set_platform_capabilities(
+        &mut self,
+        capabilities: PlatformCapabilitiesView,
+        cx: &mut Context<Self>,
+    ) {
+        if self.platform_capabilities == capabilities {
+            return;
+        }
+        self.platform_capabilities = capabilities;
+        self.sync_settings_panel(None, cx);
+        cx.notify();
     }
 
     /// Build the privacy-safe projection used by the desktop diagnostic export.

@@ -7,15 +7,7 @@ impl SettingsPanelView {
         if self.is_pending() {
             return;
         }
-        let draft = NotificationSettingsView {
-            volume: self.settings_page.draft_notification_volume,
-            notify_on_completion: self.settings_page.draft_notify_on_completion,
-            notify_on_error: self.settings_page.draft_notify_on_error,
-            notify_on_engine_events: self.settings_page.draft_notify_on_engine_events,
-            os_notifications: self.settings_page.draft_os_notifications,
-            notify_on_low_disk: self.settings_page.draft_notify_on_low_disk,
-            low_disk_threshold_bytes: self.settings.notifications.low_disk_threshold_bytes,
-        };
+        let draft = self.settings_page.draft_notifications;
         if draft == self.settings.notifications {
             return;
         }
@@ -29,25 +21,12 @@ impl SettingsPanelView {
         );
     }
 
-    pub(super) fn browser_bridge_draft(&self) -> BrowserBridgeSettingsView {
-        BrowserBridgeSettingsView {
-            allow_cookies: self.settings_page.draft_bridge_allow_cookies,
-            auto_submit: self.settings_page.draft_bridge_auto_submit,
-        }
-    }
-
     pub(crate) fn submit_platform(&mut self, cx: &mut Context<Self>) {
         if self.is_pending() {
             return;
         }
-        let draft = PlatformSettingsView {
-            close_behavior: self.settings_page.draft_close_behavior,
-            show_tray_icon: self.settings_page.draft_show_tray_icon,
-            start_minimized_to_tray: self.settings_page.draft_start_minimized_to_tray,
-            keep_awake_while_active: self.settings_page.draft_keep_awake_while_active,
-            action_after_done: self.settings_page.draft_action_after_done,
-        };
-        let bridge_draft = self.browser_bridge_draft();
+        let draft = self.settings_page.draft_platform;
+        let bridge_draft = self.settings_page.draft_browser_bridge;
         if draft == self.settings.platform && bridge_draft == self.settings.browser_bridge {
             return;
         }
@@ -67,13 +46,10 @@ impl SettingsPanelView {
         volume: NotificationVolumeView,
         cx: &mut Context<Self>,
     ) {
-        if self.is_pending() {
+        if self.is_pending() || self.settings_page.draft_notifications.volume == volume {
             return;
         }
-        if self.settings_page.draft_notification_volume == volume {
-            return;
-        }
-        self.settings_page.draft_notification_volume = volume;
+        self.settings_page.draft_notifications.volume = volume;
         self.settings_page.error = None;
         cx.notify();
     }
@@ -82,8 +58,8 @@ impl SettingsPanelView {
         if self.is_pending() {
             return;
         }
-        self.settings_page.draft_notify_on_completion =
-            !self.settings_page.draft_notify_on_completion;
+        self.settings_page.draft_notifications.notify_on_completion =
+            !self.settings_page.draft_notifications.notify_on_completion;
         self.settings_page.error = None;
         cx.notify();
     }
@@ -92,7 +68,8 @@ impl SettingsPanelView {
         if self.is_pending() {
             return;
         }
-        self.settings_page.draft_notify_on_error = !self.settings_page.draft_notify_on_error;
+        self.settings_page.draft_notifications.notify_on_error =
+            !self.settings_page.draft_notifications.notify_on_error;
         self.settings_page.error = None;
         cx.notify();
     }
@@ -101,8 +78,12 @@ impl SettingsPanelView {
         if self.is_pending() {
             return;
         }
-        self.settings_page.draft_notify_on_engine_events =
-            !self.settings_page.draft_notify_on_engine_events;
+        self.settings_page
+            .draft_notifications
+            .notify_on_engine_events = !self
+            .settings_page
+            .draft_notifications
+            .notify_on_engine_events;
         self.settings_page.error = None;
         cx.notify();
     }
@@ -111,7 +92,8 @@ impl SettingsPanelView {
         if self.is_pending() {
             return;
         }
-        self.settings_page.draft_os_notifications = !self.settings_page.draft_os_notifications;
+        self.settings_page.draft_notifications.os_notifications =
+            !self.settings_page.draft_notifications.os_notifications;
         self.settings_page.error = None;
         cx.notify();
     }
@@ -120,7 +102,8 @@ impl SettingsPanelView {
         if self.is_pending() {
             return;
         }
-        self.settings_page.draft_notify_on_low_disk = !self.settings_page.draft_notify_on_low_disk;
+        self.settings_page.draft_notifications.notify_on_low_disk =
+            !self.settings_page.draft_notifications.notify_on_low_disk;
         self.settings_page.error = None;
         cx.notify();
     }
@@ -130,13 +113,10 @@ impl SettingsPanelView {
         behavior: CloseBehaviorView,
         cx: &mut Context<Self>,
     ) {
-        if self.is_pending() {
+        if self.is_pending() || self.settings_page.draft_platform.close_behavior == behavior {
             return;
         }
-        if self.settings_page.draft_close_behavior == behavior {
-            return;
-        }
-        self.settings_page.draft_close_behavior = behavior;
+        self.settings_page.draft_platform.close_behavior = behavior;
         self.settings_page.error = None;
         cx.notify();
     }
@@ -145,28 +125,26 @@ impl SettingsPanelView {
         if self.is_pending() {
             return;
         }
-        self.settings_page.draft_show_tray_icon = !self.settings_page.draft_show_tray_icon;
-        if !self.settings_page.draft_show_tray_icon
-            && self.settings_page.draft_close_behavior == CloseBehaviorView::MinimizeToTray
+        self.settings_page.draft_platform.show_tray_icon =
+            !self.settings_page.draft_platform.show_tray_icon;
+        if !self.settings_page.draft_platform.show_tray_icon
+            && self.settings_page.draft_platform.close_behavior == CloseBehaviorView::MinimizeToTray
         {
-            self.settings_page.draft_close_behavior = CloseBehaviorView::Quit;
+            self.settings_page.draft_platform.close_behavior = CloseBehaviorView::Quit;
         }
-        if !self.settings_page.draft_show_tray_icon {
-            self.settings_page.draft_start_minimized_to_tray = false;
+        if !self.settings_page.draft_platform.show_tray_icon {
+            self.settings_page.draft_platform.start_minimized_to_tray = false;
         }
         self.settings_page.error = None;
         cx.notify();
     }
 
     pub(crate) fn toggle_start_minimized_to_tray(&mut self, cx: &mut Context<Self>) {
-        if self.is_pending() {
+        if self.is_pending() || !self.settings_page.draft_platform.show_tray_icon {
             return;
         }
-        if !self.settings_page.draft_show_tray_icon {
-            return;
-        }
-        self.settings_page.draft_start_minimized_to_tray =
-            !self.settings_page.draft_start_minimized_to_tray;
+        self.settings_page.draft_platform.start_minimized_to_tray =
+            !self.settings_page.draft_platform.start_minimized_to_tray;
         self.settings_page.error = None;
         cx.notify();
     }
@@ -176,42 +154,40 @@ impl SettingsPanelView {
         action: CompletionPowerActionView,
         cx: &mut Context<Self>,
     ) {
-        if self.is_pending() {
+        if self.is_pending() || self.settings_page.draft_platform.action_after_done == action {
             return;
         }
-        if self.settings_page.draft_action_after_done == action {
-            return;
-        }
-        self.settings_page.draft_action_after_done = action;
+        self.settings_page.draft_platform.action_after_done = action;
         self.settings_page.error = None;
         cx.notify();
     }
 
     pub(crate) fn toggle_draft_keep_awake(&mut self, cx: &mut Context<Self>) {
-        if self.is_pending() {
+        if self.is_pending() || !self.platform_capabilities.keep_awake_supported {
             return;
         }
-        self.settings_page.draft_keep_awake_while_active =
-            !self.settings_page.draft_keep_awake_while_active;
+        self.settings_page.draft_platform.keep_awake_while_active =
+            !self.settings_page.draft_platform.keep_awake_while_active;
         self.settings_page.error = None;
         cx.notify();
     }
 
     pub(crate) fn toggle_bridge_allow_cookies(&mut self, cx: &mut Context<Self>) {
-        if self.is_pending() {
+        if self.is_pending() || !self.platform_capabilities.browser_bridge_supported {
             return;
         }
-        self.settings_page.draft_bridge_allow_cookies =
-            !self.settings_page.draft_bridge_allow_cookies;
+        self.settings_page.draft_browser_bridge.allow_cookies =
+            !self.settings_page.draft_browser_bridge.allow_cookies;
         self.settings_page.error = None;
         cx.notify();
     }
 
     pub(crate) fn toggle_bridge_auto_submit(&mut self, cx: &mut Context<Self>) {
-        if self.is_pending() {
+        if self.is_pending() || !self.platform_capabilities.browser_bridge_supported {
             return;
         }
-        self.settings_page.draft_bridge_auto_submit = !self.settings_page.draft_bridge_auto_submit;
+        self.settings_page.draft_browser_bridge.auto_submit =
+            !self.settings_page.draft_browser_bridge.auto_submit;
         self.settings_page.error = None;
         cx.notify();
     }
@@ -219,9 +195,10 @@ impl SettingsPanelView {
     pub(super) fn render_settings_notifications(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
         let pending = self.is_pending();
+        let notifications = self.settings_page.draft_notifications;
         let volume_selected = NotificationVolumeView::all()
             .iter()
-            .position(|volume| *volume == self.settings_page.draft_notification_volume)
+            .position(|volume| *volume == notifications.volume)
             .unwrap_or(0);
         let volume_panel = cx.entity().downgrade();
         let volume_control = SegmentedControl::new(
@@ -247,11 +224,11 @@ impl SettingsPanelView {
                 .update(cx, |panel, cx| panel.select_notification_volume(volume, cx))
                 .ok();
         });
-        let draft_completion = self.settings_page.draft_notify_on_completion;
-        let draft_error = self.settings_page.draft_notify_on_error;
-        let draft_engine = self.settings_page.draft_notify_on_engine_events;
-        let draft_os = self.settings_page.draft_os_notifications;
-        let draft_low_disk = self.settings_page.draft_notify_on_low_disk;
+        let draft_completion = notifications.notify_on_completion;
+        let draft_error = notifications.notify_on_error;
+        let draft_engine = notifications.notify_on_engine_events;
+        let draft_os = notifications.os_notifications;
+        let draft_low_disk = notifications.notify_on_low_disk;
         let p1 = cx.entity().downgrade();
         let p2 = cx.entity().downgrade();
         let p3 = cx.entity().downgrade();
@@ -334,10 +311,11 @@ impl SettingsPanelView {
     pub(super) fn render_settings_system(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
         let pending = self.is_pending();
-        let draft_keep_awake = self.settings_page.draft_keep_awake_while_active;
+        let platform = self.settings_page.draft_platform;
+        let draft_keep_awake = platform.keep_awake_while_active;
         let action_after_done_selected = CompletionPowerActionView::ALL
             .iter()
-            .position(|action| *action == self.settings_page.draft_action_after_done)
+            .position(|action| *action == platform.action_after_done)
             .unwrap_or(0);
         let action_panel = cx.entity().downgrade();
         let action_control = SegmentedControl::new(
@@ -360,14 +338,20 @@ impl SettingsPanelView {
                 .ok();
         });
         let p_power = cx.entity().downgrade();
+        let keep_awake_supported = self.platform_capabilities.keep_awake_supported;
+        let keep_awake_desc = if keep_awake_supported {
+            self.t("settings-keep-awake-desc")
+        } else {
+            self.t("settings-keep-awake-unsupported-desc")
+        };
         let power_section = settings_section_owned(self.t("settings-power"), colors)
             .child(settings_section_row_owned(
                 self.t("settings-keep-awake"),
-                Some(self.t("settings-keep-awake-desc")),
+                Some(keep_awake_desc),
                 Switch::new("toggle-keep-awake")
-                    .checked(draft_keep_awake)
+                    .checked(keep_awake_supported && draft_keep_awake)
                     .accessibility_label(self.t("settings-keep-awake"))
-                    .disabled(pending)
+                    .disabled(pending || !keep_awake_supported)
                     .on_change(move |_, _, cx| {
                         p_power
                             .update(cx, |panel, cx| panel.toggle_draft_keep_awake(cx))
@@ -382,11 +366,11 @@ impl SettingsPanelView {
                 colors,
             ));
 
-        let draft_show_tray = self.settings_page.draft_show_tray_icon;
-        let draft_start_minimized = self.settings_page.draft_start_minimized_to_tray;
+        let draft_show_tray = platform.show_tray_icon;
+        let draft_start_minimized = platform.start_minimized_to_tray;
         let close_behavior_selected = CloseBehaviorView::all()
             .iter()
-            .position(|behavior| *behavior == self.settings_page.draft_close_behavior)
+            .position(|behavior| *behavior == platform.close_behavior)
             .unwrap_or(0);
         let close_panel = cx.entity().downgrade();
         let close_control = SegmentedControl::new(
@@ -415,8 +399,8 @@ impl SettingsPanelView {
         let p2 = cx.entity().downgrade();
         let p3 = cx.entity().downgrade();
         let p4 = cx.entity().downgrade();
-        let draft_allow_cookies = self.settings_page.draft_bridge_allow_cookies;
-        let draft_auto_submit = self.settings_page.draft_bridge_auto_submit;
+        let draft_allow_cookies = self.settings_page.draft_browser_bridge.allow_cookies;
+        let draft_auto_submit = self.settings_page.draft_browser_bridge.auto_submit;
         let tray_section = settings_section_owned(self.t("settings-window-tray"), colors)
             .child(settings_section_row_owned(
                 self.t("settings-tray-icon"),
@@ -457,14 +441,15 @@ impl SettingsPanelView {
                     .child(self.t("settings-tray-hint")),
             );
 
+        let bridge_supported = self.platform_capabilities.browser_bridge_supported;
         let bridge_section = settings_section_owned(self.t("settings-bridge"), colors)
             .child(settings_section_row_owned(
                 self.t("settings-bridge-auto-submit"),
                 Some(self.t("settings-bridge-auto-submit-desc")),
                 Switch::new("toggle-bridge-auto-submit")
-                    .checked(draft_auto_submit)
+                    .checked(bridge_supported && draft_auto_submit)
                     .accessibility_label(self.t("settings-bridge-auto-submit"))
-                    .disabled(pending)
+                    .disabled(pending || !bridge_supported)
                     .on_change(move |_, _, cx| {
                         p3.update(cx, |panel, cx| panel.toggle_bridge_auto_submit(cx))
                             .ok();
@@ -475,9 +460,9 @@ impl SettingsPanelView {
                 self.t("settings-bridge-cookies"),
                 Some(self.t("settings-bridge-cookies-desc")),
                 Switch::new("toggle-bridge-cookies")
-                    .checked(draft_allow_cookies)
+                    .checked(bridge_supported && draft_allow_cookies)
                     .accessibility_label(self.t("settings-bridge-cookies"))
-                    .disabled(pending)
+                    .disabled(pending || !bridge_supported)
                     .on_change(move |_, _, cx| {
                         p4.update(cx, |panel, cx| panel.toggle_bridge_allow_cookies(cx))
                             .ok();
@@ -488,7 +473,11 @@ impl SettingsPanelView {
                 div()
                     .text_xs()
                     .text_color(colors.text_muted)
-                    .child(self.t("settings-bridge-hint")),
+                    .child(if bridge_supported {
+                        self.t("settings-bridge-hint")
+                    } else {
+                        self.t("settings-bridge-unsupported-desc")
+                    }),
             );
 
         div()

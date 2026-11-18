@@ -1006,3 +1006,119 @@ async fn set_activity_switches_poll_intervals_without_disconnect() {
     handle.stop().await;
     drop(notification_tx);
 }
+
+#[test]
+fn history_write_tracker_retries_batch_when_queue_was_full() {
+    use super::history_sync::HistoryWriteTracker;
+
+    let profile_id = ProfileId::new();
+    let gid = Gid::from_u64(77);
+    let tasks = vec![TaskSnapshot::new(
+        gid,
+        DownloadStatus::Complete,
+        "archive.zip",
+    )];
+    let mut tracker = HistoryWriteTracker::default();
+
+    // First attempt: simulate a full channel by NOT committing the batch.
+    let first = tracker.diff_changed_records(profile_id, &tasks);
+    assert_eq!(first.records.len(), 1);
+    drop(first);
+
+    // Next poll must still produce the same batch instead of dropping it.
+    let second = tracker.diff_changed_records(profile_id, &tasks);
+    assert_eq!(second.records.len(), 1);
+    let (_records, fingerprints) = second.into_parts();
+    tracker.commit_enqueued(fingerprints);
+
+    // Once committed, an identical snapshot produces no duplicate write.
+    let third = tracker.diff_changed_records(profile_id, &tasks);
+    assert!(third.is_empty());
+}
+
+#[tokio::test]
+async fn force_refresh_clears_queued_full_notification_refresh() {
+    struct CountingSession {
+        initial: InitialSyncSnapshot,
+        live_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl DownloadSyncSession for CountingSession {
+        async fn initial_snapshot(
+            &self,
+            _stopped_count: u32,
+        ) -> Result<InitialSyncSnapshot, SyncError> {
+            Ok(self.initial.clone())
+        }
+
+        async fn refresh_global_stat(&self) -> Result<GlobalStat, SyncError> {
+            Ok(self.initial.global_stat)
+        }
+
+        async fn refresh_live(&self) -> Result<LiveSyncSnapshot, SyncError> {
+            self.live_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.initial.live.clone())
+        }
+
+        async fn refresh_stopped_page(
+            &self,
+            _offset: usize,
+            _count: u32,
+        ) -> Result<StoppedPage, SyncError> {
+            Ok(self.initial.stopped.clone())
+        }
+
+        async fn refresh_tasks(
+            &self,
+            _gids: &[Gid],
+        ) -> Result<Vec<(Gid, Option<TaskSnapshot>)>, SyncError> {
+            Ok(Vec::new())
+        }
+
+        async fn close(&self) {}
+    }
+
+    let profile_id = ProfileId::new();
+    let gid = Gid::from_u64(88);
+    let live_calls = Arc::new(AtomicUsize::new(0));
+    let (notification_tx, notification_rx) = mpsc::channel(8);
+    let connector = Arc::new(ScriptedConnector {
+        steps: Mutex::new(VecDeque::from([Ok(ConnectedSyncSession::new(
+            Box::new(CountingSession {
+                initial: initial_snapshot(gid),
+                live_calls: Arc::clone(&live_calls),
+            }),
+            notification_rx,
+        ))])),
+        calls: AtomicUsize::new(0),
+    });
+
+    let mut config = test_config(profile_id);
+    config.refresh.notification_debounce = Duration::from_millis(60);
+    config.refresh.foreground.live_tasks = Duration::from_secs(60);
+    config.refresh.foreground.stopped_tasks = Duration::from_secs(60);
+    config.refresh.foreground.global_stat = Duration::from_secs(60);
+
+    let handle = spawn_sync_coordinator(connector, config);
+    let _ = wait_until_connected(&handle).await;
+
+    // Queue a full refresh hint, then immediately trigger ForceRefresh before
+    // the notification coalesce window fires.
+    notification_tx
+        .send(RefreshHint::Full)
+        .await
+        .expect("send full refresh hint");
+    handle.force_refresh().await;
+    // Wait past the notification coalesce interval.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    assert_eq!(
+        live_calls.load(Ordering::SeqCst),
+        1,
+        "ForceRefresh must clear pending_full so the notification tick does not run a second full refresh"
+    );
+
+    handle.stop().await;
+    drop(notification_tx);
+}

@@ -303,3 +303,7 @@ settings-profile-secret-placeholder = Leave blank to keep the saved secret
 settings-proxy-username-placeholder = Optional username
 settings-proxy-password-placeholder = Optional password or replacement
 settings-category-name-placeholder = General
+
+# Platform capability hints
+settings-keep-awake-unsupported-desc = Keep-awake power management is currently supported on Windows only.
+settings-bridge-unsupported-desc = Native browser bridge packaging and registration are currently supported on Windows only.

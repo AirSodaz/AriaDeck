@@ -42,3 +42,6 @@ error-profile-switch-failed = The active profile could not be changed.
 error-profile-save-failed = Profiles could not be saved.
 error-core-command-failed = The aria2 core operation failed.
 error-diagnostics-export-failed = The redacted diagnostic ZIP could not be exported.
+error-persistence-unavailable = Settings persistence is unavailable for this session.
+error-core-download-unsupported-platform = No verified aria2 download is published for this platform. Install aria2 with your package manager, then use Browse.
+error-power-action-failed = Could not execute the scheduled power action.

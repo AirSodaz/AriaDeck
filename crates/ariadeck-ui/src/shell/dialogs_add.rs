@@ -8,6 +8,26 @@ fn fluent_number(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
+fn metadata_selection_state(preview: &AddDownloadMetadataPreviewView) -> Toggled {
+    if preview.selected_file_indices.is_empty() {
+        Toggled::False
+    } else if preview.selected_file_indices.len() == preview.files.len() {
+        Toggled::True
+    } else {
+        Toggled::Mixed
+    }
+}
+
+struct MetadataPreviewRowContext<'a> {
+    preview_index: usize,
+    preview_key: &'a str,
+    position: usize,
+    active_file_count: usize,
+    selected: bool,
+    pending: bool,
+    colors: crate::ThemeColors,
+}
+
 fn filename_hint_for_add(
     sources: &[AddDownloadSourceView],
     metadata_name: Option<&str>,
@@ -707,108 +727,14 @@ impl AddDownloadDialogView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = self.theme.colors;
-        let rows =
-            self.metadata_files
-                .iter()
-                .enumerate()
-                .map(|(index, preview)| {
-                    let active = self.active_metadata_file == Some(index);
-                    let name = preview.path.file_name().map_or_else(
-                        || preview.path.display().to_string(),
-                        |name| name.to_string_lossy().into(),
-                    );
-                    let full_path = preview.path.display().to_string();
-                    let kind = preview.kind;
-                    let kind_label = self.t(kind.message_key());
-                    let selected = preview.selected_file_indices.len();
-                    let total = preview.files.len();
-                    let row_aria = self.t_args(
-                        "dialog-add-metadata-row-aria",
-                        &[
-                            ("kind", FluentValue::from(kind_label.clone())),
-                            ("name", FluentValue::from(name.clone())),
-                            ("selected", FluentValue::from(fluent_number(selected))),
-                            ("total", FluentValue::from(fluent_number(total))),
-                        ],
-                    );
-                    let row_summary = self.t_args(
-                        "dialog-add-metadata-row-summary",
-                        &[
-                            ("kind", FluentValue::from(kind_label.clone())),
-                            ("selected", FluentValue::from(fluent_number(selected))),
-                            ("total", FluentValue::from(fluent_number(total))),
-                            ("path", FluentValue::from(full_path)),
-                        ],
-                    );
-                    let row_key = metadata_path_key(&preview.path);
-                    let row_id = stable_id("metadata-file", &row_key);
-                    let remove_id = stable_id("remove-metadata-file", &row_key);
-                    let remove_aria = self.t_args(
-                        "dialog-add-remove-kind-aria",
-                        &[("kind", FluentValue::from(kind_label))],
-                    );
-                    div()
-                        .id(row_id)
-                        .role(Role::ListItem)
-                        .aria_label(row_aria)
-                        .focusable()
-                        .tab_stop(!pending)
-                        .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
-                        .h(px(48.0))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_2()
-                        .border_b_1()
-                        .border_color(if active { colors.accent } else { colors.border })
-                        .bg(if active {
-                            colors.surface_active
-                        } else {
-                            colors.surface
-                        })
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_metadata_file(index, cx);
-                        }))
-                        .child(Icon::new(IconName::Download).size(IconSize::Small).color(
-                            if active {
-                                colors.accent
-                            } else {
-                                colors.text_muted
-                            },
-                        ))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(div().truncate().text_sm().child(name))
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_xs()
-                                        .text_color(colors.text_muted)
-                                        .child(row_summary),
-                                ),
-                        )
-                        .child(
-                            KitButton::new(remove_id)
-                                .ghost()
-                                .small()
-                                .compact()
-                                .icon(gpui_kit::component::Icon::new(IconName::X))
-                                .accessibility_label(remove_aria)
-                                .disabled(pending)
-                                .tooltip(self.t("dialog-add-remove-file"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.remove_metadata_file(index, cx);
-                                })),
-                        )
-                        .into_any_element()
-                })
-                .collect::<Vec<_>>();
+        let rows = self
+            .metadata_files
+            .iter()
+            .enumerate()
+            .map(|(index, preview)| {
+                self.render_metadata_source_row(index, preview, pending, colors, cx)
+            })
+            .collect::<Vec<_>>();
         let count = self.metadata_files.len();
         let active_index = self.active_metadata_file;
         let active_summary = active_index
@@ -819,254 +745,21 @@ impl AddDownloadDialogView {
             .map_or(0, |preview| preview.files.len());
         let active_selection_state = active_index
             .and_then(|index| self.metadata_files.get(index))
-            .map_or(Toggled::False, |preview| {
-                if preview.selected_file_indices.is_empty() {
-                    Toggled::False
-                } else if preview.selected_file_indices.len() == preview.files.len() {
-                    Toggled::True
-                } else {
-                    Toggled::Mixed
-                }
-            });
+            .map_or(Toggled::False, metadata_selection_state);
         let active_selection_icon = match active_selection_state {
             Toggled::False => IconName::Square,
             Toggled::True => IconName::SquareCheckBig,
             Toggled::Mixed => IconName::SquareMinus,
         };
         let file_list = active_index.and_then(|preview_index| {
-            let preview_key = self
-                .metadata_files
-                .get(preview_index)
-                .map(|preview| metadata_path_key(&preview.path))?;
-            let list_id = stable_id("metadata-preview-files", &preview_key);
-            Some(
-                div()
-                    .relative()
-                    .h(px(220.0))
-                    .min_h_0()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .child(
-                        uniform_list(
-                            list_id.clone(),
-                            active_file_count,
-                            cx.processor(move |this, range: Range<usize>, _window, cx| {
-                                let colors = this.theme.colors;
-                                let Some(preview) = this.metadata_files.get(preview_index) else {
-                                    return Vec::new();
-                                };
-                                let preview_key = metadata_path_key(&preview.path);
-                                range
-                                    .filter_map(|position| {
-                                        let file = preview.files.get(position)?.clone();
-                                        let selected = preview
-                                            .selected_file_indices
-                                            .binary_search(&file.index)
-                                            .is_ok();
-                                        let file_index = file.index;
-                                        Some(
-                                            div()
-                                                .id(stable_id(
-                                                    "metadata-preview-file",
-                                                    &format!("{preview_key}:{file_index}"),
-                                                ))
-                                                .role(Role::CheckBox)
-                                                .aria_position_in_set(position + 1)
-                                                .aria_size_of_set(active_file_count)
-                                                .aria_toggled(if selected {
-                                                    Toggled::True
-                                                } else {
-                                                    Toggled::False
-                                                })
-                                                .aria_label({
-                                                    let size = file.length.map_or_else(
-                                                        || this.t("dialog-add-size-unknown"),
-                                                        format_bytes,
-                                                    );
-                                                    this.t_args(
-                                                        "dialog-add-file-row-aria",
-                                                        &[
-                                                            (
-                                                                "index",
-                                                                FluentValue::from(i64::from(
-                                                                    file_index,
-                                                                )),
-                                                            ),
-                                                            (
-                                                                "path",
-                                                                FluentValue::from(
-                                                                    file.path.clone(),
-                                                                ),
-                                                            ),
-                                                            ("size", FluentValue::from(size)),
-                                                        ],
-                                                    )
-                                                })
-                                                .focusable()
-                                                .tab_stop(!pending)
-                                                .focus_visible(|style| {
-                                                    style.border_1().border_color(colors.focus_ring)
-                                                })
-                                                .h(px(40.0))
-                                                .w_full()
-                                                .flex_none()
-                                                .flex()
-                                                .items_center()
-                                                .gap_2()
-                                                .px_3()
-                                                .border_b_1()
-                                                .border_color(colors.border)
-                                                .cursor_pointer()
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.toggle_metadata_file_entry(
-                                                        preview_index,
-                                                        file_index,
-                                                        cx,
-                                                    );
-                                                }))
-                                                .child(
-                                                    div()
-                                                        .flex_none()
-                                                        .on_mouse_down(
-                                                            MouseButton::Left,
-                                                            |_, _, cx| cx.stop_propagation(),
-                                                        )
-                                                        .child(
-                                                            Checkbox::new((
-                                                                "metadata-file-check",
-                                                                file_index as usize,
-                                                            ))
-                                                            .checked(selected)
-                                                            .disabled(pending)
-                                                            .tab_stop(false)
-                                                            .on_change(cx.listener(
-                                                                move |this, _, _, cx| {
-                                                                    this.toggle_metadata_file_entry(
-                                                                        preview_index,
-                                                                        file_index,
-                                                                        cx,
-                                                                    );
-                                                                },
-                                                            )),
-                                                        ),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .w(px(34.0))
-                                                        .flex_none()
-                                                        .font_features(tabular_numbers())
-                                                        .text_xs()
-                                                        .text_color(colors.text_muted)
-                                                        .child(file_index.to_string()),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .flex_1()
-                                                        .min_w_0()
-                                                        .flex()
-                                                        .items_center()
-                                                        .gap_2()
-                                                        .child(
-                                                            Icon::new(file_type_icon(&file.path))
-                                                                .size(IconSize::Small)
-                                                                .color(colors.text_muted),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .flex_1()
-                                                                .min_w_0()
-                                                                .truncate()
-                                                                .text_xs()
-                                                                .text_color(colors.text_secondary)
-                                                                .child(file.path),
-                                                        ),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .w(px(84.0))
-                                                        .flex_none()
-                                                        .text_right()
-                                                        .font_features(tabular_numbers())
-                                                        .text_xs()
-                                                        .text_color(colors.text_muted)
-                                                        .child(file.length.map_or_else(
-                                                            || this.t("dialog-add-size-unknown"),
-                                                            format_bytes,
-                                                        )),
-                                                )
-                                                .into_any_element(),
-                                        )
-                                    })
-                                    .collect::<Vec<_>>()
-                            }),
-                        )
-                        .track_scroll(&self.metadata_file_scroll)
-                        .size_full(),
-                    )
-                    .vertical_scrollbar(&self.metadata_file_scroll)
-                    .border_1()
-                    .border_color(colors.border)
-                    .rounded_md()
-                    .into_any_element(),
-            )
+            self.render_metadata_preview_list(preview_index, active_file_count, pending, colors, cx)
         });
+
         div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(
-                div()
-                    .id("metadata-file-drop-target")
-                    .role(Role::Group)
-                    .aria_label(self.t("dialog-add-drop-target-aria"))
-                    .min_h(px(82.0))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .p_3()
-                    .border_1()
-                    .border_color(colors.border)
-                    .rounded_md()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                Icon::new(IconName::Inbox)
-                                    .size(IconSize::Medium)
-                                    .color(colors.text_muted),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .child(self.t("ui-torrent-metalink-files"))
-                                    .child(div().text_xs().text_color(colors.text_muted).child(
-                                        if preview_pending {
-                                            self.t("dialog-add-reading-metadata")
-                                        } else {
-                                            self.t_count(
-                                                "dialog-add-sources-ready",
-                                                u64::try_from(count).unwrap_or(u64::MAX),
-                                            )
-                                        },
-                                    )),
-                            ),
-                    )
-                    .child(
-                        KitButton::new("choose-metadata-files")
-                            .icon(gpui_kit::component::Icon::new(IconName::FolderDown))
-                            .label(self.t("dialog-add-choose-metadata"))
-                            .accessibility_label(self.t("dialog-add-choose-files-aria"))
-                            .disabled(pending)
-                            .loading(preview_pending)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.choose_metadata_files(window, cx);
-                            })),
-                    ),
-            )
+            .child(self.render_metadata_drop_target(count, pending, preview_pending, colors, cx))
             .when(!rows.is_empty(), |element| {
                 element.child(
                     div()
@@ -1136,6 +829,353 @@ impl AddDownloadDialogView {
                     )
                     .when_some(file_list, |element, list| element.child(list))
             })
+            .into_any_element()
+    }
+
+    fn render_metadata_drop_target(
+        &self,
+        count: usize,
+        pending: bool,
+        preview_pending: bool,
+        colors: crate::ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        div()
+            .id("metadata-file-drop-target")
+            .role(Role::Group)
+            .aria_label(self.t("dialog-add-drop-target-aria"))
+            .min_h(px(82.0))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .p_3()
+            .border_1()
+            .border_color(colors.border)
+            .rounded_md()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Icon::new(IconName::Inbox)
+                            .size(IconSize::Medium)
+                            .color(colors.text_muted),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(self.t("ui-torrent-metalink-files"))
+                            .child(div().text_xs().text_color(colors.text_muted).child(
+                                if preview_pending {
+                                    self.t("dialog-add-reading-metadata")
+                                } else {
+                                    self.t_count(
+                                        "dialog-add-sources-ready",
+                                        u64::try_from(count).unwrap_or(u64::MAX),
+                                    )
+                                },
+                            )),
+                    ),
+            )
+            .child(
+                KitButton::new("choose-metadata-files")
+                    .icon(gpui_kit::component::Icon::new(IconName::FolderDown))
+                    .label(self.t("dialog-add-choose-metadata"))
+                    .accessibility_label(self.t("dialog-add-choose-files-aria"))
+                    .disabled(pending)
+                    .loading(preview_pending)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.choose_metadata_files(window, cx);
+                    })),
+            )
+    }
+
+    fn render_metadata_source_row(
+        &self,
+        index: usize,
+        preview: &AddDownloadMetadataPreviewView,
+        pending: bool,
+        colors: crate::ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let active = self.active_metadata_file == Some(index);
+        let name = preview.path.file_name().map_or_else(
+            || preview.path.display().to_string(),
+            |name| name.to_string_lossy().into(),
+        );
+        let full_path = preview.path.display().to_string();
+        let kind_label = self.t(preview.kind.message_key());
+        let selected = preview.selected_file_indices.len();
+        let total = preview.files.len();
+        let row_aria = self.t_args(
+            "dialog-add-metadata-row-aria",
+            &[
+                ("kind", FluentValue::from(kind_label.clone())),
+                ("name", FluentValue::from(name.clone())),
+                ("selected", FluentValue::from(fluent_number(selected))),
+                ("total", FluentValue::from(fluent_number(total))),
+            ],
+        );
+        let row_summary = self.t_args(
+            "dialog-add-metadata-row-summary",
+            &[
+                ("kind", FluentValue::from(kind_label.clone())),
+                ("selected", FluentValue::from(fluent_number(selected))),
+                ("total", FluentValue::from(fluent_number(total))),
+                ("path", FluentValue::from(full_path)),
+            ],
+        );
+        let row_key = metadata_path_key(&preview.path);
+        let row_id = stable_id("metadata-file", &row_key);
+        let remove_id = stable_id("remove-metadata-file", &row_key);
+        let remove_aria = self.t_args(
+            "dialog-add-remove-kind-aria",
+            &[("kind", FluentValue::from(kind_label))],
+        );
+        div()
+            .id(row_id)
+            .role(Role::ListItem)
+            .aria_label(row_aria)
+            .focusable()
+            .tab_stop(!pending)
+            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
+            .h(px(48.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .border_b_1()
+            .border_color(if active { colors.accent } else { colors.border })
+            .bg(if active {
+                colors.surface_active
+            } else {
+                colors.surface
+            })
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.select_metadata_file(index, cx);
+            }))
+            .child(
+                Icon::new(IconName::Download)
+                    .size(IconSize::Small)
+                    .color(if active {
+                        colors.accent
+                    } else {
+                        colors.text_muted
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().truncate().text_sm().child(name))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(row_summary),
+                    ),
+            )
+            .child(
+                KitButton::new(remove_id)
+                    .ghost()
+                    .small()
+                    .compact()
+                    .icon(gpui_kit::component::Icon::new(IconName::X))
+                    .accessibility_label(remove_aria)
+                    .disabled(pending)
+                    .tooltip(self.t("dialog-add-remove-file"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.remove_metadata_file(index, cx);
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn render_metadata_preview_list(
+        &self,
+        preview_index: usize,
+        active_file_count: usize,
+        pending: bool,
+        colors: crate::ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let preview_key = self
+            .metadata_files
+            .get(preview_index)
+            .map(|preview| metadata_path_key(&preview.path))?;
+        let list_id = stable_id("metadata-preview-files", &preview_key);
+        Some(
+            div()
+                .relative()
+                .h(px(220.0))
+                .min_h_0()
+                .min_w_0()
+                .overflow_hidden()
+                .child(
+                    uniform_list(
+                        list_id,
+                        active_file_count,
+                        cx.processor(move |this, range: Range<usize>, _window, cx| {
+                            let colors = this.theme.colors;
+                            let Some(preview) = this.metadata_files.get(preview_index) else {
+                                return Vec::new();
+                            };
+                            let preview_key = metadata_path_key(&preview.path);
+                            range
+                                .filter_map(|position| {
+                                    let file = preview.files.get(position)?.clone();
+                                    let selected = preview
+                                        .selected_file_indices
+                                        .binary_search(&file.index)
+                                        .is_ok();
+                                    Some(this.render_metadata_preview_file_row(
+                                        file,
+                                        MetadataPreviewRowContext {
+                                            preview_index,
+                                            preview_key: &preview_key,
+                                            position,
+                                            active_file_count,
+                                            selected,
+                                            pending,
+                                            colors,
+                                        },
+                                        cx,
+                                    ))
+                                })
+                                .collect::<Vec<_>>()
+                        }),
+                    )
+                    .track_scroll(&self.metadata_file_scroll)
+                    .size_full(),
+                )
+                .vertical_scrollbar(&self.metadata_file_scroll)
+                .border_1()
+                .border_color(colors.border)
+                .rounded_md()
+                .into_any_element(),
+        )
+    }
+
+    fn render_metadata_preview_file_row(
+        &self,
+        file: crate::AddDownloadMetadataFileView,
+        row: MetadataPreviewRowContext<'_>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let MetadataPreviewRowContext {
+            preview_index,
+            preview_key,
+            position,
+            active_file_count,
+            selected,
+            pending,
+            colors,
+        } = row;
+        let file_index = file.index;
+        let size_label = file
+            .length
+            .map_or_else(|| self.t("dialog-add-size-unknown"), format_bytes);
+        let row_aria = self.t_args(
+            "dialog-add-file-row-aria",
+            &[
+                ("index", FluentValue::from(i64::from(file_index))),
+                ("path", FluentValue::from(file.path.as_str())),
+                ("size", FluentValue::from(size_label.as_str())),
+            ],
+        );
+        div()
+            .id(stable_id(
+                "metadata-preview-file",
+                &format!("{preview_key}:{file_index}"),
+            ))
+            .role(Role::CheckBox)
+            .aria_position_in_set(position + 1)
+            .aria_size_of_set(active_file_count)
+            .aria_toggled(if selected {
+                Toggled::True
+            } else {
+                Toggled::False
+            })
+            .aria_label(row_aria)
+            .focusable()
+            .tab_stop(!pending)
+            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
+            .h(px(40.0))
+            .w_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .border_b_1()
+            .border_color(colors.border)
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_metadata_file_entry(preview_index, file_index, cx);
+            }))
+            .child(
+                div()
+                    .flex_none()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        Checkbox::new(("metadata-file-check", file_index as usize))
+                            .checked(selected)
+                            .disabled(pending)
+                            .tab_stop(false)
+                            .on_change(cx.listener(move |this, _, _, cx| {
+                                this.toggle_metadata_file_entry(preview_index, file_index, cx);
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .w(px(34.0))
+                    .flex_none()
+                    .font_features(tabular_numbers())
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(file_index.to_string()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Icon::new(file_type_icon(&file.path))
+                            .size(IconSize::Small)
+                            .color(colors.text_muted),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_xs()
+                            .text_color(colors.text_secondary)
+                            .child(file.path),
+                    ),
+            )
+            .child(
+                div()
+                    .w(px(84.0))
+                    .flex_none()
+                    .text_right()
+                    .font_features(tabular_numbers())
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(size_label),
+            )
             .into_any_element()
     }
 

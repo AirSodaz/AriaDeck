@@ -49,6 +49,7 @@ pub(crate) struct SettingsPanelView {
     pub(crate) theme: Theme,
     pub(crate) translator: Translator,
     pub(crate) settings: SettingsView,
+    pub(crate) platform_capabilities: PlatformCapabilitiesView,
     pub(crate) profiles: ProfileCatalogView,
     pub(crate) cores: CoreRegistryView,
     pub(crate) aria2_version: String,
@@ -68,26 +69,44 @@ pub(crate) struct SettingsPanelView {
 
 impl gpui::EventEmitter<SettingsPanelEvent> for SettingsPanelView {}
 
+pub(super) struct SettingsPanelContext<'a> {
+    pub(super) theme: Theme,
+    pub(super) translator: Translator,
+    pub(super) platform_capabilities: PlatformCapabilitiesView,
+    pub(super) profiles: ProfileCatalogView,
+    pub(super) cores: CoreRegistryView,
+    pub(super) core_setup: &'a CoreSetupState,
+    pub(super) aria2_version: String,
+    pub(super) update_enabled: bool,
+    pub(super) update_portable: bool,
+    pub(super) update_status: crate::UpdateStatusView,
+    pub(super) pending_settings_save_source: Option<SettingsSaveSource>,
+    pub(super) pending_tracker_refresh: bool,
+}
+
 impl SettingsPanelView {
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         category: SettingsCategory,
         previous_focus: Option<WeakFocusHandle>,
-        theme: Theme,
-        translator: Translator,
         settings: SettingsView,
-        profiles: ProfileCatalogView,
-        cores: CoreRegistryView,
-        core_setup: &CoreSetupState,
-        aria2_version: String,
-        update_enabled: bool,
-        update_portable: bool,
-        update_status: crate::UpdateStatusView,
-        pending_settings_save_source: Option<SettingsSaveSource>,
-        pending_tracker_refresh: bool,
+        panel_cx: SettingsPanelContext<'_>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let SettingsPanelContext {
+            theme,
+            translator,
+            platform_capabilities,
+            profiles,
+            cores,
+            core_setup,
+            aria2_version,
+            update_enabled,
+            update_portable,
+            update_status,
+            pending_settings_save_source,
+            pending_tracker_refresh,
+        } = panel_cx;
         let directory = make_input("D:\\Downloads".into(), false, window, cx);
         let profile_name = make_input(
             translator.t("settings-profile-name-placeholder").into(),
@@ -253,19 +272,9 @@ impl SettingsPanelView {
             draft_check_certificate: settings.download_proxy.check_certificate,
             draft_file_allocation: settings.transfer_policy.file_allocation,
             draft_check_integrity: settings.transfer_policy.check_integrity,
-            draft_notification_volume: settings.notifications.volume,
-            draft_notify_on_completion: settings.notifications.notify_on_completion,
-            draft_notify_on_error: settings.notifications.notify_on_error,
-            draft_notify_on_engine_events: settings.notifications.notify_on_engine_events,
-            draft_os_notifications: settings.notifications.os_notifications,
-            draft_notify_on_low_disk: settings.notifications.notify_on_low_disk,
-            draft_close_behavior: settings.platform.close_behavior,
-            draft_show_tray_icon: settings.platform.show_tray_icon,
-            draft_start_minimized_to_tray: settings.platform.start_minimized_to_tray,
-            draft_keep_awake_while_active: settings.platform.keep_awake_while_active,
-            draft_action_after_done: settings.platform.action_after_done,
-            draft_bridge_allow_cookies: settings.browser_bridge.allow_cookies,
-            draft_bridge_auto_submit: settings.browser_bridge.auto_submit,
+            draft_notifications: settings.notifications,
+            draft_platform: settings.platform,
+            draft_browser_bridge: settings.browser_bridge,
             draft_categories: settings.categories.clone(),
             draft_category_edit_index: None,
             draft_tracker_enabled: settings.tracker_list.enabled,
@@ -284,6 +293,7 @@ impl SettingsPanelView {
             theme,
             translator,
             settings,
+            platform_capabilities,
             profiles,
             cores,
             aria2_version,
@@ -432,25 +442,29 @@ impl SettingsPanelView {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn sync_context(
         &mut self,
-        theme: Theme,
-        translator: Translator,
-        profiles: ProfileCatalogView,
-        cores: CoreRegistryView,
-        core_setup: &CoreSetupState,
-        aria2_version: String,
-        update_enabled: bool,
-        update_portable: bool,
-        update_status: crate::UpdateStatusView,
-        pending_settings_save_source: Option<SettingsSaveSource>,
-        pending_tracker_refresh: bool,
+        panel_cx: SettingsPanelContext<'_>,
         window: Option<&mut Window>,
         cx: &mut Context<Self>,
     ) {
+        let SettingsPanelContext {
+            theme,
+            translator,
+            platform_capabilities,
+            profiles,
+            cores,
+            core_setup,
+            aria2_version,
+            update_enabled,
+            update_portable,
+            update_status,
+            pending_settings_save_source,
+            pending_tracker_refresh,
+        } = panel_cx;
         self.theme = theme;
         self.translator = translator.clone();
+        self.platform_capabilities = platform_capabilities;
         self.profiles = profiles;
         self.cores = cores;
         self.aria2_version = aria2_version;
@@ -491,8 +505,8 @@ impl SettingsPanelView {
     ) {
         self.settings.platform.action_after_done = action_after_done;
         self.settings.platform.keep_awake_while_active = keep_awake_while_active;
-        self.settings_page.draft_action_after_done = action_after_done;
-        self.settings_page.draft_keep_awake_while_active = keep_awake_while_active;
+        self.settings_page.draft_platform.action_after_done = action_after_done;
+        self.settings_page.draft_platform.keep_awake_while_active = keep_awake_while_active;
         cx.notify();
     }
 
@@ -515,22 +529,9 @@ impl SettingsPanelView {
         self.settings_page.draft_file_allocation = settings.transfer_policy.file_allocation;
         self.settings_page.draft_check_certificate = settings.download_proxy.check_certificate;
         self.settings_page.draft_check_integrity = settings.transfer_policy.check_integrity;
-        self.settings_page.draft_notification_volume = settings.notifications.volume;
-        self.settings_page.draft_notify_on_completion = settings.notifications.notify_on_completion;
-        self.settings_page.draft_notify_on_error = settings.notifications.notify_on_error;
-        self.settings_page.draft_notify_on_engine_events =
-            settings.notifications.notify_on_engine_events;
-        self.settings_page.draft_os_notifications = settings.notifications.os_notifications;
-        self.settings_page.draft_notify_on_low_disk = settings.notifications.notify_on_low_disk;
-        self.settings_page.draft_close_behavior = settings.platform.close_behavior;
-        self.settings_page.draft_show_tray_icon = settings.platform.show_tray_icon;
-        self.settings_page.draft_start_minimized_to_tray =
-            settings.platform.start_minimized_to_tray;
-        self.settings_page.draft_keep_awake_while_active =
-            settings.platform.keep_awake_while_active;
-        self.settings_page.draft_action_after_done = settings.platform.action_after_done;
-        self.settings_page.draft_bridge_allow_cookies = settings.browser_bridge.allow_cookies;
-        self.settings_page.draft_bridge_auto_submit = settings.browser_bridge.auto_submit;
+        self.settings_page.draft_notifications = settings.notifications;
+        self.settings_page.draft_platform = settings.platform;
+        self.settings_page.draft_browser_bridge = settings.browser_bridge;
         self.settings_page.draft_tracker_enabled = settings.tracker_list.enabled;
         self.settings_page.draft_tracker_source = settings.tracker_list.source;
         self.settings_page.draft_tracker_auto_refresh = settings.tracker_list.auto_refresh;
@@ -710,25 +711,23 @@ impl SettingsPanelView {
         cx: &mut Context<Self>,
     ) {
         let display = path.to_string_lossy().into_owned();
-        if let PathPickTarget::CategoryDirectory { index } = target {
-            if let Some(category) = self.settings_page.draft_categories.get_mut(index) {
-                category.directory = display.clone();
+        match target {
+            PathPickTarget::CategoryDirectory { index } => {
+                if let Some(category) = self.settings_page.draft_categories.get_mut(index) {
+                    category.directory = display.clone();
+                }
+                if self.settings_page.draft_category_edit_index == Some(index) {
+                    self.settings_inputs.directory.update(cx, |input, cx| {
+                        input.set_value(display, window, cx);
+                    });
+                }
             }
-            if self.settings_page.draft_category_edit_index == Some(index) {
-                self.settings_inputs.directory.update(cx, |input, cx| {
-                    input.set_value(display, window, cx);
-                });
+            PathPickTarget::ProfileExecutable => {
+                let field = self.settings_inputs.profile_executable.clone();
+                field.update(cx, |input, cx| input.set_value(display, window, cx));
+                window.focus(&field.focus_handle(cx), cx);
             }
-            self.settings_page.error = None;
-            cx.notify();
-            return;
         }
-        let field = match target {
-            PathPickTarget::ProfileExecutable => self.settings_inputs.profile_executable.clone(),
-            PathPickTarget::CategoryDirectory { .. } => unreachable!(),
-        };
-        field.update(cx, |input, cx| input.set_value(display, window, cx));
-        window.focus(&field.focus_handle(cx), cx);
         self.settings_page.error = None;
         cx.notify();
     }
@@ -827,14 +826,10 @@ impl SettingsPanelView {
         let active_category = self.settings_page.active_category;
         let error = self.settings_page.error.clone();
 
-        if matches!(
-            active_category,
-            SettingsCategory::Profiles | SettingsCategory::Engine | SettingsCategory::About
-        ) {
-            return div().into_any_element();
-        }
-
         let (dirty, saving) = match active_category {
+            SettingsCategory::Profiles | SettingsCategory::Engine | SettingsCategory::About => {
+                return div().into_any_element();
+            }
             SettingsCategory::General => {
                 let dirty = self.preview_draft_categories(cx) != self.settings.categories;
                 let saving =
@@ -866,36 +861,17 @@ impl SettingsPanelView {
                 (dirty, saving)
             }
             SettingsCategory::Notifications => {
-                let notifications_draft = NotificationSettingsView {
-                    volume: self.settings_page.draft_notification_volume,
-                    notify_on_completion: self.settings_page.draft_notify_on_completion,
-                    notify_on_error: self.settings_page.draft_notify_on_error,
-                    notify_on_engine_events: self.settings_page.draft_notify_on_engine_events,
-                    os_notifications: self.settings_page.draft_os_notifications,
-                    notify_on_low_disk: self.settings_page.draft_notify_on_low_disk,
-                    low_disk_threshold_bytes: self.settings.notifications.low_disk_threshold_bytes,
-                };
-                let dirty = notifications_draft != self.settings.notifications;
+                let dirty = self.settings_page.draft_notifications != self.settings.notifications;
                 let saving =
                     self.pending_settings_save_source == Some(SettingsSaveSource::Notifications);
                 (dirty, saving)
             }
             SettingsCategory::System => {
-                let platform_draft = PlatformSettingsView {
-                    close_behavior: self.settings_page.draft_close_behavior,
-                    show_tray_icon: self.settings_page.draft_show_tray_icon,
-                    start_minimized_to_tray: self.settings_page.draft_start_minimized_to_tray,
-                    keep_awake_while_active: self.settings_page.draft_keep_awake_while_active,
-                    action_after_done: self.settings_page.draft_action_after_done,
-                };
-                let dirty = platform_draft != self.settings.platform
-                    || self.browser_bridge_draft() != self.settings.browser_bridge;
+                let dirty = self.settings_page.draft_platform != self.settings.platform
+                    || self.settings_page.draft_browser_bridge != self.settings.browser_bridge;
                 let saving =
                     self.pending_settings_save_source == Some(SettingsSaveSource::Platform);
                 (dirty, saving)
-            }
-            SettingsCategory::Profiles | SettingsCategory::Engine | SettingsCategory::About => {
-                unreachable!()
             }
         };
 
@@ -1075,37 +1051,34 @@ impl AppShell {
         self.settings_panel = None;
     }
 
+    fn settings_panel_context<'a>(
+        &self,
+        core_setup: &'a CoreSetupState,
+    ) -> SettingsPanelContext<'a> {
+        SettingsPanelContext {
+            theme: self.theme,
+            translator: self.translator.clone(),
+            platform_capabilities: self.platform_capabilities,
+            profiles: self.profiles.clone(),
+            cores: self.cores.clone(),
+            core_setup,
+            aria2_version: self.snapshot.capabilities.version.clone(),
+            update_enabled: self.update_enabled,
+            update_portable: self.update_portable,
+            update_status: self.update_status.clone(),
+            pending_settings_save_source: self.pending_settings_save.as_ref().map(|p| p.source),
+            pending_tracker_refresh: self.pending_tracker_refresh.is_some(),
+        }
+    }
+
     pub(super) fn sync_settings_panel(&self, window: Option<&mut Window>, cx: &mut Context<Self>) {
         let Some((panel, _)) = &self.settings_panel else {
             return;
         };
-        let theme = self.theme;
-        let translator = self.translator.clone();
-        let profiles = self.profiles.clone();
-        let cores = self.cores.clone();
         let core_setup = self.core_setup.clone();
-        let aria2_version = self.snapshot.capabilities.version.clone();
-        let update_enabled = self.update_enabled;
-        let update_portable = self.update_portable;
-        let update_status = self.update_status.clone();
-        let pending_settings_save_source = self.pending_settings_save.as_ref().map(|p| p.source);
-        let pending_tracker_refresh = self.pending_tracker_refresh.is_some();
+        let panel_cx = self.settings_panel_context(&core_setup);
         panel.update(cx, |panel, cx| {
-            panel.sync_context(
-                theme,
-                translator,
-                profiles,
-                cores,
-                &core_setup,
-                aria2_version,
-                update_enabled,
-                update_portable,
-                update_status,
-                pending_settings_save_source,
-                pending_tracker_refresh,
-                window,
-                cx,
-            );
+            panel.sync_context(panel_cx, window, cx);
         });
     }
 
@@ -1307,38 +1280,12 @@ impl AppShell {
             return;
         }
         let previous_focus = window.focused(cx).map(|focus| focus.downgrade());
-        let theme = self.theme;
-        let translator = self.translator.clone();
         let settings = self.settings.clone();
-        let profiles = self.profiles.clone();
-        let cores = self.cores.clone();
         let core_setup = self.core_setup.clone();
-        let aria2_version = self.snapshot.capabilities.version.clone();
-        let update_enabled = self.update_enabled;
-        let update_portable = self.update_portable;
-        let update_status = self.update_status.clone();
-        let pending_settings_save_source = self.pending_settings_save.as_ref().map(|p| p.source);
-        let pending_tracker_refresh = self.pending_tracker_refresh.is_some();
+        let panel_cx = self.settings_panel_context(&core_setup);
 
         let panel = cx.new(|cx| {
-            SettingsPanelView::new(
-                category,
-                previous_focus,
-                theme,
-                translator,
-                settings,
-                profiles,
-                cores,
-                &core_setup,
-                aria2_version,
-                update_enabled,
-                update_portable,
-                update_status,
-                pending_settings_save_source,
-                pending_tracker_refresh,
-                window,
-                cx,
-            )
+            SettingsPanelView::new(category, previous_focus, settings, panel_cx, window, cx)
         });
         let sub = cx.subscribe_in(
             &panel,

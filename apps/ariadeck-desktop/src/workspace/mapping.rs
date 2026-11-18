@@ -12,10 +12,9 @@ use ariadeck_application::{
     ItemFailure, StoreSnapshot, TaskListQuery,
 };
 use ariadeck_domain::{
-    ConnectionState, DownloadFilter, DownloadSort, DownloadStatus, DownloadTask, EngineSession,
-    EngineSessionId, Gid, ProfileId, SessionGeneration, SortDirection, SortKey,
-    TaskConnectionDetails, TaskDetails, TaskIdentity as DomainTaskIdentity, TaskProgress,
-    TaskUriStatus,
+    ConnectionState, DownloadSort, DownloadStatus, DownloadTask, EngineSession, EngineSessionId,
+    Gid, ProfileId, SessionGeneration, TaskConnectionDetails, TaskDetails,
+    TaskIdentity as DomainTaskIdentity, TaskProgress, TaskUriStatus,
 };
 use ariadeck_engine::{
     CoreDiscoveryOrigin, CoreInstallStatus, CoreSource, CoreStore, DiscoveredCore,
@@ -38,11 +37,10 @@ use ariadeck_ui::{
     ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView,
     ProxyPasswordUpdateView, SettingsView, SpeedLimitSettingsView, SpeedSampleView,
     StoppedHistoryView, TaskCountsView, TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity,
-    TaskNameStateView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
-    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
-    TrackerListSettingsView, TrackerListSourceView, TransferPolicySettingsView, WorkspaceFilter,
-    WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
-    format_speed_limit_field,
+    TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskStatusView,
+    TaskTrackerView, TaskUriStatusView, TaskUriView, TrackerListSettingsView,
+    TrackerListSourceView, TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery,
+    WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, format_speed_limit_field,
 };
 use secrecy::SecretString;
 
@@ -155,10 +153,7 @@ pub(crate) fn map_batch_command_outcome(outcome: CommandOutcome) -> BatchCommand
 pub(crate) fn map_batch_failure(failure: ItemFailure) -> BatchTaskFailureView {
     BatchTaskFailureView {
         identity: failure.item.map(|item| match item {
-            CommandItem::Task(identity) => TaskIdentity {
-                profile_id: identity.profile_id.to_string(),
-                gid: identity.gid.to_string(),
-            },
+            CommandItem::Task(identity) => TaskIdentity::from_domain(identity),
         }),
         error: map_application_error(failure.error),
     }
@@ -166,10 +161,7 @@ pub(crate) fn map_batch_failure(failure: ItemFailure) -> BatchTaskFailureView {
 
 pub(crate) fn map_command_item(item: CommandItem) -> TaskIdentity {
     let CommandItem::Task(identity) = item;
-    TaskIdentity {
-        profile_id: identity.profile_id.to_string(),
-        gid: identity.gid.to_string(),
-    }
+    TaskIdentity::from_domain(identity)
 }
 
 pub(crate) fn map_application_error(error: ApplicationError) -> OperationErrorView {
@@ -908,28 +900,11 @@ pub(crate) fn map_ui_preferences_to_query(ui: &UiPreferences) -> WorkspaceQuery 
 
 pub(crate) fn map_query(query: &WorkspaceQuery) -> TaskListQuery {
     TaskListQuery {
-        filter: match query.filter {
-            WorkspaceFilter::All => DownloadFilter::All,
-            WorkspaceFilter::Active => DownloadFilter::Active,
-            WorkspaceFilter::Waiting => DownloadFilter::Waiting,
-            WorkspaceFilter::Paused => DownloadFilter::Paused,
-            WorkspaceFilter::Completed => DownloadFilter::Completed,
-            WorkspaceFilter::Failed => DownloadFilter::Failed,
-        },
+        filter: query.filter,
         search: query.search.clone(),
         sort: DownloadSort {
-            key: match query.sort_key {
-                WorkspaceSortKey::Queue => SortKey::Queue,
-                WorkspaceSortKey::Name => SortKey::Name,
-                WorkspaceSortKey::Status => SortKey::Status,
-                WorkspaceSortKey::Progress => SortKey::Progress,
-                WorkspaceSortKey::DownloadSpeed => SortKey::DownloadSpeed,
-                WorkspaceSortKey::Size => SortKey::Size,
-            },
-            direction: match query.sort_direction {
-                WorkspaceSortDirection::Ascending => SortDirection::Ascending,
-                WorkspaceSortDirection::Descending => SortDirection::Descending,
-            },
+            key: query.sort_key,
+            direction: query.sort_direction,
         },
         category_id: query.category_id.clone(),
     }
@@ -1054,18 +1029,8 @@ pub(crate) fn map_task(
             gid: task.gid.to_string(),
         },
         display_name: task.display_name,
-        name_state: match task.name_state {
-            ariadeck_domain::TaskNameState::Resolving => TaskNameStateView::Resolving,
-            ariadeck_domain::TaskNameState::Resolved => TaskNameStateView::Resolved,
-            ariadeck_domain::TaskNameState::Custom => TaskNameStateView::Custom,
-        },
-        source_kind: match task.metadata.source_kind {
-            ariadeck_domain::TaskSourceKind::Unknown => TaskSourceKindView::Unknown,
-            ariadeck_domain::TaskSourceKind::DirectUri => TaskSourceKindView::DirectUri,
-            ariadeck_domain::TaskSourceKind::Magnet => TaskSourceKindView::Magnet,
-            ariadeck_domain::TaskSourceKind::BitTorrent => TaskSourceKindView::BitTorrent,
-            ariadeck_domain::TaskSourceKind::Metalink => TaskSourceKindView::Metalink,
-        },
+        name_state: task.name_state,
+        source_kind: task.metadata.source_kind,
         primary_source,
         directory,
         category_id,

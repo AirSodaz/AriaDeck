@@ -155,3 +155,14 @@ notice-core-activated = 已更新当前启用的 aria2 内核，重启 AriaDeck 
 notice-core-rolled-back = 已回滚至上次可用内核，重启 AriaDeck 后生效。
 notice-core-removed = aria2 内核已移除。
 notice-capability-force-pause-all-unsupported = 当前连接的引擎不支持全部强制暂停。
+notice-power-action-failed = 无法执行电源操作：{ $summary }
+
+# 启动恢复提示
+notice-startup-settings-reset = 无效的应用设置已重置，原文件已备份至 { $path }。
+notice-startup-settings-load-failed = 无法加载应用设置，本次会话已禁用保存：{ $summary }
+notice-startup-profiles-reset = 无效的配置目录已重置，原文件已备份至 { $path }。
+notice-startup-profiles-recovered = 已从备份恢复配置目录。
+notice-startup-profiles-load-failed = 无法加载配置目录：{ $summary }
+notice-startup-profile-env-failed = 无法加载当前配置环境（{ $summary }）；修复前将暂用共享设置。
+notice-startup-session-recovered = 已重置损坏的 aria2 会话文件以继续启动，原文件已备份至 { $path }。
+notice-startup-session-recovered-no-backup = 已重置损坏的 aria2 会话文件以继续启动。

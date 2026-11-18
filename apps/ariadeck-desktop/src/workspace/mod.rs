@@ -27,14 +27,14 @@ use ariadeck_ui::{
     CoreCommandRequestView, CoreCommandResultView, CoreDiscoveryResultView, CoreDownloadResultView,
     CoreRegistryView, DiagnosticExportOutcomeView, DiagnosticExportRequestView,
     DiagnosticExportResultView, EngineHealthView, GlobalTaskCommandRequestView, OperationErrorView,
-    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
-    SettingsExportOutcomeView, SettingsExportRequestView, SettingsExportResultView,
-    SettingsImportOutcomeView, SettingsImportRequestView, SettingsImportResultView,
-    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
-    SwitchProfileOutcomeView, SwitchProfileRequestView, SwitchProfileResultView,
-    TaskCommandRequestView, TaskCommandResultView, TaskDetailsRequestView, TaskOpenRequestView,
-    TrackerListSourceView, WorkspaceFilter, WorkspaceSnapshot, WorkspaceSortDirection,
-    WorkspaceSortKey,
+    PlatformCapabilitiesView, SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView,
+    SaveProfileCatalogResultView, SettingsExportOutcomeView, SettingsExportRequestView,
+    SettingsExportResultView, SettingsImportOutcomeView, SettingsImportRequestView,
+    SettingsImportResultView, SettingsSaveOutcomeView, SettingsSaveRequestView,
+    SettingsSaveResultView, SwitchProfileOutcomeView, SwitchProfileRequestView,
+    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskDetailsRequestView,
+    TaskOpenRequestView, TrackerListSourceView, WorkspaceFilter, WorkspaceSnapshot,
+    WorkspaceSortDirection, WorkspaceSortKey,
 };
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
 use secrecy::SecretString;
@@ -63,8 +63,8 @@ mod updates;
 
 use core_fetch::{CoreDownloadRequest, CoreDownloadResult, spawn_core_download_bridge};
 use engine_setup::{
-    create_sync_handle, default_download_dir, discover_aria2_executable,
-    local_engine_executable_missing, request_local_engine_shutdown,
+    EngineBootstrapOutput, EngineSessionRecovery, create_sync_handle, default_download_dir,
+    discover_aria2_executable, local_engine_executable_missing, request_local_engine_shutdown,
 };
 use launch_queue::LaunchQueue;
 use mapping::{
@@ -97,6 +97,71 @@ use updates::{UpdateController, is_read_only_update_install, updates_supported};
 /// no open window. Prevents `on_window_closed` from quitting the app.
 pub(crate) static TRAY_SESSION_ACTIVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+fn host_platform_capabilities() -> PlatformCapabilitiesView {
+    PlatformCapabilitiesView {
+        keep_awake_supported: cfg!(target_os = "windows"),
+        browser_bridge_supported: cfg!(target_os = "windows"),
+    }
+}
+
+fn translator_for_app_language(
+    language: ariadeck_settings::LanguagePreference,
+) -> ariadeck_i18n::Translator {
+    let locale = match language {
+        ariadeck_settings::LanguagePreference::System => ariadeck_i18n::LocaleId::from_system_env(),
+        ariadeck_settings::LanguagePreference::En => ariadeck_i18n::LocaleId::En,
+        ariadeck_settings::LanguagePreference::ZhCn => ariadeck_i18n::LocaleId::ZhCn,
+    };
+    ariadeck_i18n::Translator::new(locale)
+}
+
+enum StartupNoticeKind {
+    SettingsReset(PathBuf),
+    SettingsLoadFailed(String),
+    ProfilesReset(PathBuf),
+    ProfilesRecovered,
+    ProfilesLoadFailed(String),
+    ProfileEnvFailed(String),
+    SessionRecovered(EngineSessionRecovery),
+}
+
+impl StartupNoticeKind {
+    fn format(&self, translator: &ariadeck_i18n::Translator) -> String {
+        use ariadeck_i18n::{FluentArgs, FluentValue};
+        let mut args = FluentArgs::new();
+        match self {
+            Self::SettingsReset(path) => {
+                args.set("path", FluentValue::from(path.display().to_string()));
+                translator.t_args("notice-startup-settings-reset", Some(&args))
+            }
+            Self::SettingsLoadFailed(summary) => {
+                args.set("summary", FluentValue::from(summary.as_str()));
+                translator.t_args("notice-startup-settings-load-failed", Some(&args))
+            }
+            Self::ProfilesReset(path) => {
+                args.set("path", FluentValue::from(path.display().to_string()));
+                translator.t_args("notice-startup-profiles-reset", Some(&args))
+            }
+            Self::ProfilesRecovered => translator.t("notice-startup-profiles-recovered"),
+            Self::ProfilesLoadFailed(summary) => {
+                args.set("summary", FluentValue::from(summary.as_str()));
+                translator.t_args("notice-startup-profiles-load-failed", Some(&args))
+            }
+            Self::ProfileEnvFailed(summary) => {
+                args.set("summary", FluentValue::from(summary.as_str()));
+                translator.t_args("notice-startup-profile-env-failed", Some(&args))
+            }
+            Self::SessionRecovered(recovery) => match &recovery.backup_path {
+                Some(path) => {
+                    args.set("path", FluentValue::from(path.display().to_string()));
+                    translator.t_args("notice-startup-session-recovered", Some(&args))
+                }
+                None => translator.t("notice-startup-session-recovered-no-backup"),
+            },
+        }
+    }
+}
 
 pub struct DesktopRoot {
     workspace: Entity<AppShell>,
@@ -177,7 +242,7 @@ impl DesktopRoot {
         let data_dir = ariadeck_ipc::default_data_dir();
         let defaults = AppSettings::new(default_download_dir());
         let settings_store = JsonSettingsStore::new(data_dir.join("settings.json"));
-        let (mut settings, settings_store, startup_notice) =
+        let (mut settings, settings_store, startup_notice_kind) =
             match settings_store.load_or_initialize(&defaults) {
                 Ok(loaded) => {
                     let notice = loaded.recovery.map(|recovery| {
@@ -186,10 +251,7 @@ impl DesktopRoot {
                             backup = %recovery.backup_path.display(),
                             "recovered invalid application settings"
                         );
-                        format!(
-                            "Invalid settings were reset; the original was preserved at {}.",
-                            recovery.backup_path.display()
-                        )
+                        StartupNoticeKind::SettingsReset(recovery.backup_path)
                     });
                     (loaded.settings, Some(settings_store), notice)
                 }
@@ -198,12 +260,12 @@ impl DesktopRoot {
                     (
                         defaults,
                         None,
-                        Some(format!(
-                            "Settings could not be loaded and saving is disabled: {error}"
-                        )),
+                        Some(StartupNoticeKind::SettingsLoadFailed(error.to_string())),
                     )
                 }
             };
+        let translator = translator_for_app_language(settings.language);
+        let startup_notice = startup_notice_kind.map(|kind| kind.format(&translator));
         tracing::info!(
             elapsed_ms = startup_started.elapsed().as_millis(),
             "settings loaded"
@@ -231,39 +293,22 @@ impl DesktopRoot {
             match profile_store.load_catalog_or_recover(&default_profile) {
                 Ok(loaded) => {
                     let mut notice = loaded.recovery.map(|recovery| {
-                        format!(
-                            "Invalid profile catalog was reset; the original was preserved at {}.",
-                            recovery.backup_path.display()
-                        )
+                        StartupNoticeKind::ProfilesReset(recovery.backup_path).format(&translator)
                     });
                     if loaded.migrated && notice.is_none() {
                         // Malformed current-schema recovery only (no historical migrators).
-                        notice = Some("Profile catalog was recovered from a backup.".into());
+                        notice = Some(StartupNoticeKind::ProfilesRecovered.format(&translator));
                     }
-                    // Ensure local managed entries have a data_dir; download_dir is
-                    // aligned after the active env bag is applied below.
-                    if let Some(active) = loaded.catalog.active().cloned() {
-                        if active.kind == ProfileKind::LocalManaged {
-                            let mut catalog = loaded.catalog;
-                            if let Some(entry) = catalog.active_mut()
-                                && entry.data_dir.is_none()
-                            {
-                                entry.data_dir = Some(data_dir.clone());
-                            }
-                            let _ = profile_store.save_catalog(&catalog);
-                            (catalog, notice)
-                        } else {
-                            (loaded.catalog, notice)
-                        }
-                    } else {
-                        (loaded.catalog, notice)
-                    }
+                    (loaded.catalog, notice)
                 }
                 Err(error) => {
                     tracing::error!(%error, "failed to load profile catalog");
                     (
                         ProfileCatalog::from_single(default_profile),
-                        Some(format!("Profile catalog could not be loaded: {error}")),
+                        Some(
+                            StartupNoticeKind::ProfilesLoadFailed(error.to_string())
+                                .format(&translator),
+                        ),
                     )
                 }
             };
@@ -281,9 +326,9 @@ impl DesktopRoot {
                 }
                 Err(error) => {
                     tracing::error!(%error, "failed to load profile environment");
-                    profile_env_notice = Some(format!(
-                        "Profile environment could not be loaded ({error}); using shared settings until fixed."
-                    ));
+                    profile_env_notice = Some(
+                        StartupNoticeKind::ProfileEnvFailed(error.to_string()).format(&translator),
+                    );
                 }
             }
         }
@@ -299,13 +344,21 @@ impl DesktopRoot {
             }
         }
 
-        // Catalog download_dir mirrors active fallback (local spawn --dir / profile field).
+        // Align active catalog entry once (local data_dir + fallback download_dir)
+        // and persist a single atomic write instead of two consecutive writes.
         if let Some(entry) = profile_catalog.active_mut() {
-            entry.download_dir = settings.download_directory.clone();
+            let mut changed = false;
+            if entry.download_dir != settings.download_directory {
+                entry.download_dir = settings.download_directory.clone();
+                changed = true;
+            }
             if entry.kind == ProfileKind::LocalManaged && entry.data_dir.is_none() {
                 entry.data_dir = Some(data_dir.clone());
+                changed = true;
             }
-            let _ = profile_store.save_catalog(&profile_catalog);
+            if changed && let Err(error) = profile_store.save_catalog(&profile_catalog) {
+                tracing::warn!(%error, "failed to persist aligned profile catalog on startup");
+            }
         }
 
         let child_process_job = match platform::ChildProcessJob::try_new() {
@@ -321,51 +374,10 @@ impl DesktopRoot {
                 Arc::new(move |pid| job.assign_pid(pid)) as ariadeck_engine::ChildSpawnHook
             });
 
-        let (sync, local_engine, mut initial_snapshot, engine_startup_notice) =
-            match create_sync_handle(
-                &runtime,
-                &data_dir,
-                &settings,
-                &profile_catalog,
-                child_spawn_hook,
-            ) {
-                Ok((handle, local_engine, engine_notice)) => {
-                    let snapshot = WorkspaceSnapshot {
-                        connection: ConnectionView::Connecting,
-                        ..WorkspaceSnapshot::default()
-                    };
-                    (Some(handle), local_engine, snapshot, engine_notice)
-                }
-                Err(error) => {
-                    tracing::error!(%error, "failed to configure aria2 synchronization");
-                    let snapshot = WorkspaceSnapshot {
-                        connection: ConnectionView::Failed {
-                            summary: error,
-                            retryable: false,
-                        },
-                        ..WorkspaceSnapshot::default()
-                    };
-                    (None, None, snapshot, None)
-                }
-            };
-        tracing::info!(
-            elapsed_ms = startup_started.elapsed().as_millis(),
-            "engine and sync configured"
-        );
-        let local_engine_health = local_engine
-            .as_ref()
-            .map(LocalEngineSupervisor::health_handle);
-        let local_download_roots = local_engine
-            .as_ref()
-            .map(|_| LocalDownloadRootRegistry::new(settings.download_directory.clone()));
-        let download_destination_gateway = local_download_roots.as_ref().map(|roots| {
-            Arc::new(LocalDownloadDestinationGateway::with_roots(roots.clone()))
-                as Arc<dyn DownloadDestinationGateway>
-        });
-        let task_file_gateway = local_download_roots.map(|roots| {
-            Arc::new(LocalTaskFileGateway::with_roots(roots)) as Arc<dyn TaskFileGateway>
-        });
-        initial_snapshot.local_path_actions_available = task_file_gateway.is_some();
+        let initial_snapshot = WorkspaceSnapshot {
+            connection: ConnectionView::Connecting,
+            ..WorkspaceSnapshot::default()
+        };
         let credential_store =
             Arc::new(SystemProxyCredentialStore::default()) as Arc<dyn ProxyCredentialStore>;
         let proxy_reapply_store = settings_store.clone();
@@ -379,23 +391,20 @@ impl DesktopRoot {
                 profile_store,
                 profile_env_store,
                 window_geometry_store,
-                destination_gateway: download_destination_gateway.clone(),
-                sync: sync.clone(),
+                destination_gateway: None,
+                sync: None,
                 credential_store: credential_store.clone(),
                 initial_active_profile_id: profile_catalog.active().map(|p| p.profile_id),
             },
         );
-        let initial_engine_health = local_engine_health
-            .as_ref()
-            .and_then(LocalEngineHealthHandle::health)
-            .map(map_local_engine_health)
-            .unwrap_or(EngineHealthView::External);
         let settings_view = map_settings(&settings);
         let initial_query = map_ui_preferences_to_query(&settings.ui);
+        let platform_capabilities = host_platform_capabilities();
         let workspace = cx.new(|cx| {
             let mut shell = AppShell::new_with_settings(settings_view, window, cx);
+            shell.set_platform_capabilities(platform_capabilities, cx);
             shell.set_snapshot(initial_snapshot, cx);
-            shell.set_engine_health(initial_engine_health, cx);
+            shell.set_engine_health(EngineHealthView::External, cx);
             shell.set_profiles(map_profile_catalog(&profile_catalog), cx);
             shell.set_cores(map_core_registry(&core_store), cx);
             // B4: what this platform may fetch is fixed at build time, so the
@@ -407,8 +416,6 @@ impl DesktopRoot {
             } else if let Some(message) = profile_notice.take() {
                 shell.set_startup_notice(message, true, cx);
             } else if let Some(message) = profile_env_notice.take() {
-                shell.set_startup_notice(message, true, cx);
-            } else if let Some(message) = engine_startup_notice {
                 shell.set_startup_notice(message, true, cx);
             }
             shell
@@ -557,6 +564,12 @@ impl DesktopRoot {
                             }
                             Err(error) => {
                                 tracing::error!(%error, "failed to execute completion power action");
+                                this.update(cx, |this, cx| {
+                                    this.workspace.update(cx, |shell, cx| {
+                                        shell.report_power_action_failed(error, cx);
+                                    });
+                                })
+                                .ok();
                             }
                         }
                     })
@@ -573,20 +586,8 @@ impl DesktopRoot {
             });
         }
 
-        if let Some(handle) = sync.clone() {
-            spawn_snapshot_bridge(handle, query_receiver, task_file_gateway.is_some(), cx);
-        }
         spawn_persistence_event_bridge(persistence_events, window, cx);
-        if let (Some(handle), Some(store)) = (sync.clone(), proxy_reapply_store.clone()) {
-            spawn_proxy_reapply_bridge(
-                runtime.handle().clone(),
-                handle,
-                store,
-                credential_store.clone(),
-                cx,
-            );
-        }
-        let tracker_list_sender = if let Some(store) = proxy_reapply_store {
+        let tracker_list_sender = if let Some(store) = proxy_reapply_store.clone() {
             let (req_tx, req_rx) = mpsc::unbounded_channel::<TrackerListRefreshRequest>();
             let (res_tx, res_rx) = mpsc::unbounded_channel::<TrackerListRefreshResult>();
             spawn_tracker_list_refresh_bridge(
@@ -614,8 +615,49 @@ impl DesktopRoot {
             spawn_core_download_result_bridge(res_rx, window, cx);
             Some(req_tx)
         };
-        if let Some(health) = local_engine_health {
-            spawn_local_engine_health_bridge(health, cx);
+
+        // Run heavy startup I/O (remote OS keychain lookup, local aria2c spawn,
+        // and SQLite history open) off the GPUI main thread so the first frame
+        // paints immediately in `Connecting` state.
+        {
+            let bootstrap_runtime = runtime.clone();
+            let bootstrap_data_dir = data_dir.clone();
+            let bootstrap_settings = settings.clone();
+            let bootstrap_catalog = profile_catalog.clone();
+            let bootstrap_store = proxy_reapply_store;
+            let bootstrap_credentials = credential_store;
+            let bootstrap_started = startup_started;
+            cx.spawn_in(window, async move |this, cx| {
+                let bootstrap_result = bootstrap_runtime
+                    .spawn_blocking({
+                        let runtime_for_sync = bootstrap_runtime.clone();
+                        move || {
+                            create_sync_handle(
+                                &runtime_for_sync,
+                                &bootstrap_data_dir,
+                                &bootstrap_settings,
+                                &bootstrap_catalog,
+                                child_spawn_hook,
+                            )
+                        }
+                    })
+                    .await
+                    .map_err(|error| format!("Engine startup worker failed: {error}"))
+                    .and_then(|result| result);
+
+                this.update_in(cx, |this, _window, cx| {
+                    this.attach_engine_bootstrap(
+                        bootstrap_result,
+                        bootstrap_store,
+                        bootstrap_credentials,
+                        query_receiver,
+                        bootstrap_started,
+                        cx,
+                    );
+                })
+                .ok();
+            })
+            .detach();
         }
 
         let platform = PlatformController::new(&settings, last_saved_geometry);
@@ -623,10 +665,10 @@ impl DesktopRoot {
 
         let root = Self {
             workspace,
-            sync,
-            download_destination_gateway,
-            task_file_gateway,
-            local_engine,
+            sync: None,
+            download_destination_gateway: None,
+            task_file_gateway: None,
+            local_engine: None,
             _child_process_job: child_process_job,
             runtime,
             shutdown_slot,
@@ -781,6 +823,97 @@ impl DesktopRoot {
         }
 
         root
+    }
+
+    fn attach_engine_bootstrap(
+        &mut self,
+        result: Result<EngineBootstrapOutput, String>,
+        proxy_reapply_store: Option<JsonSettingsStore>,
+        credential_store: Arc<dyn ProxyCredentialStore>,
+        query_receiver: watch::Receiver<TaskListQuery>,
+        startup_started: Instant,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok((handle, local_engine, session_recovery)) => {
+                tracing::info!(
+                    elapsed_ms = startup_started.elapsed().as_millis(),
+                    "engine and sync configured asynchronously"
+                );
+                let local_engine_health = local_engine
+                    .as_ref()
+                    .map(LocalEngineSupervisor::health_handle);
+                let local_download_roots = local_engine.as_ref().map(|_| {
+                    LocalDownloadRootRegistry::new(self.settings.download_directory.clone())
+                });
+                let download_destination_gateway = local_download_roots.as_ref().map(|roots| {
+                    Arc::new(LocalDownloadDestinationGateway::with_roots(roots.clone()))
+                        as Arc<dyn DownloadDestinationGateway>
+                });
+                let task_file_gateway = local_download_roots.map(|roots| {
+                    Arc::new(LocalTaskFileGateway::with_roots(roots)) as Arc<dyn TaskFileGateway>
+                });
+                let initial_engine_health = local_engine_health
+                    .as_ref()
+                    .and_then(LocalEngineHealthHandle::health)
+                    .map(map_local_engine_health)
+                    .unwrap_or(EngineHealthView::External);
+
+                if let Some(sender) = self.persistence_sender.as_ref() {
+                    let _ = sender.send(PersistenceCommand::AttachEngine {
+                        sync: handle.clone(),
+                        destination_gateway: download_destination_gateway.clone(),
+                    });
+                }
+                spawn_snapshot_bridge(
+                    handle.clone(),
+                    query_receiver,
+                    task_file_gateway.is_some(),
+                    cx,
+                );
+                if let Some(store) = proxy_reapply_store {
+                    spawn_proxy_reapply_bridge(
+                        self.runtime.handle().clone(),
+                        handle.clone(),
+                        store,
+                        credential_store,
+                        cx,
+                    );
+                }
+                if let Some(health) = local_engine_health {
+                    spawn_local_engine_health_bridge(health, cx);
+                }
+
+                self.sync = Some(handle);
+                self.download_destination_gateway = download_destination_gateway;
+                self.task_file_gateway = task_file_gateway;
+                self.local_engine = local_engine;
+
+                let translator = translator_for_app_language(self.settings.language);
+                let recovery_notice = session_recovery.map(|recovery| {
+                    StartupNoticeKind::SessionRecovered(recovery).format(&translator)
+                });
+                self.workspace.update(cx, |shell, cx| {
+                    shell.set_engine_health(initial_engine_health, cx);
+                    if let Some(message) = recovery_notice {
+                        shell.set_startup_notice(message, true, cx);
+                    }
+                });
+            }
+            Err(error) => {
+                tracing::error!(%error, "failed to configure aria2 synchronization");
+                let snapshot = WorkspaceSnapshot {
+                    connection: ConnectionView::Failed {
+                        summary: error,
+                        retryable: false,
+                    },
+                    ..WorkspaceSnapshot::default()
+                };
+                self.workspace.update(cx, |shell, cx| {
+                    shell.set_snapshot(snapshot, cx);
+                });
+            }
+        }
     }
 
     fn poll_platform_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) {

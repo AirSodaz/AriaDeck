@@ -525,6 +525,9 @@ mod tests {
             "error-profile-save-failed",
             "error-core-command-failed",
             "error-diagnostics-export-failed",
+            "error-persistence-unavailable",
+            "error-core-download-unsupported-platform",
+            "error-power-action-failed",
         ];
         for locale in LocaleId::all() {
             let translator = Translator::new(locale);

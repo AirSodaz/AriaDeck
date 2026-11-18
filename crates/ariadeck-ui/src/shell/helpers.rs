@@ -146,31 +146,6 @@ pub(crate) enum ContextMenuAction {
     Remove,
 }
 
-impl ContextMenuAction {
-    #[allow(dead_code)]
-    pub(crate) const fn element_id(self) -> &'static str {
-        match self {
-            Self::Details => "ctx-menu-details",
-            Self::OpenDownload => "ctx-menu-open-download",
-            Self::OpenFolder => "ctx-menu-open-folder",
-            Self::CopySource => "ctx-menu-copy-source",
-            Self::CopyGid => "ctx-menu-copy-gid",
-            Self::Pause => "ctx-menu-pause",
-            Self::ForcePause => "ctx-menu-force-pause",
-            Self::Resume => "ctx-menu-resume",
-            Self::Retry => "ctx-menu-retry",
-            Self::MoveTop => "ctx-menu-move-top",
-            Self::MoveUp => "ctx-menu-move-up",
-            Self::MoveDown => "ctx-menu-move-down",
-            Self::MoveBottom => "ctx-menu-move-bottom",
-            Self::OutputName => "ctx-menu-output-name",
-            Self::SpeedLimit => "ctx-menu-speed-limit",
-            Self::TaskOptions => "ctx-menu-task-options",
-            Self::Remove => "ctx-menu-remove",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ToolbarButtonState {
     Enabled,

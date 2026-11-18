@@ -1,5 +1,9 @@
 use gpui::{App, Hsla, Window, WindowAppearance, rgb};
 
+/// Height of the custom desktop titlebar, shared between chrome layout and
+/// `gpui-kit` overlay sheet top margins.
+pub(crate) const TITLEBAR_HEIGHT: f32 = 52.0;
+
 /// User-facing color scheme selection.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ThemeMode {
@@ -203,7 +207,7 @@ impl Theme {
         gpui_kit::component::Theme::change(mode, window, cx);
         gpui_kit::component::Theme::update(cx, |kit| {
             kit.scrollbar_mode = gpui_kit::component::scroll::ScrollbarMode::Always;
-            kit.sheet.margin_top = gpui::px(52.0);
+            kit.sheet.margin_top = gpui::px(TITLEBAR_HEIGHT);
             kit.primary = self.colors.accent;
             kit.primary_hover = self.colors.accent_hover;
             kit.primary_active = self.colors.accent_active;

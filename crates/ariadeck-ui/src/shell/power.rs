@@ -22,6 +22,23 @@ pub struct PowerCountdownState {
 }
 
 impl AppShell {
+    pub fn report_power_action_failed(&mut self, summary: String, cx: &mut Context<Self>) {
+        let message = self.t_args(
+            "notice-power-action-failed",
+            &[("summary", FluentValue::from(summary.as_str()))],
+        );
+        self.record_activity(
+            crate::ActivityKindView::Error,
+            message.clone(),
+            None,
+            None,
+            1,
+            cx,
+        );
+        self.show_notice(message, true, cx);
+        cx.notify();
+    }
+
     pub(crate) fn power_countdown(&self) -> Option<PowerCountdownState> {
         match &self.active_modal {
             Some(ActiveModal::PowerCountdown(state)) => Some(*state),
@@ -411,6 +428,7 @@ impl AppShell {
             .child(div().h(px(1.0)).bg(colors.border).my_1())
             .child({
                 let shell_toggle = cx.entity().downgrade();
+                let keep_awake_supported = self.platform_capabilities.keep_awake_supported;
                 div()
                     .flex()
                     .items_center()
@@ -420,14 +438,18 @@ impl AppShell {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(colors.text_primary)
+                            .text_color(if keep_awake_supported {
+                                colors.text_primary
+                            } else {
+                                colors.text_muted
+                            })
                             .child(self.t("power-keep-awake")),
                     )
                     .child(
                         Switch::new("power-popover-keep-awake")
-                            .checked(keep_awake)
+                            .checked(keep_awake_supported && keep_awake)
                             .accessibility_label(self.t("power-keep-awake"))
-                            .disabled(pending)
+                            .disabled(pending || !keep_awake_supported)
                             .on_change(move |_, _, cx| {
                                 shell_toggle
                                     .update(cx, |this, cx| {

@@ -321,7 +321,6 @@ pub(crate) fn local_engine_executable_missing(data_dir: &Path, profile_executabl
         .is_ok_and(|path| ariadeck_engine::probe_aria2(&path).is_err())
 }
 
-/// Hide the GPUI window without destroying it so tray sessions can restore it.
 // Data-dir resolution lives in `ariadeck-ipc` so the native messaging host
 // addresses the same instance socket (D-045 §4).
 pub(crate) use ariadeck_ipc::default_data_dir;
@@ -355,13 +354,24 @@ pub(crate) fn resolve_download_dir(
     data_dir.join("downloads")
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct EngineSessionRecovery {
+    pub(crate) backup_path: Option<PathBuf>,
+}
+
+pub(crate) type EngineBootstrapOutput = (
+    SyncHandle,
+    Option<LocalEngineSupervisor>,
+    Option<EngineSessionRecovery>,
+);
+
 pub(crate) fn create_sync_handle(
     runtime: &Runtime,
     data_dir: &Path,
     settings: &AppSettings,
     catalog: &ProfileCatalog,
     child_spawn_hook: Option<ariadeck_engine::ChildSpawnHook>,
-) -> Result<(SyncHandle, Option<LocalEngineSupervisor>, Option<String>), String> {
+) -> Result<EngineBootstrapOutput, String> {
     // One-shot env override for smoke tests still wins over the catalog.
     let external_endpoint = env::var("ARIADECK_RPC_URL")
         .ok()
@@ -372,7 +382,7 @@ pub(crate) fn create_sync_handle(
     let remote_from_catalog = active.kind == ProfileKind::RemoteRpc;
     let is_remote = external_endpoint.is_some() || remote_from_catalog;
     let rpc_runtime = RpcRuntimeConfig::from_values(is_remote, |name| env::var(name).ok())?;
-    let mut engine_startup_notice = None;
+    let mut session_recovery = None;
     let (endpoint, secret, local_engine, profile_id) = if let Some(endpoint) = external_endpoint {
         if endpoint.trim() != endpoint {
             return Err("ARIADECK_RPC_URL must not contain surrounding whitespace.".into());
@@ -414,19 +424,14 @@ pub(crate) fn create_sync_handle(
             .map_err(|error| format!("Failed to start local aria2: {error}"))?;
         // Successful start: remember the active managed core as last working when present.
         let _ = CoreStore::new(data_dir).mark_active_as_last_working();
-        let mut notices = Vec::new();
         if process.session_was_recovered() {
-            let notice = match process.session_recovery_backup() {
-                Some(backup) => format!(
-                    "Corrupt aria2 session data was reset so downloads could start; the original was preserved at {}.",
-                    backup.display()
-                ),
-                None => "Corrupt aria2 session data was reset so downloads could start.".to_owned(),
-            };
-            tracing::warn!(%notice, "local aria2 session file was recovered");
-            notices.push(notice);
+            let backup_path = process.session_recovery_backup();
+            tracing::warn!(
+                backup = ?backup_path,
+                "local aria2 session file was recovered"
+            );
+            session_recovery = Some(EngineSessionRecovery { backup_path });
         }
-        engine_startup_notice = (!notices.is_empty()).then(|| notices.join(" "));
         let endpoint = process.endpoint().clone();
         let secret = Some(RpcSecret::new(process.secret().to_owned()));
         (endpoint, secret, Some(process), config.profile_id)
@@ -463,6 +468,6 @@ pub(crate) fn create_sync_handle(
     Ok((
         spawn_sync_coordinator(connector, coordinator),
         local_engine,
-        engine_startup_notice,
+        session_recovery,
     ))
 }

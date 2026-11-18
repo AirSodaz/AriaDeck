@@ -1890,3 +1890,50 @@ fn newly_localized_notices_and_task_overviews_render_in_chinese(cx: &mut TestApp
             task_overview_summary(&pending_task, &shell.translator, shell.theme.colors);
     });
 }
+
+#[gpui::test]
+fn unsupported_platform_capabilities_block_keep_awake_and_bridge_toggles(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+    view.update_in(cx, |shell, window, cx| {
+        shell.set_platform_capabilities(
+            PlatformCapabilitiesView {
+                keep_awake_supported: false,
+                browser_bridge_supported: false,
+            },
+            cx,
+        );
+        shell.open_settings(&OpenSettings, window, cx);
+        let panel = shell.settings_panel().expect("settings panel open").clone();
+        panel.update(cx, |panel, cx| {
+            panel.select_settings_category(SettingsCategory::System, cx);
+            let initial_keep_awake = panel.settings_page.draft_platform.keep_awake_while_active;
+            let initial_auto_submit = panel.settings_page.draft_browser_bridge.auto_submit;
+            let initial_allow_cookies = panel.settings_page.draft_browser_bridge.allow_cookies;
+            panel.toggle_draft_keep_awake(cx);
+            panel.toggle_bridge_auto_submit(cx);
+            panel.toggle_bridge_allow_cookies(cx);
+            assert_eq!(
+                panel.settings_page.draft_platform.keep_awake_while_active,
+                initial_keep_awake
+            );
+            assert_eq!(
+                panel.settings_page.draft_browser_bridge.auto_submit,
+                initial_auto_submit
+            );
+            assert_eq!(
+                panel.settings_page.draft_browser_bridge.allow_cookies,
+                initial_allow_cookies
+            );
+        });
+
+        shell.report_power_action_failed("systemctl exited 1".into(), cx);
+        let notice = shell
+            .status_notice
+            .as_ref()
+            .expect("power failure notice emitted");
+        assert!(notice.is_error);
+        assert!(notice.message.contains("systemctl exited 1"));
+    });
+}

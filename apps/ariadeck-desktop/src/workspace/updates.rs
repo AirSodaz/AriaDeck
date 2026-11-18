@@ -500,7 +500,16 @@ pub(crate) fn build_windows_update_command(
     package: &Path,
     executable: &Path,
 ) -> std::process::Command {
-    // Pass paths strictly via environment variables and `-LiteralPath` /
+    build_windows_update_command_with_pid(package, executable, std::process::id())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn build_windows_update_command_with_pid(
+    package: &Path,
+    executable: &Path,
+    parent_pid: u32,
+) -> std::process::Command {
+    // Pass paths and PID strictly via environment variables and `-LiteralPath` /
     // `-FilePath` so characters like `&`, `%`, `^`, `;`, or quotes in user
     // directories can never break quoting or inject shell commands.
     let mut command = ariadeck_engine::console_free_command("powershell");
@@ -511,7 +520,12 @@ pub(crate) fn build_windows_update_command(
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            "Start-Sleep -Seconds 2; \
+            "$parentPid = 0; \
+             if ([int]::TryParse($env:ARIADECK_UPDATE_PARENT_PID, [ref]$parentPid) -and $parentPid -gt 0) { \
+                 Wait-Process -Id $parentPid -Timeout 15 -ErrorAction SilentlyContinue; \
+             } else { \
+                 Start-Sleep -Seconds 2; \
+             }; \
              $pkg = $env:ARIADECK_UPDATE_PACKAGE; \
              $exe = $env:ARIADECK_UPDATE_EXECUTABLE; \
              if ($pkg -and (Test-Path -LiteralPath $pkg)) { \
@@ -522,8 +536,63 @@ pub(crate) fn build_windows_update_command(
                  Start-Process -FilePath $exe; \
              }",
         ])
+        .env("ARIADECK_UPDATE_PARENT_PID", parent_pid.to_string())
         .env("ARIADECK_UPDATE_PACKAGE", package)
         .env("ARIADECK_UPDATE_EXECUTABLE", executable);
+    command
+}
+
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn build_macos_update_command(
+    bundle_path: &Path,
+    staged_app: &Path,
+    staging_dir: &Path,
+    package: &Path,
+    parent_pid: u32,
+) -> std::process::Command {
+    let mut command = std::process::Command::new("sh");
+    command
+        .args([
+            "-c",
+            r#"i=0; while kill -0 "$5" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.5; i=$((i+1)); done
+backup="${1}.previous.$$"
+mv "$1" "$backup" || exit 1
+if mv "$2" "$1"; then
+    xattr -dr com.apple.quarantine "$1" 2>/dev/null || true
+    rm -rf "$backup" "$3" "$4"
+    open -n "$1"
+else
+    mv "$backup" "$1" 2>/dev/null || true
+    rm -rf "$3" "$4"
+    exit 1
+fi"#,
+            "updater",
+        ])
+        .arg(bundle_path)
+        .arg(staged_app)
+        .arg(staging_dir)
+        .arg(package)
+        .arg(parent_pid.to_string());
+    command
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn build_linux_update_command(
+    package: &Path,
+    target: &Path,
+    parent_pid: u32,
+) -> std::process::Command {
+    let mut command = std::process::Command::new("sh");
+    command
+        .args([
+            "-c",
+            r#"i=0; while kill -0 "$3" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.5; i=$((i+1)); done
+mv -f "$1" "$2" && chmod +x "$2" && "$2" &"#,
+            "updater",
+        ])
+        .arg(package)
+        .arg(target)
+        .arg(parent_pid.to_string());
     command
 }
 
@@ -569,18 +638,15 @@ fn launch_verified_update(package: PathBuf, executable: PathBuf) -> Result<(), S
         }
 
         let staging_dir = staging_temp.keep();
-        std::process::Command::new("sh")
-            .args([
-                "-c",
-                r#"sleep 1; rm -rf "$1" && mv "$2" "$1" && xattr -dr com.apple.quarantine "$1" 2>/dev/null; open -n "$1"; rm -rf "$3" "$4""#,
-                "updater",
-            ])
-            .arg(bundle_path)
-            .arg(&staged_app)
-            .arg(&staging_dir)
-            .arg(&package)
-            .spawn()
-            .map_err(|e| format!("Could not spawn update helper: {e}"))?;
+        build_macos_update_command(
+            bundle_path,
+            &staged_app,
+            &staging_dir,
+            &package,
+            std::process::id(),
+        )
+        .spawn()
+        .map_err(|e| format!("Could not spawn update helper: {e}"))?;
         Ok(())
     }
     #[cfg(target_os = "linux")]
@@ -595,14 +661,7 @@ fn launch_verified_update(package: PathBuf, executable: PathBuf) -> Result<(), S
         };
         std::fs::set_permissions(&package, std::fs::Permissions::from_mode(0o755))
             .map_err(|e| format!("Could not set executable permissions: {e}"))?;
-        std::process::Command::new("sh")
-            .args([
-                "-c",
-                r#"sleep 1; mv -f "$1" "$2" && chmod +x "$2" && "$2" &"#,
-                "updater",
-            ])
-            .arg(&package)
-            .arg(&target)
+        build_linux_update_command(&package, &target, std::process::id())
             .spawn()
             .map_err(|e| format!("Could not spawn update helper: {e}"))?;
         Ok(())
@@ -997,5 +1056,68 @@ QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfN
         let base64_sig = data_encoding::BASE64.encode(signature);
         assert!(verify_minisign_with_key(public_key, base64_sig.as_bytes(), b"test").is_ok());
         assert!(verify_minisign_with_key(public_key, base64_sig.as_bytes(), b"tampered").is_err());
+    }
+
+    #[test]
+    fn macos_update_command_waits_for_pid_and_uses_backup_rollback() {
+        let cmd = build_macos_update_command(
+            Path::new("/Applications/AriaDeck.app"),
+            Path::new("/tmp/stage/AriaDeck.app"),
+            Path::new("/tmp/stage"),
+            Path::new("/tmp/pkg.tar.gz"),
+            4242,
+        );
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let script = &args[1];
+        assert!(script.contains("kill -0 \"$5\""), "must wait on parent PID");
+        assert!(
+            script.contains("backup=\"${1}.previous.$$\"")
+                && script.contains("mv \"$backup\" \"$1\""),
+            "must preserve backup and roll back if mv fails"
+        );
+        assert_eq!(args.last().map(String::as_str), Some("4242"));
+    }
+
+    #[test]
+    fn linux_update_command_waits_for_pid_before_replacing_appimage() {
+        let cmd = build_linux_update_command(
+            Path::new("/tmp/AriaDeck-new.AppImage"),
+            Path::new("/home/user/AriaDeck.AppImage"),
+            9001,
+        );
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let script = &args[1];
+        assert!(script.contains("kill -0 \"$3\""), "must wait on parent PID");
+        assert_eq!(args.last().map(String::as_str), Some("9001"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_update_command_passes_parent_pid_via_env() {
+        let cmd = build_windows_update_command_with_pid(
+            Path::new(r"C:\Temp\setup.exe"),
+            Path::new(r"C:\Program Files\AriaDeck\ariadeck-desktop.exe"),
+            1357,
+        );
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.iter().any(|arg| arg.contains("Wait-Process")),
+            "Windows update script must wait on parent PID"
+        );
+        let pid_env = cmd.get_envs().find_map(|(k, v)| {
+            (k == "ARIADECK_UPDATE_PARENT_PID")
+                .then(|| v.map(|val| val.to_string_lossy().into_owned()))
+                .flatten()
+        });
+        assert_eq!(pid_env.as_deref(), Some("1357"));
     }
 }

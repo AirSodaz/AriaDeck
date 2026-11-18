@@ -38,6 +38,12 @@ use super::{
 
 /// Serialized persistence commands handled off the GPUI UI thread.
 pub(crate) enum PersistenceCommand {
+    /// Attach the live sync handle and local destination gateway once async
+    /// engine bootstrap completes after window creation.
+    AttachEngine {
+        sync: SyncHandle,
+        destination_gateway: Option<Arc<dyn DownloadDestinationGateway>>,
+    },
     SaveSettings(Box<SettingsPersistenceRequest>),
     CommitTrackerRefresh(TrackerRefreshCommit),
     SwitchProfile(Box<ProfileSwitchRequest>),
@@ -117,8 +123,17 @@ pub(crate) fn spawn_persistence_worker(
     let (events, event_rx) = mpsc::unbounded_channel::<PersistenceEvent>();
     let task = runtime.spawn(async move {
         let mut active_profile_id = deps.initial_active_profile_id;
+        let mut sync = deps.sync;
+        let mut destination_gateway = deps.destination_gateway;
         while let Some(command) = command_rx.recv().await {
             match command {
+                PersistenceCommand::AttachEngine {
+                    sync: attached_sync,
+                    destination_gateway: attached_gateway,
+                } => {
+                    sync = Some(attached_sync);
+                    destination_gateway = attached_gateway;
+                }
                 PersistenceCommand::SaveSettings(request) => {
                     let request = *request;
                     let result = match deps.settings_store.as_ref() {
@@ -130,8 +145,8 @@ pub(crate) fn spawn_persistence_worker(
                             persist_settings_request(
                                 store.clone(),
                                 deps.profile_env_store.clone(),
-                                deps.destination_gateway.clone(),
-                                deps.sync.clone(),
+                                destination_gateway.clone(),
+                                sync.clone(),
                                 deps.credential_store.clone(),
                                 request_with_profile,
                             )
@@ -151,7 +166,7 @@ pub(crate) fn spawn_persistence_worker(
                         deps.settings_store.as_ref(),
                         &deps.profile_env_store,
                         active_profile_id,
-                        deps.sync.as_ref(),
+                        sync.as_ref(),
                         commit,
                     )
                     .await;

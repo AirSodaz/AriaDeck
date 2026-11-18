@@ -498,6 +498,15 @@ pub enum DownloadFilter {
 }
 
 impl DownloadFilter {
+    pub const ALL: [Self; 6] = [
+        Self::All,
+        Self::Active,
+        Self::Waiting,
+        Self::Paused,
+        Self::Completed,
+        Self::Failed,
+    ];
+
     #[must_use]
     pub const fn matches(self, status: DownloadStatus) -> bool {
         match self {
@@ -526,12 +535,33 @@ pub enum SortKey {
     Size,
 }
 
+impl SortKey {
+    pub const ALL: [Self; 6] = [
+        Self::Queue,
+        Self::Name,
+        Self::Status,
+        Self::Progress,
+        Self::DownloadSpeed,
+        Self::Size,
+    ];
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SortDirection {
     #[default]
     Ascending,
     Descending,
+}
+
+impl SortDirection {
+    #[must_use]
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::Ascending => Self::Descending,
+            Self::Descending => Self::Ascending,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]

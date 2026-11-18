@@ -303,3 +303,7 @@ settings-profile-secret-placeholder = 留空则保留已保存的密钥
 settings-proxy-username-placeholder = 可选用户名
 settings-proxy-password-placeholder = 可选密码或替换已保存密码
 settings-category-name-placeholder = 常规
+
+# 平台能力提示
+settings-keep-awake-unsupported-desc = 下载时阻止休眠目前仅在 Windows 平台支持。
+settings-bridge-unsupported-desc = 原生浏览器桥接打包与注册目前仅在 Windows 平台支持。

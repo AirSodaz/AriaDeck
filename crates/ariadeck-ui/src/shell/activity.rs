@@ -54,13 +54,9 @@ impl AppShell {
             return;
         }
         let message = message.into();
-        let id = self.next_notice_id;
-        self.next_notice_id = self.next_notice_id.checked_add(1).unwrap_or(1);
         self.status_notice = Some(StatusNotice {
-            id,
             message: message.clone(),
             is_error,
-            automatic,
         });
         // OS-native toasts only for automatic, preference-gated events (PLAT-001).
         if automatic && self.settings.notifications.os_notifications {
@@ -292,20 +288,5 @@ impl AppShell {
         }
         self.activity_log.clear();
         cx.notify();
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn dismiss_notice(&mut self, cx: &mut Context<Self>) {
-        if self.status_notice.take().is_some() {
-            let handle = self.window_handle;
-            cx.defer(move |cx| {
-                let _ = handle.update(cx, |_, window, cx| {
-                    if window.root::<gpui_kit::component::Root>().is_some() {
-                        window.clear_notifications(cx);
-                    }
-                });
-            });
-            cx.notify();
-        }
     }
 }
