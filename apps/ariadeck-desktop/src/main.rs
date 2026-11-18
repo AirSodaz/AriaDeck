@@ -11,11 +11,8 @@ mod workspace;
 
 use std::{env, ffi::OsString, path::PathBuf, sync::Arc, time::Instant};
 
-use gpui::{
-    App, AppContext as _, Bounds, Point, TitlebarOptions, WindowBounds, WindowDecorations,
-    WindowOptions, px, size,
-};
-use gpui_kit::application;
+use gpui::{App, AppContext as _, Bounds, Point, WindowBounds, px, size};
+use gpui_kit::{application, component::TitleBar};
 use tokio::runtime::Builder;
 
 use ariadeck_ipc::{
@@ -89,34 +86,36 @@ fn main() {
                 elapsed_ms = startup_started.elapsed().as_millis(),
                 "opening primary window"
             );
-            let open_result = gpui_kit::open_window(
-                WindowOptions {
-                    window_bounds: Some(window_bounds),
-                    titlebar: Some(platform_titlebar()),
-                    window_decorations: platform_window_decorations(),
-                    window_min_size: Some(size(px(960.0), px(620.0))),
-                    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-                    icon: window_icon(),
-                    ..WindowOptions::default()
-                },
-                cx,
+            let mut window_options = TitleBar::window_options();
+            window_options.window_bounds = Some(window_bounds);
+            window_options.window_min_size = Some(size(px(960.0), px(620.0)));
+            if let Some(titlebar) = window_options.titlebar.as_mut() {
+                titlebar.title = Some("AriaDeck".into());
+                #[cfg(target_os = "macos")]
                 {
-                    let runtime = runtime.clone();
-                    let initial_request = initial_request.clone();
-                    let instance_requests = instance_requests;
-                    move |window, cx| {
-                        cx.new(|cx| {
-                            DesktopRoot::new(
-                                runtime.clone(),
-                                initial_request.clone(),
-                                instance_requests,
-                                window,
-                                cx,
-                            )
-                        })
-                    }
-                },
-            );
+                    titlebar.traffic_light_position = Some(gpui::point(px(12.0), px(18.0)));
+                }
+            }
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            {
+                window_options.icon = window_icon();
+            }
+            let open_result = gpui_kit::open_window(window_options, cx, {
+                let runtime = runtime.clone();
+                let initial_request = initial_request.clone();
+                let instance_requests = instance_requests;
+                move |window, cx| {
+                    cx.new(|cx| {
+                        DesktopRoot::new(
+                            runtime.clone(),
+                            initial_request.clone(),
+                            instance_requests,
+                            window,
+                            cx,
+                        )
+                    })
+                }
+            });
 
             if let Err(error) = open_result {
                 tracing::error!(?error, "failed to open the AriaDeck window");
@@ -197,32 +196,6 @@ fn restored_window_bounds(cx: &App) -> WindowBounds {
     ))
 }
 
-#[cfg(target_os = "windows")]
-fn platform_titlebar() -> TitlebarOptions {
-    TitlebarOptions {
-        title: Some("AriaDeck".into()),
-        appears_transparent: true,
-        ..TitlebarOptions::default()
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn platform_titlebar() -> TitlebarOptions {
-    TitlebarOptions {
-        title: Some("AriaDeck".into()),
-        appears_transparent: true,
-        traffic_light_position: Some(gpui::point(px(12.0), px(15.0))),
-    }
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn platform_titlebar() -> TitlebarOptions {
-    TitlebarOptions {
-        title: Some("AriaDeck".into()),
-        ..TitlebarOptions::default()
-    }
-}
-
 /// Return the application icon for X11/Wayland window managers (Linux + FreeBSD).
 ///
 /// GPUI reads this via `WindowOptions::icon` and forwards it to the platform
@@ -236,16 +209,6 @@ fn window_icon() -> Option<Arc<image::RgbaImage>> {
     const SIZE: u32 = 128;
     let rgba = include_bytes!(concat!(env!("OUT_DIR"), "/window_icon.rgba"));
     image::RgbaImage::from_raw(SIZE, SIZE, rgba.to_vec()).map(Arc::new)
-}
-
-#[cfg(target_os = "linux")]
-fn platform_window_decorations() -> Option<WindowDecorations> {
-    Some(WindowDecorations::Server)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn platform_window_decorations() -> Option<WindowDecorations> {
-    None
 }
 
 #[cfg(test)]

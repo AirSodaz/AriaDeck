@@ -19,21 +19,19 @@ pub use ariadeck_i18n::{LanguagePreference, LocaleId, Translator};
 
 pub use actions::init;
 pub use actions::{
-    Backspace, ClearSearch, CloseAddDownload, CloseBatchFailures, CloseCoreSetup, CloseSettings,
-    CloseTaskOptions, CloseTaskOutputName, CloseTaskSpeedLimit, Copy, Cut, Delete, FocusNext,
-    FocusPrevious, FocusSearch, InsertNewline, MoveEnd, MoveHome, MoveLeft, MoveRight,
-    MoveTaskDownInQueue, MoveTaskToQueueBottom, MoveTaskToQueueTop, MoveTaskUpInQueue,
-    OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit, Paste,
-    PauseSelectedTask, RemoveSelectedTask, ResumeSelectedTask, RetrySelectedTask, SaveSettings,
-    SelectAll, SelectAllTasks, SelectLeft, SelectNextTask, SelectPreviousTask, SelectRight,
-    SubmitAddDownload, SubmitTaskOptions, SubmitTaskOutputName, SubmitTaskSpeedLimit,
+    ClearSearch, CloseAddDownload, CloseBatchFailures, CloseCoreSetup, CloseSettings,
+    CloseTaskOptions, CloseTaskOutputName, CloseTaskSpeedLimit, FocusSearch, MoveTaskDownInQueue,
+    MoveTaskToQueueBottom, MoveTaskToQueueTop, MoveTaskUpInQueue, OpenAddDownload, OpenSettings,
+    OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit, PauseSelectedTask, RemoveSelectedTask,
+    ResumeSelectedTask, RetrySelectedTask, SaveSettings, SelectAllTasks, SelectNextTask,
+    SelectPreviousTask, SubmitAddDownload, SubmitTaskOptions, SubmitTaskOutputName,
+    SubmitTaskSpeedLimit,
 };
 pub use app_assets::Assets;
 pub use components::{
-    Badge, Button, ButtonStyle, ButtonVariant, Checkbox, Dialog, Icon, IconButton, IconName,
-    IconSize, Kbd, LoadingIndicator, Notification, Progress, ProgressCircle, Segment,
-    SegmentedControl, Spinner, StatusIndicator, Switch, Tab, TabBar, TabVariant, Tag, TagVariant,
-    Toast, ToastKind, Toggle, Tooltip, vertical_scrollbar_overlay,
+    Badge, Checkbox, Icon, IconName, IconSize, Kbd, LoadingIndicator, Notification, Progress,
+    ProgressCircle, Segment, SegmentedControl, Spinner, StatusIndicator, Switch, Tab, TabBar,
+    TabVariant, Tag, TagVariant,
 };
 pub use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 pub use gpui_kit::component::link::Link;

@@ -2,6 +2,28 @@
 
 use super::*;
 
+struct TaskDetailsSheetView {
+    shell: Entity<AppShell>,
+    _observer: Subscription,
+}
+
+impl TaskDetailsSheetView {
+    fn new(shell: Entity<AppShell>, cx: &mut Context<Self>) -> Self {
+        let observer = cx.observe(&shell, |_, _, cx| cx.notify());
+        Self {
+            shell,
+            _observer: observer,
+        }
+    }
+}
+
+impl Render for TaskDetailsSheetView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.shell
+            .update(cx, |this, cx| this.render_task_details_content(false, cx))
+    }
+}
+
 impl AppShell {
     fn format_seed_stop_rules(&self, options: &[TaskOptionView]) -> String {
         let value = |key: &str| {
@@ -82,6 +104,7 @@ impl AppShell {
         if self.snapshot.commands_available() {
             self.request_current_details(false, cx);
         }
+        self.sync_details_sheet_deferred(cx);
         cx.notify();
     }
 
@@ -190,12 +213,83 @@ impl AppShell {
 
     pub(crate) fn close_task_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.details_drawer.take().is_some() {
+            self.sync_details_sheet(window, cx);
             window.focus(&self.focus_handle, cx);
             cx.notify();
         }
     }
 
+    pub(crate) fn desired_details_sheet_open(&self, window: &Window) -> bool {
+        self.details_drawer.is_some()
+            && self.page == AppPage::Downloads
+            && shell_layout(f32::from(window.viewport_size().width)).details_presentation
+                == DetailsPresentation::Overlay
+    }
+
+    pub(crate) fn sync_details_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !has_kit_root(window) {
+            return;
+        }
+        let desired = self.desired_details_sheet_open(window);
+        if desired == self.details_sheet_open {
+            return;
+        }
+        if desired {
+            self.details_sheet_open = true;
+            let shell = cx.entity();
+            let view = cx.new(|cx| TaskDetailsSheetView::new(shell.clone(), cx));
+            let title = self.t("action-details");
+            let width = self
+                .details_drawer_width
+                .min((f32::from(window.viewport_size().width) - 24.0).max(280.0));
+            let shell_close = shell.downgrade();
+            window.open_sheet(cx, move |sheet, _, _| {
+                let shell_close = shell_close.clone();
+                sheet
+                    .title(title.clone())
+                    .size(px(width))
+                    .p_0()
+                    .overlay(true)
+                    .overlay_closable(true)
+                    .resizable(true)
+                    .child(view.clone())
+                    .on_close(move |_, _, cx| {
+                        let _ = shell_close.update(cx, |this, cx| {
+                            if this.details_sheet_open {
+                                this.details_sheet_open = false;
+                                this.details_drawer = None;
+                                cx.notify();
+                            }
+                        });
+                    })
+            });
+        } else {
+            self.details_sheet_open = false;
+            window.close_sheet(cx);
+        }
+    }
+
+    pub(crate) fn sync_details_sheet_deferred(&self, cx: &mut Context<Self>) {
+        let shell = cx.entity().downgrade();
+        let handle = self.window_handle;
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, cx| {
+                let _ = shell.update(cx, |this, cx| {
+                    this.sync_details_sheet(window, cx);
+                });
+            });
+        });
+    }
+
     pub(crate) fn render_task_details_drawer(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        self.render_task_details_content(true, cx)
+    }
+
+    pub(crate) fn render_task_details_content(
+        &mut self,
+        inline: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = self.theme.colors;
         let Some(drawer) = self.details_drawer.as_ref() else {
             return div().into_any_element();
@@ -398,18 +492,6 @@ impl AppShell {
                                     .min_w_0()
                                     .overflow_y_scroll()
                                     .track_scroll(&info_scroll)
-                                    .on_scroll({
-                                        let handle = info_scroll.clone();
-                                        cx.listener(move |this, event, window, cx| {
-                                            this.smooth_discrete_scroll(
-                                                SmoothScrollArea::DetailsInfo,
-                                                handle.clone(),
-                                                event,
-                                                window,
-                                                cx,
-                                            );
-                                        })
-                                    })
                                     .p_4()
                                     .flex()
                                     .flex_col()
@@ -417,25 +499,24 @@ impl AppShell {
                                     .child(detail_line_with_action(
                                         self.t("dialog-details-gid"),
                                         gid.clone(),
-                                        IconButton::new("copy-task-gid", IconName::Copy)
-                                            .aria_label(self.t("dialog-details-copy-gid-aria"))
-                                            .tooltip(Tooltip::new(
-                                                self.t("dialog-details-copy-gid-tooltip"),
-                                            ))
-                                            .on_click({
-                                                let gid = gid.clone();
-                                                cx.listener(move |this, _, _, cx| {
-                                                    cx.write_to_clipboard(
-                                                        ClipboardItem::new_string(gid.clone()),
-                                                    );
-                                                    this.show_notice(
-                                                        this.t("notice-gid-copied-short"),
-                                                        false,
-                                                        cx,
-                                                    );
+                                        {
+                                            let shell = cx.entity().downgrade();
+                                            Clipboard::new("copy-task-gid")
+                                                .value(gid.clone())
+                                                .tooltip(self.t("dialog-details-copy-gid-tooltip"))
+                                                .accessibility_label(
+                                                    self.t("dialog-details-copy-gid-aria"),
+                                                )
+                                                .on_copied(move |_, _, cx| {
+                                                    let _ = shell.update(cx, |this, cx| {
+                                                        this.show_notice(
+                                                            this.t("notice-gid-copied-short"),
+                                                            false,
+                                                            cx,
+                                                        );
+                                                    });
                                                 })
-                                            })
-                                            .render(colors),
+                                        },
                                         colors,
                                     ))
                                     .child(detail_line(
@@ -586,10 +667,7 @@ impl AppShell {
                                         ))
                                     }),
                             )
-                            .child(vertical_scrollbar_overlay(
-                                "task-details-info-scrollbar",
-                                &info_scroll,
-                            ))
+                            .vertical_scrollbar(&info_scroll)
                             .into_any_element()
                     }
                     TaskDetailsTab::Files => {
@@ -623,18 +701,6 @@ impl AppShell {
                                 .flex()
                                 .flex_col()
                                 .overflow_hidden()
-                                .on_scroll({
-                                    let handle = file_scroll.0.borrow().base_handle.clone();
-                                    cx.listener(move |this, event, window, cx| {
-                                        this.smooth_discrete_scroll(
-                                            SmoothScrollArea::DetailsFiles,
-                                            handle.clone(),
-                                            event,
-                                            window,
-                                            cx,
-                                        );
-                                    })
-                                })
                                 .child(
                                     uniform_list(
                                         list_id,
@@ -718,10 +784,7 @@ impl AppShell {
                                     .track_scroll(&file_scroll)
                                     .size_full(),
                                 )
-                                .child(vertical_scrollbar_overlay(
-                                    "task-details-files-scrollbar",
-                                    &file_scroll,
-                                ))
+                                .vertical_scrollbar(&file_scroll)
                                 .into_any_element()
                         }
                     }
@@ -746,18 +809,6 @@ impl AppShell {
                                     .min_w_0()
                                     .overflow_y_scroll()
                                     .track_scroll(&network_scroll)
-                                    .on_scroll({
-                                        let handle = network_scroll.clone();
-                                        cx.listener(move |this, event, window, cx| {
-                                            this.smooth_discrete_scroll(
-                                                SmoothScrollArea::DetailsNetwork,
-                                                handle.clone(),
-                                                event,
-                                                window,
-                                                cx,
-                                            );
-                                        })
-                                    })
                                     .p_4()
                                     .flex()
                                     .flex_col()
@@ -880,10 +931,7 @@ impl AppShell {
                                         colors,
                                     )),
                             )
-                            .child(vertical_scrollbar_overlay(
-                                "task-details-network-scrollbar",
-                                &network_scroll,
-                            ))
+                            .vertical_scrollbar(&network_scroll)
                             .into_any_element()
                     }
                     TaskDetailsTab::Options => {
@@ -927,24 +975,9 @@ impl AppShell {
                                 .min_w_0()
                                 .overflow_y_scroll()
                                 .track_scroll(&options_scroll)
-                                .on_scroll({
-                                    let handle = options_scroll.clone();
-                                    cx.listener(move |this, event, window, cx| {
-                                        this.smooth_discrete_scroll(
-                                            SmoothScrollArea::DetailsOptions,
-                                            handle.clone(),
-                                            event,
-                                            window,
-                                            cx,
-                                        );
-                                    })
-                                })
                                 .p_4(),
                             )
-                            .child(vertical_scrollbar_overlay(
-                                "task-details-options-scrollbar",
-                                &options_scroll,
-                            ))
+                            .vertical_scrollbar(&options_scroll)
                             .into_any_element()
                     }
                 };
@@ -976,17 +1009,31 @@ impl AppShell {
                 "dialog-details-drawer-aria",
                 &[("name", FluentValue::from(display_name.clone()))],
             ))
-            .w(px(DETAILS_DRAWER_WIDTH))
-            .max_w_full()
-            .h_full()
-            .flex_none()
+            .when(inline, |drawer| {
+                drawer
+                    .relative()
+                    .w(px(self.details_drawer_width))
+                    .max_w_full()
+                    .h_full()
+                    .flex_none()
+                    .border_l_1()
+                    .border_color(colors.border)
+            })
+            .when(!inline, |drawer| drawer.size_full())
             .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
-            .border_l_1()
-            .border_color(colors.border)
             .bg(colors.surface)
+            .when(inline, |drawer| {
+                drawer.child(
+                    resize_handle("details-drawer-resize-handle", Axis::Horizontal)
+                        .inside(HandleEdge::Leading)
+                        .on_drag(ResizeDetailsDrawer, |drag, _, _, cx| {
+                            cx.new(|_| drag.clone())
+                        }),
+                )
+            })
             .child(
                 div()
                     .h(px(68.0))
@@ -1039,20 +1086,24 @@ impl AppShell {
                                     .child(format_percent(overview_progress)),
                             ),
                     )
-                    .child(
-                        toolbar_icon_button(
-                            "close-task-details",
-                            IconName::X,
-                            self.t("dialog-details-close"),
-                            ToolbarButtonState::Enabled,
-                            false,
-                            None,
-                            colors,
+                    .when(inline, |header| {
+                        header.child(
+                            toolbar_icon_button(
+                                "close-task-details",
+                                IconName::X,
+                                self.t("dialog-details-close"),
+                                ToolbarButtonState::Enabled,
+                                false,
+                                None,
+                                colors,
+                            )
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    this.close_task_details(window, cx);
+                                },
+                            )),
                         )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.close_task_details(window, cx);
-                        })),
-                    ),
+                    }),
             )
             .child(task_overview_summary(&overview, colors))
             .child(body)

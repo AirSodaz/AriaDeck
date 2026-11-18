@@ -2,21 +2,25 @@
 
 use super::*;
 
+#[derive(Clone)]
+struct SpeedChartPoint {
+    label: SharedString,
+    download_rate: f64,
+    upload_rate: f64,
+}
+
 impl AppShell {
-    pub(crate) fn render_header(&mut self, _window: &Window, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn render_header(&mut self, window: &Window, cx: &mut Context<Self>) -> TitleBar {
         let colors = self.theme.colors;
         let (search_left, search_right) =
-            centered_search_bounds(f32::from(_window.viewport_size().width));
+            centered_search_bounds(f32::from(window.viewport_size().width));
         let search_width = search_right - search_left;
         let brand = div()
-            .w(px(TITLEBAR_SIDE_WIDTH))
             .flex_none()
             .flex()
             .items_center()
             .h_full()
             .gap_2()
-            .pl(px(TITLEBAR_BRAND_INSET))
-            .window_control_area(WindowControlArea::Drag)
             .child(img("icon.svg").size(px(20.0)).flex_none())
             .child(
                 div()
@@ -24,169 +28,112 @@ impl AppShell {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(self.t("ui-app-name")),
             );
-        // On Windows the caption strip must reach the physical right edge, so
-        // horizontal padding is applied only on the left (and non-Windows keeps
-        // symmetric padding for the Add action cluster).
-        let header = div()
-            .h(px(TITLEBAR_HEIGHT))
+        // TitleBar wraps its children in `WindowControlArea::Drag`, so Windows
+        // routes clicks through `WM_NCLBUTTONDOWN(HTCAPTION)` and falls back to
+        // a native window move (swallowing `WM_NCLBUTTONUP`) whenever GPUI leaves
+        // `MouseDown` propagating. Stop propagation in the bubble phase around
+        // interactive titlebar controls so their own `on_click` / clear button
+        // handlers receive the full press-and-release sequence.
+        let actions = div()
             .flex_none()
             .flex()
             .items_center()
-            .pl_3()
-            .border_b_1()
+            .justify_end()
+            .gap_2()
+            .when(cfg!(target_os = "windows"), |element| element.pr_2())
+            .when(!cfg!(target_os = "windows"), |element| element.pr_3())
+            .child(
+                div()
+                    .debug_selector(|| "titlebar-add-download".to_string())
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(self.render_add_button(cx)),
+            )
+            .when(cfg!(target_os = "windows"), |element| {
+                element.child(Separator::vertical().h(px(16.0)))
+            });
+
+        TitleBar::new()
+            .h(px(TITLEBAR_HEIGHT))
+            .bg(colors.toolbar_surface)
             .border_color(colors.border)
-            .bg(colors.toolbar_surface);
-        #[cfg(not(target_os = "windows"))]
-        let header = header.pr_3();
-        header
+            .on_close_window(cx.listener(|this, _, window, cx| {
+                if this.handle_window_close_request(cx) {
+                    window.remove_window();
+                }
+            }))
             .child(brand)
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .h_full()
+                    .px_3()
                     .flex()
                     .items_center()
-                    .child(titlebar_drag_region())
+                    .justify_center()
                     .child(
-                        div().w(px(search_width)).flex_none().child(
-                            Input::new(&self.search_input)
-                                .cleanable(true)
-                                .prefix(Icon::new(IconName::Search)),
-                        ),
-                    )
-                    .child(titlebar_drag_region()),
+                        div()
+                            .w(px(search_width))
+                            .flex_none()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                            .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                            .child(
+                                Input::new(&self.search_input)
+                                    .cleanable(true)
+                                    .prefix(Icon::new(IconName::Search)),
+                            ),
+                    ),
             )
-            .child({
-                // Keep chrome actions (Add) padded; Windows caption buttons are
-                // rendered outside this inset so Close can sit flush to the edge.
-                let actions = div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap_2()
-                    .when(cfg!(target_os = "windows"), |element| element.pl_2().pr_2())
-                    .when(!cfg!(target_os = "windows"), |element| {
-                        element.w(px(TITLEBAR_SIDE_WIDTH))
-                    })
-                    .child(self.render_add_button(cx));
-                #[cfg(target_os = "windows")]
-                {
-                    div()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .child(actions)
-                        .child(div().w(px(1.0)).h(px(16.0)).mr_2().bg(colors.border))
-                        .child(self.render_window_controls(_window))
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    actions
-                }
-            })
+            .child(actions)
     }
 
-    #[cfg(target_os = "windows")]
-    pub(crate) fn render_window_controls(&self, window: &Window) -> Div {
-        let colors = self.theme.colors;
-        let maximized = window.is_maximized();
-        div()
-            .h(px(TITLEBAR_HEIGHT))
-            .flex_none()
-            .flex()
-            .items_center()
-            .children(
-                [
-                    WindowControlKind::Minimize,
-                    WindowControlKind::Maximize,
-                    WindowControlKind::Close,
-                ]
-                .map(|kind| {
-                    let control = window_control_config(kind, maximized);
-                    window_control_button(
-                        control.id,
-                        control.icon,
-                        control.label,
-                        control.area,
-                        colors,
-                        control.danger,
-                    )
-                }),
-            )
-    }
-
-    pub(crate) fn render_add_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let colors = self.theme.colors;
+    pub(crate) fn render_add_button(&self, cx: &mut Context<Self>) -> KitButton {
         let enabled = self.snapshot.commands_available() && !self.add_dialog.open;
-        Button::new("open-add-download", self.t("action-add-download"))
-            .icon(IconName::Plus)
-            .aria_label(if enabled {
+        KitButton::new("open-add-download")
+            .primary()
+            .small()
+            .icon(gpui_kit::component::Icon::new(IconName::Plus))
+            .label(self.t("action-add-download"))
+            .accessibility_label(if enabled {
                 self.t("action-add-download-aria")
             } else {
                 self.t("add-download-unavailable")
             })
-            .tooltip(Tooltip::new(self.t("action-add-download")).meta("Ctrl/Cmd+N"))
-            .style(ButtonStyle::Primary)
+            .tooltip_with_action(
+                self.t("action-add-download"),
+                &OpenAddDownload,
+                Some("DownloadWorkspace"),
+            )
             .disabled(!enabled)
             .on_click(cx.listener(|this, _, window, cx| {
                 this.open_add_download(&OpenAddDownload, window, cx);
             }))
-            .render(colors)
     }
 
-    pub(crate) fn render_sidebar(&mut self, sidebar_width: f32, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn render_sidebar(
+        &mut self,
+        sidebar_width: f32,
+        cx: &mut Context<Self>,
+    ) -> Sidebar<SidebarGroup<SidebarMenu>> {
         let colors = self.theme.colors;
-        let mut filters = Vec::with_capacity(WorkspaceFilter::ALL.len());
+        let mut filter_items = Vec::with_capacity(WorkspaceFilter::ALL.len());
         for filter in WorkspaceFilter::ALL {
             let count = filter.count(self.snapshot.counts);
             let selected = self.page == AppPage::Downloads && self.query.filter == filter;
+            let label = self.t(filter.message_key());
+            let aria_label = format!("{label}, {count}");
             let icon = filter_icon(filter);
-            filters.push(
-                div()
-                    .id(SharedString::from(format!(
-                        "sidebar-filter-{}",
-                        filter.key()
-                    )))
-                    .focusable()
-                    .tab_stop(true)
-                    .role(Role::Button)
-                    .aria_label(format!("{}, {count}", self.t(filter.message_key())))
-                    .h(px(38.0))
-                    .w_full()
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .rounded_md()
-                    .text_xs()
-                    .text_color(if selected {
-                        colors.accent
-                    } else {
-                        colors.text_secondary
-                    })
-                    .when(selected, |element| {
-                        element.bg(with_alpha(colors.accent, 0.09))
-                    })
-                    .when(!selected, |element| {
-                        element.hover(|style| style.bg(colors.surface_hover))
-                    })
-                    .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.set_filter(filter, window, cx);
-                    }))
-                    .child(Icon::new(icon).size(IconSize::Small).color(if selected {
-                        colors.accent
-                    } else {
-                        colors.text_muted
-                    }))
-                    .child(div().flex_1().child(self.t(filter.message_key())))
-                    .child(
+            filter_items.push(
+                SidebarMenuItem::new(label)
+                    .icon(gpui_kit::component::Icon::new(icon))
+                    .accessibility_label(aria_label)
+                    .active(selected)
+                    .suffix(move |_, _| {
                         div()
-                            .h(px(22.0))
+                            .h(px(20.0))
                             .min_w(px(22.0))
                             .px_1()
                             .flex()
@@ -194,7 +141,7 @@ impl AppShell {
                             .justify_center()
                             .rounded_full()
                             .bg(if selected {
-                                with_alpha(colors.accent, 0.12)
+                                with_alpha(colors.accent, 0.14)
                             } else {
                                 colors.surface_active
                             })
@@ -206,8 +153,11 @@ impl AppShell {
                             } else {
                                 colors.text_muted
                             })
-                            .child(count.to_string()),
-                    ),
+                            .child(count.to_string())
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_filter(filter, window, cx);
+                    })),
             );
         }
 
@@ -244,248 +194,124 @@ impl AppShell {
             ],
         );
 
-        div()
-            .w(px(sidebar_width))
-            .flex_none()
-            .min_h_0()
-            .h_full()
-            .flex()
-            .flex_col()
-            .border_r_1()
+        let profile_banner = div()
+            .id("active-profile-banner")
+            .debug_selector(|| "sidebar-profile-header".to_string())
+            .role(Role::Status)
+            .aria_label(active_profile_aria)
+            .w_full()
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .border_1()
             .border_color(colors.border)
-            .bg(colors.surface)
+            .bg(colors.toolbar_surface)
+            .shadow_xs()
+            .flex()
+            .items_center()
+            .gap_2p5()
             .child(
-                div()
-                    .id("sidebar-scroll-shell")
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .id("sidebar-scroll")
-                            .size_full()
-                            .min_h_0()
-                            .min_w_0()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.sidebar_scroll)
-                            .on_scroll({
-                                let handle = self.sidebar_scroll.clone();
-                                cx.listener(move |this, event, window, cx| {
-                                    this.smooth_discrete_scroll(
-                                        SmoothScrollArea::Sidebar,
-                                        handle.clone(),
-                                        event,
-                                        window,
-                                        cx,
-                                    );
-                                })
-                            })
-                            .p_3()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .id("active-profile-banner")
-                                    .role(Role::Status)
-                                    .aria_label(active_profile_aria)
-                                    .px_3()
-                                    .py_2()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(colors.border)
-                                    .bg(colors.toolbar_surface)
-                                    .shadow_xs()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2p5()
-                                    .child(
-                                        Icon::new(IconName::Activity)
-                                            .size(IconSize::Small)
-                                            .color(colors.accent),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .child(
-                                                div()
-                                                    .truncate()
-                                                    .text_xs()
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .text_color(colors.text_primary)
-                                                    .child(active_profile_name),
-                                            )
-                                            .child(
-                                                div()
-                                                    .truncate()
-                                                    .text_xs()
-                                                    .text_color(colors.text_muted)
-                                                    .child(profile_summary),
-                                            ),
-                                    ),
-                            )
-                            .child(div().flex().flex_col().gap_1().children(filters))
-                            .child(self.render_sidebar_categories(cx)),
-                    )
-                    .child(vertical_scrollbar_overlay(
-                        "sidebar-scrollbar",
-                        &self.sidebar_scroll,
-                    )),
+                Icon::new(IconName::Activity)
+                    .size(IconSize::Small)
+                    .color(colors.accent),
             )
             .child(
                 div()
-                    .flex_none()
-                    .px_3()
-                    .pt_2()
-                    .pb_3()
-                    .border_t_1()
-                    .border_color(colors.border)
+                    .flex_1()
+                    .min_w_0()
                     .child(
                         div()
-                            .id("open-settings")
-                            .focusable()
-                            .tab_stop(true)
-                            .role(Role::Button)
-                            .aria_label(self.t("action-open-settings"))
-                            .h(px(38.0))
-                            .w_full()
-                            .px_3()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .rounded_md()
+                            .truncate()
                             .text_xs()
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(if self.page == AppPage::Settings {
-                                colors.accent
-                            } else {
-                                colors.text_secondary
-                            })
-                            .when(self.page == AppPage::Settings, |element| {
-                                element.bg(with_alpha(colors.accent, 0.09))
-                            })
-                            .cursor_pointer()
-                            .hover(|style| style.bg(colors.surface_hover))
-                            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_settings(&OpenSettings, window, cx);
-                            }))
-                            .child(Icon::new(IconName::Settings).size(IconSize::Small).color(
-                                if self.page == AppPage::Settings {
-                                    colors.accent
-                                } else {
-                                    colors.text_muted
-                                },
-                            ))
-                            .child(self.t("settings-label")),
+                            .text_color(colors.text_primary)
+                            .child(active_profile_name),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(profile_summary),
                     ),
-            )
+            );
+
+        let settings_footer = div()
+            .w_full()
+            .pt_2()
+            .border_t_1()
+            .border_color(colors.border)
+            .debug_selector(|| "sidebar-settings-footer".to_string())
+            .child(
+                KitButton::new("open-settings")
+                    .ghost()
+                    .small()
+                    .w_full()
+                    .justify_start()
+                    .selected(self.page == AppPage::Settings)
+                    .icon(gpui_kit::component::Icon::new(IconName::Settings))
+                    .label(self.t("settings-label"))
+                    .accessibility_label(self.t("action-open-settings"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_settings(&OpenSettings, window, cx);
+                    })),
+            );
+
+        let transfers_group = SidebarGroup::new(self.t("settings-nav-transfers"))
+            .child(SidebarMenu::new().children(filter_items));
+
+        Sidebar::new("app-sidebar")
+            .collapsible(SidebarCollapsible::None)
+            .w(px(sidebar_width))
+            .header(profile_banner)
+            .child(transfers_group)
+            .when_some(self.render_sidebar_categories(cx), |sidebar, group| {
+                sidebar.child(group)
+            })
+            .footer(settings_footer)
     }
 
-    fn render_sidebar_categories(&mut self, cx: &mut Context<Self>) -> Div {
-        let colors = self.theme.colors;
+    fn render_sidebar_categories(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<SidebarGroup<SidebarMenu>> {
         let categories = self.settings.categories.clone();
         if categories.is_empty() {
-            return div();
+            return None;
         }
         let selected = self.query.category_id.clone();
         let all_selected = selected.is_none();
-        let mut list = div()
-            .mt_3()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(
-                div()
-                    .px_3()
-                    .text_xs()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(colors.text_muted)
-                    .child(self.t("settings-categories")),
-            )
-            .child(
-                div()
-                    .id("sidebar-category-all")
-                    .focusable()
-                    .tab_stop(true)
-                    .role(gpui::Role::Button)
-                    .aria_label(self.t("filter-category-all"))
-                    .h(px(32.0))
-                    .w_full()
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .rounded_md()
-                    .text_xs()
-                    .text_color(if all_selected {
-                        colors.accent
-                    } else {
-                        colors.text_secondary
-                    })
-                    .when(all_selected, |el| el.bg(with_alpha(colors.accent, 0.09)))
-                    .when(!all_selected, |el| {
-                        el.hover(|style| style.bg(colors.surface_hover))
-                    })
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.set_category_filter(None, window, cx);
-                    }))
-                    .child(Icon::new(IconName::FolderDown).size(IconSize::Small).color(
-                        if all_selected {
-                            colors.accent
-                        } else {
-                            colors.text_muted
-                        },
-                    ))
-                    .child(self.t("filter-category-all")),
-            );
+        let mut items = Vec::with_capacity(categories.len() + 1);
+        let all_label = self.t("filter-category-all");
+        items.push(
+            SidebarMenuItem::new(all_label.clone())
+                .icon(gpui_kit::component::Icon::new(IconName::FolderDown))
+                .accessibility_label(all_label)
+                .active(all_selected)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.set_category_filter(None, window, cx);
+                })),
+        );
         for category in categories {
             let id = category.id.clone();
             let is_selected = selected.as_deref() == Some(id.as_str());
             let name = category.name.clone();
             let display_name = category_display_name(&name, self);
             let icon = category_icon(&name);
-            list = list.child(
-                div()
-                    .id(SharedString::from(format!("sidebar-category-{id}")))
-                    .focusable()
-                    .tab_stop(true)
-                    .role(gpui::Role::Button)
-                    .aria_label(display_name.clone())
-                    .h(px(32.0))
-                    .w_full()
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .rounded_md()
-                    .text_xs()
-                    .text_color(if is_selected {
-                        colors.accent
-                    } else {
-                        colors.text_secondary
-                    })
-                    .when(is_selected, |el| el.bg(with_alpha(colors.accent, 0.09)))
-                    .when(!is_selected, |el| {
-                        el.hover(|style| style.bg(colors.surface_hover))
-                    })
-                    .cursor_pointer()
+            items.push(
+                SidebarMenuItem::new(display_name.clone())
+                    .icon(gpui_kit::component::Icon::new(icon))
+                    .accessibility_label(display_name)
+                    .active(is_selected)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.set_category_filter(Some(id.clone()), window, cx);
-                    }))
-                    .child(Icon::new(icon).size(IconSize::Small).color(if is_selected {
-                        colors.accent
-                    } else {
-                        colors.text_muted
-                    }))
-                    .child(display_name),
+                    })),
             );
         }
-        list
+        Some(
+            SidebarGroup::new(self.t("settings-categories"))
+                .child(SidebarMenu::new().children(items)),
+        )
     }
 
     pub(crate) fn render_speed_chart(&self) -> Stateful<Div> {
@@ -496,18 +322,44 @@ impl AppShell {
             .map(|sample| sample.download_rate.max(sample.upload_rate))
             .max()
             .unwrap_or(0);
-        let scale = max_rate.max(1) as f32;
-        let mut columns = Vec::with_capacity(SPEED_CHART_SAMPLES);
-        columns.extend(
-            (visible.len()..SPEED_CHART_SAMPLES).map(|_| speed_chart_column(0.0, 0.0, colors)),
-        );
-        columns.extend(visible.iter().map(|sample| {
-            speed_chart_column(
-                sample.download_rate as f32 / scale,
-                sample.upload_rate as f32 / scale,
-                colors,
-            )
-        }));
+        let pad_len = SPEED_CHART_SAMPLES.saturating_sub(visible.len());
+        let mut points = Vec::with_capacity(SPEED_CHART_SAMPLES);
+        for index in 0..SPEED_CHART_SAMPLES {
+            let seconds_ago = SPEED_CHART_SAMPLES - 1 - index;
+            let label = if seconds_ago == 0 {
+                SharedString::from("Now")
+            } else {
+                SharedString::from(format!("-{seconds_ago}s"))
+            };
+            let sample = index.checked_sub(pad_len).and_then(|i| visible.get(i));
+            points.push(SpeedChartPoint {
+                label,
+                download_rate: sample.map_or(0.0, |s| s.download_rate as f64),
+                upload_rate: sample.map_or(0.0, |s| s.upload_rate as f64),
+            });
+        }
+
+        let area_chart = AreaChart::new(points)
+            .id("speed-history-area-chart")
+            .x(|point| point.label.clone())
+            .y(|point| point.download_rate)
+            .stroke(colors.progress_download)
+            .fill(with_alpha(colors.progress_download, 0.22))
+            .name(self.t("speed-download"))
+            .linear()
+            .y(|point| point.upload_rate)
+            .stroke(colors.progress_upload)
+            .fill(with_alpha(colors.progress_upload, 0.18))
+            .name(self.t("speed-upload"))
+            .linear()
+            .x_axis(false)
+            .y_axis(false)
+            .grid(true)
+            .y_tick_count(3)
+            .y_padding(4.0, 0.0)
+            .y_domain(0.0, max_rate.max(1) as f64)
+            .appear(false)
+            .tooltip_value(|_, _, value| format_rate(value.max(0.0).round() as u64).into());
 
         div()
             .id("speed-history-chart")
@@ -526,8 +378,8 @@ impl AppShell {
                     ("peak", FluentValue::from(format_rate(max_rate))),
                 ],
             ))
-            .h(px(144.0))
-            .w(px(280.0))
+            .h(px(156.0))
+            .w(px(300.0))
             .flex_none()
             .flex()
             .flex_col()
@@ -557,15 +409,7 @@ impl AppShell {
                             .child(format_rate(max_rate)),
                     ),
             )
-            .child(
-                div()
-                    .h(px(58.0))
-                    .w_full()
-                    .flex_none()
-                    .flex()
-                    .items_end()
-                    .children(columns),
-            )
+            .child(div().h(px(76.0)).w_full().flex_none().child(area_chart))
             .child(
                 div()
                     .flex()
@@ -586,7 +430,7 @@ impl AppShell {
             )
     }
 
-    pub(crate) fn render_status_bar(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn render_status_bar(&mut self, cx: &mut Context<Self>) -> StatusBar {
         let colors = self.theme.colors;
         let connection_color = connection_color(&self.snapshot.connection, colors);
         let connection_label = match &self.snapshot.connection {
@@ -608,7 +452,7 @@ impl AppShell {
                 connection_label.clone()
             })
             .h_full()
-            .px_2()
+            .px_1p5()
             .flex()
             .items_center()
             .gap_1()
@@ -631,479 +475,423 @@ impl AppShell {
                     .on_click(cx.listener(|this, _, _, cx| this.request_retry(cx)))
             });
 
-        div()
-            .h(px(28.0))
-            .flex_none()
+        let engine_status = div()
+            .id("engine-status")
+            .role(Role::Status)
+            .aria_label(self.t(self.engine_health.message_key()))
+            .h_full()
+            .px_1p5()
             .flex()
             .items_center()
-            .border_t_1()
-            .border_color(colors.border)
-            .bg(colors.toolbar_surface)
-            .child(status_button)
+            .gap_1()
+            .text_xs()
+            .text_color(colors.text_secondary)
             .child(
-                div()
-                    .id("engine-status")
-                    .role(Role::Status)
-                    .aria_label(self.t(self.engine_health.message_key()))
-                    .h_full()
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .text_xs()
-                    .text_color(colors.text_secondary)
-                    .child(
-                        StatusIndicator::new(engine_health_color(&self.engine_health, colors))
-                            .icon(match &self.engine_health {
-                                EngineHealthView::Failed { .. } => IconName::CircleAlert,
-                                EngineHealthView::Restarting { .. } => IconName::RefreshCw,
-                                EngineHealthView::Running { restarts } if *restarts > 0 => {
-                                    IconName::TriangleAlert
-                                }
-                                EngineHealthView::External | EngineHealthView::Running { .. } => {
-                                    IconName::Activity
-                                }
-                            }),
-                    )
-                    .child(self.t(self.engine_health.message_key())),
+                StatusIndicator::new(engine_health_color(&self.engine_health, colors)).icon(
+                    match &self.engine_health {
+                        EngineHealthView::Failed { .. } => IconName::CircleAlert,
+                        EngineHealthView::Restarting { .. } => IconName::RefreshCw,
+                        EngineHealthView::Running { restarts } if *restarts > 0 => {
+                            IconName::TriangleAlert
+                        }
+                        EngineHealthView::External | EngineHealthView::Running { .. } => {
+                            IconName::Activity
+                        }
+                    },
+                ),
             )
-            .when(self.snapshot.stale, |element| {
-                element.child(
-                    div()
-                        .id("stale-status")
-                        .role(Role::Status)
-                        .h_full()
-                        .px_2()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .text_xs()
-                        .text_color(colors.warning)
-                        .child(
-                            Icon::new(IconName::TriangleAlert)
-                                .size(IconSize::XSmall)
-                                .color(colors.warning),
-                        )
-                        .child(self.t("stale-data")),
+            .child(self.t(self.engine_health.message_key()));
+
+        let stale_status = self.snapshot.stale.then(|| {
+            div()
+                .id("stale-status")
+                .role(Role::Status)
+                .h_full()
+                .px_1p5()
+                .flex()
+                .items_center()
+                .gap_1()
+                .text_xs()
+                .text_color(colors.warning)
+                .child(
+                    Icon::new(IconName::TriangleAlert)
+                        .size(IconSize::XSmall)
+                        .color(colors.warning),
                 )
-            })
-            .when_some(
-                self.snapshot.stopped_history.summary_label(),
-                |element, label| {
-                    let can_load = self.snapshot.stopped_history.can_load_more
-                        && self.snapshot.connection.is_connected()
-                        && !self.snapshot.stale;
-                    let pending = self.pending_load_more_stopped;
-                    element.child(
-                        div()
-                            .id("stopped-history-status")
-                            .role(if can_load { Role::Button } else { Role::Status })
-                            .aria_label(if can_load {
-                                self.t_args(
-                                    "stopped-history-load-more-aria",
-                                    &[("summary", FluentValue::from(label.as_str()))],
-                                )
-                            } else {
-                                label.clone()
-                            })
-                            .h_full()
-                            .px_2()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .text_xs()
-                            .text_color(colors.text_muted)
-                            .child(label)
-                            .when(can_load, |element| {
-                                element
-                                    .focusable()
-                                    .tab_stop(true)
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(colors.surface_hover))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.request_load_more_stopped(cx);
-                                    }))
-                                    .child(div().text_color(colors.information).child(if pending {
-                                        "…".to_owned()
-                                    } else {
-                                        self.t("load-more")
-                                    }))
-                            }),
+                .child(self.t("stale-data"))
+        });
+
+        let stopped_status = self.snapshot.stopped_history.summary_label().map(|label| {
+            let can_load = self.snapshot.stopped_history.can_load_more
+                && self.snapshot.connection.is_connected()
+                && !self.snapshot.stale;
+            let pending = self.pending_load_more_stopped;
+            div()
+                .id("stopped-history-status")
+                .role(if can_load { Role::Button } else { Role::Status })
+                .aria_label(if can_load {
+                    self.t_args(
+                        "stopped-history-load-more-aria",
+                        &[("summary", FluentValue::from(label.as_str()))],
                     )
-                },
-            )
-            .child(self.render_power_status_bar_item(cx))
-            .child({
-                let activity_count = self.activity_log.len();
-                let activity_label = if activity_count == 0 {
-                    self.t("activity-history")
                 } else {
-                    format!("{}, {activity_count}", self.t("activity-history"))
-                };
-                div()
-                    .id("activity-status")
-                    .focusable()
-                    .tab_stop(true)
-                    .role(Role::Button)
-                    .aria_label(activity_label)
-                    .aria_expanded(self.activity_panel_open)
-                    .h_full()
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .text_xs()
-                    .text_color(if self.activity_panel_open {
-                        colors.text_primary
-                    } else {
-                        colors.text_muted
-                    })
-                    .cursor_pointer()
-                    .hover(|style| style.bg(colors.surface_hover))
-                    .focus_visible(|style| style.bg(colors.surface_active))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_activity_panel(window, cx);
-                    }))
-                    .child(Icon::new(IconName::Activity).size(IconSize::XSmall).color(
-                        if self.activity_panel_open {
+                    label.clone()
+                })
+                .h_full()
+                .px_1p5()
+                .flex()
+                .items_center()
+                .gap_1()
+                .text_xs()
+                .text_color(colors.text_muted)
+                .child(label)
+                .when(can_load, |element| {
+                    element
+                        .focusable()
+                        .tab_stop(true)
+                        .cursor_pointer()
+                        .hover(|style| style.bg(colors.surface_hover))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.request_load_more_stopped(cx);
+                        }))
+                        .child(div().text_color(colors.information).child(if pending {
+                            "…".to_owned()
+                        } else {
+                            self.t("load-more")
+                        }))
+                })
+        });
+
+        let activity_popover = {
+            let activity_open = self.active_status_popover == Some(StatusBarPopover::Activity);
+            let activity_count = self.activity_log.len();
+            let activity_label = if activity_count == 0 {
+                self.t("activity-history")
+            } else {
+                format!("{}, {activity_count}", self.t("activity-history"))
+            };
+            let trigger = KitButton::new("activity-status")
+                .ghost()
+                .xsmall()
+                .compact()
+                .accessibility_label(activity_label)
+                .icon(
+                    gpui_kit::component::Icon::new(IconName::Activity).text_color(
+                        if activity_open {
                             colors.information
                         } else {
                             colors.text_muted
                         },
-                    ))
-                    .child(if activity_count == 0 {
-                        self.t("activity-title")
-                    } else {
-                        self.t_count("activity-count", activity_count as u64)
-                    })
+                    ),
+                )
+                .label(if activity_count == 0 {
+                    self.t("activity-title")
+                } else {
+                    self.t_count("activity-count", activity_count as u64)
+                });
+            let shell_change = cx.entity().downgrade();
+            let shell_content = cx.entity().downgrade();
+            Popover::new("activity-panel")
+                .anchor(Anchor::BottomRight)
+                .open(activity_open)
+                .on_open_change(move |next_open, window, cx| {
+                    let _ = shell_change.update(cx, |this, cx| {
+                        if *next_open {
+                            this.context_menu_target = None;
+                            this.active_status_popover = Some(StatusBarPopover::Activity);
+                            cx.notify();
+                        } else {
+                            this.close_activity_panel(window, cx);
+                        }
+                    });
+                })
+                .trigger(trigger)
+                .content(move |_, _, cx| {
+                    shell_content
+                        .update(cx, |this, cx| this.render_activity_panel_content(cx))
+                        .unwrap_or_else(|_| div().into_any_element())
+                })
+        };
+
+        let speed_popover = {
+            let speed_open = self.active_status_popover == Some(StatusBarPopover::Speed);
+            let speed_aria = self.t_args(
+                "transfer-speed-aria",
+                &[
+                    (
+                        "download",
+                        FluentValue::from(format_rate(self.snapshot.download_rate)),
+                    ),
+                    (
+                        "upload",
+                        FluentValue::from(format_rate(self.snapshot.upload_rate)),
+                    ),
+                ],
+            );
+            let trigger = KitButton::new("transfer-status")
+                .ghost()
+                .xsmall()
+                .compact()
+                .accessibility_label(speed_aria)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .font_features(tabular_numbers())
+                        .text_xs()
+                        .text_color(colors.text_muted)
+                        .child(
+                            Icon::new(IconName::ArrowDown)
+                                .size(IconSize::XSmall)
+                                .color(colors.progress_download),
+                        )
+                        .child(format_rate(self.snapshot.download_rate))
+                        .child(
+                            Icon::new(IconName::ArrowUp)
+                                .size(IconSize::XSmall)
+                                .color(colors.progress_upload),
+                        )
+                        .child(format_rate(self.snapshot.upload_rate)),
+                );
+            let shell_change = cx.entity().downgrade();
+            let shell_content = cx.entity().downgrade();
+            Popover::new("speed-popover")
+                .anchor(Anchor::BottomRight)
+                .appearance(false)
+                .open(speed_open)
+                .on_open_change(move |next_open, window, cx| {
+                    let _ = shell_change.update(cx, |this, cx| {
+                        if *next_open {
+                            this.speed_popover_previous_focus =
+                                window.focused(cx).map(|focus| focus.downgrade());
+                            this.context_menu_target = None;
+                            this.active_status_popover = Some(StatusBarPopover::Speed);
+                            cx.notify();
+                        } else {
+                            this.close_speed_popover(window, cx);
+                        }
+                    });
+                })
+                .trigger(trigger)
+                .content(move |_, _, cx| {
+                    shell_content
+                        .read_with(cx, |this, _| this.render_speed_chart().into_any_element())
+                        .unwrap_or_else(|_| div().into_any_element())
+                })
+        };
+
+        StatusBar::new()
+            .h(px(28.0))
+            .flex_none()
+            .py_0()
+            .left(status_button)
+            .left(Separator::vertical().h(px(14.0)))
+            .left(engine_status)
+            .when_some(stale_status, |bar, item| {
+                bar.left(Separator::vertical().h(px(14.0))).left(item)
             })
-            .child(
-                div()
-                    .id("transfer-status")
-                    .focusable()
-                    .tab_stop(true)
-                    .role(Role::Button)
-                    .aria_label(self.t_args(
-                        "transfer-speed-aria",
-                        &[
-                            (
-                                "download",
-                                FluentValue::from(format_rate(self.snapshot.download_rate)),
-                            ),
-                            (
-                                "upload",
-                                FluentValue::from(format_rate(self.snapshot.upload_rate)),
-                            ),
-                        ],
-                    ))
-                    .aria_expanded(self.speed_popover_open)
-                    .h_full()
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .font_features(tabular_numbers())
-                    .text_xs()
-                    .text_color(colors.text_muted)
-                    .cursor_pointer()
-                    .hover(|style| style.bg(colors.surface_hover))
-                    .focus_visible(|style| style.bg(colors.surface_active))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_speed_popover(window, cx);
-                    }))
-                    .child(
-                        Icon::new(IconName::ArrowDown)
-                            .size(IconSize::XSmall)
-                            .color(colors.progress_download),
-                    )
-                    .child(format_rate(self.snapshot.download_rate))
-                    .child(
-                        Icon::new(IconName::ArrowUp)
-                            .size(IconSize::XSmall)
-                            .color(colors.progress_upload),
-                    )
-                    .child(format_rate(self.snapshot.upload_rate)),
-            )
+            .when_some(stopped_status, |bar, item| {
+                bar.left(Separator::vertical().h(px(14.0))).left(item)
+            })
+            .right(self.render_power_status_bar_item(cx))
+            .right(Separator::vertical().h(px(14.0)))
+            .right(activity_popover)
+            .right(Separator::vertical().h(px(14.0)))
+            .right(speed_popover)
     }
 
-    pub(crate) fn render_speed_popover(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let colors = self.theme.colors;
-        div()
-            .id("speed-popover-layer")
-            .absolute()
-            .inset_0()
-            .occlude()
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.close_speed_popover(window, cx);
-            }))
-            .child(
-                div()
-                    .id("speed-popover")
-                    .absolute()
-                    .right(px(8.0))
-                    .bottom(px(32.0))
-                    .on_click(|_, _, cx| cx.stop_propagation())
-                    .bg(colors.elevated_surface)
-                    .child(self.render_speed_chart()),
-            )
-    }
-
-    pub(crate) fn render_activity_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_activity_panel_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = self.theme.colors;
         let entries = self.activity_log.clone();
         div()
-            .id("activity-panel-layer")
-            .absolute()
-            .inset_0()
-            .occlude()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.close_activity_panel(window, cx);
-                }),
-            )
+            .id("activity-panel-body")
+            .w(px(ACTIVITY_PANEL_WIDTH))
+            .max_h(px(420.0))
+            .flex()
+            .flex_col()
+            .gap_2()
             .child(
                 div()
-                    .id("activity-panel")
-                    .absolute()
-                    .right(px(8.0))
-                    .bottom(px(36.0))
-                    .w(px(ACTIVITY_PANEL_WIDTH))
-                    .max_h(px(420.0))
                     .flex()
-                    .flex_col()
+                    .items_center()
+                    .justify_between()
                     .gap_2()
-                    .p_3()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(colors.border)
-                    .bg(colors.elevated_surface)
-                    .shadow_lg()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .justify_between()
                             .gap_2()
                             .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(
-                                        Icon::new(IconName::Activity)
-                                            .size(IconSize::Small)
-                                            .color(colors.information),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(colors.text_primary)
-                                            .child(self.t("activity-title")),
-                                    ),
+                                Icon::new(IconName::Activity)
+                                    .size(IconSize::Small)
+                                    .color(colors.information),
                             )
                             .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .child(
-                                        Button::new("clear-activity-log", self.t("button-clear"))
-                                            .aria_label(self.t("action-clear-activity"))
-                                            .style(ButtonStyle::Secondary)
-                                            .disabled(entries.is_empty())
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.clear_activity_log(cx);
-                                            }))
-                                            .render(colors),
-                                    )
-                                    .child(
-                                        IconButton::new("close-activity-panel", IconName::X)
-                                            .aria_label(self.t("action-close-activity"))
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.close_activity_panel(window, cx);
-                                            }))
-                                            .render(colors),
-                                    ),
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(colors.text_primary)
+                                    .child(self.t("activity-title")),
                             ),
                     )
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(colors.text_muted)
-                            .child(self.t("activity-description")),
-                    )
-                    .child(if entries.is_empty() {
-                        div()
-                            .flex_1()
-                            .py_6()
                             .flex()
                             .items_center()
-                            .justify_center()
-                            .text_xs()
-                            .text_color(colors.text_muted)
-                            .child(self.t("ui-no-activity"))
-                            .into_any_element()
-                    } else {
+                            .gap_1()
+                            .child(
+                                KitButton::new("clear-activity-log")
+                                    .small()
+                                    .label(self.t("button-clear"))
+                                    .accessibility_label(self.t("action-clear-activity"))
+                                    .disabled(entries.is_empty())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.clear_activity_log(cx);
+                                    })),
+                            )
+                            .child(
+                                KitButton::new("close-activity-panel")
+                                    .ghost()
+                                    .small()
+                                    .compact()
+                                    .icon(gpui_kit::component::Icon::new(IconName::X))
+                                    .accessibility_label(self.t("action-close-activity"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.close_activity_panel(window, cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(self.t("activity-description")),
+            )
+            .child(if entries.is_empty() {
+                div()
+                    .flex_1()
+                    .py_6()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(self.t("ui-no-activity"))
+                    .into_any_element()
+            } else {
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .max_h(px(320.0))
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .child(
                         div()
-                            .relative()
+                            .id("activity-panel-scroll")
                             .flex_1()
                             .min_h_0()
                             .min_w_0()
-                            .max_h(px(320.0))
+                            .pr_3()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.activity_scroll)
                             .flex()
                             .flex_col()
-                            .overflow_hidden()
-                            .child(
+                            .gap_2()
+                            .children(entries.into_iter().map(|entry| {
+                                let kind_color = match entry.kind {
+                                    ActivityKindView::Completion => colors.success,
+                                    ActivityKindView::Error => colors.danger,
+                                    ActivityKindView::Engine => colors.warning,
+                                    ActivityKindView::Command => colors.information,
+                                    ActivityKindView::Info => colors.text_muted,
+                                };
                                 div()
-                                    .id("activity-panel-scroll")
-                                    .flex_1()
-                                    .min_h_0()
-                                    .min_w_0()
-                                    .pr_3()
-                                    .overflow_y_scroll()
-                                    .track_scroll(&self.activity_scroll)
-                                    .on_scroll({
-                                        let handle = self.activity_scroll.clone();
-                                        cx.listener(move |this, event, window, cx| {
-                                            this.smooth_discrete_scroll(
-                                                SmoothScrollArea::Activity,
-                                                handle.clone(),
-                                                event,
-                                                window,
-                                                cx,
-                                            );
-                                        })
-                                    })
+                                    .id(SharedString::from(format!("activity-entry-{}", entry.id)))
                                     .flex()
                                     .flex_col()
-                                    .gap_2()
-                                    .children(entries.into_iter().map(|entry| {
-                                        let kind_color = match entry.kind {
-                                            ActivityKindView::Completion => colors.success,
-                                            ActivityKindView::Error => colors.danger,
-                                            ActivityKindView::Engine => colors.warning,
-                                            ActivityKindView::Command => colors.information,
-                                            ActivityKindView::Info => colors.text_muted,
-                                        };
+                                    .gap_1()
+                                    .p_2()
+                                    .rounded_md()
+                                    .bg(colors.surface)
+                                    .border_1()
+                                    .border_color(colors.border)
+                                    .child(
                                         div()
-                                            .id(SharedString::from(format!(
-                                                "activity-entry-{}",
-                                                entry.id
-                                            )))
                                             .flex()
-                                            .flex_col()
-                                            .gap_1()
-                                            .p_2()
-                                            .rounded_md()
-                                            .bg(colors.surface)
-                                            .border_1()
-                                            .border_color(colors.border)
+                                            .items_center()
+                                            .gap_2()
+                                            .child(StatusIndicator::new(kind_color).icon(
+                                                match entry.kind {
+                                                    ActivityKindView::Completion => {
+                                                        IconName::CircleCheck
+                                                    }
+                                                    ActivityKindView::Error => IconName::CircleX,
+                                                    ActivityKindView::Engine => {
+                                                        IconName::TriangleAlert
+                                                    }
+                                                    ActivityKindView::Command => IconName::Activity,
+                                                    ActivityKindView::Info => IconName::Info,
+                                                },
+                                            ))
                                             .child(
                                                 div()
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap_2()
-                                                    .child(StatusIndicator::new(kind_color).icon(
-                                                        match entry.kind {
-                                                            ActivityKindView::Completion => {
-                                                                IconName::CircleCheck
-                                                            }
-                                                            ActivityKindView::Error => {
-                                                                IconName::CircleX
-                                                            }
-                                                            ActivityKindView::Engine => {
-                                                                IconName::TriangleAlert
-                                                            }
-                                                            ActivityKindView::Command => {
-                                                                IconName::Activity
-                                                            }
-                                                            ActivityKindView::Info => {
-                                                                IconName::Info
-                                                            }
-                                                        },
-                                                    ))
-                                                    .child(
-                                                        div()
-                                                            .text_xs()
-                                                            .font_weight(FontWeight::MEDIUM)
-                                                            .text_color(colors.text_muted)
-                                                            .child(self.t(match entry.kind {
-                                                                ActivityKindView::Completion => {
-                                                                    "activity-kind-completion"
-                                                                }
-                                                                ActivityKindView::Error => {
-                                                                    "activity-kind-error"
-                                                                }
-                                                                ActivityKindView::Engine => {
-                                                                    "activity-kind-engine"
-                                                                }
-                                                                ActivityKindView::Command => {
-                                                                    "activity-kind-command"
-                                                                }
-                                                                ActivityKindView::Info => {
-                                                                    "activity-kind-info"
-                                                                }
-                                                            })),
-                                                    )
-                                                    .when(entry.count > 1, |element| {
-                                                        element.child(
-                                                            div()
-                                                                .text_xs()
-                                                                .text_color(colors.text_muted)
-                                                                .child(self.t_count(
-                                                                    "activity-repeated-count",
-                                                                    u64::from(entry.count),
-                                                                )),
-                                                        )
-                                                    }),
+                                                    .text_xs()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(colors.text_muted)
+                                                    .child(self.t(match entry.kind {
+                                                        ActivityKindView::Completion => {
+                                                            "activity-kind-completion"
+                                                        }
+                                                        ActivityKindView::Error => {
+                                                            "activity-kind-error"
+                                                        }
+                                                        ActivityKindView::Engine => {
+                                                            "activity-kind-engine"
+                                                        }
+                                                        ActivityKindView::Command => {
+                                                            "activity-kind-command"
+                                                        }
+                                                        ActivityKindView::Info => {
+                                                            "activity-kind-info"
+                                                        }
+                                                    })),
                                             )
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .text_color(colors.text_primary)
-                                                    .child(entry.summary.clone()),
-                                            )
-                                            .when_some(entry.detail.clone(), |element, detail| {
+                                            .when(entry.count > 1, |element| {
                                                 element.child(
                                                     div()
                                                         .text_xs()
                                                         .text_color(colors.text_muted)
-                                                        .child(detail),
+                                                        .child(self.t_count(
+                                                            "activity-repeated-count",
+                                                            u64::from(entry.count),
+                                                        )),
                                                 )
-                                            })
-                                    })),
-                            )
-                            .child(vertical_scrollbar_overlay(
-                                "activity-panel-scrollbar",
-                                &self.activity_scroll,
-                            ))
-                            .into_any_element()
-                    }),
-            )
-            .into_any_element()
-    }
-
-    pub(crate) fn render_toast(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(notice) = self.status_notice.as_ref() else {
-            return div().into_any_element();
-        };
-        let kind = if notice.is_error {
-            ToastKind::Error
-        } else {
-            ToastKind::Success
-        };
-        div()
-            .absolute()
-            .right(px(16.0))
-            .bottom(px(44.0))
-            .child(
-                Toast::new("operation-toast", notice.message.clone(), kind, self.theme)
-                    .close_label(self.t("dismiss-notification"))
-                    .on_close(cx.listener(|this, _, _, cx| this.dismiss_notice(cx))),
-            )
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(colors.text_primary)
+                                            .child(entry.summary.clone()),
+                                    )
+                                    .when_some(entry.detail.clone(), |element, detail| {
+                                        element.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(colors.text_muted)
+                                                .child(detail),
+                                        )
+                                    })
+                            })),
+                    )
+                    .vertical_scrollbar(&self.activity_scroll)
+                    .into_any_element()
+            })
             .into_any_element()
     }
 
@@ -1147,82 +935,68 @@ impl AppShell {
             && self.snapshot.commands_available()
             && !self.add_dialog.open;
 
-        div()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                div()
-                    .max_w(px(420.0))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap_3()
-                    .text_center()
-                    .child(
-                        div()
-                            .size(px(56.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_xl()
-                            .border_1()
-                            .border_color(colors.border)
-                            .bg(colors.surface)
-                            .shadow_xs()
-                            .child(Icon::new(icon).size(IconSize::Large).color(colors.accent)),
-                    )
-                    .child(
-                        div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(colors.text_primary)
-                            .child(title),
-                    )
-                    .when(show_add, |element| {
-                        element.child(
-                            div()
-                                .text_xs()
-                                .text_color(colors.text_muted)
-                                .child(self.t("empty-state-subtitle")),
-                        )
-                    })
-                    .when(show_clear, |element| {
-                        element.child(
-                            Button::new("clear-empty-filter", self.t("clear-filter"))
-                                .aria_label(self.t("action-clear-search"))
-                                .style(ButtonStyle::Secondary)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.query.filter = WorkspaceFilter::All;
-                                    this.set_search_query("", window, cx);
-                                    window.focus(&this.focus_handle, cx);
-                                }))
-                                .render(colors),
-                        )
-                    })
-                    .when(show_add, |element| {
-                        element.child(
-                            Button::new("add-download-empty-state", self.t("action-add-download"))
-                                .icon(IconName::Plus)
-                                .aria_label(self.t("action-add-download-aria"))
-                                .style(ButtonStyle::Primary)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.open_add_download(&OpenAddDownload, window, cx);
-                                }))
-                                .render(colors),
-                        )
-                    })
-                    .when(self.snapshot.connection.can_retry(), |element| {
-                        element.child(
-                            Button::new("retry-connection", self.t("retry-label"))
-                                .aria_label(self.t("connection-retry-now"))
-                                .style(ButtonStyle::Primary)
-                                .on_click(cx.listener(|this, _, _, cx| this.request_retry(cx)))
-                                .render(colors),
-                        )
-                    }),
+        let mut header = EmptyHeader::new()
+            .media(
+                EmptyMedia::new()
+                    .with_variant(EmptyMediaVariant::Icon)
+                    .size(px(56.0))
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.surface)
+                    .shadow_xs()
+                    .child(Icon::new(icon).size(IconSize::Large).color(colors.accent)),
             )
-            .into_any_element()
+            .title(EmptyTitle::new().child(title));
+        if show_add {
+            header =
+                header.description(EmptyDescription::new().child(self.t("empty-state-subtitle")));
+        }
+
+        let has_actions = show_clear || show_add || self.snapshot.connection.can_retry();
+        let mut empty = Empty::new().size_full().header(header);
+        if has_actions {
+            let mut actions = EmptyContent::new()
+                .flex_row()
+                .flex_wrap()
+                .justify_center()
+                .gap_2();
+            if show_clear {
+                actions = actions.child(
+                    KitButton::new("clear-empty-filter")
+                        .label(self.t("clear-filter"))
+                        .accessibility_label(self.t("action-clear-search"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.query.filter = WorkspaceFilter::All;
+                            this.set_search_query("", window, cx);
+                            window.focus(&this.focus_handle, cx);
+                        })),
+                );
+            }
+            if show_add {
+                actions = actions.child(
+                    KitButton::new("add-download-empty-state")
+                        .primary()
+                        .icon(gpui_kit::component::Icon::new(IconName::Plus))
+                        .label(self.t("action-add-download"))
+                        .accessibility_label(self.t("action-add-download-aria"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_add_download(&OpenAddDownload, window, cx);
+                        })),
+                );
+            }
+            if self.snapshot.connection.can_retry() {
+                actions = actions.child(
+                    KitButton::new("retry-connection")
+                        .primary()
+                        .label(self.t("retry-label"))
+                        .accessibility_label(self.t("connection-retry-now"))
+                        .on_click(cx.listener(|this, _, _, cx| this.request_retry(cx))),
+                );
+            }
+            empty = empty.content(actions);
+        }
+
+        empty.into_any_element()
     }
 }

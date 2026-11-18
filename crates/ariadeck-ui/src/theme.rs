@@ -201,24 +201,35 @@ impl Theme {
             },
         };
         gpui_kit::component::Theme::change(mode, window, cx);
-        gpui_kit::component::Theme::set_scrollbar_mode(
-            gpui_kit::component::scroll::ScrollbarMode::Always,
-            cx,
-        );
-        let kit = gpui_kit::component::Theme::global_mut(cx);
-        kit.primary = self.colors.accent;
-        kit.primary_hover = self.colors.accent_hover;
-        kit.primary_active = self.colors.accent_active;
-        kit.primary_foreground = self.colors.text_inverse;
-        kit.button_primary = self.colors.accent;
-        kit.button_primary_hover = self.colors.accent_hover;
-        kit.button_primary_active = self.colors.accent_active;
-        kit.button_primary_foreground = self.colors.text_inverse;
-        kit.tokens.button_primary = self.colors.accent.into();
-        kit.tokens.button_primary_hover = self.colors.accent_hover.into();
-        kit.tokens.button_primary_active = self.colors.accent_active.into();
-        kit.tokens.button_primary_foreground = self.colors.text_inverse.into();
-        kit.ring = self.colors.focus_ring;
+        gpui_kit::component::Theme::update(cx, |kit| {
+            kit.scrollbar_mode = gpui_kit::component::scroll::ScrollbarMode::Always;
+            kit.sheet.margin_top = gpui::px(52.0);
+            kit.primary = self.colors.accent;
+            kit.primary_hover = self.colors.accent_hover;
+            kit.primary_active = self.colors.accent_active;
+            kit.primary_foreground = self.colors.text_inverse;
+            kit.button_primary = self.colors.accent;
+            kit.button_primary_hover = self.colors.accent_hover;
+            kit.button_primary_active = self.colors.accent_active;
+            kit.button_primary_foreground = self.colors.text_inverse;
+            kit.ring = self.colors.focus_ring;
+            kit.title_bar = self.colors.toolbar_surface;
+            kit.title_bar_border = self.colors.border;
+            kit.status_bar = self.colors.toolbar_surface;
+            kit.status_bar_border = self.colors.border;
+            kit.tokens.status_bar = self.colors.toolbar_surface.into();
+            kit.sidebar = self.colors.surface;
+            kit.sidebar_border = self.colors.border;
+            kit.sidebar_foreground = self.colors.text_secondary;
+            let sidebar_accent = gpui::Hsla {
+                a: 0.10,
+                ..self.colors.accent
+            };
+            kit.sidebar_accent = sidebar_accent;
+            kit.sidebar_accent_foreground = self.colors.accent;
+            kit.tokens.sidebar = self.colors.surface.into();
+            kit.tokens.sidebar_accent = sidebar_accent.into();
+        });
     }
 }
 
@@ -364,5 +375,31 @@ mod tests {
             ThemeMode::from(gpui_kit::component::ThemeMode::Dark),
             ThemeMode::Dark
         );
+    }
+
+    #[gpui_kit::test]
+    fn sync_to_kit_reconciles_tokens_and_base_theme(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let dark = Theme::dark();
+            dark.sync_to_kit(None, cx);
+            let kit = gpui_kit::component::Theme::global(cx);
+            assert_eq!(kit.mode, gpui_kit::component::ThemeMode::Dark);
+            assert_eq!(kit.primary, dark.colors.accent);
+            assert_eq!(kit.ring, dark.colors.focus_ring);
+            assert_eq!(
+                kit.scrollbar_mode,
+                gpui_kit::component::scroll::ScrollbarMode::Always
+            );
+            assert_eq!(kit.tokens.button_primary, dark.colors.accent.into());
+            assert_eq!(kit.tokens.primary, dark.colors.accent.into());
+
+            let light = Theme::light();
+            light.sync_to_kit(None, cx);
+            let kit = gpui_kit::component::Theme::global(cx);
+            assert_eq!(kit.mode, gpui_kit::component::ThemeMode::Light);
+            assert_eq!(kit.primary, light.colors.accent);
+            assert_eq!(kit.tokens.button_primary, light.colors.accent.into());
+        });
     }
 }

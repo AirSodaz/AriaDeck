@@ -84,15 +84,17 @@ impl AppShell {
             identity: task.identity.clone(),
             display_name: task_display_name(&task),
             active: task.status.uses_active_connections(),
-            previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
             error: None,
         });
+        self.sync_kit_modals(window, cx);
         cx.notify();
-        cx.defer_in(window, |this, window, cx| {
-            if this.output_name_dialog.is_some() {
-                window.focus(&this.output_name_input.focus_handle(cx), cx);
-            }
-        });
+        if !has_kit_root(window) {
+            cx.defer_in(window, |this, window, cx| {
+                if this.output_name_dialog.is_some() {
+                    window.focus(&this.output_name_input.focus_handle(cx), cx);
+                }
+            });
+        }
     }
 
     pub(crate) fn close_task_output_name_action(
@@ -112,14 +114,9 @@ impl AppShell {
         {
             return;
         }
-        let previous_focus = self
-            .output_name_dialog
-            .take()
-            .and_then(|dialog| dialog.previous_focus)
-            .and_then(|focus| focus.upgrade());
-        if let Some(focus) = previous_focus {
-            window.focus(&focus, cx);
-        } else {
+        self.output_name_dialog = None;
+        self.sync_kit_modals(window, cx);
+        if !has_kit_root(window) {
             window.focus(&self.focus_handle, cx);
         }
         cx.notify();
@@ -222,15 +219,17 @@ impl AppShell {
         self.task_speed_limit_dialog = Some(TaskSpeedLimitDialog {
             identity: task.identity.clone(),
             display_name: task_display_name(&task),
-            previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
             error: None,
         });
+        self.sync_kit_modals(window, cx);
         cx.notify();
-        cx.defer_in(window, |this, window, cx| {
-            if this.task_speed_limit_dialog.is_some() {
-                window.focus(&this.task_inputs.download_limit.focus_handle(cx), cx);
-            }
-        });
+        if !has_kit_root(window) {
+            cx.defer_in(window, |this, window, cx| {
+                if this.task_speed_limit_dialog.is_some() {
+                    window.focus(&this.task_inputs.download_limit.focus_handle(cx), cx);
+                }
+            });
+        }
     }
 
     pub(crate) fn close_task_speed_limit_action(
@@ -250,14 +249,9 @@ impl AppShell {
         {
             return;
         }
-        let previous_focus = self
-            .task_speed_limit_dialog
-            .take()
-            .and_then(|dialog| dialog.previous_focus)
-            .and_then(|focus| focus.upgrade());
-        if let Some(focus) = previous_focus {
-            window.focus(&focus, cx);
-        } else {
+        self.task_speed_limit_dialog = None;
+        self.sync_kit_modals(window, cx);
+        if !has_kit_root(window) {
             window.focus(&self.focus_handle, cx);
         }
         cx.notify();
@@ -426,15 +420,17 @@ impl AppShell {
             identity: task.identity.clone(),
             display_name: task_display_name(&task),
             supports_seed_rules,
-            previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
             error: None,
         });
+        self.sync_kit_modals(window, cx);
         cx.notify();
-        cx.defer_in(window, |this, window, cx| {
-            if this.task_options_dialog.is_some() {
-                window.focus(&this.task_inputs.seed_ratio.focus_handle(cx), cx);
-            }
-        });
+        if !has_kit_root(window) {
+            cx.defer_in(window, |this, window, cx| {
+                if this.task_options_dialog.is_some() {
+                    window.focus(&this.task_inputs.seed_ratio.focus_handle(cx), cx);
+                }
+            });
+        }
     }
 
     pub(crate) fn close_task_options(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -445,14 +441,9 @@ impl AppShell {
         {
             return;
         }
-        let previous_focus = self
-            .task_options_dialog
-            .take()
-            .and_then(|dialog| dialog.previous_focus)
-            .and_then(|focus| focus.upgrade());
-        if let Some(focus) = previous_focus {
-            window.focus(&focus, cx);
-        } else {
+        self.task_options_dialog = None;
+        self.sync_kit_modals(window, cx);
+        if !has_kit_root(window) {
             window.focus(&self.focus_handle, cx);
         }
         cx.notify();
@@ -621,13 +612,31 @@ impl AppShell {
         self.begin_task_command(TaskCommandView::MoveToQueueBottom, cx);
     }
 
+    #[cfg(test)]
     pub(crate) fn open_task_context_menu(
         &mut self,
         index: usize,
-        position: Point<Pixels>,
+        _position: Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(identity) = self
+            .snapshot
+            .tasks
+            .get(index)
+            .map(|task| task.identity.clone())
+        else {
+            return;
+        };
+        let _ = self.prepare_task_context_menu(&identity, window, cx);
+    }
+
+    pub(crate) fn prepare_task_context_menu(
+        &mut self,
+        identity: &TaskIdentity,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<TaskIdentity> {
         if self.page != AppPage::Downloads
             || self.add_dialog.open
             || self.output_name_dialog.is_some()
@@ -636,30 +645,29 @@ impl AppShell {
             || self.remove_confirmation.is_some()
             || self.batch_failure_details.is_some()
         {
-            return;
+            return None;
         }
-        let Some(task) = self.snapshot.tasks.get(index).cloned() else {
-            return;
-        };
+        let index = self
+            .snapshot
+            .tasks
+            .iter()
+            .position(|task| &task.identity == identity)?;
         // Right-click focuses the row without clearing a multi-selection that
         // already includes it (qBittorrent/Motrix parity).
-        if !self.selected_tasks.contains(&task.identity) {
+        if !self.selected_tasks.contains(identity) {
             self.select_at_with_modifiers(index, false, false, window, cx);
         } else {
-            self.selected = Some(task.identity.clone());
+            self.selected = Some(identity.clone());
         }
-        self.sort_popover_open = false;
-        self.speed_popover_open = false;
-        self.context_menu = Some(TaskContextMenu {
-            identity: task.identity,
-            position,
-        });
+        self.active_status_popover = None;
+        self.context_menu_target = Some(identity.clone());
         window.focus(&self.focus_handle, cx);
         cx.notify();
+        Some(identity.clone())
     }
 
     pub(crate) fn close_task_context_menu(&mut self, cx: &mut Context<Self>) {
-        if self.context_menu.take().is_some() {
+        if self.context_menu_target.take().is_some() {
             cx.notify();
         }
     }
@@ -667,12 +675,12 @@ impl AppShell {
     /// Prefer the right-clicked menu identity so multi-selection still has a
     /// single authoritative target for copy/open/details actions.
     pub(crate) fn context_menu_task_view(&self) -> Option<DownloadRowView> {
-        if let Some(menu) = self.context_menu.as_ref()
+        if let Some(target) = self.context_menu_target.as_ref()
             && let Some(task) = self
                 .snapshot
                 .tasks
                 .iter()
-                .find(|task| task.identity == menu.identity)
+                .find(|task| &task.identity == target)
         {
             return Some(task.clone());
         }
@@ -993,14 +1001,9 @@ impl AppShell {
                     has_live_tasks: selected_tasks.iter().any(|task| !task.status.is_terminal()),
                     has_terminal_tasks: selected_tasks.iter().any(|task| task.status.is_terminal()),
                     delete_files: false,
-                    previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
                 });
+                self.sync_kit_modals(window, cx);
                 cx.notify();
-                cx.defer_in(window, |this, window, cx| {
-                    if this.remove_confirmation.is_some() {
-                        window.focus(&this.remove_cancel_focus, cx);
-                    }
-                });
             }
             return;
         }
@@ -1022,14 +1025,9 @@ impl AppShell {
             has_live_tasks: !task.status.is_terminal(),
             has_terminal_tasks: task.status.is_terminal(),
             delete_files: false,
-            previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
         });
+        self.sync_kit_modals(window, cx);
         cx.notify();
-        cx.defer_in(window, |this, window, cx| {
-            if this.remove_confirmation.is_some() {
-                window.focus(&this.remove_cancel_focus, cx);
-            }
-        });
     }
 
     pub(crate) fn close_remove_confirmation(
@@ -1037,15 +1035,11 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(confirmation) = self.remove_confirmation.take() else {
+        if self.remove_confirmation.take().is_none() {
             return;
-        };
-        if let Some(focus) = confirmation
-            .previous_focus
-            .and_then(|focus| focus.upgrade())
-        {
-            window.focus(&focus, cx);
-        } else {
+        }
+        self.sync_kit_modals(window, cx);
+        if !has_kit_root(window) {
             window.focus(&self.focus_handle, cx);
         }
         cx.notify();
@@ -1055,6 +1049,7 @@ impl AppShell {
         let Some(confirmation) = self.remove_confirmation.take() else {
             return;
         };
+        self.sync_kit_modals_deferred(cx);
         let selection_matches = if confirmation.identities.len() > 1 {
             confirmation
                 .identities
@@ -1101,21 +1096,23 @@ impl AppShell {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn toggle_speed_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.speed_popover_open {
+        if self.active_status_popover == Some(StatusBarPopover::Speed) {
             self.close_speed_popover(window, cx);
             return;
         }
         self.speed_popover_previous_focus = window.focused(cx).map(|focus| focus.downgrade());
-        self.speed_popover_open = true;
+        self.context_menu_target = None;
+        self.active_status_popover = Some(StatusBarPopover::Speed);
         cx.notify();
     }
 
     pub(crate) fn close_speed_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.speed_popover_open {
+        if self.active_status_popover != Some(StatusBarPopover::Speed) {
             return;
         }
-        self.speed_popover_open = false;
+        self.active_status_popover = None;
         if let Some(focus) = self
             .speed_popover_previous_focus
             .take()
@@ -1156,547 +1153,6 @@ impl AppShell {
         }
         self.selected_task_view()
     }
-
-    pub(crate) fn render_remove_confirmation(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = self.theme.colors;
-        let (display_name, has_live_tasks, has_terminal_tasks, delete_files) = self
-            .remove_confirmation
-            .as_ref()
-            .map(|confirmation| {
-                (
-                    confirmation.display_name.clone(),
-                    confirmation.has_live_tasks,
-                    confirmation.has_terminal_tasks,
-                    confirmation.delete_files,
-                )
-            })
-            .unwrap_or_default();
-        let local_files_available = !matches!(self.engine_health, EngineHealthView::External);
-        let removal_description_key = match (has_live_tasks, has_terminal_tasks) {
-            (true, true) => "dialog-remove-description-mixed",
-            (true, false) => "dialog-remove-description-live",
-            (false, true) => "dialog-remove-description-terminal",
-            (false, false) => "dialog-remove-description-generic",
-        };
-        let removal_description = self.t_args(
-            removal_description_key,
-            &[("name", FluentValue::from(display_name))],
-        );
-        let file_choice = if local_files_available {
-            Checkbox::new("remove-task-files")
-                .checked(delete_files)
-                .accessibility_label(self.t("dialog-remove-files-aria"))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.toggle_remove_files(cx);
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .text_sm()
-                        .text_color(colors.text_primary)
-                        .child(self.t("dialog-remove-files-checkbox"))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(colors.text_muted)
-                                .child(self.t("ui-remove-aria2-control")),
-                        ),
-                )
-                .into_any_element()
-        } else {
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .text_xs()
-                .text_color(colors.text_secondary)
-                .child(Icon::new(IconName::Info).size(IconSize::Small))
-                .child(self.t("ui-external-engine-files-kept"))
-                .into_any_element()
-        };
-        Dialog::new(
-            "remove-task-dialog",
-            self.t("dialog-remove-title"),
-            self.theme,
-        )
-        .description(removal_description)
-        .key_context("RemoveTaskDialog")
-        .track_focus(self.remove_dialog_focus.clone())
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .text_xs()
-                .text_color(colors.text_secondary)
-                .child(
-                    Icon::new(IconName::TriangleAlert)
-                        .size(IconSize::Small)
-                        .color(colors.danger),
-                )
-                .child(if delete_files {
-                    self.t("dialog-remove-files-warning")
-                } else {
-                    self.t("dialog-remove-files-kept")
-                }),
-        )
-        .child(file_choice)
-        .action(
-            Button::new("cancel-remove-task", self.t("button-cancel"))
-                .aria_label(self.t("dialog-remove-cancel-aria"))
-                .style(ButtonStyle::Secondary)
-                .track_focus(self.remove_cancel_focus.clone())
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.close_remove_confirmation(window, cx);
-                }))
-                .render(colors),
-        )
-        .action(
-            Button::new(
-                "confirm-remove-task",
-                if delete_files {
-                    self.t("dialog-remove-and-files")
-                } else {
-                    self.t("dialog-remove-confirm")
-                },
-            )
-            .aria_label(if delete_files {
-                self.t("dialog-remove-submit-aria")
-            } else {
-                self.t("dialog-remove-confirm")
-            })
-            .style(ButtonStyle::Danger)
-            .track_focus(self.remove_submit_focus.clone())
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.submit_remove_confirmation(cx);
-            }))
-            .render(colors),
-        )
-        .into_any_element()
-    }
-
-    pub(crate) fn render_batch_failure_details(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = self.theme.colors;
-        let Some(details) = self.batch_failure_details.as_ref() else {
-            return div().into_any_element();
-        };
-        let command = self.t(batch_task_command_label_key(details.command));
-        let failures = details
-            .failures
-            .iter()
-            .enumerate()
-            .map(|(index, failure)| {
-                let task_name = failure.identity.as_ref().map_or_else(
-                    || self.t("dialog-batch-request"),
-                    |identity| {
-                        self.snapshot
-                            .tasks
-                            .iter()
-                            .find(|task| task.identity == *identity)
-                            .map(task_display_name)
-                            .unwrap_or_else(|| {
-                                self.t_args(
-                                    "dialog-batch-task-name",
-                                    &[("gid", FluentValue::from(identity.gid.clone()))],
-                                )
-                            })
-                    },
-                );
-                div()
-                    .id(SharedString::from(format!("batch-failure-{index}")))
-                    .role(Role::ListItem)
-                    .flex()
-                    .items_start()
-                    .gap_2()
-                    .child(
-                        Icon::new(IconName::CircleAlert)
-                            .size(IconSize::Small)
-                            .color(colors.danger),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(task_name),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(colors.text_muted)
-                                    .child(self.te(&failure.error)),
-                            ),
-                    )
-            })
-            .collect::<Vec<_>>();
-        Dialog::new(
-            "batch-failure-dialog",
-            self.t("dialog-batch-title"),
-            self.theme,
-        )
-        .description(self.t_count(
-            "dialog-batch-failure-summary",
-            u64::try_from(details.failures.len()).unwrap_or(u64::MAX),
-        ))
-        .key_context("BatchFailureDialog")
-        .track_focus(self.batch_failure_dialog_focus.clone())
-        .width(560.0)
-        .child(
-            div()
-                .id("batch-failure-list")
-                .role(Role::List)
-                .aria_label(self.t_args(
-                    "dialog-batch-failure-list-aria",
-                    &[("action", FluentValue::from(command))],
-                ))
-                .max_h(px(360.0))
-                .flex()
-                .flex_col()
-                .gap_3()
-                .children(failures),
-        )
-        .action(
-            Button::new("close-batch-failures", self.t("button-close"))
-                .aria_label(self.t("dialog-batch-close-aria"))
-                .style(ButtonStyle::Secondary)
-                .track_focus(self.batch_failure_close_focus.clone())
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.close_batch_failure_details(window, cx);
-                }))
-                .render(colors),
-        )
-        .into_any_element()
-    }
-
-    pub(crate) fn render_task_output_name_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = self.theme.colors;
-        let Some(dialog) = self.output_name_dialog.as_ref() else {
-            return div().into_any_element();
-        };
-        let identity = dialog.identity.clone();
-        let display_name = dialog.display_name.clone();
-        let active = dialog.active;
-        let error = dialog.error.clone();
-        let pending = self.pending_task_command.as_ref().is_some_and(|pending| {
-            pending.identity == identity
-                && matches!(&pending.command, TaskCommandView::SetOutputName { .. })
-        });
-        let content = div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(colors.text_secondary)
-                    .child(self.t("dialog-output-name-filename")),
-            )
-            .child(Input::new(&self.output_name_input))
-            .when(active, |element| {
-                element.child(
-                    div()
-                        .id("active-output-name-warning")
-                        .role(Role::Status)
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .text_xs()
-                        .text_color(colors.warning)
-                        .child(
-                            Icon::new(IconName::TriangleAlert)
-                                .size(IconSize::Small)
-                                .color(colors.warning),
-                        )
-                        .child(self.t("ui-output-name-restart")),
-                )
-            })
-            .when_some(error, |element, error| {
-                element.child(
-                    div()
-                        .id("task-output-name-error")
-                        .role(Role::Alert)
-                        .aria_label(self.te(&error))
-                        .text_xs()
-                        .text_color(colors.danger)
-                        .child(self.te(&error)),
-                )
-            });
-
-        Dialog::new(
-            "task-output-name-dialog",
-            self.t("dialog-output-name-title"),
-            self.theme,
-        )
-        .description(self.t_args(
-            "dialog-output-name-description",
-            &[("name", FluentValue::from(display_name))],
-        ))
-        .key_context("TaskOutputNameDialog")
-        .track_focus(self.output_name_dialog_focus.clone())
-        .width(520.0)
-        .child(content)
-        .action(
-            Button::new("cancel-task-output-name", self.t("button-cancel"))
-                .aria_label(self.t("dialog-output-name-cancel-aria"))
-                .style(ButtonStyle::Secondary)
-                .disabled(pending)
-                .track_focus(self.output_name_cancel_focus.clone())
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.close_task_output_name(window, cx);
-                }))
-                .render(colors),
-        )
-        .action(
-            Button::new(
-                "submit-task-output-name",
-                if pending {
-                    self.t("dialog-output-name-saving")
-                } else {
-                    self.t("button-save")
-                },
-            )
-            .aria_label(if pending {
-                self.t("dialog-output-name-saving")
-            } else {
-                self.t("dialog-output-name-save")
-            })
-            .style(ButtonStyle::Primary)
-            .loading(pending)
-            .track_focus(self.output_name_submit_focus.clone())
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.submit_task_output_name(cx);
-            }))
-            .render(colors),
-        )
-        .into_any_element()
-    }
-
-    pub(crate) fn render_task_speed_limit_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = self.theme.colors;
-        let Some(dialog) = self.task_speed_limit_dialog.as_ref() else {
-            return div().into_any_element();
-        };
-        let identity = dialog.identity.clone();
-        let display_name = dialog.display_name.clone();
-        let error = dialog.error.clone();
-        let pending = self.pending_task_command.as_ref().is_some_and(|pending| {
-            pending.identity == identity
-                && matches!(&pending.command, TaskCommandView::SetSpeedLimit { .. })
-        });
-        let content = div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
-                div()
-                    .flex()
-                    .gap_3()
-                    .child(
-                        settings_labeled_input(
-                            self.t("dialog-speed-limit-download"),
-                            &self.task_inputs.download_limit,
-                            colors,
-                        )
-                        .flex_1()
-                        .min_w_0(),
-                    )
-                    .child(
-                        settings_labeled_input(
-                            self.t("dialog-speed-limit-upload"),
-                            &self.task_inputs.upload_limit,
-                            colors,
-                        )
-                        .flex_1()
-                        .min_w_0(),
-                    ),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(colors.text_muted)
-                    .child(self.t("dialog-speed-limit-help")),
-            )
-            .when_some(error, |element, error| {
-                element.child(
-                    div()
-                        .id("task-speed-limit-error")
-                        .role(Role::Alert)
-                        .aria_label(self.te(&error))
-                        .text_xs()
-                        .text_color(colors.danger)
-                        .child(self.te(&error)),
-                )
-            });
-
-        Dialog::new(
-            "task-speed-limit-dialog",
-            self.t("dialog-speed-limit-title"),
-            self.theme,
-        )
-        .description(self.t_args(
-            "dialog-speed-limit-description",
-            &[("name", FluentValue::from(display_name))],
-        ))
-        .key_context("TaskSpeedLimitDialog")
-        .track_focus(self.task_speed_limit_dialog_focus.clone())
-        .width(520.0)
-        .child(content)
-        .action(
-            Button::new("cancel-task-speed-limit", self.t("button-cancel"))
-                .aria_label(self.t("dialog-speed-limit-cancel-aria"))
-                .style(ButtonStyle::Secondary)
-                .disabled(pending)
-                .track_focus(self.task_speed_limit_cancel_focus.clone())
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.close_task_speed_limit(window, cx);
-                }))
-                .render(colors),
-        )
-        .action(
-            Button::new(
-                "submit-task-speed-limit",
-                if pending {
-                    self.t("dialog-speed-limit-saving")
-                } else {
-                    self.t("button-save")
-                },
-            )
-            .aria_label(if pending {
-                self.t("dialog-speed-limit-saving")
-            } else {
-                self.t("dialog-speed-limit-save")
-            })
-            .style(ButtonStyle::Primary)
-            .loading(pending)
-            .track_focus(self.task_speed_limit_submit_focus.clone())
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.submit_task_speed_limit(cx);
-            }))
-            .render(colors),
-        )
-        .into_any_element()
-    }
-
-    pub(crate) fn render_task_options_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = self.theme.colors;
-        let Some(dialog) = self.task_options_dialog.as_ref() else {
-            return div().into_any_element();
-        };
-        let identity = dialog.identity.clone();
-        let display_name = dialog.display_name.clone();
-        let supports_seed_rules = dialog.supports_seed_rules;
-        let error = dialog.error.clone();
-        let pending = self.pending_task_command.as_ref().is_some_and(|pending| {
-            pending.identity == identity
-                && matches!(&pending.command, TaskCommandView::SetOptions { .. })
-        });
-        let content =
-            div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .child(div().text_xs().text_color(colors.text_muted).child(
-                    if supports_seed_rules {
-                        self.t("dialog-task-options-seed-help")
-                    } else {
-                        self.t("dialog-task-options-seed-unavailable")
-                    },
-                ))
-                .when(supports_seed_rules, |element| {
-                    element.child(
-                        div()
-                            .flex()
-                            .gap_3()
-                            .child(
-                                settings_labeled_input(
-                                    self.t("dialog-task-options-seed-ratio"),
-                                    &self.task_inputs.seed_ratio,
-                                    colors,
-                                )
-                                .flex_1()
-                                .min_w_0(),
-                            )
-                            .child(
-                                settings_labeled_input(
-                                    self.t("dialog-task-options-seed-time"),
-                                    &self.task_inputs.seed_time,
-                                    colors,
-                                )
-                                .flex_1()
-                                .min_w_0(),
-                            ),
-                    )
-                })
-                .when_some(error, |element, error| {
-                    element.child(
-                        div()
-                            .id("task-options-error")
-                            .role(Role::Alert)
-                            .aria_label(self.te(&error))
-                            .text_xs()
-                            .text_color(colors.danger)
-                            .child(self.te(&error)),
-                    )
-                });
-
-        Dialog::new(
-            "task-options-dialog",
-            self.t("dialog-task-options-title"),
-            self.theme,
-        )
-        .description(self.t_args(
-            "dialog-task-options-description",
-            &[("name", FluentValue::from(display_name))],
-        ))
-        .key_context("TaskOptionsDialog")
-        .track_focus(self.task_options_dialog_focus.clone())
-        .width(520.0)
-        .child(content)
-        .action(
-            Button::new("cancel-task-options", self.t("button-cancel"))
-                .aria_label(self.t("dialog-task-options-cancel-aria"))
-                .style(ButtonStyle::Secondary)
-                .disabled(pending)
-                .track_focus(self.task_options_cancel_focus.clone())
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.close_task_options(window, cx);
-                }))
-                .render(colors),
-        )
-        .action(
-            Button::new(
-                "submit-task-options",
-                if pending {
-                    self.t("dialog-task-options-saving")
-                } else {
-                    self.t("button-save")
-                },
-            )
-            .aria_label(if pending {
-                self.t("dialog-task-options-saving")
-            } else {
-                self.t("dialog-task-options-save")
-            })
-            .style(ButtonStyle::Primary)
-            .loading(pending)
-            .disabled(!supports_seed_rules)
-            .track_focus(self.task_options_submit_focus.clone())
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.submit_task_options(cx);
-            }))
-            .render(colors),
-        )
-        .into_any_element()
-    }
 }
 
 const fn task_command_label_key(command: &TaskCommandView) -> &'static str {
@@ -1719,7 +1175,7 @@ const fn task_command_label_key(command: &TaskCommandView) -> &'static str {
     }
 }
 
-const fn batch_task_command_label_key(command: BatchTaskCommandView) -> &'static str {
+pub(super) const fn batch_task_command_label_key(command: BatchTaskCommandView) -> &'static str {
     match command {
         BatchTaskCommandView::Pause => "action-pause",
         BatchTaskCommandView::ForcePause => "action-force-pause",

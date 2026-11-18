@@ -83,7 +83,7 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         self.page = AppPage::Downloads;
-        self.speed_popover_open = false;
+        self.active_status_popover = None;
         if self.add_dialog.open {
             window.focus(&self.add_input.focus_handle(cx), cx);
             return;
@@ -127,18 +127,21 @@ impl AppShell {
             metadata_files: Vec::new(),
             active_metadata_file: None,
             preview_pending: None,
-            previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
             pending: None,
             error: None,
             results: Vec::new(),
         };
+        self.sync_kit_modals(window, cx);
         cx.notify();
-        cx.defer_in(window, |this, window, cx| {
-            if this.add_dialog.open && this.add_dialog.input_mode == AddDownloadInputModeView::Links
-            {
-                window.focus(&this.add_input.focus_handle(cx), cx);
-            }
-        });
+        if !has_kit_root(window) {
+            cx.defer_in(window, |this, window, cx| {
+                if this.add_dialog.open
+                    && this.add_dialog.input_mode == AddDownloadInputModeView::Links
+                {
+                    window.focus(&this.add_input.focus_handle(cx), cx);
+                }
+            });
+        }
     }
 
     pub(crate) fn close_add_download_action(
@@ -158,16 +161,10 @@ impl AppShell {
             return;
         }
         self.links_input_drag_origin = None;
-        let restore_focus = self.add_dialog_focus.contains_focused(window, cx)
-            || self.add_input.focus_handle(cx).is_focused(window);
-        let previous_focus = self.add_dialog.previous_focus.take();
         self.add_dialog = AddDownloadDialog::default();
-        if restore_focus {
-            if let Some(focus) = previous_focus.and_then(|focus| focus.upgrade()) {
-                window.focus(&focus, cx);
-            } else {
-                window.focus(&self.focus_handle, cx);
-            }
+        self.sync_kit_modals(window, cx);
+        if !has_kit_root(window) {
+            window.focus(&self.focus_handle, cx);
         }
         cx.notify();
     }
@@ -827,47 +824,44 @@ impl AppShell {
             .items_center()
             .gap_1p5()
             .child(div().text_xs().text_color(colors.text_muted).child(label))
-            .child(
-                Button::new("add-category-auto", auto_label)
+            .child({
+                let mut button = KitButton::new("add-category-auto")
+                    .small()
                     .compact()
-                    .style(if selected.is_none() {
-                        ButtonStyle::Primary
-                    } else {
-                        ButtonStyle::Secondary
-                    })
+                    .label(auto_label)
                     .disabled(pending)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.set_add_category(None, cx);
-                    }))
-                    .render(colors),
-            );
+                    }));
+                if selected.is_none() {
+                    button = button.primary();
+                }
+                button
+            });
         for category in categories {
             let id = category.id.clone();
             let is_selected = selected.as_deref() == Some(id.as_str());
             let name = category.name.clone();
             let display_name = category_display_name(&name, self);
-            row = row.child(
-                Button::new(
-                    SharedString::from(format!("add-category-{id}")),
-                    display_name,
-                )
-                .compact()
-                .style(if is_selected {
-                    ButtonStyle::Primary
-                } else {
-                    ButtonStyle::Secondary
-                })
-                .disabled(pending)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.set_add_category(Some(id.clone()), cx);
-                }))
-                .render(colors),
-            );
+            row = row.child({
+                let mut button = KitButton::new(SharedString::from(format!("add-category-{id}")))
+                    .small()
+                    .compact()
+                    .label(display_name)
+                    .disabled(pending)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_add_category(Some(id.clone()), cx);
+                    }));
+                if is_selected {
+                    button = button.primary();
+                }
+                button
+            });
         }
         row
     }
 
-    pub(crate) fn render_add_download_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_add_download_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = self.theme.colors;
         let add_pending = self.add_dialog.pending.is_some();
         let preview_pending = self.add_dialog.preview_pending.is_some();
@@ -955,7 +949,6 @@ impl AppShell {
         });
         let category_picker = self.render_add_category_picker(cx);
         let links_input_height = self.links_input_height;
-        let is_resizing = self.links_input_drag_origin.is_some();
         let content = div()
             .flex()
             .flex_col()
@@ -1004,30 +997,8 @@ impl AppShell {
                                     .font_family("monospace"),
                             )
                             .child(
-                                div()
-                                    .id("links-input-resize-grip")
-                                    .role(Role::Button)
-                                    .aria_label(self.t("dialog-add-resize-links-input-aria"))
-                                    .tooltip(Tooltip::text(
-                                        self.t("dialog-add-resize-links-input-aria"),
-                                        None,
-                                        colors,
-                                    ))
-                                    .absolute()
-                                    .bottom(px(3.0))
-                                    .right(px(3.0))
-                                    .size(px(14.0))
-                                    .flex()
-                                    .items_end()
-                                    .justify_end()
-                                    .p(px(1.0))
-                                    .text_color(if is_resizing {
-                                        colors.accent
-                                    } else {
-                                        colors.text_muted
-                                    })
-                                    .hover(|style| style.text_color(colors.text_secondary))
-                                    .cursor(gpui::CursorStyle::ResizeUpLeftDownRight)
+                                resize_handle("links-input-resize-grip", Axis::Vertical)
+                                    .inside(HandleEdge::Trailing)
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(
@@ -1044,12 +1015,9 @@ impl AppShell {
                                             },
                                         ),
                                     )
-                                    .on_drag(ResizeLinkInput, |_, _, _, cx| {
-                                        cx.new(|_| ResizeLinkInput)
-                                    })
-                                    .child(
-                                        Icon::new(IconName::ResizeCorner).size(IconSize::XSmall),
-                                    ),
+                                    .on_drag(ResizeLinkInput, |drag, _, _, cx| {
+                                        cx.new(|_| drag.clone())
+                                    }),
                             ),
                     )
                     .child(
@@ -1089,12 +1057,11 @@ impl AppShell {
                         file_conflict == FileConflictPolicyView::Overwrite,
                         |element| {
                             element.child(
-                                div()
-                                    .id("add-download-overwrite-warning")
-                                    .role(Role::Alert)
-                                    .text_xs()
-                                    .text_color(colors.danger)
-                                    .child(self.t("ui-overwrite-warning")),
+                                Alert::warning(
+                                    "add-download-overwrite-warning",
+                                    self.t("ui-overwrite-warning"),
+                                )
+                                .xsmall(),
                             )
                         },
                     )
@@ -1109,79 +1076,10 @@ impl AppShell {
             })
             .when_some(error, |element, error| {
                 let message = self.te(&error);
-                element.child(
-                    div()
-                        .id("add-download-error")
-                        .role(Role::Alert)
-                        .aria_label(message.clone())
-                        .text_xs()
-                        .text_color(colors.danger)
-                        .child(message),
-                )
+                element.child(Alert::error("add-download-error", message).xsmall())
             });
 
-        let scroll_shell = shell.clone();
-        let scroll_handle = self.add_dialog_scroll.clone();
-        Dialog::new(
-            "add-download-dialog",
-            self.t("dialog-add-download"),
-            self.theme,
-        )
-        .key_context("AddDownloadDialog")
-        .track_focus(self.add_dialog_focus.clone())
-        .width(if input_mode == AddDownloadInputModeView::MetadataFiles {
-            720.0
-        } else if self.add_dialog.advanced_open {
-            640.0
-        } else {
-            560.0
-        })
-        .scrollable(true)
-        .max_h(relative(0.88))
-        .track_scroll(self.add_dialog_scroll.clone())
-        .on_scroll(move |event, window, cx| {
-            let handle = scroll_handle.clone();
-            scroll_shell
-                .update(cx, |this, cx| {
-                    this.smooth_discrete_scroll(
-                        SmoothScrollArea::AddDownload,
-                        handle,
-                        event,
-                        window,
-                        cx,
-                    );
-                })
-                .ok();
-        })
-        .child(content)
-        .action(
-            Button::new("cancel-add-download", self.t("button-cancel"))
-                .aria_label(self.t("dialog-add-cancel-aria"))
-                .style(ButtonStyle::Secondary)
-                .disabled(pending)
-                .track_focus(self.add_cancel_focus.clone())
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.close_add_download(window, cx);
-                }))
-                .render(colors),
-        )
-        .action(
-            Button::new("submit-add-download", self.t("dialog-add-submit"))
-                .aria_label(if add_pending {
-                    self.t("dialog-add-submitting")
-                } else {
-                    self.t("dialog-add-submit")
-                })
-                .style(ButtonStyle::Primary)
-                .disabled(preview_pending)
-                .loading(add_pending)
-                .track_focus(self.add_submit_focus.clone())
-                .on_click(cx.listener(|this, _, _window, cx| {
-                    this.submit_add_download(cx);
-                }))
-                .render(colors),
-        )
-        .into_any_element()
+        content.into_any_element()
     }
 
     pub(crate) fn render_add_advanced_section(
@@ -1189,141 +1087,139 @@ impl AppShell {
         pending: bool,
         colors: crate::ThemeColors,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> Collapsible {
         let open = self.add_dialog.advanced_open;
-        div()
+        let trigger = div()
+            .id("add-download-advanced-toggle")
+            .role(Role::Button)
+            .aria_label(if open {
+                self.t("dialog-add-hide-advanced-aria")
+            } else {
+                self.t("dialog-add-show-advanced-aria")
+            })
+            .aria_expanded(open)
+            .focusable()
+            .tab_stop(true)
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .rounded_md()
+            .border_1()
+            .border_color(colors.border)
+            .bg(colors.elevated_surface)
+            .px_3()
+            .py_2()
+            .hover(|style| style.bg(colors.surface_hover))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_add_advanced(cx)))
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(colors.text_secondary)
+                    .child(self.t("ui-advanced-options")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(if open {
+                        self.t("dialog-add-hide-advanced")
+                    } else {
+                        self.t("dialog-add-show-advanced")
+                    })
+                    .child(
+                        Icon::new(if open {
+                            IconName::ChevronUp
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .size(IconSize::XSmall),
+                    ),
+            );
+        let body = div()
             .flex()
             .flex_col()
             .gap_2()
+            .pt_2()
             .child(
                 div()
-                    .id("add-download-advanced-toggle")
-                    .role(Role::Button)
-                    .aria_label(if open {
-                        self.t("dialog-add-hide-advanced-aria")
-                    } else {
-                        self.t("dialog-add-show-advanced-aria")
-                    })
-                    .aria_expanded(open)
-                    .focusable()
-                    .tab_stop(true)
-                    .cursor_pointer()
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(self.t("dialog-add-advanced-hint")),
+            )
+            .child(
+                div()
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(colors.border)
-                    .bg(colors.elevated_surface)
-                    .px_3()
-                    .py_2()
-                    .hover(|style| style.bg(colors.surface_hover))
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_add_advanced(cx)))
+                    .gap_3()
                     .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(colors.text_secondary)
-                            .child(self.t("ui-advanced-options")),
+                        settings_labeled_input(
+                            self.t("dialog-add-referer"),
+                            &self.add_inputs.referer,
+                            colors,
+                        )
+                        .flex_1()
+                        .min_w_0(),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .text_xs()
-                            .text_color(colors.text_muted)
-                            .child(if open {
-                                self.t("dialog-add-hide-advanced")
-                            } else {
-                                self.t("dialog-add-show-advanced")
-                            })
-                            .child(
-                                Icon::new(if open {
-                                    IconName::ChevronUp
-                                } else {
-                                    IconName::ChevronDown
-                                })
-                                .size(IconSize::XSmall),
-                            ),
+                        settings_labeled_input(
+                            self.t("dialog-add-user-agent"),
+                            &self.add_inputs.user_agent,
+                            colors,
+                        )
+                        .flex_1()
+                        .min_w_0(),
                     ),
             )
-            .when(open, |element| {
-                element
+            .child(settings_labeled_input(
+                self.t("dialog-add-custom-headers"),
+                &self.add_inputs.headers,
+                colors,
+            ))
+            .child(settings_labeled_input(
+                self.t("dialog-add-cookie"),
+                &self.add_inputs.cookie,
+                colors,
+            ))
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(colors.text_muted)
-                            .child(self.t("dialog-add-advanced-hint")),
+                        settings_labeled_input(
+                            self.t("dialog-add-http-username"),
+                            &self.add_inputs.http_user,
+                            colors,
+                        )
+                        .flex_1()
+                        .min_w_0(),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .gap_3()
-                            .child(
-                                settings_labeled_input(
-                                    self.t("dialog-add-referer"),
-                                    &self.add_inputs.referer,
-                                    colors,
-                                )
-                                .flex_1()
-                                .min_w_0(),
-                            )
-                            .child(
-                                settings_labeled_input(
-                                    self.t("dialog-add-user-agent"),
-                                    &self.add_inputs.user_agent,
-                                    colors,
-                                )
-                                .flex_1()
-                                .min_w_0(),
-                            ),
-                    )
-                    .child(settings_labeled_input(
-                        self.t("dialog-add-custom-headers"),
-                        &self.add_inputs.headers,
-                        colors,
-                    ))
-                    .child(settings_labeled_input(
-                        self.t("dialog-add-cookie"),
-                        &self.add_inputs.cookie,
-                        colors,
-                    ))
-                    .child(
-                        div()
-                            .flex()
-                            .gap_3()
-                            .child(
-                                settings_labeled_input(
-                                    self.t("dialog-add-http-username"),
-                                    &self.add_inputs.http_user,
-                                    colors,
-                                )
-                                .flex_1()
-                                .min_w_0(),
-                            )
-                            .child(
-                                settings_labeled_input(
-                                    self.t("dialog-add-http-password"),
-                                    &self.add_inputs.http_passwd,
-                                    colors,
-                                )
-                                .flex_1()
-                                .min_w_0(),
-                            ),
-                    )
-                    .child(settings_labeled_input(
-                        self.t("dialog-add-checksum"),
-                        &self.add_inputs.checksum,
-                        colors,
-                    ))
-                    .when(pending, |element| {
-                        // Keep the section visible while submitting, but inputs stay
-                        // disabled through the dialog pending state of TextField focus.
-                        element
-                    })
-            })
+                        settings_labeled_input(
+                            self.t("dialog-add-http-password"),
+                            &self.add_inputs.http_passwd,
+                            colors,
+                        )
+                        .flex_1()
+                        .min_w_0(),
+                    ),
+            )
+            .child(settings_labeled_input(
+                self.t("dialog-add-checksum"),
+                &self.add_inputs.checksum,
+                colors,
+            ))
+            .when(pending, |element| element);
+
+        Collapsible::new()
+            .motion_id("add-download-advanced")
+            .open(open)
+            .child(trigger)
+            .content(body)
     }
 
     pub(crate) fn render_metadata_file_picker(
@@ -1333,106 +1229,108 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = self.theme.colors;
-        let rows =
-            self.add_dialog
-                .metadata_files
-                .iter()
-                .enumerate()
-                .map(|(index, preview)| {
-                    let active = self.add_dialog.active_metadata_file == Some(index);
-                    let name = preview.path.file_name().map_or_else(
-                        || preview.path.display().to_string(),
-                        |name| name.to_string_lossy().into(),
-                    );
-                    let full_path = preview.path.display().to_string();
-                    let kind = preview.kind;
-                    let kind_label = self.t(kind.message_key());
-                    let selected = preview.selected_file_indices.len();
-                    let total = preview.files.len();
-                    let row_aria = self.t_args(
-                        "dialog-add-metadata-row-aria",
-                        &[
-                            ("kind", FluentValue::from(kind_label.clone())),
-                            ("name", FluentValue::from(name.clone())),
-                            ("selected", FluentValue::from(fluent_number(selected))),
-                            ("total", FluentValue::from(fluent_number(total))),
-                        ],
-                    );
-                    let row_summary = self.t_args(
-                        "dialog-add-metadata-row-summary",
-                        &[
-                            ("kind", FluentValue::from(kind_label.clone())),
-                            ("selected", FluentValue::from(fluent_number(selected))),
-                            ("total", FluentValue::from(fluent_number(total))),
-                            ("path", FluentValue::from(full_path)),
-                        ],
-                    );
-                    let remove_aria = self.t_args(
-                        "dialog-add-remove-kind-aria",
-                        &[("kind", FluentValue::from(kind_label))],
-                    );
-                    div()
-                        .id(SharedString::from(format!("metadata-file-{index}")))
-                        .role(Role::ListItem)
-                        .aria_label(row_aria)
-                        .focusable()
-                        .tab_stop(!pending)
-                        .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
-                        .h(px(48.0))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_2()
-                        .border_b_1()
-                        .border_color(if active { colors.accent } else { colors.border })
-                        .bg(if active {
-                            colors.surface_active
-                        } else {
-                            colors.surface
-                        })
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_metadata_file(index, cx);
-                        }))
-                        .child(Icon::new(IconName::Download).size(IconSize::Small).color(
-                            if active {
+        let rows = self
+            .add_dialog
+            .metadata_files
+            .iter()
+            .enumerate()
+            .map(|(index, preview)| {
+                let active = self.add_dialog.active_metadata_file == Some(index);
+                let name = preview.path.file_name().map_or_else(
+                    || preview.path.display().to_string(),
+                    |name| name.to_string_lossy().into(),
+                );
+                let full_path = preview.path.display().to_string();
+                let kind = preview.kind;
+                let kind_label = self.t(kind.message_key());
+                let selected = preview.selected_file_indices.len();
+                let total = preview.files.len();
+                let row_aria = self.t_args(
+                    "dialog-add-metadata-row-aria",
+                    &[
+                        ("kind", FluentValue::from(kind_label.clone())),
+                        ("name", FluentValue::from(name.clone())),
+                        ("selected", FluentValue::from(fluent_number(selected))),
+                        ("total", FluentValue::from(fluent_number(total))),
+                    ],
+                );
+                let row_summary = self.t_args(
+                    "dialog-add-metadata-row-summary",
+                    &[
+                        ("kind", FluentValue::from(kind_label.clone())),
+                        ("selected", FluentValue::from(fluent_number(selected))),
+                        ("total", FluentValue::from(fluent_number(total))),
+                        ("path", FluentValue::from(full_path)),
+                    ],
+                );
+                let remove_aria = self.t_args(
+                    "dialog-add-remove-kind-aria",
+                    &[("kind", FluentValue::from(kind_label))],
+                );
+                div()
+                    .id(SharedString::from(format!("metadata-file-{index}")))
+                    .role(Role::ListItem)
+                    .aria_label(row_aria)
+                    .focusable()
+                    .tab_stop(!pending)
+                    .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
+                    .h(px(48.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .border_b_1()
+                    .border_color(if active { colors.accent } else { colors.border })
+                    .bg(if active {
+                        colors.surface_active
+                    } else {
+                        colors.surface
+                    })
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.select_metadata_file(index, cx);
+                    }))
+                    .child(
+                        Icon::new(IconName::Download)
+                            .size(IconSize::Small)
+                            .color(if active {
                                 colors.accent
                             } else {
                                 colors.text_muted
-                            },
-                        ))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(div().truncate().text_sm().child(name))
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_xs()
-                                        .text_color(colors.text_muted)
-                                        .child(row_summary),
-                                ),
-                        )
-                        .child(
-                            IconButton::new(
-                                SharedString::from(format!("remove-metadata-file-{index}")),
-                                IconName::X,
-                            )
-                            .aria_label(remove_aria)
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().truncate().text_sm().child(name))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(colors.text_muted)
+                                    .child(row_summary),
+                            ),
+                    )
+                    .child(
+                        KitButton::new(SharedString::from(format!("remove-metadata-file-{index}")))
+                            .ghost()
+                            .small()
+                            .compact()
+                            .icon(gpui_kit::component::Icon::new(IconName::X))
+                            .accessibility_label(remove_aria)
                             .disabled(pending)
-                            .tooltip(Tooltip::new(self.t("dialog-add-remove-file")))
+                            .tooltip(self.t("dialog-add-remove-file"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.remove_metadata_file(index, cx);
-                            }))
-                            .render(colors),
-                        )
-                        .into_any_element()
-                })
-                .collect::<Vec<_>>();
+                            })),
+                    )
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
         let count = self.add_dialog.metadata_files.len();
         let active_index = self.add_dialog.active_metadata_file;
         let active_summary = active_index
@@ -1541,17 +1439,29 @@ impl AppShell {
                                                 );
                                             }))
                                             .child(
-                                                Icon::new(if selected {
-                                                    IconName::SquareCheckBig
-                                                } else {
-                                                    IconName::Square
-                                                })
-                                                .size(IconSize::Small)
-                                                .color(if selected {
-                                                    colors.accent
-                                                } else {
-                                                    colors.text_muted
-                                                }),
+                                                div()
+                                                    .flex_none()
+                                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                        cx.stop_propagation()
+                                                    })
+                                                    .child(
+                                                        Checkbox::new((
+                                                            "metadata-file-check",
+                                                            file_index as usize,
+                                                        ))
+                                                        .checked(selected)
+                                                        .disabled(pending)
+                                                        .tab_stop(false)
+                                                        .on_change(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                this.toggle_metadata_file_entry(
+                                                                    preview_index,
+                                                                    file_index,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                    ),
                                             )
                                             .child(
                                                 div()
@@ -1604,24 +1514,9 @@ impl AppShell {
                         }),
                     )
                     .track_scroll(&self.metadata_file_scroll)
-                    .on_scroll({
-                        let handle = self.metadata_file_scroll.0.borrow().base_handle.clone();
-                        cx.listener(move |this, event, window, cx| {
-                            this.smooth_discrete_scroll(
-                                SmoothScrollArea::MetadataFiles,
-                                handle.clone(),
-                                event,
-                                window,
-                                cx,
-                            );
-                        })
-                    })
                     .size_full(),
                 )
-                .child(vertical_scrollbar_overlay(
-                    "metadata-files-scrollbar",
-                    &self.metadata_file_scroll,
-                ))
+                .vertical_scrollbar(&self.metadata_file_scroll)
                 .border_1()
                 .border_color(colors.border)
                 .rounded_md()
@@ -1673,19 +1568,15 @@ impl AppShell {
                             ),
                     )
                     .child(
-                        Button::new(
-                            "choose-metadata-files",
-                            self.t("dialog-add-choose-metadata"),
-                        )
-                        .icon(IconName::FolderDown)
-                        .aria_label(self.t("dialog-add-choose-files-aria"))
-                        .style(ButtonStyle::Secondary)
-                        .disabled(pending)
-                        .loading(preview_pending)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.choose_metadata_files(window, cx);
-                        }))
-                        .render(colors),
+                        KitButton::new("choose-metadata-files")
+                            .icon(gpui_kit::component::Icon::new(IconName::FolderDown))
+                            .label(self.t("dialog-add-choose-metadata"))
+                            .accessibility_label(self.t("dialog-add-choose-files-aria"))
+                            .disabled(pending)
+                            .loading(preview_pending)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.choose_metadata_files(window, cx);
+                            })),
                     ),
             )
             .when(!rows.is_empty(), |element| {

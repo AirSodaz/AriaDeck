@@ -1,15 +1,18 @@
 use std::time::Duration;
 
 use ariadeck_i18n::FluentValue;
-use gpui::{
-    AnyElement, Context, Div, FontWeight, IntoElement, Role, SharedString, Stateful, div,
-    prelude::*, px,
+use gpui::{Anchor, Context, Div, FontWeight, Role, SharedString, div, prelude::*, px};
+use gpui_kit::component::{
+    Disableable as _, Sizable as _,
+    button::{Button as KitButton, ButtonVariants as _},
+    popover::Popover,
+    switch::Switch,
 };
 
-use super::{AppShell, AppShellEvent, ProxyPasswordUpdateView, SettingsSaveSource};
-use crate::{
-    Button, ButtonStyle, CompletionPowerActionView, Dialog, Icon, IconName, IconSize, Toggle,
+use super::{
+    AppShell, AppShellEvent, ProxyPasswordUpdateView, SettingsSaveSource, StatusBarPopover,
 };
+use crate::{CompletionPowerActionView, Icon, IconName, IconSize};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PowerCountdownState {
@@ -29,6 +32,7 @@ impl AppShell {
             if self.power_countdown.is_some() {
                 self.power_countdown = None;
                 self.power_countdown_generation = self.power_countdown_generation.wrapping_add(1);
+                self.sync_kit_modals_deferred(cx);
                 cx.notify();
             }
         } else if self.power_had_active_tasks
@@ -71,6 +75,7 @@ impl AppShell {
             is_error: false,
         });
 
+        self.sync_kit_modals_deferred(cx);
         cx.notify();
 
         // Spawn 1-second countdown ticker
@@ -117,6 +122,7 @@ impl AppShell {
                 cx,
             );
             cx.emit(AppShellEvent::CompletionPowerActionRequested(action));
+            self.sync_kit_modals_deferred(cx);
             cx.notify();
             false
         }
@@ -136,6 +142,7 @@ impl AppShell {
             cx,
         );
         self.show_notice(self.t("notice-power-action-cancelled"), false, cx);
+        self.sync_kit_modals_deferred(cx);
         cx.notify();
     }
 
@@ -156,6 +163,7 @@ impl AppShell {
             cx,
         );
         cx.emit(AppShellEvent::CompletionPowerActionRequested(action));
+        self.sync_kit_modals_deferred(cx);
         cx.notify();
     }
 
@@ -188,6 +196,7 @@ impl AppShell {
             self.power_had_active_tasks = false;
             self.power_countdown = None;
             self.power_countdown_generation = self.power_countdown_generation.wrapping_add(1);
+            self.sync_kit_modals_deferred(cx);
         }
         let settings = self.settings.clone();
         self.request_settings_save(
@@ -214,20 +223,20 @@ impl AppShell {
         cx.notify();
     }
 
+    #[cfg(test)]
     pub(crate) fn toggle_power_popover(&mut self, cx: &mut Context<Self>) {
-        self.power_popover_open = !self.power_popover_open;
-        if self.power_popover_open {
-            self.speed_popover_open = false;
-            self.sort_popover_open = false;
-            self.activity_panel_open = false;
-            self.context_menu = None;
+        if self.active_status_popover == Some(StatusBarPopover::Power) {
+            self.active_status_popover = None;
+        } else {
+            self.context_menu_target = None;
+            self.active_status_popover = Some(StatusBarPopover::Power);
         }
         cx.notify();
     }
 
     pub(crate) fn close_power_popover(&mut self, cx: &mut Context<Self>) {
-        if self.power_popover_open {
-            self.power_popover_open = false;
+        if self.active_status_popover == Some(StatusBarPopover::Power) {
+            self.active_status_popover = None;
             cx.notify();
         }
     }
@@ -250,8 +259,9 @@ impl AppShell {
         }
     }
 
-    pub(crate) fn render_power_status_bar_item(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(crate) fn render_power_status_bar_item(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
+        let open = self.active_status_popover == Some(StatusBarPopover::Power);
         let armed = self.settings.platform.action_after_done.is_armed();
         let action_name = self.t(self.settings.platform.action_after_done.message_key());
         let label = self.t_args(
@@ -265,225 +275,141 @@ impl AppShell {
 
         let icon_color = if armed {
             colors.warning
-        } else if self.power_popover_open {
+        } else if open {
             colors.information
         } else {
             colors.text_muted
         };
-
-        div()
-            .id("power-status")
-            .focusable()
-            .tab_stop(true)
-            .role(Role::Button)
-            .aria_label(aria_label)
-            .aria_expanded(self.power_popover_open)
-            .ml_auto()
-            .h_full()
-            .px_2()
-            .flex()
-            .items_center()
-            .gap_1()
-            .text_xs()
-            .text_color(if armed || self.power_popover_open {
-                colors.text_primary
-            } else {
-                colors.text_muted
-            })
-            .cursor_pointer()
-            .hover(|style| style.bg(colors.surface_hover))
-            .focus_visible(|style| style.bg(colors.surface_active))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.toggle_power_popover(cx);
-            }))
-            .child(
-                Icon::new(IconName::Moon)
-                    .size(IconSize::XSmall)
-                    .color(icon_color),
-            )
-            .child(label)
+        let trigger = KitButton::new("power-status")
+            .ghost()
+            .xsmall()
+            .compact()
+            .accessibility_label(aria_label)
+            .icon(gpui_kit::component::Icon::new(IconName::Moon).text_color(icon_color))
+            .label(label);
+        let shell_change = cx.entity().downgrade();
+        let shell_content = cx.entity().downgrade();
+        div().h_full().flex().items_center().child(
+            Popover::new("power-popover")
+                .anchor(Anchor::BottomRight)
+                .open(open)
+                .on_open_change(move |next_open, _, cx| {
+                    let _ = shell_change.update(cx, |this, cx| {
+                        if *next_open {
+                            this.context_menu_target = None;
+                            this.active_status_popover = Some(StatusBarPopover::Power);
+                        } else if this.active_status_popover == Some(StatusBarPopover::Power) {
+                            this.active_status_popover = None;
+                        }
+                        cx.notify();
+                    });
+                })
+                .trigger(trigger)
+                .content(move |_, _, cx| {
+                    shell_content
+                        .update(cx, |this, cx| this.render_power_popover_content(cx))
+                        .unwrap_or_else(|_| div())
+                }),
+        )
     }
 
-    pub(crate) fn render_power_popover(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(crate) fn render_power_popover_content(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
         let pending = self.pending_settings_save.is_some();
         let current_action = self.settings.platform.action_after_done;
         let keep_awake = self.settings.platform.keep_awake_while_active;
 
         div()
-            .id("power-popover-layer")
-            .absolute()
-            .inset_0()
-            .occlude()
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.close_power_popover(cx);
-            }))
+            .w(px(240.0))
+            .flex()
+            .flex_col()
+            .gap_2()
             .child(
                 div()
-                    .id("power-popover")
-                    .absolute()
-                    .right(px(160.0))
-                    .bottom(px(34.0))
-                    .w(px(260.0))
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .p_3()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(colors.border)
-                    .bg(colors.elevated_surface)
-                    .shadow_lg()
-                    .on_click(|_, _, cx| cx.stop_propagation())
-                    .child(
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(colors.text_primary)
+                    .child(self.t("power-popover-title")),
+            )
+            .child({
+                let mut options_col = div().flex().flex_col().gap_1();
+                for action in CompletionPowerActionView::ALL {
+                    let is_selected = current_action == action;
+                    let shell = cx.entity().downgrade();
+                    let action_label = self.t(action.message_key());
+                    options_col = options_col.child(
                         div()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(colors.text_primary)
-                            .child(self.t("power-popover-title")),
-                    )
-                    .child({
-                        let mut options_col = div().flex().flex_col().gap_1();
-                        for action in CompletionPowerActionView::ALL {
-                            let is_selected = current_action == action;
-                            let shell = cx.entity().downgrade();
-                            let action_label = self.t(action.message_key());
-                            options_col = options_col.child(
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "power-popover-action-{}",
-                                        action.as_str()
-                                    )))
-                                    .focusable()
-                                    .tab_stop(true)
-                                    .role(Role::Button)
-                                    .aria_selected(is_selected)
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .text_xs()
-                                    .text_color(if is_selected {
-                                        colors.text_primary
-                                    } else {
-                                        colors.text_secondary
-                                    })
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(colors.surface_hover))
-                                    .on_click(move |_, _, cx| {
-                                        if !pending {
-                                            shell
-                                                .update(cx, |this, cx| {
-                                                    this.select_completion_action(action, cx);
-                                                })
-                                                .ok();
-                                        }
-                                    })
-                                    .child(action_label)
-                                    .when(is_selected, |el| {
-                                        el.child(
-                                            Icon::new(IconName::CircleCheck)
-                                                .size(IconSize::Small)
-                                                .color(colors.accent),
-                                        )
-                                    }),
-                            );
-                        }
-                        options_col
-                    })
-                    .child(div().h(px(1.0)).bg(colors.border).my_1())
-                    .child({
-                        let shell_toggle = cx.entity().downgrade();
-                        div()
+                            .id(SharedString::from(format!(
+                                "power-popover-action-{}",
+                                action.as_str()
+                            )))
+                            .focusable()
+                            .tab_stop(true)
+                            .role(Role::Button)
+                            .aria_selected(is_selected)
                             .flex()
                             .items_center()
                             .justify_between()
                             .px_2()
                             .py_1()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(colors.text_primary)
-                                    .child(self.t("power-keep-awake")),
-                            )
-                            .child(
-                                Toggle::new("power-popover-keep-awake", keep_awake)
-                                    .aria_label(self.t("power-keep-awake"))
-                                    .disabled(pending)
-                                    .on_click(move |_, _, cx| {
-                                        shell_toggle
-                                            .update(cx, |this, cx| {
-                                                this.toggle_keep_awake(cx);
-                                            })
-                                            .ok();
+                            .rounded_md()
+                            .text_xs()
+                            .text_color(if is_selected {
+                                colors.text_primary
+                            } else {
+                                colors.text_secondary
+                            })
+                            .cursor_pointer()
+                            .hover(|style| style.bg(colors.surface_hover))
+                            .on_click(move |_, _, cx| {
+                                if !pending {
+                                    shell
+                                        .update(cx, |this, cx| {
+                                            this.select_completion_action(action, cx);
+                                        })
+                                        .ok();
+                                }
+                            })
+                            .child(action_label)
+                            .when(is_selected, |el| {
+                                el.child(
+                                    Icon::new(IconName::CircleCheck)
+                                        .size(IconSize::Small)
+                                        .color(colors.accent),
+                                )
+                            }),
+                    );
+                }
+                options_col
+            })
+            .child(div().h(px(1.0)).bg(colors.border).my_1())
+            .child({
+                let shell_toggle = cx.entity().downgrade();
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_2()
+                    .py_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.text_primary)
+                            .child(self.t("power-keep-awake")),
+                    )
+                    .child(
+                        Switch::new("power-popover-keep-awake")
+                            .checked(keep_awake)
+                            .accessibility_label(self.t("power-keep-awake"))
+                            .disabled(pending)
+                            .on_change(move |_, _, cx| {
+                                shell_toggle
+                                    .update(cx, |this, cx| {
+                                        this.toggle_keep_awake(cx);
                                     })
-                                    .render(colors),
-                            )
-                    }),
-            )
-    }
-
-    pub(crate) fn render_power_countdown_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = self.theme.colors;
-        let (action, seconds) = self
-            .power_countdown
-            .map(|c| (c.action, c.remaining_seconds))
-            .unwrap_or((CompletionPowerActionView::None, 0));
-
-        let action_verb = self.action_verb_label(action);
-        let action_btn = self.action_btn_label(action);
-        let description = self.t_args(
-            "dialog-power-countdown-desc",
-            &[
-                ("action", FluentValue::from(action_verb.as_str())),
-                ("seconds", FluentValue::from(seconds.to_string().as_str())),
-            ],
-        );
-
-        Dialog::new(
-            "power-countdown-dialog",
-            self.t("dialog-power-countdown-title"),
-            self.theme,
-        )
-        .description(description)
-        .key_context("PowerCountdownDialog")
-        .track_focus(self.power_countdown_dialog_focus.clone())
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .text_xs()
-                .text_color(colors.text_secondary)
-                .child(
-                    Icon::new(IconName::TriangleAlert)
-                        .size(IconSize::Small)
-                        .color(colors.warning),
-                )
-                .child(format!("{seconds}s")),
-        )
-        .action(
-            Button::new("cancel-power-countdown", self.t("dialog-power-cancel"))
-                .aria_label(self.t("dialog-power-cancel"))
-                .style(ButtonStyle::Secondary)
-                .track_focus(self.power_countdown_cancel_focus.clone())
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.cancel_power_countdown(cx);
-                }))
-                .render(colors),
-        )
-        .action(
-            Button::new("execute-power-now", action_btn.clone())
-                .aria_label(action_btn)
-                .style(ButtonStyle::Primary)
-                .track_focus(self.power_countdown_submit_focus.clone())
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.execute_power_action_now(cx);
-                }))
-                .render(colors),
-        )
-        .into_any_element()
+                                    .ok();
+                            }),
+                    )
+            })
     }
 }

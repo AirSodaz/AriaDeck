@@ -8,12 +8,32 @@ use std::{
 
 use ariadeck_i18n::{FluentArgs, FluentValue};
 use gpui::{
-    Anchor, AnyElement, App, ClickEvent, ClipboardItem, Context, Div, DragMoveEvent, ElementId,
-    Entity, ExternalPaths, FocusHandle, Focusable, FontFeatures, FontWeight, Hsla, IntoElement,
-    MouseButton, MouseDownEvent, PathPromptOptions, Pixels, Point, Render, Role, ScrollDelta,
-    ScrollEvent, ScrollHandle, ScrollStrategy, SharedString, Stateful, Subscription, Toggled,
-    UniformListScrollHandle, WeakFocusHandle, Window, WindowControlArea, anchored, deferred, div,
-    img, point, prelude::*, px, relative, uniform_list,
+    Anchor, AnyElement, AnyWindowHandle, App, Axis, ClickEvent, ClipboardItem, Context, Div,
+    DragMoveEvent, ElementId, Entity, ExternalPaths, FocusHandle, Focusable, FontFeatures,
+    FontWeight, Hsla, IntoElement, MouseButton, MouseDownEvent, PathPromptOptions, Pixels, Render,
+    Role, ScrollHandle, ScrollStrategy, SharedString, Stateful, Subscription, Toggled,
+    UniformListScrollHandle, WeakFocusHandle, Window, div, img, prelude::*, px, uniform_list,
+};
+use gpui_kit::component::{
+    Disableable as _, Selectable as _, Sizable as _, TitleBar, WindowExt as _,
+    alert::Alert,
+    button::{Button as KitButton, ButtonVariants as _},
+    chart::AreaChart,
+    clipboard::Clipboard,
+    collapsible::Collapsible,
+    empty::{
+        Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant,
+        EmptyTitle,
+    },
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem},
+    notification::Notification,
+    popover::Popover,
+    progress::Progress as KitProgress,
+    resizable::{HandleEdge, resize_handle},
+    scroll::ScrollableElement as _,
+    separator::Separator,
+    sidebar::{Sidebar, SidebarCollapsible, SidebarGroup, SidebarMenu, SidebarMenuItem},
+    status_bar::StatusBar,
 };
 
 use crate::{
@@ -23,43 +43,44 @@ use crate::{
     AddDownloadMetadataPreviewView, AddDownloadModeView, AddDownloadRequestView,
     AddDownloadResultView, AddDownloadSourceView, BatchCommandOutcomeView,
     BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
-    BatchTaskFailureView, BridgeDownloadView, BrowserBridgeSettingsView, Button, ButtonStyle,
-    Checkbox, ClearSearch, CloseAddDownload, CloseBatchFailures, CloseBehaviorView, CloseCoreSetup,
-    CloseSettings, CloseTaskOptions, CloseTaskOutputName, CloseTaskSpeedLimit, ColorSchemeView,
+    BatchTaskFailureView, BridgeDownloadView, BrowserBridgeSettingsView, Checkbox, ClearSearch,
+    CloseAddDownload, CloseBatchFailures, CloseBehaviorView, CloseCoreSetup, CloseSettings,
+    CloseTaskOptions, CloseTaskOutputName, CloseTaskSpeedLimit, ColorSchemeView,
     CommandOutcomeView, CompletionPowerActionView, ConnectionView, CoreCommandOutcomeView,
     CoreCommandRequestView, CoreCommandResultView, CoreCommandView, CoreDiscoveryResultView,
     CoreDownloadOfferView, CoreDownloadResultView, CoreRegistryView, DiagnosticExportOutcomeView,
-    DiagnosticExportRequestView, DiagnosticExportResultView, Dialog, DiscoveredCoreView,
+    DiagnosticExportRequestView, DiagnosticExportResultView, DiscoveredCoreView,
     DownloadProxySettingsView, DownloadRowView, EngineHealthView, EngineSessionView,
-    FileAllocationView, FileConflictPolicyView, FocusNext, FocusPrevious, FocusSearch,
-    GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView, Icon,
-    IconButton, IconName, IconSize, LanguagePreferenceView, Link, LocaleId, MoveTaskDownInQueue,
-    MoveTaskToQueueBottom, MoveTaskToQueueTop, MoveTaskUpInQueue, NotificationSettingsView,
-    NotificationVolumeView, OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName,
-    OpenTaskSpeedLimit, OperationErrorView, PauseSelectedTask, PlatformSettingsView,
-    ProfileCatalogView, ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView,
-    ProxyModeView, ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask,
-    RetrySelectedTask, SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView,
-    SaveProfileCatalogResultView, SaveSettings, SecretStringView, Segment, SegmentedControl,
-    SelectAllTasks, SelectNextTask, SelectPreviousTask, SettingsExportOutcomeView,
-    SettingsExportRequestView, SettingsExportResultView, SettingsImportOutcomeView,
-    SettingsImportRequestView, SettingsImportResultView, SettingsSaveOutcomeView,
-    SettingsSaveRequestView, SettingsSaveResultView, SettingsView, SpeedLimitSettingsView,
-    SpeedSampleView, StatusIndicator, SubmitAddDownload, SubmitTaskOptions, SubmitTaskOutputName,
-    SubmitTaskSpeedLimit, SwitchProfileOutcomeView, SwitchProfileRequestView,
-    SwitchProfileResultView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
-    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView,
-    TaskFileView, TaskIdentity, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
-    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskStatusView, Theme, ThemeMode,
-    Toast, ToastKind, Toggle, Tooltip, TrackerListSettingsView, TrackerListSourceView,
-    TransferPolicySettingsView, Translator, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
-    WorkspaceSortDirection, WorkspaceSortKey, format_bytes, format_eta, format_percent,
-    format_rate, format_share_ratio, vertical_scrollbar_overlay,
+    FileAllocationView, FileConflictPolicyView, FocusSearch, GlobalTaskCommandRequestView,
+    GlobalTaskCommandResultView, GlobalTaskCommandView, Icon, IconName, IconSize,
+    LanguagePreferenceView, Link, LocaleId, MoveTaskDownInQueue, MoveTaskToQueueBottom,
+    MoveTaskToQueueTop, MoveTaskUpInQueue, NotificationSettingsView, NotificationVolumeView,
+    OpenAddDownload, OpenSettings, OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit,
+    OperationErrorView, PauseSelectedTask, PlatformSettingsView, ProfileCatalogView,
+    ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView,
+    ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask, RetrySelectedTask,
+    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
+    SaveSettings, SecretStringView, Segment, SegmentedControl, SelectAllTasks, SelectNextTask,
+    SelectPreviousTask, SettingsExportOutcomeView, SettingsExportRequestView,
+    SettingsExportResultView, SettingsImportOutcomeView, SettingsImportRequestView,
+    SettingsImportResultView, SettingsSaveOutcomeView, SettingsSaveRequestView,
+    SettingsSaveResultView, SettingsView, SpeedLimitSettingsView, SpeedSampleView, StatusIndicator,
+    SubmitAddDownload, SubmitTaskOptions, SubmitTaskOutputName, SubmitTaskSpeedLimit, Switch,
+    SwitchProfileOutcomeView, SwitchProfileRequestView, SwitchProfileResultView,
+    TaskCommandRequestView, TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView,
+    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskFileView, TaskIdentity,
+    TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
+    TaskOptionView, TaskPathValidationView, TaskStatusView, Theme, ThemeMode,
+    TrackerListSettingsView, TrackerListSourceView, TransferPolicySettingsView, Translator,
+    WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    format_bytes, format_eta, format_percent, format_rate, format_share_ratio,
 };
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 
 #[cfg(test)]
 use crate::{TaskPeerView, TaskServerView, TaskTrackerView, TaskUriView};
+#[cfg(test)]
+use gpui::Point;
 
 mod activity;
 mod chrome;
@@ -68,6 +89,7 @@ mod core_setup;
 mod details;
 mod dialogs_add;
 mod helpers;
+mod modals;
 mod power;
 mod profiles;
 mod settings;
@@ -75,6 +97,7 @@ mod task_list;
 use core_setup::CoreSetupState;
 #[allow(unused_imports)]
 use helpers::*;
+use modals::ModalKind;
 pub use power::PowerCountdownState;
 
 const SPEED_CHART_SAMPLES: usize = 120;
@@ -86,17 +109,14 @@ const SEARCH_WIDTH: f32 = 460.0;
 const SIDEBAR_WIDTH: f32 = 208.0;
 const COMPACT_SIDEBAR_WIDTH: f32 = 184.0;
 const DETAILS_DRAWER_WIDTH: f32 = 380.0;
+const DETAILS_DRAWER_MIN_WIDTH: f32 = 320.0;
+const DETAILS_DRAWER_MAX_WIDTH: f32 = 560.0;
 const WIDE_SHELL_MIN_WIDTH: f32 = 1280.0;
 const TASK_ROW_HEIGHT: f32 = 64.0;
 const ACTIVITY_HISTORY_LIMIT: usize = 100;
 const ACTIVITY_PANEL_WIDTH: f32 = 360.0;
 /// Minimum gap between revision-driven details re-fetches while the drawer is open (PERF-001).
 const DETAILS_REFRESH_MIN_INTERVAL: Duration = Duration::from_millis(500);
-
-#[cfg(target_os = "macos")]
-const TITLEBAR_BRAND_INSET: f32 = 52.0;
-#[cfg(not(target_os = "macos"))]
-const TITLEBAR_BRAND_INSET: f32 = 0.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TaskLayoutMode {
@@ -256,7 +276,6 @@ struct AddDownloadDialog {
     metadata_files: Vec<AddDownloadMetadataPreviewView>,
     active_metadata_file: Option<usize>,
     preview_pending: Option<PendingMetadataPreview>,
-    previous_focus: Option<WeakFocusHandle>,
     pending: Option<PendingAddDownload>,
     error: Option<OperationErrorView>,
     results: Vec<AddDownloadItemResultView>,
@@ -347,34 +366,31 @@ impl Render for ResizeLinkInput {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum SmoothScrollArea {
-    Sidebar,
-    TaskList,
-    Settings,
-    MetadataFiles,
-    DetailsInfo,
-    DetailsFiles,
-    DetailsNetwork,
-    DetailsOptions,
-    Activity,
-    AddDownload,
+#[derive(Clone)]
+pub(crate) struct ResizeDetailsDrawer;
+
+impl Render for ResizeDetailsDrawer {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
 }
 
-#[derive(Clone, Copy)]
-struct SmoothScrollTarget {
-    offset: Point<Pixels>,
-    generation: u64,
-    active: bool,
-}
-
+#[cfg_attr(not(test), allow(dead_code))]
 struct StatusNotice {
+    #[allow(dead_code)]
     id: u64,
     message: String,
     is_error: bool,
     /// When false, this is command feedback that Quiet mode still shows.
     #[allow(dead_code)]
     automatic: bool,
+}
+
+pub(crate) fn has_kit_root(window: &Window) -> bool {
+    window
+        .root::<gpui_kit::component::Root>()
+        .flatten()
+        .is_some()
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -547,21 +563,18 @@ struct RemoveConfirmation {
     has_live_tasks: bool,
     has_terminal_tasks: bool,
     delete_files: bool,
-    previous_focus: Option<WeakFocusHandle>,
 }
 
 struct TaskOutputNameDialog {
     identity: TaskIdentity,
     display_name: String,
     active: bool,
-    previous_focus: Option<WeakFocusHandle>,
     error: Option<OperationErrorView>,
 }
 
 struct TaskSpeedLimitDialog {
     identity: TaskIdentity,
     display_name: String,
-    previous_focus: Option<WeakFocusHandle>,
     error: Option<OperationErrorView>,
 }
 
@@ -569,19 +582,19 @@ struct TaskOptionsDialog {
     identity: TaskIdentity,
     display_name: String,
     supports_seed_rules: bool,
-    previous_focus: Option<WeakFocusHandle>,
     error: Option<OperationErrorView>,
 }
 
-struct TaskContextMenu {
-    identity: TaskIdentity,
-    position: Point<Pixels>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StatusBarPopover {
+    Speed,
+    Power,
+    Activity,
 }
 
 struct BatchFailureDetails {
     command: BatchTaskCommandView,
     failures: Vec<BatchTaskFailureView>,
-    previous_focus: Option<WeakFocusHandle>,
 }
 
 /// Settings-page InputState entities, grouped for navigation and theme updates.
@@ -689,6 +702,7 @@ impl TaskInputs {
 }
 
 pub struct AppShell {
+    window_handle: AnyWindowHandle,
     theme: Theme,
     /// Active Fluent translator for the resolved display language.
     translator: Translator,
@@ -708,9 +722,7 @@ pub struct AppShell {
     output_name_input: Entity<InputState>,
     settings_inputs: SettingsInputs,
     add_dialog: AddDownloadDialog,
-    add_dialog_focus: FocusHandle,
-    add_cancel_focus: FocusHandle,
-    add_submit_focus: FocusHandle,
+    active_kit_modal: Option<ModalKind>,
     settings_page: SettingsPage,
     /// Discovery / verified-download state for the shared Get-aria2 panel (B4).
     core_setup: CoreSetupState,
@@ -719,9 +731,6 @@ pub struct AppShell {
     update_portable: bool,
     pending_update_check: Option<RequestId>,
     pending_update_download: Option<RequestId>,
-    core_setup_dialog_focus: FocusHandle,
-    core_setup_settings_focus: FocusHandle,
-    core_setup_dismiss_focus: FocusHandle,
     /// Set once the user has confirmed a browser hand-off in this session. Only
     /// consulted when cookies *and* auto-submit are both on, which D-045 §6 makes
     /// the one configuration that never gets a fully silent path.
@@ -732,42 +741,24 @@ pub struct AppShell {
     pending_batch_command: Option<PendingBatchTaskCommand>,
     pending_load_more_stopped: bool,
     batch_failure_details: Option<BatchFailureDetails>,
-    batch_failure_dialog_focus: FocusHandle,
-    batch_failure_close_focus: FocusHandle,
     output_name_dialog: Option<TaskOutputNameDialog>,
-    output_name_dialog_focus: FocusHandle,
-    output_name_cancel_focus: FocusHandle,
-    output_name_submit_focus: FocusHandle,
     task_inputs: TaskInputs,
     task_speed_limit_dialog: Option<TaskSpeedLimitDialog>,
-    task_speed_limit_dialog_focus: FocusHandle,
-    task_speed_limit_cancel_focus: FocusHandle,
-    task_speed_limit_submit_focus: FocusHandle,
     task_options_dialog: Option<TaskOptionsDialog>,
-    task_options_dialog_focus: FocusHandle,
-    task_options_cancel_focus: FocusHandle,
-    task_options_submit_focus: FocusHandle,
     details_drawer: Option<TaskDetailsDrawer>,
+    details_drawer_width: f32,
+    details_sheet_open: bool,
     remove_confirmation: Option<RemoveConfirmation>,
-    remove_dialog_focus: FocusHandle,
-    remove_cancel_focus: FocusHandle,
-    remove_submit_focus: FocusHandle,
-    speed_popover_open: bool,
+    active_status_popover: Option<StatusBarPopover>,
     speed_popover_previous_focus: Option<WeakFocusHandle>,
-    sort_popover_open: bool,
-    context_menu: Option<TaskContextMenu>,
-    power_popover_open: bool,
+    context_menu_target: Option<TaskIdentity>,
     power_countdown: Option<PowerCountdownState>,
     power_had_active_tasks: bool,
-    power_countdown_dialog_focus: FocusHandle,
-    power_countdown_cancel_focus: FocusHandle,
-    power_countdown_submit_focus: FocusHandle,
     power_countdown_generation: u64,
     status_notice: Option<StatusNotice>,
     next_notice_id: u64,
     activity_log: Vec<ActivityEntryView>,
     next_activity_id: u64,
-    activity_panel_open: bool,
     activity_scroll: ScrollHandle,
     /// Suppresses repeated low-disk warnings until free space recovers.
     low_disk_active: bool,
@@ -775,12 +766,9 @@ pub struct AppShell {
     next_request_id: u64,
     links_input_height: f32,
     links_input_drag_origin: Option<(Pixels, f32)>,
-    sidebar_scroll: ScrollHandle,
-    add_dialog_scroll: ScrollHandle,
     list_scroll: UniformListScrollHandle,
     settings_scroll: ScrollHandle,
     metadata_file_scroll: UniformListScrollHandle,
-    smooth_scroll_targets: HashMap<SmoothScrollArea, SmoothScrollTarget>,
     focus_handle: FocusHandle,
     rendered_range: Range<usize>,
     _search_subscription: Subscription,
@@ -850,7 +838,6 @@ impl AppShell {
                     let text = input.read(cx).value().to_string();
                     if this.query.search != text {
                         this.query.search = text;
-                        this.sort_popover_open = false;
                         this.clear_task_selection();
                         this.emit_query(cx);
                     }
@@ -1172,6 +1159,7 @@ impl AppShell {
         ));
         let window_bounds_subscription = cx.observe_window_bounds(window, |this, window, cx| {
             this.emit_window_geometry(window, cx);
+            this.sync_details_sheet(window, cx);
             cx.notify();
         });
         let _window_appearance_subscription =
@@ -1187,7 +1175,9 @@ impl AppShell {
             });
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
+        let window_handle = window.window_handle();
         Self {
+            window_handle,
             theme,
             translator: translator_for_language(settings.language),
             settings: settings.clone(),
@@ -1238,9 +1228,7 @@ impl AppShell {
                 category_extensions: settings_category_extensions_input,
             },
             add_dialog: AddDownloadDialog::default(),
-            add_dialog_focus: cx.focus_handle(),
-            add_cancel_focus: cx.focus_handle().tab_stop(true),
-            add_submit_focus: cx.focus_handle().tab_stop(true),
+            active_kit_modal: None,
             settings_page: SettingsPage {
                 draft_color_scheme: settings.color_scheme,
                 draft_language: settings.language,
@@ -1273,9 +1261,6 @@ impl AppShell {
             update_portable: false,
             pending_update_check: None,
             pending_update_download: None,
-            core_setup_dialog_focus: cx.focus_handle(),
-            core_setup_settings_focus: cx.focus_handle().tab_stop(true),
-            core_setup_dismiss_focus: cx.focus_handle().tab_stop(true),
             bridge_auto_submit_unlocked: false,
             pending_settings_save: None,
             pending_task_command: None,
@@ -1283,12 +1268,7 @@ impl AppShell {
             pending_batch_command: None,
             pending_load_more_stopped: false,
             batch_failure_details: None,
-            batch_failure_dialog_focus: cx.focus_handle(),
-            batch_failure_close_focus: cx.focus_handle().tab_stop(true),
             output_name_dialog: None,
-            output_name_dialog_focus: cx.focus_handle(),
-            output_name_cancel_focus: cx.focus_handle().tab_stop(true),
-            output_name_submit_focus: cx.focus_handle().tab_stop(true),
             task_inputs: TaskInputs {
                 download_limit: task_download_limit_input,
                 upload_limit: task_upload_limit_input,
@@ -1296,47 +1276,30 @@ impl AppShell {
                 seed_time: task_seed_time_input,
             },
             task_speed_limit_dialog: None,
-            task_speed_limit_dialog_focus: cx.focus_handle(),
-            task_speed_limit_cancel_focus: cx.focus_handle().tab_stop(true),
-            task_speed_limit_submit_focus: cx.focus_handle().tab_stop(true),
-
             task_options_dialog: None,
-            task_options_dialog_focus: cx.focus_handle(),
-            task_options_cancel_focus: cx.focus_handle().tab_stop(true),
-            task_options_submit_focus: cx.focus_handle().tab_stop(true),
             details_drawer: None,
+            details_drawer_width: DETAILS_DRAWER_WIDTH,
+            details_sheet_open: false,
             remove_confirmation: None,
-            remove_dialog_focus: cx.focus_handle(),
-            remove_cancel_focus: cx.focus_handle().tab_stop(true),
-            remove_submit_focus: cx.focus_handle().tab_stop(true),
-            speed_popover_open: false,
+            active_status_popover: None,
             speed_popover_previous_focus: None,
-            sort_popover_open: false,
-            power_popover_open: false,
+            context_menu_target: None,
             power_countdown: None,
             power_had_active_tasks: false,
-            power_countdown_dialog_focus: cx.focus_handle(),
-            power_countdown_cancel_focus: cx.focus_handle().tab_stop(true),
-            power_countdown_submit_focus: cx.focus_handle().tab_stop(true),
             power_countdown_generation: 0,
-            context_menu: None,
             status_notice: None,
             next_notice_id: 1,
             activity_log: Vec::new(),
             next_activity_id: 1,
-            activity_panel_open: false,
             activity_scroll: ScrollHandle::new(),
             low_disk_active: false,
             known_task_status: HashMap::new(),
             next_request_id: 1,
             links_input_height: DEFAULT_LINKS_INPUT_HEIGHT,
             links_input_drag_origin: None,
-            sidebar_scroll: ScrollHandle::new(),
-            add_dialog_scroll: ScrollHandle::new(),
             list_scroll: UniformListScrollHandle::new(),
             settings_scroll: ScrollHandle::new(),
             metadata_file_scroll: UniformListScrollHandle::new(),
-            smooth_scroll_targets: HashMap::new(),
             focus_handle,
             rendered_range: 0..0,
             _search_subscription: search_subscription,
@@ -1348,104 +1311,6 @@ impl AppShell {
             _settings_subscriptions: settings_subscriptions,
             _window_bounds_subscription: window_bounds_subscription,
         }
-    }
-
-    fn smooth_discrete_scroll(
-        &mut self,
-        area: SmoothScrollArea,
-        handle: ScrollHandle,
-        event: &ScrollEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if crate::accessibility::prefers_reduced_motion() {
-            return;
-        }
-        let ScrollDelta::Lines(lines) = event.delta else {
-            return;
-        };
-        let mut delta = event.delta.pixel_delta(window.line_height());
-        if delta.x != px(0.0) && delta.y != px(0.0) {
-            if lines.x.abs() > lines.y.abs() {
-                delta.y = px(0.0);
-            } else {
-                delta.x = px(0.0);
-            }
-        }
-        let after_native_scroll = handle.offset();
-        let start = Point {
-            x: after_native_scroll.x - delta.x,
-            y: after_native_scroll.y - delta.y,
-        };
-        let max = handle.max_offset();
-        let start = Point {
-            x: start.x.clamp(-max.x, px(0.0)),
-            y: start.y.clamp(-max.y, px(0.0)),
-        };
-        if start == after_native_scroll {
-            return;
-        }
-        let state = self
-            .smooth_scroll_targets
-            .entry(area)
-            .or_insert(SmoothScrollTarget {
-                offset: after_native_scroll,
-                generation: 0,
-                active: false,
-            });
-        let mut target = if state.active {
-            Point {
-                x: state.offset.x + delta.x,
-                y: state.offset.y + delta.y,
-            }
-        } else {
-            after_native_scroll
-        };
-        target.x = target.x.clamp(-max.x, px(0.0));
-        target.y = target.y.clamp(-max.y, px(0.0));
-        state.offset = target;
-        state.generation = state.generation.wrapping_add(1);
-        state.active = true;
-        let generation = state.generation;
-        handle.set_offset(start);
-        cx.stop_propagation();
-
-        cx.spawn(async move |this, cx| {
-            let began = Instant::now();
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
-                let progress = (began.elapsed().as_secs_f32() / 0.14).min(1.0);
-                let eased = 1.0 - (1.0 - progress).powi(3);
-                let offset = Point {
-                    x: start.x + (target.x - start.x) * eased,
-                    y: start.y + (target.y - start.y) * eased,
-                };
-                let done = this
-                    .update(cx, |this, cx| {
-                        let Some(state) = this.smooth_scroll_targets.get_mut(&area) else {
-                            return true;
-                        };
-                        if state.generation != generation {
-                            return true;
-                        }
-                        handle.set_offset(offset);
-                        cx.notify();
-                        if progress >= 1.0 {
-                            state.active = false;
-                            true
-                        } else {
-                            false
-                        }
-                    })
-                    .unwrap_or(true);
-                if done {
-                    break;
-                }
-            }
-        })
-        .detach();
     }
 
     pub fn set_snapshot(&mut self, snapshot: WorkspaceSnapshot, cx: &mut Context<Self>) {
@@ -1898,7 +1763,7 @@ impl AppShell {
                         self.range_anchor = None;
                         self.selected = None;
                         self.details_drawer = None;
-                        self.context_menu = None;
+                        self.context_menu_target = None;
                         // Recovery path: files stay on disk or in Trash (see
                         // success_label). Restore list focus for continued work.
                         window.focus(&self.focus_handle, cx);
@@ -2101,16 +1966,8 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.batch_failure_details = Some(BatchFailureDetails {
-            command,
-            failures,
-            previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
-        });
-        cx.defer_in(window, |this, window, cx| {
-            if this.batch_failure_details.is_some() {
-                window.focus(&this.batch_failure_close_focus, cx);
-            }
-        });
+        self.batch_failure_details = Some(BatchFailureDetails { command, failures });
+        self.sync_kit_modals(window, cx);
     }
 
     fn close_batch_failure_details_action(
@@ -2123,12 +1980,11 @@ impl AppShell {
     }
 
     fn close_batch_failure_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(details) = self.batch_failure_details.take() else {
+        if self.batch_failure_details.take().is_none() {
             return;
-        };
-        if let Some(focus) = details.previous_focus.and_then(|focus| focus.upgrade()) {
-            window.focus(&focus, cx);
-        } else {
+        }
+        self.sync_kit_modals(window, cx);
+        if !has_kit_root(window) {
             window.focus(&self.focus_handle, cx);
         }
         cx.notify();
@@ -2167,7 +2023,7 @@ impl AppShell {
         }) {
             self.selected = self.selected_tasks.iter().next().cloned();
             self.details_drawer = None;
-            self.context_menu = None;
+            self.context_menu_target = None;
         }
         if self.selected_tasks.is_empty() {
             self.range_anchor = None;
@@ -2536,7 +2392,7 @@ impl AppShell {
     fn set_filter(&mut self, filter: WorkspaceFilter, window: &mut Window, cx: &mut Context<Self>) {
         let query_changed = self.query.filter != filter;
         self.page = AppPage::Downloads;
-        self.speed_popover_open = false;
+        self.active_status_popover = None;
         if query_changed {
             self.query.filter = filter;
             self.clear_task_selection();
@@ -2559,7 +2415,7 @@ impl AppShell {
     ) {
         let query_changed = self.query.category_id != category_id;
         self.page = AppPage::Downloads;
-        self.speed_popover_open = false;
+        self.active_status_popover = None;
         if query_changed {
             self.query.category_id = category_id;
             self.clear_task_selection();
@@ -2574,18 +2430,6 @@ impl AppShell {
         }
     }
 
-    fn toggle_sort_popover(&mut self, cx: &mut Context<Self>) {
-        self.sort_popover_open = !self.sort_popover_open;
-        cx.notify();
-    }
-
-    fn close_sort_popover(&mut self, cx: &mut Context<Self>) {
-        if self.sort_popover_open {
-            self.sort_popover_open = false;
-            cx.notify();
-        }
-    }
-
     /// D-014: changing the sort key or direction only changes the current
     /// AriaDeck query and preserves identity-based selection; it never writes a
     /// new engine priority.
@@ -2596,7 +2440,6 @@ impl AppShell {
                 .scroll_to_item_strict(0, ScrollStrategy::Top);
             self.emit_query(cx);
         }
-        self.sort_popover_open = false;
         cx.notify();
     }
 
@@ -2612,8 +2455,7 @@ impl AppShell {
 
     fn focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
         self.page = AppPage::Downloads;
-        self.speed_popover_open = false;
-        self.sort_popover_open = false;
+        self.active_status_popover = None;
         window.focus(&self.search_input.focus_handle(cx), cx);
         cx.notify();
     }
@@ -2630,7 +2472,6 @@ impl AppShell {
         });
         if self.query.search != text {
             self.query.search = text;
-            self.sort_popover_open = false;
             self.clear_task_selection();
             self.emit_query(cx);
         }
@@ -2639,16 +2480,14 @@ impl AppShell {
     fn clear_search(&mut self, _: &ClearSearch, window: &mut Window, cx: &mut Context<Self>) {
         if self.power_countdown.is_some() {
             self.cancel_power_countdown(cx);
-        } else if self.context_menu.take().is_some() {
+        } else if self.context_menu_target.take().is_some() {
             cx.notify();
-        } else if self.activity_panel_open {
-            self.close_activity_panel(window, cx);
-        } else if self.sort_popover_open {
-            self.close_sort_popover(cx);
-        } else if self.speed_popover_open {
-            self.close_speed_popover(window, cx);
-        } else if self.power_popover_open {
-            self.close_power_popover(cx);
+        } else if let Some(popover) = self.active_status_popover {
+            match popover {
+                StatusBarPopover::Activity => self.close_activity_panel(window, cx),
+                StatusBarPopover::Speed => self.close_speed_popover(window, cx),
+                StatusBarPopover::Power => self.close_power_popover(cx),
+            }
         } else if self.output_name_dialog.is_some() {
             self.close_task_output_name(window, cx);
         } else if self.task_speed_limit_dialog.is_some() {
@@ -2841,64 +2680,6 @@ impl AppShell {
         self.range_anchor = None;
     }
 
-    fn focus_next(&mut self, _: &FocusNext, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus_next(cx);
-        if self.add_dialog.open && !self.add_dialog_focus.contains_focused(window, cx) {
-            window.focus(&self.add_input.focus_handle(cx), cx);
-        } else if self.output_name_dialog.is_some()
-            && !self.output_name_dialog_focus.contains_focused(window, cx)
-        {
-            window.focus(&self.output_name_input.focus_handle(cx), cx);
-        } else if self.remove_confirmation.is_some()
-            && !self.remove_dialog_focus.contains_focused(window, cx)
-        {
-            window.focus(&self.remove_cancel_focus, cx);
-        } else if self.batch_failure_details.is_some()
-            && !self.batch_failure_dialog_focus.contains_focused(window, cx)
-        {
-            window.focus(&self.batch_failure_close_focus, cx);
-        } else if self.task_speed_limit_dialog.is_some()
-            && !self
-                .task_speed_limit_dialog_focus
-                .contains_focused(window, cx)
-        {
-            window.focus(&self.task_inputs.download_limit.focus_handle(cx), cx);
-        } else if self.task_options_dialog.is_some()
-            && !self.task_options_dialog_focus.contains_focused(window, cx)
-        {
-            window.focus(&self.task_inputs.seed_ratio.focus_handle(cx), cx);
-        }
-    }
-
-    fn focus_previous(&mut self, _: &FocusPrevious, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus_prev(cx);
-        if self.add_dialog.open && !self.add_dialog_focus.contains_focused(window, cx) {
-            window.focus(&self.add_submit_focus, cx);
-        } else if self.output_name_dialog.is_some()
-            && !self.output_name_dialog_focus.contains_focused(window, cx)
-        {
-            window.focus(&self.output_name_submit_focus, cx);
-        } else if self.remove_confirmation.is_some()
-            && !self.remove_dialog_focus.contains_focused(window, cx)
-        {
-            window.focus(&self.remove_submit_focus, cx);
-        } else if self.batch_failure_details.is_some()
-            && !self.batch_failure_dialog_focus.contains_focused(window, cx)
-        {
-            window.focus(&self.batch_failure_close_focus, cx);
-        } else if self.task_speed_limit_dialog.is_some()
-            && !self
-                .task_speed_limit_dialog_focus
-                .contains_focused(window, cx)
-        {
-            window.focus(&self.task_speed_limit_submit_focus, cx);
-        } else if self.task_options_dialog.is_some()
-            && !self.task_options_dialog_focus.contains_focused(window, cx)
-        {
-            window.focus(&self.task_options_submit_focus, cx);
-        }
-    }
-
     pub fn handle_window_close_request(&mut self, cx: &mut Context<Self>) -> bool {
         match self.settings.platform.close_behavior {
             CloseBehaviorView::MinimizeToTray if self.settings.platform.show_tray_icon => {
@@ -3013,6 +2794,14 @@ impl Focusable for AppShell {
 
 impl Render for AppShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if has_kit_root(window) {
+            if self.desired_kit_modal() != self.active_kit_modal {
+                self.sync_kit_modals_deferred(cx);
+            }
+            if self.desired_details_sheet_open(window) != self.details_sheet_open {
+                self.sync_details_sheet_deferred(cx);
+            }
+        }
         let colors = self.theme.colors;
         let metadata_drop_enabled =
             self.add_dialog.pending.is_none() && self.add_dialog.preview_pending.is_none();
@@ -3053,8 +2842,6 @@ impl Render for AppShell {
             .on_action(cx.listener(Self::close_batch_failure_details_action))
             .on_action(cx.listener(Self::close_core_setup_onboarding_action))
             .on_action(cx.listener(Self::remove_selected))
-            .on_action(cx.listener(Self::focus_next))
-            .on_action(cx.listener(Self::focus_previous))
             .can_drop(move |value, _window, _cx| {
                 value.downcast_ref::<ExternalPaths>().is_some_and(|paths| {
                     can_accept_metadata_drop(metadata_drop_enabled, paths.paths())
@@ -3089,50 +2876,6 @@ impl Render for AppShell {
                     }),
             )
             .child(self.render_status_bar(cx))
-            .when(self.add_dialog.open, |element| {
-                element.child(self.render_add_download_dialog(cx))
-            })
-            .when(self.output_name_dialog.is_some(), |element| {
-                element.child(self.render_task_output_name_dialog(cx))
-            })
-            .when(self.task_speed_limit_dialog.is_some(), |element| {
-                element.child(self.render_task_speed_limit_dialog(cx))
-            })
-            .when(self.task_options_dialog.is_some(), |element| {
-                element.child(self.render_task_options_dialog(cx))
-            })
-            .when(self.remove_confirmation.is_some(), |element| {
-                element.child(self.render_remove_confirmation(cx))
-            })
-            .when(self.speed_popover_open, |element| {
-                element.child(self.render_speed_popover(cx))
-            })
-            .when(self.power_popover_open, |element| {
-                element.child(self.render_power_popover(cx))
-            })
-            .when(self.power_countdown.is_some(), |element| {
-                element.child(self.render_power_countdown_dialog(cx))
-            })
-            .when(self.activity_panel_open, |element| {
-                element.child(self.render_activity_panel(cx))
-            })
-            .when(self.context_menu.is_some(), |element| {
-                element.child(self.render_task_context_menu(cx))
-            })
-            .when(
-                self.sort_popover_open && self.page == AppPage::Downloads,
-                |element| element.child(self.render_sort_popover_layer(cx)),
-            )
-            .when(self.status_notice.is_some(), |element| {
-                element.child(self.render_toast(cx))
-            })
-            .when(self.batch_failure_details.is_some(), |element| {
-                element.child(self.render_batch_failure_details(cx))
-            })
-            // Last child so the first-run guide sits above the rest of the shell.
-            .when(self.core_setup.onboarding_open, |element| {
-                element.child(self.render_core_setup_onboarding(cx))
-            })
     }
 }
 

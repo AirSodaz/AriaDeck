@@ -25,7 +25,6 @@ pub(crate) struct CoreSetupState {
     pub(crate) downloading: bool,
     /// The first-run guide is on screen.
     pub(crate) onboarding_open: bool,
-    pub(crate) onboarding_previous_focus: Option<WeakFocusHandle>,
 }
 
 impl AppShell {
@@ -136,11 +135,9 @@ impl AppShell {
             return;
         }
         self.core_setup.onboarding_open = true;
-        self.core_setup.onboarding_previous_focus =
-            window.focused(cx).map(|focus| focus.downgrade());
         // Re-scan on open so the list reflects an aria2 installed since launch.
         self.request_core_discovery(cx);
-        window.focus(&self.core_setup_dialog_focus, cx);
+        self.sync_kit_modals(window, cx);
         cx.notify();
     }
 
@@ -150,14 +147,8 @@ impl AppShell {
             return;
         }
         self.core_setup.onboarding_open = false;
-        let previous_focus = self
-            .core_setup
-            .onboarding_previous_focus
-            .take()
-            .and_then(|focus| focus.upgrade());
-        if let Some(focus) = previous_focus {
-            window.focus(&focus, cx);
-        } else {
+        self.sync_kit_modals(window, cx);
+        if !has_kit_root(window) {
             window.focus(&self.focus_handle, cx);
         }
         cx.emit(AppShellEvent::CoreSetupOnboardingDismissed);
@@ -232,28 +223,29 @@ impl AppShell {
                             .flex_wrap()
                             .gap_2()
                             .child(
-                                Button::new(
-                                    SharedString::from(format!("{id_prefix}-import-core")),
-                                    self.t("settings-core-import"),
-                                )
-                                .aria_label(self.t("settings-core-import-aria"))
-                                .style(ButtonStyle::Primary)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.request_import_core_from_input(cx);
-                                }))
-                                .render(colors),
+                                KitButton::new(SharedString::from(format!(
+                                    "{id_prefix}-import-core"
+                                )))
+                                .primary()
+                                .label(self.t("settings-core-import"))
+                                .accessibility_label(self.t("settings-core-import-aria"))
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.request_import_core_from_input(cx);
+                                    },
+                                )),
                             )
                             .child(
-                                Button::new(
-                                    SharedString::from(format!("{id_prefix}-link-core")),
-                                    self.t("settings-core-link"),
-                                )
-                                .aria_label(self.t("settings-core-link-aria"))
-                                .style(ButtonStyle::Secondary)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.request_link_core_from_input(cx);
-                                }))
-                                .render(colors),
+                                KitButton::new(SharedString::from(format!(
+                                    "{id_prefix}-link-core"
+                                )))
+                                .label(self.t("settings-core-link"))
+                                .accessibility_label(self.t("settings-core-link-aria"))
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.request_link_core_from_input(cx);
+                                    },
+                                )),
                             ),
                     ),
             )
@@ -304,18 +296,14 @@ impl AppShell {
                             .child(self.t("core-setup-found-title")),
                     )
                     .child(
-                        Button::new(
-                            SharedString::from(format!("{id_prefix}-rescan-cores")),
-                            self.t("core-setup-rescan"),
-                        )
-                        .icon(IconName::ScanSearch)
-                        .aria_label(self.t("core-setup-rescan-aria"))
-                        .style(ButtonStyle::Secondary)
-                        .disabled(scanning)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.request_core_discovery(cx);
-                        }))
-                        .render(colors),
+                        KitButton::new(SharedString::from(format!("{id_prefix}-rescan-cores")))
+                            .icon(gpui_kit::component::Icon::new(IconName::ScanSearch))
+                            .label(self.t("core-setup-rescan"))
+                            .accessibility_label(self.t("core-setup-rescan-aria"))
+                            .disabled(scanning)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.request_core_discovery(cx);
+                            })),
                     ),
             )
             .child(div().text_xs().text_color(colors.text_muted).child(summary))
@@ -372,50 +360,47 @@ impl AppShell {
                             .flex_wrap()
                             .gap_2()
                             .child(
-                                Button::new(
-                                    SharedString::from(format!(
-                                        "{id_prefix}-import-discovered-{index}"
-                                    )),
-                                    self.t("settings-core-import"),
-                                )
-                                .aria_label(self.t_args(
+                                KitButton::new(SharedString::from(format!(
+                                    "{id_prefix}-import-discovered-{index}"
+                                )))
+                                .primary()
+                                .label(self.t("settings-core-import"))
+                                .accessibility_label(self.t_args(
                                     "core-setup-import-aria",
                                     &[("path", FluentValue::from(core.path.as_str()))],
                                 ))
-                                .style(ButtonStyle::Primary)
                                 .disabled(already_registered)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.request_core_command(
-                                        CoreCommandView::Import {
-                                            path: import_path.clone(),
-                                        },
-                                        cx,
-                                    );
-                                }))
-                                .render(colors),
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.request_core_command(
+                                            CoreCommandView::Import {
+                                                path: import_path.clone(),
+                                            },
+                                            cx,
+                                        );
+                                    },
+                                )),
                             )
                             .child(
-                                Button::new(
-                                    SharedString::from(format!(
-                                        "{id_prefix}-link-discovered-{index}"
-                                    )),
-                                    self.t("settings-core-link"),
-                                )
-                                .aria_label(self.t_args(
+                                KitButton::new(SharedString::from(format!(
+                                    "{id_prefix}-link-discovered-{index}"
+                                )))
+                                .label(self.t("settings-core-link"))
+                                .accessibility_label(self.t_args(
                                     "core-setup-link-aria",
                                     &[("path", FluentValue::from(core.path.as_str()))],
                                 ))
-                                .style(ButtonStyle::Secondary)
                                 .disabled(already_registered)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.request_core_command(
-                                        CoreCommandView::Link {
-                                            path: link_path.clone(),
-                                        },
-                                        cx,
-                                    );
-                                }))
-                                .render(colors),
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.request_core_command(
+                                            CoreCommandView::Link {
+                                                path: link_path.clone(),
+                                            },
+                                            cx,
+                                        );
+                                    },
+                                )),
                             ),
                     )
             }))
@@ -470,92 +455,24 @@ impl AppShell {
             .when(offer.available, |element| {
                 element.child(
                     div().flex().child(
-                        Button::new(
-                            SharedString::from(format!("{id_prefix}-download-core")),
-                            if downloading {
+                        KitButton::new(SharedString::from(format!("{id_prefix}-download-core")))
+                            .primary()
+                            .icon(gpui_kit::component::Icon::new(IconName::FolderDown))
+                            .label(if downloading {
                                 self.t("core-setup-download-running")
                             } else {
                                 self.t("core-setup-download-action")
-                            },
-                        )
-                        .icon(IconName::FolderDown)
-                        .aria_label(self.t_args(
-                            "core-setup-download-aria",
-                            &[("version", FluentValue::from(offer.version.as_str()))],
-                        ))
-                        .style(ButtonStyle::Primary)
-                        .disabled(downloading)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.request_core_download(cx);
-                        }))
-                        .render(colors),
+                            })
+                            .accessibility_label(self.t_args(
+                                "core-setup-download-aria",
+                                &[("version", FluentValue::from(offer.version.as_str()))],
+                            ))
+                            .disabled(downloading)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.request_core_download(cx);
+                            })),
                     ),
                 )
             })
-    }
-
-    pub(crate) fn render_core_setup_onboarding(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = self.theme.colors;
-        let has_core = !self.cores.installations.is_empty();
-        Dialog::new(
-            "core-setup-dialog",
-            self.t("dialog-core-setup-title"),
-            self.theme,
-        )
-        .description(self.t("dialog-core-setup-description"))
-        .width(560.0)
-        .key_context("CoreSetupDialog")
-        .track_focus(self.core_setup_dialog_focus.clone())
-        .child(
-            div()
-                .flex()
-                .items_start()
-                .gap_2()
-                .text_xs()
-                .text_color(colors.text_secondary)
-                .child(Icon::new(IconName::Info).size(IconSize::Small))
-                .child(self.t("dialog-core-setup-remote-hint")),
-        )
-        .child(self.render_core_setup_panel("onboarding", cx))
-        .when(has_core, |dialog| {
-            dialog.child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap_2()
-                    .text_xs()
-                    .text_color(colors.text_secondary)
-                    .child(
-                        Icon::new(IconName::CircleCheck)
-                            .size(IconSize::Small)
-                            .color(colors.success),
-                    )
-                    .child(self.t("dialog-core-setup-restart-hint")),
-            )
-        })
-        .action(
-            Button::new(
-                "core-setup-open-settings",
-                self.t("dialog-core-setup-open-settings"),
-            )
-            .aria_label(self.t("dialog-core-setup-open-settings-aria"))
-            .style(ButtonStyle::Secondary)
-            .track_focus(self.core_setup_settings_focus.clone())
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.open_engine_settings_from_onboarding(window, cx);
-            }))
-            .render(colors),
-        )
-        .action(
-            Button::new("core-setup-dismiss", self.t("dialog-core-setup-dismiss"))
-                .aria_label(self.t("dialog-core-setup-dismiss-aria"))
-                .style(ButtonStyle::Primary)
-                .track_focus(self.core_setup_dismiss_focus.clone())
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.dismiss_core_setup_onboarding(window, cx);
-                }))
-                .render(colors),
-        )
-        .into_any_element()
     }
 }

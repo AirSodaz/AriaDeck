@@ -3,18 +3,6 @@
 use super::*;
 // Re-exported via parent `use helpers::*` for AppShell and tests.
 
-pub(crate) fn titlebar_drag_region() -> Div {
-    let region = div().flex_1().min_w_0().h_full();
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    {
-        region.window_control_area(WindowControlArea::Drag)
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        region
-    }
-}
-
 pub(crate) fn theme_for_scheme(scheme: ColorSchemeView) -> Theme {
     match scheme {
         ColorSchemeView::System | ColorSchemeView::Dark => Theme::dark(),
@@ -31,146 +19,6 @@ pub(crate) fn resolve_theme(scheme: ColorSchemeView, window: &Window) -> Theme {
             gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark => Theme::dark(),
         },
     }
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum WindowControlKind {
-    Minimize,
-    Maximize,
-    Close,
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct WindowControlConfig {
-    pub(crate) id: &'static str,
-    pub(crate) icon: IconName,
-    pub(crate) label: &'static str,
-    pub(crate) area: WindowControlArea,
-    pub(crate) danger: bool,
-}
-
-#[cfg(target_os = "windows")]
-pub(crate) fn window_control_config(
-    kind: WindowControlKind,
-    maximized: bool,
-) -> WindowControlConfig {
-    match kind {
-        WindowControlKind::Minimize => WindowControlConfig {
-            id: "window-minimize",
-            icon: IconName::WindowMinimize,
-            label: "Minimize window",
-            area: WindowControlArea::Min,
-            danger: false,
-        },
-        WindowControlKind::Maximize => WindowControlConfig {
-            id: "window-maximize",
-            icon: if maximized {
-                IconName::WindowRestore
-            } else {
-                IconName::WindowMaximize
-            },
-            label: if maximized {
-                "Restore window"
-            } else {
-                "Maximize window"
-            },
-            area: WindowControlArea::Max,
-            danger: false,
-        },
-        WindowControlKind::Close => WindowControlConfig {
-            id: "window-close",
-            icon: IconName::WindowClose,
-            label: "Close window",
-            area: WindowControlArea::Close,
-            danger: true,
-        },
-    }
-}
-
-/// Windows 11 caption button width (WinUI AppWindow title bar convention).
-#[cfg(target_os = "windows")]
-pub(crate) const WINDOW_CONTROL_WIDTH: f32 = 46.0;
-
-#[cfg(target_os = "windows")]
-pub(crate) fn window_control_button(
-    id: &'static str,
-    icon: IconName,
-    label: &'static str,
-    area: WindowControlArea,
-    colors: crate::ThemeColors,
-    danger: bool,
-) -> Stateful<Div> {
-    // Caption glyphs must set Icon.color explicitly: embedded SVGs use a fixed
-    // stroke and do not inherit the parent's text_color, so omitting color made
-    // them render black on the dark titlebar (invisible).
-    let idle = colors.text_primary;
-    let hover_bg = if danger {
-        colors.danger
-    } else {
-        colors.surface_hover
-    };
-    let active_bg = if danger {
-        colors.danger
-    } else {
-        colors.surface_active
-    };
-    // Fluent Close: red fill + light glyph. Other captions keep the idle glyph
-    // color while the fill changes (GPUI recolors SVG strokes via text_color).
-    let hover_fg = if danger {
-        Theme::light().colors.text_inverse
-    } else {
-        idle
-    };
-    div()
-        .id(id)
-        .role(Role::Button)
-        .aria_label(label)
-        .window_control_area(area)
-        .focusable()
-        .tab_stop(true)
-        .h(px(TITLEBAR_HEIGHT))
-        .w(px(WINDOW_CONTROL_WIDTH))
-        .min_w(px(WINDOW_CONTROL_WIDTH))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_none()
-        .cursor_pointer()
-        .text_color(idle)
-        .hover(move |style| style.bg(hover_bg).text_color(hover_fg))
-        .active(move |style| style.bg(active_bg).text_color(hover_fg))
-        .tooltip(Tooltip::text(label, None, colors))
-        // Match toolbar IconButton optical size (Medium / 16px) so caption
-        // glyphs and chrome actions feel consistent.
-        .child(Icon::new(icon).size(IconSize::Medium))
-}
-
-pub(crate) fn speed_chart_column(
-    download_height: f32,
-    upload_height: f32,
-    colors: crate::ThemeColors,
-) -> Div {
-    div()
-        .h_full()
-        .flex_1()
-        .min_w(px(1.0))
-        .flex()
-        .items_end()
-        .child(
-            div()
-                .w(relative(0.5))
-                .h(relative(download_height.clamp(0.0, 1.0)))
-                .bg(colors.progress_download),
-        )
-        .child(
-            div()
-                .w(relative(0.5))
-                .h(relative(upload_height.clamp(0.0, 1.0)))
-                .bg(colors.progress_upload),
-        )
 }
 
 pub(crate) fn speed_chart_window(history: &[SpeedSampleView]) -> &[SpeedSampleView] {
@@ -200,31 +48,33 @@ pub(crate) fn toolbar_icon_button(
     label: impl Into<SharedString>,
     state: ToolbarButtonState,
     danger: bool,
-    shortcut: Option<&'static str>,
-    colors: crate::ThemeColors,
-) -> Stateful<Div> {
+    action: Option<&dyn gpui::Action>,
+    _colors: crate::ThemeColors,
+) -> KitButton {
     let label = label.into();
     let enabled = state == ToolbarButtonState::Enabled;
     let loading = state == ToolbarButtonState::Loading;
-    let tooltip = shortcut.map_or_else(
-        || Tooltip::new(label.clone()),
-        |shortcut| Tooltip::new(label.clone()).meta(shortcut),
-    );
-    IconButton::new(id, icon)
-        .aria_label(if enabled || loading {
+    let mut button = KitButton::new(id)
+        .icon(gpui_kit::component::Icon::new(icon))
+        .small()
+        .compact()
+        .accessibility_label(if enabled || loading {
             label.to_string()
         } else {
             format!("{label} unavailable")
         })
-        .style(if danger {
-            ButtonStyle::Danger
-        } else {
-            ButtonStyle::Ghost
-        })
         .disabled(!enabled && !loading)
-        .loading(loading)
-        .tooltip(tooltip)
-        .render(colors)
+        .loading(loading);
+    button = if danger {
+        button.danger()
+    } else {
+        button.ghost()
+    };
+    if let Some(action) = action {
+        button.tooltip_with_action(label, action, Some("DownloadWorkspace"))
+    } else {
+        button.tooltip(label)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -235,10 +85,10 @@ pub(crate) fn queue_move_button(
     command: TaskCommandView,
     enabled: bool,
     pending_command: Option<&TaskCommandView>,
-    shortcut: Option<&'static str>,
+    action: Option<&dyn gpui::Action>,
     colors: crate::ThemeColors,
     cx: &mut Context<AppShell>,
-) -> Stateful<Div> {
+) -> KitButton {
     let loading = pending_command == Some(&command);
     toolbar_icon_button(
         id,
@@ -246,7 +96,7 @@ pub(crate) fn queue_move_button(
         label,
         ToolbarButtonState::from_flags(enabled, loading),
         false,
-        shortcut,
+        action,
         colors,
     )
     .when(enabled, move |button| {
@@ -278,6 +128,7 @@ pub(crate) enum ContextMenuAction {
 }
 
 impl ContextMenuAction {
+    #[allow(dead_code)]
     pub(crate) const fn element_id(self) -> &'static str {
         match self {
             Self::Details => "ctx-menu-details",
@@ -299,59 +150,6 @@ impl ContextMenuAction {
             Self::Remove => "ctx-menu-remove",
         }
     }
-}
-
-pub(crate) fn context_menu_item(
-    action: ContextMenuAction,
-    label: impl Into<SharedString>,
-    shortcut: Option<&'static str>,
-    enabled: bool,
-    destructive: bool,
-    colors: crate::ThemeColors,
-    cx: &mut Context<AppShell>,
-) -> AnyElement {
-    let label = label.into();
-    div()
-        .id(action.element_id())
-        .role(Role::MenuItem)
-        .aria_label(label.clone())
-        .focusable()
-        .tab_stop(enabled)
-        .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
-        .w_full()
-        .h(px(32.0))
-        .px_3()
-        .flex()
-        .items_center()
-        .justify_between()
-        .gap_3()
-        .rounded_sm()
-        .cursor_pointer()
-        .text_sm()
-        .text_color(if !enabled {
-            colors.text_muted
-        } else if destructive {
-            colors.danger
-        } else {
-            colors.text_primary
-        })
-        .when(enabled, |element| {
-            element
-                .hover(|style| style.bg(colors.surface_hover))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.activate_context_menu_action(action, window, cx);
-                }))
-        })
-        .child(label)
-        .when_some(shortcut, |element, shortcut| {
-            element.child(
-                div()
-                    .text_xs()
-                    .text_color(colors.text_muted)
-                    .child(shortcut),
-            )
-        })
-        .into_any_element()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -393,7 +191,7 @@ pub(crate) fn settings_path_field_row(
     browse_label: impl Into<SharedString>,
     browse_aria: impl Into<SharedString>,
     target: PathPickTarget,
-    colors: crate::ThemeColors,
+    _colors: crate::ThemeColors,
     cx: &mut Context<AppShell>,
 ) -> Div {
     let browse_label = browse_label.into();
@@ -404,14 +202,13 @@ pub(crate) fn settings_path_field_row(
         .gap_2()
         .child(div().flex_1().min_w_0().child(Input::new(input)))
         .child(
-            Button::new(browse_id, browse_label)
-                .icon(IconName::FolderDown)
-                .aria_label(browse_aria)
-                .style(ButtonStyle::Secondary)
+            KitButton::new(browse_id)
+                .icon(gpui_kit::component::Icon::new(IconName::FolderDown))
+                .label(browse_label)
+                .accessibility_label(browse_aria)
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.pick_path_for_field(target, window, cx);
-                }))
-                .render(colors),
+                })),
         )
 }
 
@@ -974,36 +771,24 @@ pub(crate) fn task_status_color(status: TaskStatusView, colors: crate::ThemeColo
     }
 }
 
-pub(crate) fn task_progress_bar(
+pub(crate) fn task_progress_bar_with_id(
+    id: impl Into<gpui::ElementId>,
     progress: f32,
     status: TaskStatusView,
     colors: crate::ThemeColors,
-) -> Div {
+) -> KitProgress {
     let fill = match status {
         TaskStatusView::Failed | TaskStatusView::Removed => colors.danger,
         TaskStatusView::Complete => colors.success,
         TaskStatusView::Seeding => colors.progress_upload,
         _ => colors.progress_download,
     };
-    let ratio = progress.clamp(0.0, 1.0);
-    div()
-        .h(px(4.0))
-        .w_full()
-        .rounded_full()
-        .bg(colors.progress_track)
-        .overflow_hidden()
-        .child(div().h_full().w(relative(ratio)).rounded_full().bg(fill))
-}
-
-pub(crate) fn task_progress_bar_with_id(
-    id: impl Into<gpui::ElementId>,
-    progress: f32,
-    status: TaskStatusView,
-    colors: crate::ThemeColors,
-) -> Stateful<Div> {
-    div()
-        .id(id)
-        .child(task_progress_bar(progress, status, colors))
+    let percent = (progress.clamp(0.0, 1.0)) * 100.0;
+    KitProgress::new(id)
+        .value(percent)
+        .xsmall()
+        .color(fill)
+        .loading(status == TaskStatusView::Verifying && percent <= 0.0)
 }
 
 pub(crate) fn task_table_value(width: f32, value: String, colors: crate::ThemeColors) -> Div {

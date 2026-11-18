@@ -71,21 +71,28 @@ impl AppShell {
             };
             cx.emit(AppShellEvent::OsNotificationRequested {
                 title,
-                body: message,
+                body: message.clone(),
                 is_error,
             });
         }
+        let note = if is_error {
+            Notification::error(message)
+                .autohide(false)
+                .placement(Anchor::BottomRight)
+        } else {
+            Notification::success(message)
+                .autohide(true)
+                .placement(Anchor::BottomRight)
+        };
+        let handle = self.window_handle;
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, cx| {
+                if has_kit_root(window) {
+                    window.push_notification(note, cx);
+                }
+            });
+        });
         cx.notify();
-        if !is_error {
-            cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(Duration::from_secs(3)).await;
-                this.update(cx, |this, cx| {
-                    this.expire_notice(id, cx);
-                })
-                .ok();
-            })
-            .detach();
-        }
     }
 
     pub(crate) fn record_activity(
@@ -243,24 +250,23 @@ impl AppShell {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn toggle_activity_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.activity_panel_open {
+        if self.active_status_popover == Some(StatusBarPopover::Activity) {
             self.close_activity_panel(window, cx);
             return;
         }
-        self.speed_popover_open = false;
-        self.sort_popover_open = false;
-        self.context_menu = None;
-        self.activity_panel_open = true;
+        self.context_menu_target = None;
+        self.active_status_popover = Some(StatusBarPopover::Activity);
         cx.notify();
         let _ = window;
     }
 
     pub(crate) fn close_activity_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.activity_panel_open {
+        if self.active_status_popover != Some(StatusBarPopover::Activity) {
             return;
         }
-        self.activity_panel_open = false;
+        self.active_status_popover = None;
         window.focus(&self.focus_handle, cx);
         cx.notify();
     }
@@ -273,19 +279,17 @@ impl AppShell {
         cx.notify();
     }
 
-    pub(crate) fn expire_notice(&mut self, id: u64, cx: &mut Context<Self>) {
-        if self
-            .status_notice
-            .as_ref()
-            .is_some_and(|notice| notice.id == id && !notice.is_error)
-        {
-            self.status_notice = None;
-            cx.notify();
-        }
-    }
-
+    #[allow(dead_code)]
     pub(crate) fn dismiss_notice(&mut self, cx: &mut Context<Self>) {
         if self.status_notice.take().is_some() {
+            let handle = self.window_handle;
+            cx.defer(move |cx| {
+                let _ = handle.update(cx, |_, window, cx| {
+                    if window.root::<gpui_kit::component::Root>().is_some() {
+                        window.clear_notifications(cx);
+                    }
+                });
+            });
             cx.notify();
         }
     }

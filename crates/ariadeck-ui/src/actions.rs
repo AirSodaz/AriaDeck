@@ -3,20 +3,7 @@ use gpui::{App, KeyBinding, OperatingSystem, actions};
 actions!(
     ariadeck,
     [
-        Backspace,
-        Delete,
-        MoveLeft,
-        MoveRight,
-        SelectLeft,
-        SelectRight,
-        InsertNewline,
-        SelectAll,
         SelectAllTasks,
-        MoveHome,
-        MoveEnd,
-        Paste,
-        Cut,
-        Copy,
         FocusSearch,
         ClearSearch,
         SelectNextTask,
@@ -46,90 +33,69 @@ actions!(
         CloseBatchFailures,
         CloseCoreSetup,
         RemoveSelectedTask,
-        FocusNext,
-        FocusPrevious,
     ]
 );
 
-/// Shared key context for every `TextField` so paste/copy/select-all work everywhere.
-pub const TEXT_FIELD_KEY_CONTEXT: &str = "TextField";
-
-fn text_field_bindings(cx: &App) -> Vec<KeyBinding> {
-    let context = Some(TEXT_FIELD_KEY_CONTEXT);
-    let modifier = if cx.platform_info().os == OperatingSystem::Mac {
-        "cmd"
-    } else {
-        "ctrl"
-    };
-    vec![
-        KeyBinding::new("backspace", Backspace, context),
-        KeyBinding::new("delete", Delete, context),
-        KeyBinding::new("left", MoveLeft, context),
-        KeyBinding::new("right", MoveRight, context),
-        KeyBinding::new("shift-left", SelectLeft, context),
-        KeyBinding::new("shift-right", SelectRight, context),
-        KeyBinding::new(
-            if modifier == "cmd" { "cmd-a" } else { "ctrl-a" },
-            SelectAll,
-            context,
-        ),
-        KeyBinding::new("home", MoveHome, context),
-        KeyBinding::new("end", MoveEnd, context),
-        KeyBinding::new(
-            if modifier == "cmd" { "cmd-v" } else { "ctrl-v" },
-            Paste,
-            context,
-        ),
-        KeyBinding::new(
-            if modifier == "cmd" { "cmd-x" } else { "ctrl-x" },
-            Cut,
-            context,
-        ),
-        KeyBinding::new(
-            if modifier == "cmd" { "cmd-c" } else { "ctrl-c" },
-            Copy,
-            context,
-        ),
-        KeyBinding::new("shift-enter", InsertNewline, context),
-    ]
-}
-
 pub fn init(cx: &mut App) {
     gpui_kit::init(cx);
-    let mut bindings = text_field_bindings(cx);
-    let select_all = if cx.platform_info().os == OperatingSystem::Mac {
-        "cmd-a"
-    } else {
-        "ctrl-a"
-    };
-    bindings.extend([
-        KeyBinding::new("cmd-f", FocusSearch, None),
-        KeyBinding::new(select_all, SelectAllTasks, Some("DownloadWorkspace")),
-        KeyBinding::new("cmd-n", OpenAddDownload, Some("DownloadWorkspace")),
+    let is_mac = cx.platform_info().os == OperatingSystem::Mac;
+    let pick = |mac: &'static str, other: &'static str| if is_mac { mac } else { other };
+    let bindings = [
+        KeyBinding::new(pick("cmd-f", "ctrl-f"), FocusSearch, None),
+        KeyBinding::new(
+            pick("cmd-a", "ctrl-a"),
+            SelectAllTasks,
+            Some("DownloadWorkspace"),
+        ),
+        KeyBinding::new(
+            pick("cmd-n", "ctrl-n"),
+            OpenAddDownload,
+            Some("DownloadWorkspace"),
+        ),
         KeyBinding::new("escape", CloseAddDownload, Some("AddDownloadDialog")),
         KeyBinding::new("enter", SubmitAddDownload, Some("AddDownloadDialog")),
-        KeyBinding::new("cmd-enter", SubmitAddDownload, Some("AddDownloadDialog")),
+        KeyBinding::new(
+            pick("cmd-enter", "ctrl-enter"),
+            SubmitAddDownload,
+            Some("AddDownloadDialog"),
+        ),
         KeyBinding::new("escape", ClearSearch, Some("SearchInput")),
         KeyBinding::new("escape", ClearSearch, Some("DownloadWorkspace")),
         KeyBinding::new("down", SelectNextTask, Some("DownloadWorkspace")),
         KeyBinding::new("up", SelectPreviousTask, Some("DownloadWorkspace")),
         KeyBinding::new("enter", OpenTaskDetails, Some("DownloadWorkspace")),
-        KeyBinding::new("cmd-shift-p", PauseSelectedTask, Some("DownloadWorkspace")),
-        KeyBinding::new("cmd-shift-r", ResumeSelectedTask, Some("DownloadWorkspace")),
-        KeyBinding::new("cmd-alt-r", RetrySelectedTask, Some("DownloadWorkspace")),
         KeyBinding::new(
-            "cmd-shift-home",
+            pick("cmd-shift-p", "ctrl-shift-p"),
+            PauseSelectedTask,
+            Some("DownloadWorkspace"),
+        ),
+        KeyBinding::new(
+            pick("cmd-shift-r", "ctrl-shift-r"),
+            ResumeSelectedTask,
+            Some("DownloadWorkspace"),
+        ),
+        KeyBinding::new(
+            pick("cmd-alt-r", "ctrl-alt-r"),
+            RetrySelectedTask,
+            Some("DownloadWorkspace"),
+        ),
+        KeyBinding::new(
+            pick("cmd-shift-home", "ctrl-shift-home"),
             MoveTaskToQueueTop,
             Some("DownloadWorkspace"),
         ),
-        KeyBinding::new("cmd-shift-up", MoveTaskUpInQueue, Some("DownloadWorkspace")),
         KeyBinding::new(
-            "cmd-shift-down",
+            pick("cmd-shift-up", "ctrl-shift-up"),
+            MoveTaskUpInQueue,
+            Some("DownloadWorkspace"),
+        ),
+        KeyBinding::new(
+            pick("cmd-shift-down", "ctrl-shift-down"),
             MoveTaskDownInQueue,
             Some("DownloadWorkspace"),
         ),
         KeyBinding::new(
-            "cmd-shift-end",
+            pick("cmd-shift-end", "ctrl-shift-end"),
             MoveTaskToQueueBottom,
             Some("DownloadWorkspace"),
         ),
@@ -138,28 +104,38 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("escape", CloseTaskOutputName, Some("TaskOutputNameDialog")),
         KeyBinding::new("enter", SubmitTaskOutputName, Some("TaskOutputNameDialog")),
         KeyBinding::new(
-            "cmd-enter",
+            pick("cmd-enter", "ctrl-enter"),
             SubmitTaskOutputName,
             Some("TaskOutputNameDialog"),
         ),
         KeyBinding::new("escape", CloseTaskSpeedLimit, Some("TaskSpeedLimitDialog")),
         KeyBinding::new("enter", SubmitTaskSpeedLimit, Some("TaskSpeedLimitDialog")),
         KeyBinding::new(
-            "cmd-enter",
+            pick("cmd-enter", "ctrl-enter"),
             SubmitTaskSpeedLimit,
             Some("TaskSpeedLimitDialog"),
         ),
         KeyBinding::new("escape", CloseTaskOptions, Some("TaskOptionsDialog")),
         KeyBinding::new("enter", SubmitTaskOptions, Some("TaskOptionsDialog")),
-        KeyBinding::new("cmd-enter", SubmitTaskOptions, Some("TaskOptionsDialog")),
+        KeyBinding::new(
+            pick("cmd-enter", "ctrl-enter"),
+            SubmitTaskOptions,
+            Some("TaskOptionsDialog"),
+        ),
         KeyBinding::new("escape", CloseBatchFailures, Some("BatchFailureDialog")),
         // Escape dismisses the first-run guide, which counts as "you were asked".
         KeyBinding::new("escape", CloseCoreSetup, Some("CoreSetupDialog")),
-        KeyBinding::new("cmd-,", OpenSettings, Some("DownloadWorkspace")),
+        KeyBinding::new(
+            pick("cmd-,", "ctrl-,"),
+            OpenSettings,
+            Some("DownloadWorkspace"),
+        ),
         KeyBinding::new("escape", CloseSettings, Some("SettingsPage")),
-        KeyBinding::new("cmd-enter", SaveSettings, Some("SettingsPage")),
-        KeyBinding::new("tab", FocusNext, None),
-        KeyBinding::new("shift-tab", FocusPrevious, None),
-    ]);
+        KeyBinding::new(
+            pick("cmd-enter", "ctrl-enter"),
+            SaveSettings,
+            Some("SettingsPage"),
+        ),
+    ];
     cx.bind_keys(bindings);
 }

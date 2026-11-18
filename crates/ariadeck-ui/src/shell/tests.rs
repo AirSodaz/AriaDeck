@@ -15,6 +15,47 @@ fn secondary_modifier() -> &'static str {
     }
 }
 
+/// Open an [`AppShell`] inside a [`gpui_kit::component::Root`] matching production
+/// `gpui_kit::open_window`, so `WindowExt` dialogs, sheets, and notifications work.
+#[allow(dead_code)]
+fn open_test_shell(
+    cx: &mut TestAppContext,
+    build: impl FnOnce(&mut Window, &mut Context<AppShell>) -> AppShell + 'static,
+) -> (Entity<AppShell>, gpui::VisualTestContext) {
+    open_test_shell_sized(cx, gpui::size(px(1280.0), px(800.0)), build)
+}
+
+#[allow(dead_code)]
+fn open_test_shell_sized(
+    cx: &mut TestAppContext,
+    viewport: gpui::Size<Pixels>,
+    build: impl FnOnce(&mut Window, &mut Context<AppShell>) -> AppShell + 'static,
+) -> (Entity<AppShell>, gpui::VisualTestContext) {
+    cx.update(crate::init);
+    let mut shell_entity: Option<Entity<AppShell>> = None;
+    let window = cx
+        .update(|cx| {
+            cx.open_window(
+                gpui::WindowOptions {
+                    window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                        Default::default(),
+                        viewport,
+                    ))),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    let shell = cx.new(|cx| build(window, cx));
+                    shell_entity = Some(shell.clone());
+                    cx.new(|cx| gpui_kit::component::Root::new(shell, window, cx))
+                },
+            )
+        })
+        .expect("open test root window");
+    let shell = shell_entity.expect("shell created inside root window");
+    let visual_cx = gpui::VisualTestContext::from_window(window.into(), cx);
+    (shell, visual_cx)
+}
+
 fn task(index: usize) -> DownloadRowView {
     DownloadRowView {
         identity: TaskIdentity {
@@ -160,29 +201,110 @@ fn search_bounds_are_centered_and_ignore_workspace_drawers() {
     }
 }
 
-#[cfg(target_os = "windows")]
-#[test]
-fn window_controls_map_to_native_areas_and_accessible_labels() {
-    let minimize = window_control_config(WindowControlKind::Minimize, false);
-    assert_eq!(minimize.area, WindowControlArea::Min);
-    assert_eq!(minimize.icon, IconName::WindowMinimize);
-    assert_eq!(minimize.label, "Minimize window");
-    assert!(!minimize.danger);
+#[gpui::test]
+fn title_bar_renders_centered_search_and_add_action(cx: &mut TestAppContext) {
+    let (shell, mut visual_cx) =
+        open_test_shell_sized(cx, gpui::size(px(1_280.0), px(720.0)), |window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(2);
+            shell
+        });
 
-    let maximize = window_control_config(WindowControlKind::Maximize, false);
-    assert_eq!(maximize.area, WindowControlArea::Max);
-    assert_eq!(maximize.icon, IconName::WindowMaximize);
-    assert_eq!(maximize.label, "Maximize window");
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
 
-    let restore = window_control_config(WindowControlKind::Maximize, true);
-    assert_eq!(restore.icon, IconName::WindowRestore);
-    assert_eq!(restore.label, "Restore window");
+    shell.read_with(&visual_cx, |shell, cx| {
+        let search_bounds = shell
+            .search_input
+            .read(cx)
+            .text_bounds()
+            .expect("titlebar search input must be painted");
+        assert!(
+            search_bounds.bottom() <= px(TITLEBAR_HEIGHT + 2.0),
+            "search input must sit inside the {TITLEBAR_HEIGHT}px titlebar (bottom={:?})",
+            search_bounds.bottom()
+        );
+        assert!(
+            search_bounds.size.width > px(0.0),
+            "titlebar search input must have positive width"
+        );
+    });
 
-    let close = window_control_config(WindowControlKind::Close, false);
-    assert_eq!(close.area, WindowControlArea::Close);
-    assert_eq!(close.icon, IconName::WindowClose);
-    assert_eq!(close.label, "Close window");
-    assert!(close.danger);
+    let add_bounds = visual_cx
+        .debug_bounds("titlebar-add-download")
+        .expect("titlebar add download button must be painted");
+    let center = add_bounds.center();
+    let down_result = visual_cx.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: center,
+                modifiers: gpui::Modifiers::none(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        )
+    });
+    assert!(
+        !down_result.propagate,
+        "mouse down on titlebar add button must stop propagation so Windows HTCAPTION does not hijack the click"
+    );
+    visual_cx.simulate_mouse_up(center, MouseButton::Left, gpui::Modifiers::none());
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    shell.read_with(&visual_cx, |shell, _| {
+        assert!(
+            shell.add_dialog.open,
+            "clicking the titlebar add download button must open the Add Download dialog"
+        );
+    });
+    assert!(
+        visual_cx.update(|window, cx| window.has_active_dialog(cx)),
+        "Add Download dialog must mount in Root after clicking the titlebar button"
+    );
+}
+
+#[gpui::test]
+fn speed_chart_area_chart_renders_empty_single_and_bounded_histories(cx: &mut TestAppContext) {
+    let (shell, mut visual_cx) = open_test_shell(cx, |window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(1);
+        shell.active_status_popover = Some(StatusBarPopover::Speed);
+        shell
+    });
+
+    for sample_count in [0, 1, SPEED_CHART_SAMPLES + 10] {
+        shell.update(&mut visual_cx, |shell, cx| {
+            shell.snapshot.speed_history = (0..sample_count)
+                .map(|index| SpeedSampleView {
+                    download_rate: (index as u64 + 1) * 1024,
+                    upload_rate: (index as u64) * 256,
+                })
+                .collect();
+            shell.snapshot.download_rate = shell
+                .snapshot
+                .speed_history
+                .last()
+                .map_or(0, |sample| sample.download_rate);
+            shell.snapshot.upload_rate = shell
+                .snapshot
+                .speed_history
+                .last()
+                .map_or(0, |sample| sample.upload_rate);
+            cx.notify();
+        });
+        visual_cx.run_until_parked();
+        let _ = visual_cx.update(|window, cx| window.draw(cx));
+    }
+
+    shell.read_with(&visual_cx, |shell, _| {
+        assert_eq!(
+            speed_chart_window(&shell.snapshot.speed_history).len(),
+            SPEED_CHART_SAMPLES
+        );
+    });
 }
 
 #[test]
@@ -365,7 +487,7 @@ fn context_menu_opens_from_right_click_and_preserves_multi_selection(cx: &mut Te
             window,
             cx,
         );
-        assert!(shell.context_menu.is_some());
+        assert!(shell.context_menu_target.is_some());
         assert_eq!(shell.selected.as_ref(), Some(&task(1).identity));
         assert_eq!(shell.selected_tasks.len(), 2);
         assert!(shell.selected_tasks.contains(&task(0).identity));
@@ -380,7 +502,7 @@ fn context_menu_opens_from_right_click_and_preserves_multi_selection(cx: &mut Te
         );
 
         shell.close_task_context_menu(cx);
-        assert!(shell.context_menu.is_none());
+        assert!(shell.context_menu_target.is_none());
         // Closing the menu does not drop the multi-selection.
         assert_eq!(shell.selected_tasks.len(), 2);
     });
@@ -403,7 +525,7 @@ fn queue_priority_keyboard_actions_are_wired_on_the_workspace(cx: &mut TestAppCo
         shell
     });
 
-    cx.simulate_keystrokes("cmd-shift-up");
+    cx.simulate_keystrokes(&format!("{}-shift-up", secondary_modifier()));
 
     view.read_with(cx, |shell, _| {
         assert!(
@@ -1567,66 +1689,71 @@ fn bridge_downloads_consume_only_the_leading_header_group(cx: &mut TestAppContex
 
 #[gpui::test]
 fn add_download_dialog_accepts_keyboard_input(cx: &mut TestAppContext) {
-    let (view, cx) = cx.add_window_view(|window, cx| {
+    let (view, mut cx) = open_test_shell(cx, |window, cx| {
         let mut shell = AppShell::new(Theme::dark(), window, cx);
         shell.snapshot = snapshot(1);
         shell
     });
 
-    view.update_in(cx, |shell, window, cx| {
+    view.update_in(&mut cx, |shell, window, cx| {
         shell.open_add_download(&OpenAddDownload, window, cx);
     });
+    cx.run_until_parked();
+    let _ = cx.update(|window, cx| window.draw(cx));
     cx.simulate_input("https://example.com/file");
 
-    view.read_with(cx, |shell, cx| {
+    view.read_with(&cx, |shell, cx| {
         assert_eq!(shell.add_input.read(cx).text(), "https://example.com/file");
     });
 }
 
 #[gpui::test]
 fn add_download_dialog_input_can_be_clicked_before_typing(cx: &mut TestAppContext) {
-    let (view, cx) = cx.add_window_view(|window, cx| {
+    let (view, mut cx) = open_test_shell(cx, |window, cx| {
         let mut shell = AppShell::new(Theme::dark(), window, cx);
         shell.snapshot = snapshot(1);
         shell
     });
 
-    view.update_in(cx, |shell, window, cx| {
+    view.update_in(&mut cx, |shell, window, cx| {
         shell.open_add_download(&OpenAddDownload, window, cx);
     });
-    let input_bounds = view.read_with(cx, |shell, cx| {
+    cx.run_until_parked();
+    let _ = cx.update(|window, cx| window.draw(cx));
+    let input_bounds = view.read_with(&cx, |shell, cx| {
         shell
             .add_input
             .read(cx)
             .text_bounds()
             .expect("add-download input must be painted")
     });
-    view.update_in(cx, |shell, window, cx| {
+    view.update_in(&mut cx, |shell, window, cx| {
         window.focus(&shell.search_input.focus_handle(cx), cx);
     });
     cx.simulate_click(input_bounds.center(), Default::default());
     cx.simulate_input("https://example.com/file");
 
-    view.read_with(cx, |shell, cx| {
+    view.read_with(&cx, |shell, cx| {
         assert_eq!(shell.add_input.read(cx).value(), "https://example.com/file");
     });
 }
 
 #[gpui::test]
 fn add_download_dialog_supports_standard_clipboard_shortcuts(cx: &mut TestAppContext) {
-    cx.update(crate::init);
-    let (view, cx) = cx.add_window_view(|window, cx| {
+    let (view, mut cx) = open_test_shell(cx, |window, cx| {
         let mut shell = AppShell::new(Theme::dark(), window, cx);
         shell.snapshot = snapshot(1);
         shell
     });
 
-    view.update_in(cx, |shell, window, cx| {
+    view.update_in(&mut cx, |shell, window, cx| {
         shell.open_add_download(&OpenAddDownload, window, cx);
         shell.add_input.update(cx, |input, cx| {
             input.set_value("https://example.com/file", window, cx);
         });
     });
+    cx.run_until_parked();
+    let _ = cx.update(|window, cx| window.draw(cx));
     cx.simulate_keystrokes(&format!(
         "{}-a {}-c",
         secondary_modifier(),
@@ -1641,7 +1768,7 @@ fn add_download_dialog_supports_standard_clipboard_shortcuts(cx: &mut TestAppCon
         "magnet:?xt=urn:btih:test".to_owned(),
     ));
     cx.simulate_keystrokes(&format!("{}-v", secondary_modifier()));
-    view.read_with(cx, |shell, cx| {
+    view.read_with(&cx, |shell, cx| {
         assert_eq!(shell.add_input.read(cx).value(), "magnet:?xt=urn:btih:test");
     });
 
@@ -1650,7 +1777,7 @@ fn add_download_dialog_supports_standard_clipboard_shortcuts(cx: &mut TestAppCon
         secondary_modifier(),
         secondary_modifier()
     ));
-    view.read_with(cx, |shell, cx| {
+    view.read_with(&cx, |shell, cx| {
         assert!(shell.add_input.read(cx).value().is_empty());
     });
     assert_eq!(
@@ -1661,13 +1788,16 @@ fn add_download_dialog_supports_standard_clipboard_shortcuts(cx: &mut TestAppCon
 
 #[gpui::test]
 fn add_download_input_preserves_pasted_lines_and_shift_enter(cx: &mut TestAppContext) {
-    cx.update(crate::init);
-    let (view, cx) = cx.add_window_view(|window, cx| {
+    let (view, mut cx) = open_test_shell(cx, |window, cx| {
         let mut shell = AppShell::new(Theme::dark(), window, cx);
         shell.snapshot = snapshot(1);
-        shell.open_add_download(&OpenAddDownload, window, cx);
         shell
     });
+    view.update_in(&mut cx, |shell, window, cx| {
+        shell.open_add_download(&OpenAddDownload, window, cx);
+    });
+    cx.run_until_parked();
+    let _ = cx.update(|window, cx| window.draw(cx));
 
     cx.write_to_clipboard(ClipboardItem::new_string(
         "https://example.test/one\r\nhttps://example.test/two".into(),
@@ -1675,7 +1805,7 @@ fn add_download_input_preserves_pasted_lines_and_shift_enter(cx: &mut TestAppCon
     cx.simulate_keystrokes(&format!("{}-v shift-enter", secondary_modifier()));
     cx.simulate_input("magnet:?xt=urn:btih:abc");
 
-    view.read_with(cx, |shell, cx| {
+    view.read_with(&cx, |shell, cx| {
         assert_eq!(
             shell.add_input.read(cx).value().replace("\r\n", "\n"),
             "https://example.test/one\nhttps://example.test/two\nmagnet:?xt=urn:btih:abc"
@@ -2640,7 +2770,7 @@ fn escape_priority_closes_popover_then_settings_then_search(cx: &mut TestAppCont
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut shell = AppShell::new(Theme::dark(), window, cx);
         shell.page = AppPage::Settings;
-        shell.speed_popover_open = true;
+        shell.active_status_popover = Some(StatusBarPopover::Speed);
         shell.search_input.update(cx, |input, cx| {
             input.set_value("archive", window, cx);
         });
@@ -2651,7 +2781,7 @@ fn escape_priority_closes_popover_then_settings_then_search(cx: &mut TestAppCont
         shell.clear_search(&ClearSearch, window, cx);
     });
     view.read_with(cx, |shell, cx| {
-        assert!(!shell.speed_popover_open);
+        assert_eq!(shell.active_status_popover, None);
         assert_eq!(shell.page, AppPage::Settings);
         assert_eq!(shell.search_input.read(cx).value(), "archive");
     });
@@ -2938,19 +3068,18 @@ fn speed_popover_toggles_and_restores_previous_focus(cx: &mut TestAppContext) {
 
     view.update_in(cx, |shell, window, cx| {
         shell.toggle_speed_popover(window, cx);
-        assert!(shell.speed_popover_open);
+        assert_eq!(shell.active_status_popover, Some(StatusBarPopover::Speed));
         shell.close_speed_popover(window, cx);
     });
     view.read_with(cx, |shell, _| {
-        assert!(!shell.speed_popover_open);
+        assert_eq!(shell.active_status_popover, None);
         assert!(shell.speed_popover_previous_focus.is_none());
     });
 }
 
 #[gpui::test]
 fn task_settings_dialogs_keep_tab_focus_inside_the_modal(cx: &mut TestAppContext) {
-    cx.update(crate::init);
-    let (view, cx) = cx.add_window_view(|window, cx| {
+    let (view, mut cx) = open_test_shell(cx, |window, cx| {
         let mut shell = AppShell::new(Theme::dark(), window, cx);
         let mut workspace = snapshot(1);
         workspace.tasks[0].status = TaskStatusView::Active;
@@ -2959,45 +3088,84 @@ fn task_settings_dialogs_keep_tab_focus_inside_the_modal(cx: &mut TestAppContext
         shell
     });
 
-    view.update_in(cx, |shell, window, cx| {
+    // Open speed limit dialog and verify focus starts in download_limit and Tab stays trapped inside.
+    view.update_in(&mut cx, |shell, window, cx| {
         shell.open_task_speed_limit(window, cx);
     });
-    view.update_in(cx, |shell, window, cx| {
-        window.focus(&shell.focus_handle, cx);
-        shell.focus_next(&FocusNext, window, cx);
+    cx.run_until_parked();
+    let _ = cx.update(|window, cx| window.draw(cx));
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    view.update_in(&mut cx, |shell, window, cx| {
         assert!(
             shell
                 .task_inputs
                 .download_limit
                 .focus_handle(cx)
-                .is_focused(window)
+                .is_focused(window),
+            "speed limit dialog should focus download_limit"
         );
+    });
 
-        window.focus(&shell.focus_handle, cx);
-        shell.focus_previous(&FocusPrevious, window, cx);
-        assert!(shell.task_speed_limit_submit_focus.is_focused(window));
-        shell.close_task_speed_limit(window, cx);
+    // Cycle Tab through the dialog controls; focus must never escape to the workspace behind it.
+    for _ in 0..8 {
+        cx.simulate_keystrokes("tab");
+        cx.run_until_parked();
+        view.update_in(&mut cx, |shell, window, _| {
+            assert!(
+                !shell.focus_handle.is_focused(window),
+                "Tab must not escape active speed limit dialog"
+            );
+        });
+    }
+
+    // Escape closes speed limit dialog.
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    view.read_with(&cx, |shell, _| {
+        assert!(shell.task_speed_limit_dialog.is_none());
+    });
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+
+    // Open task options dialog and verify initial focus & Escape dismissal.
+    view.update_in(&mut cx, |shell, window, cx| {
         shell.open_task_options(window, cx);
     });
-    view.update_in(cx, |shell, window, cx| {
-        window.focus(&shell.focus_handle, cx);
-        shell.focus_next(&FocusNext, window, cx);
-        assert!(
-            shell
-                .task_inputs
-                .seed_ratio
-                .focus_handle(cx)
-                .is_focused(window)
-        );
-
-        window.focus(&shell.focus_handle, cx);
-        shell.focus_previous(&FocusPrevious, window, cx);
-        assert!(shell.task_options_submit_focus.is_focused(window));
-    });
+    cx.run_until_parked();
+    let _ = cx.update(|window, cx| window.draw(cx));
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
     cx.simulate_keystrokes("escape");
-    view.read_with(cx, |shell, _| {
+    cx.run_until_parked();
+    view.read_with(&cx, |shell, _| {
         assert!(shell.task_options_dialog.is_none());
     });
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+
+    // Verify core setup onboarding & power countdown also open as kit dialogs and dismiss on Escape.
+    view.update_in(&mut cx, |shell, window, cx| {
+        shell.open_core_setup_onboarding(window, cx);
+    });
+    cx.run_until_parked();
+    let _ = cx.update(|window, cx| window.draw(cx));
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    view.read_with(&cx, |shell, _| {
+        assert!(!shell.core_setup.onboarding_open);
+    });
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+
+    view.update(&mut cx, |shell, cx| {
+        shell.start_power_countdown(CompletionPowerActionView::Sleep, cx);
+    });
+    cx.run_until_parked();
+    let _ = cx.update(|window, cx| window.draw(cx));
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    view.read_with(&cx, |shell, _| {
+        assert!(shell.power_countdown.is_none());
+    });
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
 }
 
 #[gpui::test]
@@ -3514,11 +3682,14 @@ fn activity_panel_toggles_and_clears(cx: &mut TestAppContext) {
             cx,
         );
         shell.toggle_activity_panel(window, cx);
-        assert!(shell.activity_panel_open);
+        assert_eq!(
+            shell.active_status_popover,
+            Some(StatusBarPopover::Activity)
+        );
         shell.clear_activity_log(cx);
         assert!(shell.activity_log.is_empty());
         shell.close_activity_panel(window, cx);
-        assert!(!shell.activity_panel_open);
+        assert_eq!(shell.active_status_popover, None);
     });
 }
 
@@ -4158,11 +4329,11 @@ fn power_popover_toggles(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
 
     view.update(cx, |shell, cx| {
-        assert!(!shell.power_popover_open);
+        assert_eq!(shell.active_status_popover, None);
         shell.toggle_power_popover(cx);
-        assert!(shell.power_popover_open);
+        assert_eq!(shell.active_status_popover, Some(StatusBarPopover::Power));
         shell.close_power_popover(cx);
-        assert!(!shell.power_popover_open);
+        assert_eq!(shell.active_status_popover, None);
     });
 }
 
@@ -4202,53 +4373,85 @@ fn power_action_change_during_countdown_updates_action(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
-fn sort_popover_toggles_and_renders_anchored_menu(cx: &mut TestAppContext) {
-    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+fn sort_dropdown_menu_builds_and_updates_query(cx: &mut TestAppContext) {
+    let (shell, mut cx) =
+        open_test_shell(cx, |window, cx| AppShell::new(Theme::dark(), window, cx));
 
-    view.update(cx, |shell, cx| {
-        assert!(!shell.sort_popover_open);
-        shell.toggle_sort_popover(cx);
-        assert!(shell.sort_popover_open);
+    shell.update_in(&mut cx, |shell, window, cx| {
+        let weak = cx.entity().downgrade();
+        let menu = PopupMenu::build(window, cx, |menu, _, _| {
+            shell.populate_sort_menu(menu, weak)
+        });
+        assert!(!menu.read(cx).is_empty());
 
-        // Verify layer and menu can both be rendered without panic
-        let layer = shell.render_sort_popover_layer(cx);
-        let _ = layer;
-        let menu = shell.render_sort_menu(cx);
-        let _ = menu;
-
-        shell.close_sort_popover(cx);
-        assert!(!shell.sort_popover_open);
-    });
-}
-
-#[gpui::test]
-fn sort_popover_closes_on_escape_and_when_sort_key_selected(cx: &mut TestAppContext) {
-    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
-
-    // Test Escape closing sort popover
-    view.update_in(cx, |shell, window, cx| {
-        shell.sort_popover_open = true;
-        shell.clear_search(&ClearSearch, window, cx);
-        assert!(!shell.sort_popover_open);
-    });
-
-    // Test selecting a sort key closes sort popover
-    view.update(cx, |shell, cx| {
-        shell.sort_popover_open = true;
         shell.set_sort_key(WorkspaceSortKey::Name, cx);
-        assert!(!shell.sort_popover_open);
         assert_eq!(shell.query.sort_key, WorkspaceSortKey::Name);
-    });
 
-    // Test selecting a direction keeps sort popover open
-    view.update(cx, |shell, cx| {
-        shell.sort_popover_open = true;
         shell.set_sort_direction(WorkspaceSortDirection::Descending, cx);
-        assert!(shell.sort_popover_open);
         assert_eq!(
             shell.query.sort_direction,
             WorkspaceSortDirection::Descending
         );
+    });
+}
+
+#[gpui::test]
+fn status_bar_popovers_are_mutually_exclusive(cx: &mut TestAppContext) {
+    let (shell, mut cx) =
+        open_test_shell(cx, |window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    shell.update_in(&mut cx, |shell, window, cx| {
+        shell.toggle_speed_popover(window, cx);
+        assert_eq!(shell.active_status_popover, Some(StatusBarPopover::Speed));
+
+        shell.toggle_power_popover(cx);
+        assert_eq!(shell.active_status_popover, Some(StatusBarPopover::Power));
+
+        shell.toggle_activity_panel(window, cx);
+        assert_eq!(
+            shell.active_status_popover,
+            Some(StatusBarPopover::Activity)
+        );
+
+        shell.toggle_activity_panel(window, cx);
+        assert_eq!(shell.active_status_popover, None);
+    });
+}
+
+#[gpui::test]
+fn notices_push_into_root_notifications_and_stack(cx: &mut TestAppContext) {
+    let (shell, mut cx) =
+        open_test_shell(cx, |window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    shell.update(&mut cx, |shell, cx| {
+        shell.show_notice("Saved successfully.", false, cx);
+        shell.show_notice("Connection refused.", true, cx);
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        let notifications = window.notifications(cx);
+        assert_eq!(notifications.len(), 2);
+    });
+}
+
+#[gpui::test]
+fn task_context_menu_populates_items_for_selected_task(cx: &mut TestAppContext) {
+    let (shell, mut cx) = open_test_shell(cx, |window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(2);
+        shell
+    });
+
+    shell.update_in(&mut cx, |shell, window, cx| {
+        let target = shell
+            .prepare_task_context_menu(&task(0).identity, window, cx)
+            .expect("target task");
+        let weak = cx.entity().downgrade();
+        let menu = PopupMenu::build(window, cx, |menu, _, _| {
+            shell.populate_task_context_menu(menu, &target, weak)
+        });
+        assert!(!menu.read(cx).is_empty());
     });
 }
 
@@ -4451,49 +4654,53 @@ fn input_placeholders_sync_on_language_switch_and_apply_settings(cx: &mut TestAp
 fn sidebar_scrolls_upper_region_while_keeping_settings_pinned_on_short_window(
     cx: &mut TestAppContext,
 ) {
-    let window_handle = cx.add_window(|window, cx| {
-        let settings = SettingsView {
-            categories: (0..12)
-                .map(|index| crate::DownloadCategoryView {
-                    id: format!("cat-{index}"),
-                    name: format!("Category {index}"),
-                    directory: format!("D:\\Downloads\\cat-{index}"),
-                    extensions: format!("ext{index}"),
-                    is_fallback: false,
-                })
-                .collect(),
-            ..Default::default()
-        };
-        let mut shell = AppShell::new_with_settings(settings, window, cx);
-        shell.snapshot = snapshot(1);
-        shell
-    });
-    cx.simulate_window_resize(window_handle.into(), gpui::size(px(900.0), px(360.0)));
+    let (_shell, mut visual_cx) =
+        open_test_shell_sized(cx, gpui::size(px(900.0), px(360.0)), |window, cx| {
+            let settings = SettingsView {
+                categories: (0..12)
+                    .map(|index| crate::DownloadCategoryView {
+                        id: format!("cat-{index}"),
+                        name: format!("Category {index}"),
+                        directory: format!("D:\\Downloads\\cat-{index}"),
+                        extensions: format!("ext{index}"),
+                        is_fallback: false,
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            let mut shell = AppShell::new_with_settings(settings, window, cx);
+            shell.snapshot = snapshot(1);
+            shell
+        });
 
-    let mut visual_cx = gpui::VisualTestContext::from_window(window_handle.into(), cx);
     visual_cx.run_until_parked();
     let _ = visual_cx.update(|window, cx| window.draw(cx));
 
-    window_handle
-        .read_with(&visual_cx, |shell, _| {
-            let bounds = shell.sidebar_scroll.bounds();
-            let max_offset = shell.sidebar_scroll.max_offset();
-            assert!(
-                bounds.size.height > px(0.0),
-                "sidebar scroll viewport must have positive height"
-            );
-            assert!(
-                bounds.bottom() < px(360.0),
-                "sidebar scroll viewport must leave room at the bottom for pinned Settings button (bottom={:?})",
-                bounds.bottom()
-            );
-            assert!(
-                max_offset.y > px(0.0),
-                "sidebar upper region should overflow vertically and scroll on a 360px window (max_offset={:?})",
-                max_offset
-            );
-        })
-        .expect("read shell");
+    let header_bounds = visual_cx
+        .debug_bounds("sidebar-profile-header")
+        .expect("sidebar profile header must be painted");
+    let footer_bounds = visual_cx
+        .debug_bounds("sidebar-settings-footer")
+        .expect("sidebar settings footer must be painted");
+    assert!(
+        header_bounds.size.height > px(0.0),
+        "sidebar header must have positive height"
+    );
+    assert!(
+        footer_bounds.size.height > px(0.0),
+        "sidebar footer must have positive height"
+    );
+    assert!(
+        footer_bounds.bottom() <= px(360.0),
+        "sidebar settings footer must stay pinned inside the 360px window (bottom={:?})",
+        footer_bounds.bottom()
+    );
+    assert!(
+        footer_bounds.top() > header_bounds.bottom(),
+        "sidebar scrollable content region must sit between header ({:?}) and pinned footer ({:?})",
+        header_bounds.bottom(),
+        footer_bounds.top()
+    );
 }
 
 #[gpui::test]
@@ -4502,98 +4709,89 @@ fn settings_page_and_add_download_dialog_keep_scrollbars_inside_narrow_viewport(
 ) {
     let viewport_width = px(640.0);
     let viewport_height = px(440.0);
-    let window_handle = cx.add_window(|window, cx| {
-        let mut shell = AppShell::new(Theme::dark(), window, cx);
-        shell.snapshot = snapshot(5);
-        shell.page = AppPage::Settings;
-        shell
-    });
-    cx.simulate_window_resize(
-        window_handle.into(),
+    let (shell, mut visual_cx) = open_test_shell_sized(
+        cx,
         gpui::size(viewport_width, viewport_height),
+        |window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(5);
+            shell.page = AppPage::Settings;
+            shell
+        },
     );
 
-    let mut visual_cx = gpui::VisualTestContext::from_window(window_handle.into(), cx);
     visual_cx.run_until_parked();
     let _ = visual_cx.update(|window, cx| window.draw(cx));
 
-    window_handle
-        .read_with(&visual_cx, |shell, _| {
-            let bounds = shell.settings_scroll.bounds();
-            assert!(
-                bounds.size.width > px(0.0),
-                "settings scroll viewport must have positive width"
-            );
-            assert!(
-                bounds.right() <= viewport_width + px(0.5),
-                "settings scroll viewport (and its overlay scrollbar) must stay within narrow viewport (right={:?}, viewport={:?})",
-                bounds.right(),
-                viewport_width
-            );
-        })
-        .expect("read settings scroll bounds");
+    shell.read_with(&visual_cx, |shell, _| {
+        let bounds = shell.settings_scroll.bounds();
+        assert!(
+            bounds.size.width > px(0.0),
+            "settings scroll viewport must have positive width"
+        );
+        assert!(
+            bounds.right() <= viewport_width + px(0.5),
+            "settings scroll viewport (and its overlay scrollbar) must stay within narrow viewport (right={:?}, viewport={:?})",
+            bounds.right(),
+            viewport_width
+        );
+    });
 
-    // Now open Add Download with advanced options expanded so the dialog overflows vertically.
-    let _ = window_handle.update(&mut visual_cx, |shell, window, cx| {
+    // Now open Add Download with advanced options expanded so the dialog fits & scrolls in narrow viewport.
+    shell.update_in(&mut visual_cx, |shell, window, cx| {
         shell.open_add_download(&OpenAddDownload, window, cx);
         shell.toggle_add_advanced(cx);
     });
     visual_cx.run_until_parked();
     let _ = visual_cx.update(|window, cx| window.draw(cx));
 
-    window_handle
-        .read_with(&visual_cx, |shell, _| {
-            let bounds = shell.add_dialog_scroll.bounds();
-            let max_offset = shell.add_dialog_scroll.max_offset();
-            assert!(
-                bounds.size.width > px(0.0) && bounds.size.height > px(0.0),
-                "add download scroll body must have positive bounds"
-            );
-            assert!(
-                bounds.right() <= viewport_width + px(0.5),
-                "add download dialog must fit inside narrow viewport (right={:?}, viewport={:?})",
-                bounds.right(),
-                viewport_width
-            );
-            assert!(
-                max_offset.y > px(0.0),
-                "expanded add download dialog must overflow vertically on a 440px window (max_offset={:?})",
-                max_offset
-            );
-        })
-        .expect("read add dialog scroll bounds");
+    assert!(visual_cx.update(|window, cx| window.has_active_dialog(cx)));
+    shell.read_with(&visual_cx, |shell, cx| {
+        let bounds = shell
+            .add_input
+            .read(cx)
+            .text_bounds()
+            .expect("add download input painted inside kit dialog");
+        assert!(
+            bounds.size.width > px(0.0) && bounds.size.height > px(0.0),
+            "add download input must have positive bounds"
+        );
+        assert!(
+            bounds.right() <= viewport_width + px(0.5),
+            "add download dialog must fit inside narrow viewport (right={:?}, viewport={:?})",
+            bounds.right(),
+            viewport_width
+        );
+    });
 }
 
 #[gpui::test]
 fn details_drawer_tabs_render_with_scrollbars_inside_viewport(cx: &mut TestAppContext) {
     let viewport_width = px(720.0);
     let viewport_height = px(420.0);
-    let window_handle = cx.add_window(|window, cx| {
-        let mut shell = AppShell::new(Theme::dark(), window, cx);
-        shell.snapshot = snapshot(2);
-        shell.selected = Some(shell.snapshot.tasks[0].identity.clone());
-        shell
-    });
-    cx.simulate_window_resize(
-        window_handle.into(),
+    let (shell, mut visual_cx) = open_test_shell_sized(
+        cx,
         gpui::size(viewport_width, viewport_height),
+        |window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(2);
+            shell.selected = Some(shell.snapshot.tasks[0].identity.clone());
+            shell
+        },
     );
 
-    let mut visual_cx = gpui::VisualTestContext::from_window(window_handle.into(), cx);
-    let (request_id, session, identity) = window_handle
-        .update(&mut visual_cx, |shell, window, cx| {
-            shell.open_task_details_action(&OpenTaskDetails, window, cx);
-            let drawer = shell.details_drawer.as_ref().expect("drawer opened");
-            let pending = drawer.pending.as_ref().expect("details request pending");
-            (
-                pending.request_id,
-                drawer.session.clone(),
-                drawer.identity.clone(),
-            )
-        })
-        .expect("open details");
+    let (request_id, session, identity) = shell.update_in(&mut visual_cx, |shell, window, cx| {
+        shell.open_task_details_action(&OpenTaskDetails, window, cx);
+        let drawer = shell.details_drawer.as_ref().expect("drawer opened");
+        let pending = drawer.pending.as_ref().expect("details request pending");
+        (
+            pending.request_id,
+            drawer.session.clone(),
+            drawer.identity.clone(),
+        )
+    });
 
-    let _ = window_handle.update(&mut visual_cx, |shell, _window, cx| {
+    shell.update(&mut visual_cx, |shell, cx| {
         shell.set_task_details_result(
             TaskDetailsResultView {
                 request_id,
@@ -4604,6 +4802,13 @@ fn details_drawer_tabs_render_with_scrollbars_inside_viewport(cx: &mut TestAppCo
             cx,
         );
     });
+    visual_cx.run_until_parked();
+    assert!(visual_cx.update(|window, cx| window.has_active_sheet(cx)));
+    // Allow Sheet's 150ms slide-in animation to settle at right(0px).
+    visual_cx
+        .background_executor
+        .advance_clock(Duration::from_millis(200));
+    visual_cx.run_until_parked();
 
     for tab in [
         TaskDetailsTab::Info,
@@ -4611,7 +4816,7 @@ fn details_drawer_tabs_render_with_scrollbars_inside_viewport(cx: &mut TestAppCo
         TaskDetailsTab::Network,
         TaskDetailsTab::Options,
     ] {
-        let _ = window_handle.update(&mut visual_cx, |shell, _window, cx| {
+        shell.update(&mut visual_cx, |shell, cx| {
             if let Some(drawer) = &mut shell.details_drawer {
                 drawer.tab = tab;
             }
@@ -4620,26 +4825,64 @@ fn details_drawer_tabs_render_with_scrollbars_inside_viewport(cx: &mut TestAppCo
         visual_cx.run_until_parked();
         let _ = visual_cx.update(|window, cx| window.draw(cx));
 
-        window_handle
-            .read_with(&visual_cx, |shell, _| {
-                let drawer = shell.details_drawer.as_ref().expect("drawer present");
-                let bounds = match tab {
-                    TaskDetailsTab::Info => drawer.info_scroll.bounds(),
-                    TaskDetailsTab::Files => drawer.file_scroll.0.borrow().base_handle.bounds(),
-                    TaskDetailsTab::Network => drawer.network_scroll.bounds(),
-                    TaskDetailsTab::Options => drawer.options_scroll.bounds(),
-                };
-                assert!(
-                    bounds.size.width > px(0.0) && bounds.size.height > px(0.0),
-                    "details tab {tab:?} must have positive scroll bounds"
-                );
-                assert!(
-                    bounds.right() <= viewport_width + px(0.5),
-                    "details tab {tab:?} scroll bounds must remain inside viewport (right={:?}, viewport={:?})",
-                    bounds.right(),
-                    viewport_width
-                );
-            })
-            .expect("read details tab bounds");
+        shell.read_with(&visual_cx, |shell, _| {
+            let drawer = shell.details_drawer.as_ref().expect("drawer present");
+            let bounds = match tab {
+                TaskDetailsTab::Info => drawer.info_scroll.bounds(),
+                TaskDetailsTab::Files => drawer.file_scroll.0.borrow().base_handle.bounds(),
+                TaskDetailsTab::Network => drawer.network_scroll.bounds(),
+                TaskDetailsTab::Options => drawer.options_scroll.bounds(),
+            };
+            assert!(
+                bounds.size.width > px(0.0) && bounds.size.height > px(0.0),
+                "details tab {tab:?} must have positive scroll bounds"
+            );
+            assert!(
+                bounds.right() <= viewport_width + px(0.5),
+                "details tab {tab:?} scroll bounds must remain inside viewport (right={:?}, viewport={:?})",
+                bounds.right(),
+                viewport_width
+            );
+        });
     }
+}
+
+#[gpui::test]
+fn details_drawer_transitions_between_sheet_and_inline_across_breakpoint(cx: &mut TestAppContext) {
+    let (shell, mut visual_cx) =
+        open_test_shell_sized(cx, gpui::size(px(900.0), px(700.0)), |window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(2);
+            shell.selected = Some(shell.snapshot.tasks[0].identity.clone());
+            shell
+        });
+
+    shell.update_in(&mut visual_cx, |shell, window, cx| {
+        shell.open_task_details_action(&OpenTaskDetails, window, cx);
+    });
+    visual_cx.run_until_parked();
+    assert!(visual_cx.update(|window, cx| window.has_active_sheet(cx)));
+    // Allow Sheet's 150ms slide-in animation to settle at right(0px).
+    visual_cx
+        .background_executor
+        .advance_clock(Duration::from_millis(200));
+    visual_cx.run_until_parked();
+
+    // Grow across the 1280px breakpoint: Sheet closes, inline drawer stays open.
+    visual_cx.simulate_resize(gpui::size(px(1400.0), px(700.0)));
+    visual_cx.run_until_parked();
+    assert!(!visual_cx.update(|window, cx| window.has_active_sheet(cx)));
+    shell.read_with(&visual_cx, |shell, _| {
+        assert!(shell.details_drawer.is_some());
+    });
+
+    // Shrink back below 1280px: Sheet re-opens automatically.
+    visual_cx.simulate_resize(gpui::size(px(900.0), px(700.0)));
+    visual_cx.run_until_parked();
+    assert!(visual_cx.update(|window, cx| window.has_active_sheet(cx)));
+    // Allow Sheet's 150ms slide-in animation to settle at right(0px).
+    visual_cx
+        .background_executor
+        .advance_clock(Duration::from_millis(200));
+    visual_cx.run_until_parked();
 }

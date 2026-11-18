@@ -478,8 +478,7 @@ impl AppShell {
             });
         self.page = AppPage::Settings;
         self.details_drawer = None;
-        self.speed_popover_open = false;
-        self.activity_panel_open = false;
+        self.active_status_popover = None;
         self.settings_page = SettingsPage {
             previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
             active_category: category,
@@ -1616,18 +1615,6 @@ impl AppShell {
                                             .py_6()
                                             .overflow_y_scroll()
                                             .track_scroll(&self.settings_scroll)
-                                            .on_scroll({
-                                                let handle = self.settings_scroll.clone();
-                                                cx.listener(move |this, event, window, cx| {
-                                                    this.smooth_discrete_scroll(
-                                                        SmoothScrollArea::Settings,
-                                                        handle.clone(),
-                                                        event,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                })
-                                            })
                                             .child(
                                                 div()
                                                     .w_full()
@@ -1663,10 +1650,7 @@ impl AppShell {
                                                     }),
                                             ),
                                     )
-                                    .child(vertical_scrollbar_overlay(
-                                        "settings-scrollbar",
-                                        &self.settings_scroll,
-                                    )),
+                                    .vertical_scrollbar(&self.settings_scroll),
                             )
                             .child(self.render_settings_footer(cx)),
                     ),
@@ -1904,13 +1888,14 @@ impl AppShell {
             .px_6()
             .gap_3()
             .child(
-                Button::new("footer-save", self.t("button-save"))
-                    .aria_label(if saving {
+                KitButton::new("footer-save")
+                    .primary()
+                    .label(self.t("button-save"))
+                    .accessibility_label(if saving {
                         self.t("settings-save-saving")
                     } else {
                         self.t("settings-save")
                     })
-                    .style(ButtonStyle::Primary)
                     .disabled(pending || !dirty)
                     .loading(saving)
                     .on_click(cx.listener(move |this, _, _, cx| match active_category {
@@ -1920,8 +1905,7 @@ impl AppShell {
                         SettingsCategory::Notifications => this.submit_notifications(cx),
                         SettingsCategory::System => this.submit_platform(cx),
                         _ => {}
-                    }))
-                    .render(colors),
+                    })),
             )
             .when_some(error, |footer, error| {
                 let message = self.te(&error);
@@ -2251,38 +2235,37 @@ impl AppShell {
                                         .child(fallback_badge.clone()),
                                 )
                             })
-                            .child(
-                                Button::new(
-                                    SharedString::from(format!("category-edit-{index}")),
-                                    edit_label.clone(),
-                                )
+                            .child({
+                                let mut button = KitButton::new(SharedString::from(format!(
+                                    "category-edit-{index}"
+                                )))
+                                .small()
                                 .compact()
-                                .icon(IconName::Pencil)
-                                .style(if is_editing {
-                                    ButtonStyle::Primary
-                                } else {
-                                    ButtonStyle::Secondary
-                                })
+                                .icon(gpui_kit::component::Icon::new(IconName::Pencil))
+                                .label(edit_label.clone())
                                 .disabled(pending)
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.select_category_editor(index, window, cx);
-                                }))
-                                .render(colors),
-                            )
+                                }));
+                                if is_editing {
+                                    button = button.primary();
+                                }
+                                button
+                            })
                             .when(!is_fallback, |row| {
                                 row.child(
-                                    Button::new(
-                                        SharedString::from(format!("category-remove-{index}")),
-                                        remove_label.clone(),
-                                    )
+                                    KitButton::new(SharedString::from(format!(
+                                        "category-remove-{index}"
+                                    )))
+                                    .ghost()
+                                    .small()
                                     .compact()
-                                    .icon(IconName::Trash2)
-                                    .style(ButtonStyle::Ghost)
+                                    .icon(gpui_kit::component::Icon::new(IconName::Trash2))
+                                    .label(remove_label.clone())
                                     .disabled(pending || categories.len() <= 1)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.remove_download_category(index, cx);
-                                    }))
-                                    .render(colors),
+                                    })),
                                 )
                             }),
                     )
@@ -2349,14 +2332,13 @@ impl AppShell {
             .child(list)
             .child(
                 div().mt_2().child(
-                    Button::new("add-download-category", add_label)
-                        .icon(IconName::Plus)
-                        .style(ButtonStyle::Secondary)
+                    KitButton::new("add-download-category")
+                        .icon(gpui_kit::component::Icon::new(IconName::Plus))
+                        .label(add_label)
                         .disabled(pending || self.settings_page.draft_categories.len() >= 32)
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.add_download_category(window, cx);
-                        }))
-                        .render(colors),
+                        })),
                 ),
             )
     }
@@ -2483,16 +2465,17 @@ impl AppShell {
                                     div().text_xs().text_color(colors.text_muted).child(summary),
                                 ),
                         )
-                        .child(
-                            Button::new(
-                                SharedString::from(format!("activate-profile-{}", profile_id)),
-                                if is_active {
-                                    self.t("settings-item-active")
-                                } else {
-                                    self.t("settings-item-activate")
-                                },
-                            )
-                            .aria_label(if is_active {
+                        .child({
+                            let mut button = KitButton::new(SharedString::from(format!(
+                                "activate-profile-{}",
+                                profile_id
+                            )))
+                            .label(if is_active {
+                                self.t("settings-item-active")
+                            } else {
+                                self.t("settings-item-activate")
+                            })
+                            .accessibility_label(if is_active {
                                 self.t_args(
                                     "settings-profile-active-aria",
                                     &[("name", FluentValue::from(profile.name.as_str()))],
@@ -2503,47 +2486,44 @@ impl AppShell {
                                     &[("name", FluentValue::from(profile.name.as_str()))],
                                 )
                             })
-                            .style(if is_active {
-                                ButtonStyle::Secondary
-                            } else {
-                                ButtonStyle::Primary
-                            })
                             .disabled(is_active)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.request_switch_profile(switch_id.clone(), cx);
-                            }))
-                            .render(colors),
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.request_switch_profile(switch_id.clone(), cx);
+                                },
+                            ));
+                            if !is_active {
+                                button = button.primary();
+                            }
+                            button
+                        })
+                        .child(
+                            KitButton::new(SharedString::from(format!("edit-profile-{}", edit_id)))
+                                .label(self.t("settings-item-edit"))
+                                .accessibility_label(self.t_args(
+                                    "settings-profile-edit-aria",
+                                    &[("name", FluentValue::from(profile.name.as_str()))],
+                                ))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_profile_editor(edit_id.clone(), window, cx);
+                                })),
                         )
                         .child(
-                            Button::new(
-                                SharedString::from(format!("edit-profile-{}", edit_id)),
-                                self.t("settings-item-edit"),
-                            )
-                            .aria_label(self.t_args(
-                                "settings-profile-edit-aria",
-                                &[("name", FluentValue::from(profile.name.as_str()))],
-                            ))
-                            .style(ButtonStyle::Secondary)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_profile_editor(edit_id.clone(), window, cx);
-                            }))
-                            .render(colors),
-                        )
-                        .child(
-                            Button::new(
-                                SharedString::from(format!("remove-profile-{}", remove_id)),
-                                self.t("button-delete"),
-                            )
-                            .aria_label(self.t_args(
+                            KitButton::new(SharedString::from(format!(
+                                "remove-profile-{}",
+                                remove_id
+                            )))
+                            .label(self.t("button-delete"))
+                            .accessibility_label(self.t_args(
                                 "settings-profile-delete-aria",
                                 &[("name", FluentValue::from(profile.name.as_str()))],
                             ))
-                            .style(ButtonStyle::Secondary)
                             .disabled(!can_remove)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.request_remove_profile(remove_id.clone(), cx);
-                            }))
-                            .render(colors),
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.request_remove_profile(remove_id.clone(), cx);
+                                },
+                            )),
                         )
                 }),
             ))
@@ -2699,23 +2679,21 @@ impl AppShell {
                                             )),
                                     )
                                     .child(
-                                        Button::new(
-                                            "toggle-clear-profile-secret",
-                                            if secret_cleared {
+                                        KitButton::new("toggle-clear-profile-secret")
+                                            .label(if secret_cleared {
                                                 self.t("settings-profile-secret-keep")
                                             } else if has_secret {
                                                 self.t("settings-profile-secret-remove")
                                             } else {
                                                 self.t("settings-profile-secret-none")
-                                            },
-                                        )
-                                        .aria_label(self.t("settings-profile-secret-toggle-aria"))
-                                        .style(ButtonStyle::Secondary)
-                                        .disabled(!has_secret && !secret_cleared)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.toggle_clear_profile_rpc_secret(window, cx);
-                                        }))
-                                        .render(colors),
+                                            })
+                                            .accessibility_label(
+                                                self.t("settings-profile-secret-toggle-aria"),
+                                            )
+                                            .disabled(!has_secret && !secret_cleared)
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.toggle_clear_profile_rpc_secret(window, cx);
+                                            })),
                                     )
                                     .into_any_element()
                             })
@@ -2725,28 +2703,25 @@ impl AppShell {
                                     .flex_wrap()
                                     .gap_2()
                                     .child(
-                                        Button::new(
-                                            "apply-profile-editor",
-                                            self.t("settings-profile-apply"),
-                                        )
-                                        .aria_label(self.t("settings-profile-apply-aria"))
-                                        .style(ButtonStyle::Primary)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.apply_profile_editor(window, cx);
-                                        }))
-                                        .render(colors),
+                                        KitButton::new("apply-profile-editor")
+                                            .primary()
+                                            .label(self.t("settings-profile-apply"))
+                                            .accessibility_label(
+                                                self.t("settings-profile-apply-aria"),
+                                            )
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.apply_profile_editor(window, cx);
+                                            })),
                                     )
                                     .child(
-                                        Button::new(
-                                            "cancel-profile-editor",
-                                            self.t("button-cancel"),
-                                        )
-                                        .aria_label(self.t("settings-profile-cancel-aria"))
-                                        .style(ButtonStyle::Secondary)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.close_profile_editor(window, cx);
-                                        }))
-                                        .render(colors),
+                                        KitButton::new("cancel-profile-editor")
+                                            .label(self.t("button-cancel"))
+                                            .accessibility_label(
+                                                self.t("settings-profile-cancel-aria"),
+                                            )
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.close_profile_editor(window, cx);
+                                            })),
                                     ),
                             ),
                     )
@@ -2759,32 +2734,30 @@ impl AppShell {
                     .flex_wrap()
                     .gap_2()
                     .child(
-                        Button::new("add-local-profile", self.t("settings-profile-add-local"))
-                            .aria_label(self.t("settings-profile-add-local-aria"))
-                            .style(ButtonStyle::Secondary)
+                        KitButton::new("add-local-profile")
+                            .label(self.t("settings-profile-add-local"))
+                            .accessibility_label(self.t("settings-profile-add-local-aria"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.add_draft_local_profile(window, cx);
-                            }))
-                            .render(colors),
+                            })),
                     )
                     .child(
-                        Button::new("add-remote-profile", self.t("settings-profile-add-remote"))
-                            .aria_label(self.t("settings-profile-add-remote-aria"))
-                            .style(ButtonStyle::Secondary)
+                        KitButton::new("add-remote-profile")
+                            .label(self.t("settings-profile-add-remote"))
+                            .accessibility_label(self.t("settings-profile-add-remote-aria"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.add_draft_remote_profile(window, cx);
-                            }))
-                            .render(colors),
+                            })),
                     )
                     .child(
-                        Button::new("save-profile-catalog", self.t("settings-profile-save"))
-                            .aria_label(self.t("settings-profile-save-aria"))
-                            .style(ButtonStyle::Primary)
+                        KitButton::new("save-profile-catalog")
+                            .primary()
+                            .label(self.t("settings-profile-save"))
+                            .accessibility_label(self.t("settings-profile-save-aria"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let catalog = this.profiles.clone();
                                 this.request_save_profile_catalog(catalog, cx);
-                            }))
-                            .render(colors),
+                            })),
                     ),
             )
             .when_some(
@@ -2829,31 +2802,29 @@ impl AppShell {
                                     .flex_wrap()
                                     .gap_2()
                                     .child(
-                                        Button::new(
-                                            "confirm-delete-profile",
-                                            self.t("settings-profile-delete-confirm"),
-                                        )
-                                        .aria_label(self.t_args(
-                                            "settings-profile-delete-confirm-aria",
-                                            &[("name", FluentValue::from(delete_name.as_str()))],
-                                        ))
-                                        .style(ButtonStyle::Primary)
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.confirm_remove_profile(cx);
-                                        }))
-                                        .render(colors),
+                                        KitButton::new("confirm-delete-profile")
+                                            .danger()
+                                            .label(self.t("settings-profile-delete-confirm"))
+                                            .accessibility_label(self.t_args(
+                                                "settings-profile-delete-confirm-aria",
+                                                &[(
+                                                    "name",
+                                                    FluentValue::from(delete_name.as_str()),
+                                                )],
+                                            ))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.confirm_remove_profile(cx);
+                                            })),
                                     )
                                     .child(
-                                        Button::new(
-                                            "cancel-delete-profile",
-                                            self.t("button-cancel"),
-                                        )
-                                        .aria_label(self.t("settings-profile-delete-cancel-aria"))
-                                        .style(ButtonStyle::Secondary)
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.cancel_remove_profile(cx);
-                                        }))
-                                        .render(colors),
+                                        KitButton::new("cancel-delete-profile")
+                                            .label(self.t("button-cancel"))
+                                            .accessibility_label(
+                                                self.t("settings-profile-delete-cancel-aria"),
+                                            )
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.cancel_remove_profile(cx);
+                                            })),
                                     ),
                             ),
                     )
@@ -2978,19 +2949,16 @@ impl AppShell {
                                     .flex()
                                     .flex_wrap()
                                     .gap_2()
-                                    .child(
-                                        Button::new(
-                                            SharedString::from(format!(
-                                                "activate-core-{}",
-                                                activate_id
-                                            )),
-                                            if is_active {
-                                                self.t("settings-item-active")
-                                            } else {
-                                                self.t("settings-item-activate")
-                                            },
-                                        )
-                                        .aria_label(if is_active {
+                                    .child({
+                                        let mut button = KitButton::new(SharedString::from(
+                                            format!("activate-core-{}", activate_id),
+                                        ))
+                                        .label(if is_active {
+                                            self.t("settings-item-active")
+                                        } else {
+                                            self.t("settings-item-activate")
+                                        })
+                                        .accessibility_label(if is_active {
                                             self.t_args(
                                                 "settings-core-active-aria",
                                                 &[(
@@ -3007,11 +2975,6 @@ impl AppShell {
                                                 )],
                                             )
                                         })
-                                        .style(if is_active {
-                                            ButtonStyle::Secondary
-                                        } else {
-                                            ButtonStyle::Primary
-                                        })
                                         .disabled(is_active)
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.request_core_command(
@@ -3020,75 +2983,73 @@ impl AppShell {
                                                 },
                                                 cx,
                                             );
-                                        }))
-                                        .render(colors),
-                                    )
+                                        }));
+                                        if !is_active {
+                                            button = button.primary();
+                                        }
+                                        button
+                                    })
                                     .child(
-                                        Button::new(
-                                            SharedString::from(format!(
-                                                "verify-core-{}",
-                                                verify_id
-                                            )),
-                                            self.t("settings-core-verify"),
-                                        )
-                                        .aria_label(self.t_args(
+                                        KitButton::new(SharedString::from(format!(
+                                            "verify-core-{}",
+                                            verify_id
+                                        )))
+                                        .label(self.t("settings-core-verify"))
+                                        .accessibility_label(self.t_args(
                                             "settings-core-verify-aria",
                                             &[(
                                                 "version",
                                                 FluentValue::from(core.version.as_str()),
                                             )],
                                         ))
-                                        .style(ButtonStyle::Secondary)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.request_core_command(
-                                                CoreCommandView::Verify {
-                                                    core_id: verify_id.clone(),
-                                                },
-                                                cx,
-                                            );
-                                        }))
-                                        .render(colors),
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.request_core_command(
+                                                    CoreCommandView::Verify {
+                                                        core_id: verify_id.clone(),
+                                                    },
+                                                    cx,
+                                                );
+                                            }),
+                                        ),
                                     )
                                     .child(
-                                        Button::new(
-                                            SharedString::from(format!(
-                                                "remove-core-{}",
-                                                remove_id
-                                            )),
-                                            self.t("settings-core-remove"),
-                                        )
-                                        .aria_label(self.t_args(
+                                        KitButton::new(SharedString::from(format!(
+                                            "remove-core-{}",
+                                            remove_id
+                                        )))
+                                        .label(self.t("settings-core-remove"))
+                                        .accessibility_label(self.t_args(
                                             "settings-core-remove-aria",
                                             &[(
                                                 "version",
                                                 FluentValue::from(core.version.as_str()),
                                             )],
                                         ))
-                                        .style(ButtonStyle::Secondary)
                                         .disabled(is_active)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.request_core_command(
-                                                CoreCommandView::Remove {
-                                                    core_id: remove_id.clone(),
-                                                },
-                                                cx,
-                                            );
-                                        }))
-                                        .render(colors),
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.request_core_command(
+                                                    CoreCommandView::Remove {
+                                                        core_id: remove_id.clone(),
+                                                    },
+                                                    cx,
+                                                );
+                                            }),
+                                        ),
                                     ),
                             )
                     })),
             )
             .child(
                 div().mt_3().flex().child(
-                    Button::new("rollback-core", self.t("settings-core-rollback"))
-                        .aria_label(self.t("settings-core-rollback-aria"))
-                        .style(ButtonStyle::Secondary)
+                    KitButton::new("rollback-core")
+                        .label(self.t("settings-core-rollback"))
+                        .accessibility_label(self.t("settings-core-rollback-aria"))
                         .disabled(!can_rollback)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.request_core_command(CoreCommandView::Rollback, cx);
-                        }))
-                        .render(colors),
+                        })),
                 ),
             )
             // B4: the same Get-aria2 panel the first-run guide shows. Discovery,
@@ -3225,15 +3186,15 @@ impl AppShell {
                 div().max_w(px(760.0)).child(settings_section_row_owned(
                     self.t("settings-proxy-check-certificate"),
                     Some(self.t("settings-proxy-check-certificate-desc")),
-                    Toggle::new("toggle-check-certificate", draft_check_certificate)
-                        .aria_label(self.t("settings-proxy-check-certificate-aria"))
+                    Switch::new("toggle-check-certificate")
+                        .checked(draft_check_certificate)
+                        .accessibility_label(self.t("settings-proxy-check-certificate-aria"))
                         .disabled(pending)
-                        .on_click(move |_, _, cx| {
+                        .on_change(move |_, _, cx| {
                             cert_shell
                                 .update(cx, |shell, cx| shell.toggle_check_certificate(cx))
                                 .ok();
-                        })
-                        .render(colors),
+                        }),
                     colors,
                 )),
             )
@@ -3318,17 +3279,19 @@ impl AppShell {
                                 )
                                 .when(self.settings.download_proxy.has_password, |row| {
                                     row.child(
-                                        IconButton::new(
-                                            "clear-proxy-password",
-                                            password_button_icon,
-                                        )
-                                        .aria_label(password_button_label.clone())
-                                        .disabled(pending)
-                                        .tooltip(Tooltip::new(password_button_label.clone()))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.clear_saved_proxy_password(window, cx);
-                                        }))
-                                        .render(colors),
+                                        KitButton::new("clear-proxy-password")
+                                            .ghost()
+                                            .small()
+                                            .compact()
+                                            .icon(gpui_kit::component::Icon::new(
+                                                password_button_icon,
+                                            ))
+                                            .accessibility_label(password_button_label.clone())
+                                            .disabled(pending)
+                                            .tooltip(password_button_label.clone())
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.clear_saved_proxy_password(window, cx);
+                                            })),
                                     )
                                 }),
                         )
@@ -3360,17 +3323,17 @@ impl AppShell {
                                 self.t("settings-proxy-password-saved")
                             })
                             .child(
-                                IconButton::new(
-                                    "clear-disabled-proxy-password",
-                                    password_button_icon,
-                                )
-                                .aria_label(password_button_label.clone())
-                                .disabled(pending)
-                                .tooltip(Tooltip::new(password_button_label.clone()))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.clear_saved_proxy_password(window, cx);
-                                }))
-                                .render(colors),
+                                KitButton::new("clear-disabled-proxy-password")
+                                    .ghost()
+                                    .small()
+                                    .compact()
+                                    .icon(gpui_kit::component::Icon::new(password_button_icon))
+                                    .accessibility_label(password_button_label.clone())
+                                    .disabled(pending)
+                                    .tooltip(password_button_label.clone())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.clear_saved_proxy_password(window, cx);
+                                    })),
                             ),
                     )
                 },
@@ -3505,21 +3468,21 @@ impl AppShell {
                         .child(settings_section_row_owned(
                             self.t("settings-integrity-check"),
                             Some(self.t("settings-integrity-check-desc")),
-                            Toggle::new("toggle-check-integrity", draft_check_integrity)
-                                .aria_label(if draft_check_integrity {
+                            Switch::new("toggle-check-integrity")
+                                .checked(draft_check_integrity)
+                                .accessibility_label(if draft_check_integrity {
                                     self.t("settings-integrity-check-disable")
                                 } else {
                                     self.t("settings-integrity-check-enable")
                                 })
                                 .disabled(pending)
-                                .on_click(move |_, _, cx| {
+                                .on_change(move |_, _, cx| {
                                     integrity_shell
                                         .update(cx, |shell, cx| {
                                             shell.toggle_check_integrity(cx);
                                         })
                                         .ok();
-                                })
-                                .render(colors),
+                                }),
                             colors,
                         ))
                         .child(
@@ -3589,15 +3552,15 @@ impl AppShell {
                 .child(settings_section_row_owned(
                     self.t("settings-tracker-enabled"),
                     Some(self.t("settings-tracker-enabled-desc")),
-                    Toggle::new("toggle-tracker-enabled", enabled)
-                        .aria_label(self.t("settings-tracker-enabled-aria"))
+                    Switch::new("toggle-tracker-enabled")
+                        .checked(enabled)
+                        .accessibility_label(self.t("settings-tracker-enabled-aria"))
                         .disabled(pending)
-                        .on_click(move |_, _, cx| {
+                        .on_change(move |_, _, cx| {
                             enable_shell
                                 .update(cx, |shell, cx| shell.toggle_tracker_list_enabled(cx))
                                 .ok();
-                        })
-                        .render(colors),
+                        }),
                     colors,
                 ))
                 .child(settings_section_row_owned(
@@ -3616,15 +3579,15 @@ impl AppShell {
                 .child(settings_section_row_owned(
                     self.t("settings-tracker-auto-refresh"),
                     Some(self.t("settings-tracker-auto-refresh-desc")),
-                    Toggle::new("toggle-tracker-auto-refresh", auto_refresh)
-                        .aria_label(self.t("settings-tracker-auto-refresh-aria"))
+                    Switch::new("toggle-tracker-auto-refresh")
+                        .checked(auto_refresh)
+                        .accessibility_label(self.t("settings-tracker-auto-refresh-aria"))
                         .disabled(pending)
-                        .on_click(move |_, _, cx| {
+                        .on_change(move |_, _, cx| {
                             auto_shell
                                 .update(cx, |shell, cx| shell.toggle_tracker_list_auto_refresh(cx))
                                 .ok();
-                        })
-                        .render(colors),
+                        }),
                     colors,
                 ))
                 .child(
@@ -3633,9 +3596,9 @@ impl AppShell {
                         .items_center()
                         .gap_3()
                         .child(
-                            Button::new("refresh-tracker-list", self.t("settings-tracker-refresh"))
-                                .aria_label(self.t("settings-tracker-refresh-aria"))
-                                .style(ButtonStyle::Secondary)
+                            KitButton::new("refresh-tracker-list")
+                                .label(self.t("settings-tracker-refresh"))
+                                .accessibility_label(self.t("settings-tracker-refresh-aria"))
                                 .disabled(pending)
                                 .loading(self.settings_page.pending_tracker_refresh.is_some())
                                 .on_click(move |_, _, cx| {
@@ -3644,8 +3607,7 @@ impl AppShell {
                                             shell.request_tracker_list_refresh(cx)
                                         })
                                         .ok();
-                                })
-                                .render(colors),
+                                }),
                         )
                         .child(div().text_xs().text_color(colors.text_muted).child(
                             match last_refreshed {
@@ -3728,66 +3690,66 @@ impl AppShell {
             .child(settings_section_row_owned(
                 self.t("settings-notify-completion"),
                 Some(self.t("settings-notify-completion-desc")),
-                Toggle::new("toggle-notify-completion", draft_completion)
-                    .aria_label(self.t("settings-notify-completion"))
+                Switch::new("toggle-notify-completion")
+                    .checked(draft_completion)
+                    .accessibility_label(self.t("settings-notify-completion"))
                     .disabled(pending)
-                    .on_click(move |_, _, cx| {
+                    .on_change(move |_, _, cx| {
                         s1.update(cx, |shell, cx| shell.toggle_notify_on_completion(cx))
                             .ok();
-                    })
-                    .render(colors),
+                    }),
                 colors,
             ))
             .child(settings_section_row_owned(
                 self.t("settings-notify-error"),
                 Some(self.t("settings-notify-error-desc")),
-                Toggle::new("toggle-notify-error", draft_error)
-                    .aria_label(self.t("settings-notify-error"))
+                Switch::new("toggle-notify-error")
+                    .checked(draft_error)
+                    .accessibility_label(self.t("settings-notify-error"))
                     .disabled(pending)
-                    .on_click(move |_, _, cx| {
+                    .on_change(move |_, _, cx| {
                         s2.update(cx, |shell, cx| shell.toggle_notify_on_error(cx))
                             .ok();
-                    })
-                    .render(colors),
+                    }),
                 colors,
             ))
             .child(settings_section_row_owned(
                 self.t("settings-notify-engine"),
                 Some(self.t("settings-notify-engine-desc")),
-                Toggle::new("toggle-notify-engine", draft_engine)
-                    .aria_label(self.t("settings-notify-engine"))
+                Switch::new("toggle-notify-engine")
+                    .checked(draft_engine)
+                    .accessibility_label(self.t("settings-notify-engine"))
                     .disabled(pending)
-                    .on_click(move |_, _, cx| {
+                    .on_change(move |_, _, cx| {
                         s3.update(cx, |shell, cx| shell.toggle_notify_on_engine_events(cx))
                             .ok();
-                    })
-                    .render(colors),
+                    }),
                 colors,
             ))
             .child(settings_section_row_owned(
                 self.t("settings-notify-os"),
                 Some(self.t("settings-notify-os-desc")),
-                Toggle::new("toggle-os-notifications", draft_os)
-                    .aria_label(self.t("settings-notify-os"))
+                Switch::new("toggle-os-notifications")
+                    .checked(draft_os)
+                    .accessibility_label(self.t("settings-notify-os"))
                     .disabled(pending)
-                    .on_click(move |_, _, cx| {
+                    .on_change(move |_, _, cx| {
                         s4.update(cx, |shell, cx| shell.toggle_os_notifications(cx))
                             .ok();
-                    })
-                    .render(colors),
+                    }),
                 colors,
             ))
             .child(settings_section_row_owned(
                 self.t("settings-notify-low-disk"),
                 Some(self.t("settings-notify-low-disk-desc")),
-                Toggle::new("toggle-notify-low-disk", draft_low_disk)
-                    .aria_label(self.t("settings-notify-low-disk"))
+                Switch::new("toggle-notify-low-disk")
+                    .checked(draft_low_disk)
+                    .accessibility_label(self.t("settings-notify-low-disk"))
                     .disabled(pending)
-                    .on_click(move |_, _, cx| {
+                    .on_change(move |_, _, cx| {
                         s5.update(cx, |shell, cx| shell.toggle_notify_on_low_disk(cx))
                             .ok();
-                    })
-                    .render(colors),
+                    }),
                 colors,
             ))
     }
@@ -3825,15 +3787,15 @@ impl AppShell {
             .child(settings_section_row_owned(
                 self.t("settings-keep-awake"),
                 Some(self.t("settings-keep-awake-desc")),
-                Toggle::new("toggle-keep-awake", draft_keep_awake)
-                    .aria_label(self.t("settings-keep-awake"))
+                Switch::new("toggle-keep-awake")
+                    .checked(draft_keep_awake)
+                    .accessibility_label(self.t("settings-keep-awake"))
                     .disabled(pending)
-                    .on_click(move |_, _, cx| {
+                    .on_change(move |_, _, cx| {
                         s_power
                             .update(cx, |shell, cx| shell.toggle_draft_keep_awake(cx))
                             .ok();
-                    })
-                    .render(colors),
+                    }),
                 colors,
             ))
             .child(settings_section_row_owned(
@@ -3882,27 +3844,27 @@ impl AppShell {
             .child(settings_section_row_owned(
                 self.t("settings-tray-icon"),
                 Some(self.t("settings-tray-icon-desc")),
-                Toggle::new("toggle-show-tray", draft_show_tray)
-                    .aria_label(self.t("settings-tray-icon"))
+                Switch::new("toggle-show-tray")
+                    .checked(draft_show_tray)
+                    .accessibility_label(self.t("settings-tray-icon"))
                     .disabled(pending)
-                    .on_click(move |_, _, cx| {
+                    .on_change(move |_, _, cx| {
                         s1.update(cx, |shell, cx| shell.toggle_show_tray_icon(cx))
                             .ok();
-                    })
-                    .render(colors),
+                    }),
                 colors,
             ))
             .child(settings_section_row_owned(
                 self.t("settings-start-minimized"),
                 Some(self.t("settings-start-minimized-desc")),
-                Toggle::new("toggle-start-minimized", draft_start_minimized)
-                    .aria_label(self.t("settings-start-minimized"))
+                Switch::new("toggle-start-minimized")
+                    .checked(draft_start_minimized)
+                    .accessibility_label(self.t("settings-start-minimized"))
                     .disabled(pending || !draft_show_tray)
-                    .on_click(move |_, _, cx| {
+                    .on_change(move |_, _, cx| {
                         s2.update(cx, |shell, cx| shell.toggle_start_minimized_to_tray(cx))
                             .ok();
-                    })
-                    .render(colors),
+                    }),
                 colors,
             ))
             .child(settings_section_row_owned(
@@ -3925,27 +3887,27 @@ impl AppShell {
             .child(settings_section_row_owned(
                 self.t("settings-bridge-auto-submit"),
                 Some(self.t("settings-bridge-auto-submit-desc")),
-                Toggle::new("toggle-bridge-auto-submit", draft_auto_submit)
-                    .aria_label(self.t("settings-bridge-auto-submit"))
+                Switch::new("toggle-bridge-auto-submit")
+                    .checked(draft_auto_submit)
+                    .accessibility_label(self.t("settings-bridge-auto-submit"))
                     .disabled(pending)
-                    .on_click(move |_, _, cx| {
+                    .on_change(move |_, _, cx| {
                         s3.update(cx, |shell, cx| shell.toggle_bridge_auto_submit(cx))
                             .ok();
-                    })
-                    .render(colors),
+                    }),
                 colors,
             ))
             .child(settings_section_row_owned(
                 self.t("settings-bridge-cookies"),
                 Some(self.t("settings-bridge-cookies-desc")),
-                Toggle::new("toggle-bridge-cookies", draft_allow_cookies)
-                    .aria_label(self.t("settings-bridge-cookies"))
+                Switch::new("toggle-bridge-cookies")
+                    .checked(draft_allow_cookies)
+                    .accessibility_label(self.t("settings-bridge-cookies"))
                     .disabled(pending)
-                    .on_click(move |_, _, cx| {
+                    .on_change(move |_, _, cx| {
                         s4.update(cx, |shell, cx| shell.toggle_bridge_allow_cookies(cx))
                             .ok();
-                    })
-                    .render(colors),
+                    }),
                 colors,
             ))
             .child(
@@ -4002,9 +3964,10 @@ impl AppShell {
             authors
         };
         let diagnostic_shell = cx.entity().downgrade();
-        let diagnostic_button = Button::new("export-diagnostics", diagnostics_label.clone())
-            .icon(IconName::Download)
-            .aria_label(diagnostics_aria)
+        let diagnostic_button = KitButton::new("export-diagnostics")
+            .icon(gpui_kit::component::Icon::new(IconName::Download))
+            .label(diagnostics_label.clone())
+            .accessibility_label(diagnostics_aria)
             .on_click(move |_, window, cx| {
                 diagnostic_shell
                     .update(cx, |shell, cx| shell.export_diagnostics(window, cx))
@@ -4012,9 +3975,10 @@ impl AppShell {
             });
         let transfer_pending = self.pending_settings_save.is_some();
         let export_shell = cx.entity().downgrade();
-        let settings_export_button = Button::new("export-settings", settings_export_label.clone())
-            .icon(IconName::Download)
-            .aria_label(settings_export_aria)
+        let settings_export_button = KitButton::new("export-settings")
+            .icon(gpui_kit::component::Icon::new(IconName::Download))
+            .label(settings_export_label.clone())
+            .accessibility_label(settings_export_aria)
             .disabled(transfer_pending)
             .on_click(move |_, window, cx| {
                 export_shell
@@ -4022,9 +3986,10 @@ impl AppShell {
                     .ok();
             });
         let import_shell = cx.entity().downgrade();
-        let settings_import_button = Button::new("import-settings", settings_import_label.clone())
-            .icon(IconName::ArrowUp)
-            .aria_label(settings_import_aria)
+        let settings_import_button = KitButton::new("import-settings")
+            .icon(gpui_kit::component::Icon::new(IconName::ArrowUp))
+            .label(settings_import_label.clone())
+            .accessibility_label(settings_import_aria)
             .disabled(transfer_pending)
             .on_click(move |_, window, cx| {
                 import_shell
@@ -4032,8 +3997,9 @@ impl AppShell {
                     .ok();
             });
         let update_check_shell = cx.entity().downgrade();
-        let update_check_button = Button::new("check-for-updates", self.t("settings-update-check"))
-            .icon(IconName::RefreshCw)
+        let update_check_button = KitButton::new("check-for-updates")
+            .icon(gpui_kit::component::Icon::new(IconName::RefreshCw))
+            .label(self.t("settings-update-check"))
             .loading(matches!(
                 self.update_status,
                 crate::UpdateStatusView::Checking
@@ -4096,17 +4062,15 @@ impl AppShell {
                 if *installer_available && !self.update_portable {
                     let download_shell = cx.entity().downgrade();
                     actions = actions.child(
-                        Button::new(
-                            "download-update-installer",
-                            self.t("settings-update-download-install"),
-                        )
-                        .icon(IconName::Download)
-                        .primary()
-                        .on_click(move |_, _, cx| {
-                            download_shell
-                                .update(cx, |shell, cx| shell.request_update_download(cx))
-                                .ok();
-                        }),
+                        KitButton::new("download-update-installer")
+                            .primary()
+                            .icon(gpui_kit::component::Icon::new(IconName::Download))
+                            .label(self.t("settings-update-download-install"))
+                            .on_click(move |_, _, cx| {
+                                download_shell
+                                    .update(cx, |shell, cx| shell.request_update_download(cx))
+                                    .ok();
+                            }),
                     );
                 }
                 actions
@@ -4114,9 +4078,10 @@ impl AppShell {
             crate::UpdateStatusView::Downloaded { .. } if !self.update_portable => {
                 let install_shell = cx.entity().downgrade();
                 div().flex().child(
-                    Button::new("install-update", self.t("settings-update-install"))
-                        .icon(IconName::Check)
+                    KitButton::new("install-update")
                         .primary()
+                        .icon(gpui_kit::component::Icon::new(IconName::Check))
+                        .label(self.t("settings-update-install"))
                         .on_click(move |_, _, cx| {
                             install_shell
                                 .update(cx, |shell, cx| shell.request_update_install(cx))
@@ -4132,21 +4097,12 @@ impl AppShell {
                 total_bytes: Some(total),
                 ..
             } if *total > 0 => {
-                let ratio = (*downloaded_bytes as f32 / *total as f32).clamp(0.0, 1.0);
+                let percent = ((*downloaded_bytes as f32 / *total as f32).clamp(0.0, 1.0)) * 100.0;
                 div().w_full().pt_1().child(
-                    div()
-                        .h(px(4.0))
-                        .w_full()
-                        .rounded_full()
-                        .bg(colors.progress_track)
-                        .overflow_hidden()
-                        .child(
-                            div()
-                                .h_full()
-                                .w(relative(ratio))
-                                .rounded_full()
-                                .bg(colors.progress_download),
-                        ),
+                    KitProgress::new("update-download-progress")
+                        .value(percent)
+                        .xsmall()
+                        .color(colors.progress_download),
                 )
             }
             crate::UpdateStatusView::Available { title, notes, .. } => div()
@@ -4220,7 +4176,7 @@ impl AppShell {
                                 .flex()
                                 .flex_col()
                                 .gap_2()
-                                .child(update_check_button.render(colors))
+                                .child(update_check_button)
                                 .child(update_actions)
                                 .child(update_details),
                             colors,
@@ -4233,13 +4189,13 @@ impl AppShell {
                     .child(settings_section_row_owned(
                         settings_export_label,
                         Some(settings_export_description),
-                        settings_export_button.render(colors),
+                        settings_export_button,
                         colors,
                     ))
                     .child(settings_section_row_owned(
                         settings_import_label,
                         Some(settings_import_description),
-                        settings_import_button.render(colors),
+                        settings_import_button,
                         colors,
                     )),
             )
@@ -4247,7 +4203,7 @@ impl AppShell {
                 settings_section_row_owned(
                     diagnostics_label,
                     Some(diagnostics_description),
-                    diagnostic_button.render(colors),
+                    diagnostic_button,
                     colors,
                 ),
             ))
