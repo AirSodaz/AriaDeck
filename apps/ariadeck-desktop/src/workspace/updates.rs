@@ -13,7 +13,6 @@ const MAX_METADATA_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CHECKSUM_BYTES: usize = 1024 * 1024;
 const MAX_SIGNATURE_BYTES: usize = 16 * 1024;
 const MAX_INSTALLER_BYTES: usize = 512 * 1024 * 1024;
-const USER_AGENT: &str = concat!("AriaDeck/", env!("CARGO_PKG_VERSION"));
 const UPDATE_PUBLIC_KEY: Option<&str> = option_env!("ARIADECK_UPDATE_PUBLIC_KEY");
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -271,49 +270,12 @@ async fn fetch_bounded(
     label: &str,
     headers: &[(&str, &str)],
 ) -> Result<Vec<u8>, String> {
-    let client = reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|error| format!("Could not initialize {label} download: {error}"))?;
-    let mut request = client.get(url);
-    for (name, value) in headers {
-        request = request.header(*name, *value);
-    }
-    let mut response = request
-        .send()
-        .await
-        .map_err(|error| format!("{label} download failed: {error}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "{label} download failed with HTTP {}.",
-            response.status()
-        ));
-    }
-    if response
-        .content_length()
-        .is_some_and(|size| size > limit as u64)
-    {
-        return Err(format!("{label} download is too large."));
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| format!("{label} download failed: {error}"))?
-    {
-        if bytes.len().saturating_add(chunk.len()) > limit {
-            return Err(format!("{label} download is too large."));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
+    super::http::fetch_bounded_bytes(url, limit, REQUEST_TIMEOUT, label, headers).await
 }
 
 pub(crate) async fn download_verified_package<F>(
     offer: &UpdateOffer,
-    mut on_progress: F,
+    on_progress: F,
 ) -> Result<Vec<u8>, String>
 where
     F: FnMut(u64, Option<u64>),
@@ -331,52 +293,14 @@ where
         return Err("This release has no package signature.".to_owned());
     };
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|error| format!("Could not initialize package download: {error}"))?;
-
-    let mut response = client
-        .get(package_url)
-        .send()
-        .await
-        .map_err(|error| format!("Package download failed: {error}"))?;
-
-    if !response.status().is_success() {
-        return Err(format!(
-            "Package download failed with HTTP {}.",
-            response.status()
-        ));
-    }
-
-    let total_bytes = response.content_length();
-    if total_bytes.is_some_and(|size| size > MAX_INSTALLER_BYTES as u64) {
-        return Err("Package download is too large.".into());
-    }
-
-    let mut bytes = Vec::new();
-    let mut last_progress_report = 0u64;
-    on_progress(0, total_bytes);
-
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| format!("Package download failed: {error}"))?
-    {
-        if bytes.len().saturating_add(chunk.len()) > MAX_INSTALLER_BYTES {
-            return Err("Package download is too large.".into());
-        }
-        bytes.extend_from_slice(&chunk);
-        let current_len = bytes.len() as u64;
-        if current_len.saturating_sub(last_progress_report) >= 256 * 1024
-            || total_bytes == Some(current_len)
-        {
-            last_progress_report = current_len;
-            on_progress(current_len, total_bytes);
-        }
-    }
+    let bytes = super::http::fetch_bounded_with_progress(
+        package_url,
+        MAX_INSTALLER_BYTES,
+        Duration::from_secs(300),
+        "Package",
+        on_progress,
+    )
+    .await?;
 
     verify_minisign(&signature_bytes, &bytes)?;
 

@@ -1,4 +1,3 @@
-## Settings page (English)
 
 settings-title = Application settings
 settings-nav-general = General
@@ -37,7 +36,6 @@ settings-category-directory = Download directory
 settings-category-directory-browse-aria = Choose category download directory
 settings-category-remove = Remove
 settings-category-no-directory = No directory selected
-settings-category-default-name = Category { $n }
 notice-settings-categories = Download categories saved.
 
 settings-speed-limits = Speed limits

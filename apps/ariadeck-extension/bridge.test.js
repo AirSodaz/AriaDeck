@@ -12,6 +12,7 @@ import {
   MESSAGE_VERSION,
   batchTooLarge,
   buildMessage,
+  hostLabelOf,
   messageTooLarge,
   originOf,
 } from "./bridge.js";
@@ -68,4 +69,9 @@ test("byte length, not character count, decides the size limit", () => {
     true,
     "but over it in bytes",
   );
+});
+
+test("hostLabelOf extracts host and tolerates malformed storage entries", () => {
+  assert.equal(hostLabelOf("https://example.test:8443"), "example.test:8443");
+  assert.equal(hostLabelOf("not a valid url"), "not a valid url");
 });

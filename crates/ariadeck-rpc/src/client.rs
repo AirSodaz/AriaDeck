@@ -723,16 +723,12 @@ fn request_options(request: &AddDownloadRequest) -> Map<String, Value> {
     // and custom headers can travel together (ADD-005).
     for (key, value) in &request.options {
         match options.get_mut(key) {
-            Some(Value::String(existing)) => {
-                let previous = existing.clone();
-                *options.get_mut(key).expect("key exists") =
-                    Value::Array(vec![Value::String(previous), Value::String(value.clone())]);
+            Some(slot @ Value::String(_)) => {
+                let previous = std::mem::replace(slot, Value::Null);
+                *slot = Value::Array(vec![previous, Value::String(value.clone())]);
             }
             Some(Value::Array(values)) => values.push(Value::String(value.clone())),
-            Some(_) => {
-                options.insert(key.clone(), Value::String(value.clone()));
-            }
-            None => {
+            Some(_) | None => {
                 options.insert(key.clone(), Value::String(value.clone()));
             }
         }

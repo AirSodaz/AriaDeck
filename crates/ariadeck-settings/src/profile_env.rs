@@ -18,8 +18,7 @@
 //! is accepted in-tree; add a previous-tag migrator only when a release needs it.
 
 use std::{
-    fs::{self, OpenOptions},
-    io::{self, Write},
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -184,44 +183,16 @@ impl ProfileEnvironmentStore {
         sync_env_download_directory(&mut env);
         env.validate()?;
         let path = self.path_for(profile_id);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|source| {
-                io_error("creating the profile environment directory", parent, source)
-            })?;
-        }
-        let payload = serde_json::to_string_pretty(&env).map_err(SettingsError::Serialize)?;
-        let temp_path = path.with_extension("json.tmp");
-        let result = (|| -> Result<(), SettingsError> {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(&temp_path)
-                .map_err(|source| {
-                    io_error(
-                        "creating the temporary profile environment file",
-                        &temp_path,
-                        source,
-                    )
-                })?;
-            file.write_all(payload.as_bytes())
-                .and_then(|_| file.write_all(b"\n"))
-                .map_err(|source| {
-                    io_error("writing the profile environment", &temp_path, source)
-                })?;
-            file.flush()
-                .and_then(|_| file.sync_all())
-                .map_err(|source| {
-                    io_error("flushing the profile environment", &temp_path, source)
-                })?;
-            fs::rename(&temp_path, &path)
-                .map_err(|source| io_error("replacing the profile environment", &path, source))?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temp_path);
-        }
-        result
+        let payload = serde_json::to_vec_pretty(&env).map_err(SettingsError::Serialize)?;
+        crate::atomic_io::write_atomic_json(
+            &path,
+            &payload,
+            "creating the profile environment directory",
+            "creating the temporary profile environment file",
+            "writing the profile environment",
+            "flushing the profile environment",
+            "replacing the profile environment",
+        )
     }
 
     /// Best-effort remove bag when a profile is deleted from the catalog.
@@ -310,5 +281,22 @@ mod tests {
         ));
         let on_disk = fs::read_to_string(&path).expect("read");
         assert!(on_disk.contains(r#""schema_version":9"#));
+    }
+
+    #[test]
+    fn repeated_atomic_saves_leave_no_temp_files_behind() {
+        let root = tempfile::tempdir().expect("temp");
+        let store = ProfileEnvironmentStore::new(root.path());
+        let id = Uuid::new_v4();
+        let env = ProfileEnvironment::defaults_for_root(root.path().join("dl"));
+        for _ in 0..8 {
+            store.save(id, &env).expect("atomic save");
+        }
+        let dir = store.path_for(id).parent().expect("parent").to_path_buf();
+        let entries = fs::read_dir(&dir)
+            .expect("readdir")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, vec![std::ffi::OsString::from("environment.json")]);
     }
 }

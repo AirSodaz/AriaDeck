@@ -319,7 +319,7 @@ pub(crate) fn hide_native_window(window: &Window) -> bool {
         if let Ok(handle) = HasWindowHandle::window_handle(window)
             && let RawWindowHandle::Win32(win32) = handle.as_raw()
         {
-            return hide_show_win32(win32.hwnd.get(), false);
+            return crate::platform::hide_show_win32(win32.hwnd.get(), false);
         }
     }
     // Fallback on non-Windows or when the raw handle is unavailable: minimize
@@ -334,34 +334,12 @@ pub(crate) fn show_native_window(window: &Window) -> bool {
         if let Ok(handle) = HasWindowHandle::window_handle(window)
             && let RawWindowHandle::Win32(win32) = handle.as_raw()
         {
-            let restored = hide_show_win32(win32.hwnd.get(), true);
+            let restored = crate::platform::hide_show_win32(win32.hwnd.get(), true);
             window.activate_window();
             return restored;
         }
     }
     window.activate_window();
-    true
-}
-
-#[cfg(target_os = "windows")]
-pub(crate) fn hide_show_win32(hwnd: isize, show: bool) -> bool {
-    // Narrow platform boundary: user32 ShowWindow for true hide-to-tray.
-    #[link(name = "user32")]
-    unsafe extern "system" {
-        fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
-        fn SetForegroundWindow(hwnd: isize) -> i32;
-        fn BringWindowToTop(hwnd: isize) -> i32;
-    }
-    const SW_HIDE: i32 = 0;
-    const SW_RESTORE: i32 = 9;
-    // SAFETY: hwnd is the live GPUI window handle for this process.
-    unsafe {
-        ShowWindow(hwnd, if show { SW_RESTORE } else { SW_HIDE });
-        if show {
-            BringWindowToTop(hwnd);
-            SetForegroundWindow(hwnd);
-        }
-    }
     true
 }
 

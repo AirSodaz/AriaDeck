@@ -344,11 +344,17 @@ mod tests {
     }
 
     #[test]
-    fn relative_time_interpolation_works() {
+    fn count_interpolation_works() {
         let t = Translator::new(LocaleId::En);
-        assert_eq!(t.t_count("time-minutes-ago", 5), "5 minutes ago");
+        assert_eq!(
+            t.t_count("dialog-details-files-aria", 5),
+            "Task files, 5 items"
+        );
         let zh = Translator::new(LocaleId::ZhCn);
-        assert_eq!(zh.t_count("time-minutes-ago", 5), "5 分钟前");
+        assert_eq!(
+            zh.t_count("dialog-details-files-aria", 5),
+            "任务文件，共 5 项"
+        );
     }
 
     #[test]

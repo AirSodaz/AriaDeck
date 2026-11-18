@@ -297,6 +297,10 @@ impl AppShell {
         let identity = drawer.identity.clone();
         let overview = drawer.overview.clone();
         let selected_tab = drawer.tab;
+        let info_scroll = drawer.info_scroll.clone();
+        let file_scroll = drawer.file_scroll.clone();
+        let network_scroll = drawer.network_scroll.clone();
+        let options_scroll = drawer.options_scroll.clone();
         let display_name = if overview.name_state.is_resolving() {
             self.t("task-name-resolving")
         } else {
@@ -397,44 +401,6 @@ impl AppShell {
                 })
                 .into_any_element(),
             TaskDetailsPresentation::Ready(details) => {
-                let TaskDetailsView {
-                    directory,
-                    primary_source,
-                    output_path,
-                    path_validation,
-                    info_hash,
-                    piece_length,
-                    piece_count,
-                    trackers,
-                    uris,
-                    servers,
-                    peers,
-                    options,
-                    files,
-                } = *details;
-                let file_count = files.len();
-                let gid = identity.gid.clone();
-                let is_bittorrent = matches!(
-                    overview.source_kind,
-                    crate::TaskSourceKindView::Magnet | crate::TaskSourceKindView::BitTorrent
-                ) || overview.status == TaskStatusView::Seeding;
-                let seed_stop_rules = self.format_seed_stop_rules(&options);
-                let path_validation_label = match path_validation {
-                    TaskPathValidationView::Unavailable => {
-                        self.t("dialog-details-path-unavailable")
-                    }
-                    TaskPathValidationView::Valid {
-                        existing_files,
-                        missing_paths,
-                    } => self.t_args(
-                        "dialog-details-path-valid",
-                        &[
-                            ("existing", FluentValue::from(existing_files)),
-                            ("missing", FluentValue::from(missing_paths)),
-                        ],
-                    ),
-                    TaskPathValidationView::Warning(error) => self.te(&error),
-                };
                 let shell = cx.entity().downgrade();
                 let tabs = SegmentedControl::new(
                     "task-details-tabs",
@@ -471,514 +437,25 @@ impl AppShell {
                 });
 
                 let content = match selected_tab {
-                    TaskDetailsTab::Info => {
-                        let info_scroll = self
-                            .details_drawer
-                            .as_ref()
-                            .expect("details drawer exists while rendering info")
-                            .info_scroll
-                            .clone();
-                        div()
-                            .relative()
-                            .flex_1()
-                            .min_h_0()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .id("task-details-info-scroll")
-                                    .size_full()
-                                    .min_h_0()
-                                    .min_w_0()
-                                    .overflow_y_scroll()
-                                    .track_scroll(&info_scroll)
-                                    .p_4()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_2()
-                                    .child(detail_line_with_action(
-                                        self.t("dialog-details-gid"),
-                                        gid.clone(),
-                                        {
-                                            let shell = cx.entity().downgrade();
-                                            Clipboard::new("copy-task-gid")
-                                                .value(gid.clone())
-                                                .tooltip(self.t("dialog-details-copy-gid-tooltip"))
-                                                .accessibility_label(
-                                                    self.t("dialog-details-copy-gid-aria"),
-                                                )
-                                                .on_copied(move |_, _, cx| {
-                                                    let _ = shell.update(cx, |this, cx| {
-                                                        this.show_notice(
-                                                            this.t("notice-gid-copied-short"),
-                                                            false,
-                                                            cx,
-                                                        );
-                                                    });
-                                                })
-                                        },
-                                        colors,
-                                    ))
-                                    .child(detail_line(
-                                        self.t("dialog-details-source-type"),
-                                        self.t(overview.source_kind.message_key()),
-                                        colors,
-                                    ))
-                                    .when_some(
-                                        primary_source
-                                            .as_deref()
-                                            .or(overview.primary_source.as_deref()),
-                                        |element, source| {
-                                            element.child(detail_line(
-                                                self.t("dialog-details-source"),
-                                                source,
-                                                colors,
-                                            ))
-                                        },
-                                    )
-                                    .child(detail_line(
-                                        self.t("dialog-details-directory"),
-                                        directory
-                                            .as_deref()
-                                            .unwrap_or(&self.t("dialog-details-not-reported")),
-                                        colors,
-                                    ))
-                                    .when_some(output_path.as_deref(), |element, path| {
-                                        element.child(detail_line(
-                                            self.t("dialog-details-output"),
-                                            path,
-                                            colors,
-                                        ))
-                                    })
-                                    .child(detail_line(
-                                        self.t("dialog-details-path-check"),
-                                        path_validation_label,
-                                        colors,
-                                    ))
-                                    .when_some(overview.error.as_ref(), |element, error| {
-                                        element
-                                            .child(detail_line(
-                                                self.t("dialog-details-failure"),
-                                                error.summary.clone(),
-                                                colors,
-                                            ))
-                                            .when_some(
-                                                error.details.as_deref(),
-                                                |element, details| {
-                                                    element.child(detail_line(
-                                                        self.t("dialog-details-aria2-details"),
-                                                        details,
-                                                        colors,
-                                                    ))
-                                                },
-                                            )
-                                    })
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .pt_2()
-                                            .child(
-                                                toolbar_icon_button(
-                                                    "open-task-download",
-                                                    IconName::Download,
-                                                    self.t("action-open-file"),
-                                                    if path_actions_available && !path_open_pending
-                                                    {
-                                                        ToolbarButtonState::Enabled
-                                                    } else {
-                                                        ToolbarButtonState::Disabled
-                                                    },
-                                                    false,
-                                                    None,
-                                                    colors,
-                                                )
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.request_task_open(
-                                                        TaskOpenTargetView::Download,
-                                                        cx,
-                                                    );
-                                                })),
-                                            )
-                                            .child(
-                                                toolbar_icon_button(
-                                                    "open-task-folder",
-                                                    IconName::FolderDown,
-                                                    self.t("action-open-folder"),
-                                                    if path_actions_available && !path_open_pending
-                                                    {
-                                                        ToolbarButtonState::Enabled
-                                                    } else {
-                                                        ToolbarButtonState::Disabled
-                                                    },
-                                                    false,
-                                                    None,
-                                                    colors,
-                                                )
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.request_task_open(
-                                                        TaskOpenTargetView::Folder,
-                                                        cx,
-                                                    );
-                                                })),
-                                            ),
-                                    )
-                                    .when_some(info_hash.as_deref(), |element, hash| {
-                                        element.child(detail_line(
-                                            self.t("dialog-details-info-hash"),
-                                            hash,
-                                            colors,
-                                        ))
-                                    })
-                                    .when(
-                                        piece_length.is_some() || piece_count.is_some(),
-                                        |element| {
-                                            element.child(detail_line(
-                                self.t("dialog-details-pieces"),
-                                self.t_args(
-                                    "dialog-details-piece-layout",
-                                    &[
-                                        (
-                                            "count",
-                                            FluentValue::from(piece_count.map_or_else(
-                                                || self.t("dialog-details-not-reported"),
-                                                |value| value.to_string(),
-                                            )),
-                                        ),
-                                        (
-                                            "size",
-                                            FluentValue::from(piece_length.map_or_else(
-                                                || self.t("dialog-details-not-reported"),
-                                                format_bytes,
-                                            )),
-                                        ),
-                                    ],
-                                ),
-                                colors,
-                            ))
-                                        },
-                                    )
-                                    .when(is_bittorrent, |element| {
-                                        element.child(detail_line(
-                                            self.t("dialog-details-seed-limits"),
-                                            seed_stop_rules,
-                                            colors,
-                                        ))
-                                    }),
-                            )
-                            .vertical_scrollbar(&info_scroll)
-                            .into_any_element()
-                    }
-                    TaskDetailsTab::Files => {
-                        if file_count == 0 {
-                            drawer_message(
-                                self.t("dialog-details-no-files"),
-                                self.t("dialog-details-no-files-detail"),
-                                colors,
-                            )
-                        } else {
-                            let shell_id =
-                                SharedString::from(format!("task-files-shell:{}", identity.gid));
-                            let list_id =
-                                SharedString::from(format!("task-files:{}", identity.gid));
-                            let file_scroll = self
-                                .details_drawer
-                                .as_ref()
-                                .expect("details drawer exists while rendering files")
-                                .file_scroll
-                                .clone();
-                            div()
-                                .id(shell_id)
-                                .role(Role::List)
-                                .aria_label(
-                                    self.t_count("dialog-details-files-aria", file_count as u64),
-                                )
-                                .relative()
-                                .flex_1()
-                                .min_h_0()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .overflow_hidden()
-                                .child(
-                                    uniform_list(
-                                        list_id,
-                                        file_count,
-                                        cx.processor(
-                                            move |this, range: Range<usize>, _window, _cx| {
-                                                let colors = this.theme.colors;
-                                                let rows = {
-                                                    let Some(drawer) = &mut this.details_drawer
-                                                    else {
-                                                        return Vec::new();
-                                                    };
-                                                    drawer.rendered_file_range = range.clone();
-                                                    let TaskDetailsLoadState::Ready { details } =
-                                                        &drawer.state
-                                                    else {
-                                                        return Vec::new();
-                                                    };
-                                                    let gid = drawer.identity.gid.clone();
-                                                    range
-                                                        .filter_map(|index| {
-                                                            details.files.get(index).cloned().map(
-                                                                |file| (gid.clone(), index, file),
-                                                            )
-                                                        })
-                                                        .collect::<Vec<_>>()
-                                                };
-                                                rows.into_iter()
-                                                    .map(|(gid, index, file)| {
-                                                        let state = this.t(if file.selected {
-                                                            "dialog-details-file-enabled"
-                                                        } else {
-                                                            "dialog-details-file-skipped"
-                                                        });
-                                                        let progress = if file.length == 0 {
-                                                            None
-                                                        } else {
-                                                            let completed = u128::from(
-                                                                file.completed_length
-                                                                    .min(file.length),
-                                                            );
-                                                            Some(
-                                                                ((completed * 10_000)
-                                                                    / u128::from(file.length))
-                                                                    as u16,
-                                                            )
-                                                        };
-                                                        let aria_label = this.t_args(
-                                                            "dialog-details-file-aria",
-                                                            &[
-                                                                (
-                                                                    "path",
-                                                                    FluentValue::from(
-                                                                        file.path.clone(),
-                                                                    ),
-                                                                ),
-                                                                ("state", FluentValue::from(state)),
-                                                                (
-                                                                    "size",
-                                                                    FluentValue::from(
-                                                                        format_bytes(file.length),
-                                                                    ),
-                                                                ),
-                                                                (
-                                                                    "progress",
-                                                                    FluentValue::from(
-                                                                        format_percent(progress),
-                                                                    ),
-                                                                ),
-                                                            ],
-                                                        );
-                                                        render_file_row(
-                                                            &gid, index, file, file_count,
-                                                            aria_label, colors,
-                                                        )
-                                                    })
-                                                    .collect::<Vec<_>>()
-                                            },
-                                        ),
-                                    )
-                                    .track_scroll(&file_scroll)
-                                    .size_full(),
-                                )
-                                .vertical_scrollbar(&file_scroll)
-                                .into_any_element()
-                        }
-                    }
+                    TaskDetailsTab::Info => self.render_details_info_tab(
+                        &identity,
+                        &overview,
+                        &details,
+                        path_actions_available && !path_open_pending,
+                        info_scroll,
+                        cx,
+                    ),
+                    TaskDetailsTab::Files => self.render_details_files_tab(
+                        &identity,
+                        details.files.len(),
+                        file_scroll,
+                        cx,
+                    ),
                     TaskDetailsTab::Network => {
-                        let network_scroll = self
-                            .details_drawer
-                            .as_ref()
-                            .expect("details drawer exists while rendering network")
-                            .network_scroll
-                            .clone();
-                        div()
-                            .relative()
-                            .flex_1()
-                            .min_h_0()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .id("task-details-network-scroll")
-                                    .size_full()
-                                    .min_h_0()
-                                    .min_w_0()
-                                    .overflow_y_scroll()
-                                    .track_scroll(&network_scroll)
-                                    .p_4()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_4()
-                                    .child(detail_collection_section(
-                                        self.t("dialog-details-sources"),
-                                        self.t("dialog-details-no-sources"),
-                                        uris.into_iter()
-                                            .map(|source| {
-                                                let status = self.t(source.status.message_key());
-                                                detail_collection_row(
-                                                    source.uri, status, None, colors,
-                                                )
-                                            })
-                                            .collect(),
-                                        colors,
-                                    ))
-                                    .child(detail_collection_section(
-                                        self.t("dialog-details-trackers"),
-                                        self.t("dialog-details-no-trackers"),
-                                        trackers
-                                            .into_iter()
-                                            .map(|tracker| {
-                                                let tier = self.t_args(
-                                                    "dialog-details-tracker-tier",
-                                                    &[("tier", FluentValue::from(tracker.tier))],
-                                                );
-                                                detail_collection_row(
-                                                    tracker.uri,
-                                                    tier,
-                                                    None,
-                                                    colors,
-                                                )
-                                            })
-                                            .collect(),
-                                        colors,
-                                    ))
-                                    .child(detail_collection_section(
-                                        self.t("dialog-details-servers"),
-                                        self.t("dialog-details-no-servers"),
-                                        servers
-                                            .into_iter()
-                                            .map(|server| {
-                                                let current_uri = if server.current_uri.is_empty() {
-                                                    server.uri.clone()
-                                                } else {
-                                                    server.current_uri.clone()
-                                                };
-                                                let rate = format_rate(server.download_rate);
-                                                let secondary =
-                                                    if server.uri.is_empty()
-                                                        || server.uri == current_uri
-                                                    {
-                                                        self.t_args(
-                                                            "dialog-details-server-file-rate",
-                                                            &[
-                                                                (
-                                                                    "file",
-                                                                    FluentValue::from(
-                                                                        server.file_index,
-                                                                    ),
-                                                                ),
-                                                                ("rate", FluentValue::from(rate)),
-                                                            ],
-                                                        )
-                                                    } else {
-                                                        self.t_args(
-                                                "dialog-details-server-source-file-rate",
-                                                &[
-                                                    ("source", FluentValue::from(server.uri)),
-                                                    ("file", FluentValue::from(server.file_index)),
-                                                    ("rate", FluentValue::from(rate)),
-                                                ],
-                                            )
-                                                    };
-                                                detail_collection_row(
-                                                    current_uri,
-                                                    secondary,
-                                                    None,
-                                                    colors,
-                                                )
-                                            })
-                                            .collect(),
-                                        colors,
-                                    ))
-                                    .child(detail_collection_section(
-                                        self.t("dialog-details-peers"),
-                                        self.t("dialog-details-no-peers"),
-                                        peers
-                                            .into_iter()
-                                            .map(|peer| {
-                                                let address = if peer.address.contains(':') {
-                                                    format!("[{}]:{}", peer.address, peer.port)
-                                                } else {
-                                                    format!("{}:{}", peer.address, peer.port)
-                                                };
-                                                let rates = self.t_args(
-                                                    "dialog-details-peer-rates",
-                                                    &[
-                                                        (
-                                                            "download",
-                                                            FluentValue::from(format_rate(
-                                                                peer.download_rate,
-                                                            )),
-                                                        ),
-                                                        (
-                                                            "upload",
-                                                            FluentValue::from(format_rate(
-                                                                peer.upload_rate,
-                                                            )),
-                                                        ),
-                                                    ],
-                                                );
-                                                let badge = peer
-                                                    .seeder
-                                                    .then(|| self.t("dialog-details-peer-seed"));
-                                                detail_collection_row(address, rates, badge, colors)
-                                            })
-                                            .collect(),
-                                        colors,
-                                    )),
-                            )
-                            .vertical_scrollbar(&network_scroll)
-                            .into_any_element()
+                        self.render_details_network_tab(*details, network_scroll)
                     }
                     TaskDetailsTab::Options => {
-                        let options_scroll = self
-                            .details_drawer
-                            .as_ref()
-                            .expect("details drawer exists while rendering options")
-                            .options_scroll
-                            .clone();
-                        div()
-                            .relative()
-                            .flex_1()
-                            .min_h_0()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .child(
-                                detail_collection_section(
-                                    self.t("dialog-details-read-only-options"),
-                                    self.t("dialog-details-no-options"),
-                                    options
-                                        .into_iter()
-                                        .map(|option| {
-                                            let value = if option.redacted {
-                                                self.t("dialog-details-option-hidden")
-                                            } else if option.value.is_empty() {
-                                                self.t("dialog-details-option-empty")
-                                            } else {
-                                                option.value
-                                            };
-                                            let badge = option
-                                                .redacted
-                                                .then(|| self.t("dialog-details-option-sensitive"));
-                                            detail_collection_row(option.key, value, badge, colors)
-                                        })
-                                        .collect(),
-                                    colors,
-                                )
-                                .id("task-details-options-scroll")
-                                .size_full()
-                                .min_h_0()
-                                .min_w_0()
-                                .overflow_y_scroll()
-                                .track_scroll(&options_scroll)
-                                .p_4(),
-                            )
-                            .vertical_scrollbar(&options_scroll)
-                            .into_any_element()
+                        self.render_details_options_tab(details.options, options_scroll)
                     }
                 };
 
@@ -1107,6 +584,479 @@ impl AppShell {
             )
             .child(task_overview_summary(&overview, colors))
             .child(body)
+            .into_any_element()
+    }
+
+    fn render_details_info_tab(
+        &self,
+        identity: &TaskIdentity,
+        overview: &DownloadRowView,
+        details: &TaskDetailsView,
+        path_actions_enabled: bool,
+        info_scroll: ScrollHandle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = self.theme.colors;
+        let gid = identity.gid.clone();
+        let is_bittorrent = matches!(
+            overview.source_kind,
+            crate::TaskSourceKindView::Magnet | crate::TaskSourceKindView::BitTorrent
+        ) || overview.status == TaskStatusView::Seeding;
+        let seed_stop_rules = self.format_seed_stop_rules(&details.options);
+        let path_validation_label = match &details.path_validation {
+            TaskPathValidationView::Unavailable => self.t("dialog-details-path-unavailable"),
+            TaskPathValidationView::Valid {
+                existing_files,
+                missing_paths,
+            } => self.t_args(
+                "dialog-details-path-valid",
+                &[
+                    ("existing", FluentValue::from(*existing_files)),
+                    ("missing", FluentValue::from(*missing_paths)),
+                ],
+            ),
+            TaskPathValidationView::Warning(error) => self.te(error),
+        };
+
+        div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
+            .child(
+                div()
+                    .id("task-details-info-scroll")
+                    .size_full()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&info_scroll)
+                    .p_4()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(detail_line_with_action(
+                        self.t("dialog-details-gid"),
+                        gid.clone(),
+                        {
+                            let shell = cx.entity().downgrade();
+                            Clipboard::new("copy-task-gid")
+                                .value(gid.clone())
+                                .tooltip(self.t("dialog-details-copy-gid-tooltip"))
+                                .accessibility_label(self.t("dialog-details-copy-gid-aria"))
+                                .on_copied(move |_, _, cx| {
+                                    let _ = shell.update(cx, |this, cx| {
+                                        this.show_notice(
+                                            this.t("notice-gid-copied-short"),
+                                            false,
+                                            cx,
+                                        );
+                                    });
+                                })
+                        },
+                        colors,
+                    ))
+                    .child(detail_line(
+                        self.t("dialog-details-source-type"),
+                        self.t(overview.source_kind.message_key()),
+                        colors,
+                    ))
+                    .when_some(
+                        details
+                            .primary_source
+                            .as_deref()
+                            .or(overview.primary_source.as_deref()),
+                        |element, source| {
+                            element.child(detail_line(
+                                self.t("dialog-details-source"),
+                                source,
+                                colors,
+                            ))
+                        },
+                    )
+                    .child(detail_line(
+                        self.t("dialog-details-directory"),
+                        details
+                            .directory
+                            .as_deref()
+                            .unwrap_or(&self.t("dialog-details-not-reported")),
+                        colors,
+                    ))
+                    .when_some(details.output_path.as_deref(), |element, path| {
+                        element.child(detail_line(self.t("dialog-details-output"), path, colors))
+                    })
+                    .child(detail_line(
+                        self.t("dialog-details-path-check"),
+                        path_validation_label,
+                        colors,
+                    ))
+                    .when_some(overview.error.as_ref(), |element, error| {
+                        element
+                            .child(detail_line(
+                                self.t("dialog-details-failure"),
+                                error.summary.clone(),
+                                colors,
+                            ))
+                            .when_some(error.details.as_deref(), |element, details| {
+                                element.child(detail_line(
+                                    self.t("dialog-details-aria2-details"),
+                                    details,
+                                    colors,
+                                ))
+                            })
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .pt_2()
+                            .child(
+                                toolbar_icon_button(
+                                    "open-task-download",
+                                    IconName::Download,
+                                    self.t("action-open-file"),
+                                    if path_actions_enabled {
+                                        ToolbarButtonState::Enabled
+                                    } else {
+                                        ToolbarButtonState::Disabled
+                                    },
+                                    false,
+                                    None,
+                                    colors,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.request_task_open(TaskOpenTargetView::Download, cx);
+                                    },
+                                )),
+                            )
+                            .child(
+                                toolbar_icon_button(
+                                    "open-task-folder",
+                                    IconName::FolderDown,
+                                    self.t("action-open-folder"),
+                                    if path_actions_enabled {
+                                        ToolbarButtonState::Enabled
+                                    } else {
+                                        ToolbarButtonState::Disabled
+                                    },
+                                    false,
+                                    None,
+                                    colors,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.request_task_open(TaskOpenTargetView::Folder, cx);
+                                    },
+                                )),
+                            ),
+                    )
+                    .when_some(details.info_hash.as_deref(), |element, hash| {
+                        element.child(detail_line(
+                            self.t("dialog-details-info-hash"),
+                            hash,
+                            colors,
+                        ))
+                    })
+                    .when(
+                        details.piece_length.is_some() || details.piece_count.is_some(),
+                        |element| {
+                            element.child(detail_line(
+                                self.t("dialog-details-pieces"),
+                                self.t_args(
+                                    "dialog-details-piece-layout",
+                                    &[
+                                        (
+                                            "count",
+                                            FluentValue::from(details.piece_count.map_or_else(
+                                                || self.t("dialog-details-not-reported"),
+                                                |value| value.to_string(),
+                                            )),
+                                        ),
+                                        (
+                                            "size",
+                                            FluentValue::from(details.piece_length.map_or_else(
+                                                || self.t("dialog-details-not-reported"),
+                                                format_bytes,
+                                            )),
+                                        ),
+                                    ],
+                                ),
+                                colors,
+                            ))
+                        },
+                    )
+                    .when(is_bittorrent, |element| {
+                        element.child(detail_line(
+                            self.t("dialog-details-seed-limits"),
+                            seed_stop_rules,
+                            colors,
+                        ))
+                    }),
+            )
+            .vertical_scrollbar(&info_scroll)
+            .into_any_element()
+    }
+
+    fn render_details_files_tab(
+        &self,
+        identity: &TaskIdentity,
+        file_count: usize,
+        file_scroll: UniformListScrollHandle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = self.theme.colors;
+        if file_count == 0 {
+            return drawer_message(
+                self.t("dialog-details-no-files"),
+                self.t("dialog-details-no-files-detail"),
+                colors,
+            );
+        }
+        let shell_id = SharedString::from(format!("task-files-shell:{}", identity.gid));
+        let list_id = SharedString::from(format!("task-files:{}", identity.gid));
+        div()
+            .id(shell_id)
+            .role(Role::List)
+            .aria_label(self.t_count("dialog-details-files-aria", file_count as u64))
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .child(
+                uniform_list(
+                    list_id,
+                    file_count,
+                    cx.processor(move |this, range: Range<usize>, _window, _cx| {
+                        let colors = this.theme.colors;
+                        let rows = {
+                            let Some(drawer) = &mut this.details_drawer else {
+                                return Vec::new();
+                            };
+                            drawer.rendered_file_range = range.clone();
+                            let TaskDetailsLoadState::Ready { details } = &drawer.state else {
+                                return Vec::new();
+                            };
+                            let gid = drawer.identity.gid.clone();
+                            range
+                                .filter_map(|index| {
+                                    details
+                                        .files
+                                        .get(index)
+                                        .cloned()
+                                        .map(|file| (gid.clone(), index, file))
+                                })
+                                .collect::<Vec<_>>()
+                        };
+                        rows.into_iter()
+                            .map(|(gid, index, file)| {
+                                let state = this.t(if file.selected {
+                                    "dialog-details-file-enabled"
+                                } else {
+                                    "dialog-details-file-skipped"
+                                });
+                                let progress = if file.length == 0 {
+                                    None
+                                } else {
+                                    let completed =
+                                        u128::from(file.completed_length.min(file.length));
+                                    Some(((completed * 10_000) / u128::from(file.length)) as u16)
+                                };
+                                let aria_label = this.t_args(
+                                    "dialog-details-file-aria",
+                                    &[
+                                        ("path", FluentValue::from(file.path.clone())),
+                                        ("state", FluentValue::from(state)),
+                                        ("size", FluentValue::from(format_bytes(file.length))),
+                                        ("progress", FluentValue::from(format_percent(progress))),
+                                    ],
+                                );
+                                render_file_row(&gid, index, file, file_count, aria_label, colors)
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(&file_scroll)
+                .size_full(),
+            )
+            .vertical_scrollbar(&file_scroll)
+            .into_any_element()
+    }
+
+    fn render_details_network_tab(
+        &self,
+        details: TaskDetailsView,
+        network_scroll: ScrollHandle,
+    ) -> AnyElement {
+        let colors = self.theme.colors;
+        div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
+            .child(
+                div()
+                    .id("task-details-network-scroll")
+                    .size_full()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&network_scroll)
+                    .p_4()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(detail_collection_section(
+                        self.t("dialog-details-sources"),
+                        self.t("dialog-details-no-sources"),
+                        details
+                            .uris
+                            .into_iter()
+                            .map(|source| {
+                                let status = self.t(source.status.message_key());
+                                detail_collection_row(source.uri, status, None, colors)
+                            })
+                            .collect(),
+                        colors,
+                    ))
+                    .child(detail_collection_section(
+                        self.t("dialog-details-trackers"),
+                        self.t("dialog-details-no-trackers"),
+                        details
+                            .trackers
+                            .into_iter()
+                            .map(|tracker| {
+                                let tier = self.t_args(
+                                    "dialog-details-tracker-tier",
+                                    &[("tier", FluentValue::from(tracker.tier))],
+                                );
+                                detail_collection_row(tracker.uri, tier, None, colors)
+                            })
+                            .collect(),
+                        colors,
+                    ))
+                    .child(detail_collection_section(
+                        self.t("dialog-details-servers"),
+                        self.t("dialog-details-no-servers"),
+                        details
+                            .servers
+                            .into_iter()
+                            .map(|server| {
+                                let current_uri = if server.current_uri.is_empty() {
+                                    server.uri.clone()
+                                } else {
+                                    server.current_uri.clone()
+                                };
+                                let rate = format_rate(server.download_rate);
+                                let secondary =
+                                    if server.uri.is_empty() || server.uri == current_uri {
+                                        self.t_args(
+                                            "dialog-details-server-file-rate",
+                                            &[
+                                                ("file", FluentValue::from(server.file_index)),
+                                                ("rate", FluentValue::from(rate)),
+                                            ],
+                                        )
+                                    } else {
+                                        self.t_args(
+                                            "dialog-details-server-source-file-rate",
+                                            &[
+                                                ("source", FluentValue::from(server.uri)),
+                                                ("file", FluentValue::from(server.file_index)),
+                                                ("rate", FluentValue::from(rate)),
+                                            ],
+                                        )
+                                    };
+                                detail_collection_row(current_uri, secondary, None, colors)
+                            })
+                            .collect(),
+                        colors,
+                    ))
+                    .child(detail_collection_section(
+                        self.t("dialog-details-peers"),
+                        self.t("dialog-details-no-peers"),
+                        details
+                            .peers
+                            .into_iter()
+                            .map(|peer| {
+                                let address = if peer.address.contains(':') {
+                                    format!("[{}]:{}", peer.address, peer.port)
+                                } else {
+                                    format!("{}:{}", peer.address, peer.port)
+                                };
+                                let rates = self.t_args(
+                                    "dialog-details-peer-rates",
+                                    &[
+                                        (
+                                            "download",
+                                            FluentValue::from(format_rate(peer.download_rate)),
+                                        ),
+                                        (
+                                            "upload",
+                                            FluentValue::from(format_rate(peer.upload_rate)),
+                                        ),
+                                    ],
+                                );
+                                let badge = peer.seeder.then(|| self.t("dialog-details-peer-seed"));
+                                detail_collection_row(address, rates, badge, colors)
+                            })
+                            .collect(),
+                        colors,
+                    )),
+            )
+            .vertical_scrollbar(&network_scroll)
+            .into_any_element()
+    }
+
+    fn render_details_options_tab(
+        &self,
+        options: Vec<TaskOptionView>,
+        options_scroll: ScrollHandle,
+    ) -> AnyElement {
+        let colors = self.theme.colors;
+        div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
+            .child(
+                detail_collection_section(
+                    self.t("dialog-details-read-only-options"),
+                    self.t("dialog-details-no-options"),
+                    options
+                        .into_iter()
+                        .map(|option| {
+                            let value = if option.redacted {
+                                self.t("dialog-details-option-hidden")
+                            } else if option.value.is_empty() {
+                                self.t("dialog-details-option-empty")
+                            } else {
+                                option.value
+                            };
+                            let badge = option
+                                .redacted
+                                .then(|| self.t("dialog-details-option-sensitive"));
+                            detail_collection_row(option.key, value, badge, colors)
+                        })
+                        .collect(),
+                    colors,
+                )
+                .id("task-details-options-scroll")
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .overflow_y_scroll()
+                .track_scroll(&options_scroll)
+                .p_4(),
+            )
+            .vertical_scrollbar(&options_scroll)
             .into_any_element()
     }
 }

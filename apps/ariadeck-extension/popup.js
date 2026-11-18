@@ -7,6 +7,7 @@ import {
   ERROR_TEXT,
   cookieOrigins,
   cookiesAllowedFor,
+  hostLabelOf,
   lastResult,
   originOf,
   requestCookieAccess,
@@ -65,7 +66,7 @@ async function render() {
   allowedList.replaceChildren(
     ...origins.map((entry) => {
       const item = document.createElement("li");
-      item.textContent = new URL(entry).host;
+      item.textContent = hostLabelOf(entry);
       return item;
     }),
   );

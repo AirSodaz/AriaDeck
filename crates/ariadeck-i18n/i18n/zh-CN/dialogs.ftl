@@ -1,4 +1,3 @@
-## 对话框（简体中文）
 
 dialog-add-download = 添加下载
 dialog-add-input-links = 链接
@@ -14,7 +13,6 @@ dialog-add-input-type-aria = 下载来源类型
 dialog-add-mode-aria = 多链接处理方式
 dialog-add-file-conflict-aria = 已有文件处理方式
 dialog-add-cancel-aria = 取消添加下载
-dialog-add-resize-links-input-aria = 拖拽调整链接输入框高度，双击重置为默认高度
 dialog-add-url-or-magnet = URL 或磁力链接
 dialog-add-no-sources = 未检测到来源
 dialog-add-sources-detected = 检测到 { $n } 个来源
@@ -125,8 +123,6 @@ dialog-details-sources = 来源与镜像
 dialog-details-trackers = Tracker
 dialog-details-servers = 服务器
 dialog-details-close = 关闭详情
-dialog-details-share-ratio = 分享率
-dialog-details-progress = 进度
 dialog-details-info = 信息
 dialog-details-source = 来源
 dialog-details-output = 输出
@@ -163,7 +159,6 @@ dialog-details-seed-ratio-disabled = 分享率条件已禁用（0.0）
 dialog-details-seed-ratio-value = 分享率 { $ratio }
 dialog-details-seed-stop-rules = 先达到任一限制即停止：{ $ratio } · 时间 { $time } 分钟
 dialog-add-category = 分类
-dialog-add-category-default = 默认目录
 dialog-add-category-auto = 自动
 dialog-add-category-auto-named = 自动 · { $name }
 
@@ -181,7 +176,6 @@ dialog-core-setup-dismiss-aria = 不选择核心，关闭 aria2 设置引导
 dialog-power-countdown-title = 全部下载已完成
 dialog-power-countdown-desc = 计算机将在 { $seconds } 秒后{ $action }。
 dialog-power-cancel = 取消
-dialog-power-execute-now = 立即{ $action }
 power-action-verb-sleep = 进入睡眠
 power-action-verb-hibernate = 进入休眠
 power-action-verb-shutdown = 关机

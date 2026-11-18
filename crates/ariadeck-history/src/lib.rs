@@ -22,6 +22,8 @@ const MAX_ERROR_MESSAGE_CHARS: usize = 512;
 
 #[derive(Debug, Error)]
 pub enum HistoryError {
+    #[error("history storage I/O error: {0}")]
+    Io(#[from] std::io::Error),
     #[error("history database error: {0}")]
     Database(#[from] rusqlite::Error),
     #[error("history database is poisoned")]
@@ -47,9 +49,7 @@ impl SqliteHistoryStore {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, HistoryError> {
         let path = path.into();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                HistoryError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
-            })?;
+            std::fs::create_dir_all(parent)?;
         }
         let connection = Connection::open(&path)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -73,10 +73,10 @@ impl SqliteHistoryStore {
 
     fn with_connection<T>(
         &self,
-        f: impl FnOnce(&Connection) -> Result<T, HistoryError>,
+        f: impl FnOnce(&mut Connection) -> Result<T, HistoryError>,
     ) -> Result<T, HistoryError> {
-        let connection = self.connection.lock().map_err(|_| HistoryError::Poisoned)?;
-        f(&connection)
+        let mut connection = self.connection.lock().map_err(|_| HistoryError::Poisoned)?;
+        f(&mut connection)
     }
 }
 
@@ -89,20 +89,55 @@ impl TaskHistoryStore for SqliteHistoryStore {
             .map_err(Into::into)
     }
 
+    fn upsert_batch(
+        &self,
+        records: &[HistoryRecord],
+    ) -> Result<(), ariadeck_application::HistoryStoreError> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        self.with_connection(|connection| {
+            let tx = connection.transaction()?;
+            for record in records {
+                upsert_record(&tx, record)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .map_err(Into::into)
+    }
+
     fn remove(
         &self,
         profile_id: ProfileId,
         gid: Gid,
     ) -> Result<(), ariadeck_application::HistoryStoreError> {
+        self.remove_batch(profile_id, &[gid])
+    }
+
+    fn remove_batch(
+        &self,
+        profile_id: ProfileId,
+        gids: &[Gid],
+    ) -> Result<(), ariadeck_application::HistoryStoreError> {
+        if gids.is_empty() {
+            return Ok(());
+        }
         self.with_connection(|connection| {
-            connection.execute(
-                "DELETE FROM task_history WHERE profile_id = ?1 AND gid = ?2",
-                params![profile_id.to_string(), gid.to_string()],
-            )?;
-            connection.execute(
-                "DELETE FROM task_category WHERE profile_id = ?1 AND gid = ?2",
-                params![profile_id.to_string(), gid.to_string()],
-            )?;
+            let tx = connection.transaction()?;
+            let profile_s = profile_id.to_string();
+            for &gid in gids {
+                let gid_s = gid.to_string();
+                tx.execute(
+                    "DELETE FROM task_history WHERE profile_id = ?1 AND gid = ?2",
+                    params![&profile_s, &gid_s],
+                )?;
+                tx.execute(
+                    "DELETE FROM task_category WHERE profile_id = ?1 AND gid = ?2",
+                    params![&profile_s, &gid_s],
+                )?;
+            }
+            tx.commit()?;
             Ok(())
         })
         .map_err(Into::into)
@@ -667,5 +702,59 @@ mod tests {
         assert_eq!(listed, vec![(gid, "cat-movies".into())]);
         store.set_task_category(profile, gid, None).expect("clear");
         assert!(store.task_category(profile, gid).expect("get").is_none());
+    }
+
+    #[test]
+    fn upsert_batch_and_remove_batch_commit_atomically() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = SqliteHistoryStore::open(dir.path().join("history.sqlite")).expect("open");
+        let profile = ProfileId::new();
+        let records = vec![
+            history_record_from_task(
+                profile,
+                &sample_task(10, DownloadStatus::Complete, "a.bin"),
+                100,
+            )
+            .expect("a"),
+            history_record_from_task(
+                profile,
+                &sample_task(11, DownloadStatus::Error, "b.bin"),
+                200,
+            )
+            .expect("b"),
+        ];
+        store.upsert_batch(&records).expect("upsert batch");
+        store
+            .set_task_category(profile, Gid::from_u64(10), Some("cat-a"))
+            .expect("cat a");
+        store
+            .set_task_category(profile, Gid::from_u64(11), Some("cat-b"))
+            .expect("cat b");
+        assert_eq!(store.count(profile).expect("count"), 2);
+
+        store
+            .remove_batch(profile, &[Gid::from_u64(10), Gid::from_u64(11)])
+            .expect("remove batch");
+        assert_eq!(store.count(profile).expect("count after"), 0);
+        assert!(
+            store
+                .list_task_categories(profile)
+                .expect("categories")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn open_surfaces_io_error_when_parent_is_a_file() {
+        let dir = TempDir::new().expect("tempdir");
+        let blocking_file = dir.path().join("not-a-dir");
+        std::fs::write(&blocking_file, b"occupied").expect("seed file");
+        let err = SqliteHistoryStore::open(blocking_file.join("history.sqlite"))
+            .err()
+            .expect("should fail");
+        assert!(
+            matches!(err, HistoryError::Io(_)),
+            "expected HistoryError::Io, got {err:?}"
+        );
     }
 }

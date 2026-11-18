@@ -1,4 +1,3 @@
-## In-app notices and command feedback (English)
 
 notice-select-task-first = Select a visible task first.
 notice-select-task-details = Select a visible task to open its details.
@@ -64,9 +63,7 @@ notice-choose-metadata = Choose at least one Torrent or Metalink file.
 notice-filename-empty = Enter a filename.
 notice-filename-dot = A filename cannot be "." or "..".
 notice-filename-separators = Use a filename without path separators.
-notice-stale-session = The aria2 session changed. Review current state before submitting again.
 notice-refresh-details = Could not refresh task details: { $summary }
-notice-outcome-unknown = Outcome unknown · { $summary }
 
 # Command progress / success
 cmd-pause-all-progress = Pausing all tasks…

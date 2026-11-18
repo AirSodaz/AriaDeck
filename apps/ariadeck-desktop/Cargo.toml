@@ -52,9 +52,10 @@ async-trait.workspace = true
 futures.workspace = true
 
 [lints.rust]
-# Platform boundary (Win32 ShowWindow for hide-to-tray) requires a narrow unsafe
-# call; keep the rest of the workspace forbid-unsafe.
-unsafe_code = "allow"
+# Platform boundary (`platform.rs` Win32 FFI for tray hide/show and power state)
+# requires narrow `#[allow(unsafe_code)]` blocks; keep the rest of the crate denied
+# and the rest of the workspace forbid-unsafe.
+unsafe_code = "deny"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

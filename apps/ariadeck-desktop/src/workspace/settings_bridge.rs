@@ -250,40 +250,159 @@ pub(crate) fn preflight_settings(
     Ok(())
 }
 
-pub(crate) fn spawn_settings_result_bridge(
-    mut results: mpsc::UnboundedReceiver<SettingsPersistenceResult>,
+pub(crate) fn deliver_tracker_list_refresh_result(
+    this: &mut DesktopRoot,
+    result: TrackerListRefreshResult,
+    cx: &mut Context<DesktopRoot>,
+) {
+    if let Some(settings) = result.settings.as_ref()
+        && result.result.is_ok()
+    {
+        this.settings = settings.clone();
+    }
+    let outcome = result.result.map_err(|summary| OperationErrorView {
+        code: "settings.tracker_refresh_failed".into(),
+        summary,
+        retryable: true,
+    });
+    let mapped = result.settings.as_ref().map(map_settings);
+    this.workspace.update(cx, |workspace, cx| {
+        workspace.set_tracker_list_refresh_result(
+            result.request_id,
+            mapped,
+            result.tracker_count,
+            outcome,
+            result.auto,
+            cx,
+        );
+    });
+}
+
+pub(crate) fn spawn_persistence_event_bridge(
+    mut events: mpsc::UnboundedReceiver<super::persistence::PersistenceEvent>,
     window: &Window,
     cx: &mut Context<DesktopRoot>,
 ) {
     cx.spawn_in(window, async move |this, cx| {
-        while let Some(result) = results.recv().await {
+        while let Some(event) = events.recv().await {
             if this
-                .update_in(cx, |this, window, cx| {
-                    if result.result.is_ok() {
-                        this.settings = result.settings.clone();
-                        this.sync_tray_with_settings(cx);
-                    }
-                    let outcome = result.result.map_or_else(
-                        |summary| {
-                            SettingsSaveOutcomeView::Failure(OperationErrorView {
-                                code: "settings.save_failed".into(),
-                                summary,
-                                retryable: true,
-                            })
-                        },
-                        |()| SettingsSaveOutcomeView::Success,
-                    );
-                    this.workspace.update(cx, |workspace, cx| {
-                        workspace.set_settings_save_result(
-                            SettingsSaveResultView {
-                                request_id: result.request_id,
-                                settings: map_settings(&result.settings),
-                                outcome,
+                .update_in(cx, |this, window, cx| match event {
+                    super::persistence::PersistenceEvent::SettingsSaved(result) => {
+                        if result.result.is_ok() {
+                            this.settings = result.settings.clone();
+                            this.sync_tray_with_settings(cx);
+                        }
+                        let outcome = result.result.map_or_else(
+                            |summary| {
+                                SettingsSaveOutcomeView::Failure(OperationErrorView {
+                                    code: "settings.save_failed".into(),
+                                    summary,
+                                    retryable: true,
+                                })
                             },
-                            window,
-                            cx,
+                            |()| SettingsSaveOutcomeView::Success,
                         );
-                    });
+                        this.workspace.update(cx, |workspace, cx| {
+                            workspace.set_settings_save_result(
+                                SettingsSaveResultView {
+                                    request_id: result.request_id,
+                                    settings: map_settings(&result.settings),
+                                    outcome,
+                                },
+                                window,
+                                cx,
+                            );
+                        });
+                    }
+                    super::persistence::PersistenceEvent::TrackerListRefreshed(result) => {
+                        deliver_tracker_list_refresh_result(this, result, cx);
+                    }
+                    super::persistence::PersistenceEvent::ProfileSwitched(result) => {
+                        this.profile_catalog = result.catalog;
+                        let catalog_view = map_profile_catalog(&this.profile_catalog);
+                        match result.result {
+                            Ok(()) => {
+                                if let Some(next_settings) = result.next_settings {
+                                    this.settings = next_settings;
+                                }
+                                let settings_view = map_settings(&this.settings);
+                                this.workspace.update(cx, |shell, cx| {
+                                    shell.apply_settings(settings_view, Some(window), cx);
+                                    shell.set_switch_profile_result(
+                                        SwitchProfileResultView {
+                                            request_id: result.request_id,
+                                            profile_id: result.profile_id_raw,
+                                            catalog: catalog_view,
+                                            outcome: SwitchProfileOutcomeView::Success,
+                                        },
+                                        cx,
+                                    );
+                                });
+                            }
+                            Err(summary) => {
+                                this.workspace.update(cx, |shell, cx| {
+                                    shell.set_switch_profile_result(
+                                        SwitchProfileResultView {
+                                            request_id: result.request_id,
+                                            profile_id: result.profile_id_raw,
+                                            catalog: catalog_view,
+                                            outcome: SwitchProfileOutcomeView::Failure(
+                                                OperationErrorView {
+                                                    code: "profile.switch_failed".into(),
+                                                    summary,
+                                                    retryable: true,
+                                                },
+                                            ),
+                                        },
+                                        cx,
+                                    );
+                                });
+                            }
+                        }
+                    }
+                    super::persistence::PersistenceEvent::ProfileCatalogSaved(result) => {
+                        match result.result {
+                            Ok(()) => {
+                                if let Some(catalog) = result.catalog {
+                                    this.profile_catalog = catalog;
+                                }
+                                let view = map_profile_catalog(&this.profile_catalog);
+                                this.workspace.update(cx, |shell, cx| {
+                                    shell.set_save_profile_catalog_result(
+                                        SaveProfileCatalogResultView {
+                                            request_id: result.request_id,
+                                            catalog: view,
+                                            outcome: SaveProfileCatalogOutcomeView::Success,
+                                        },
+                                        Some(window),
+                                        cx,
+                                    );
+                                });
+                            }
+                            Err(summary) => {
+                                this.workspace.update(cx, |shell, cx| {
+                                    shell.set_save_profile_catalog_result(
+                                        SaveProfileCatalogResultView {
+                                            request_id: result.request_id,
+                                            catalog: result.request_catalog,
+                                            outcome: SaveProfileCatalogOutcomeView::Failure(
+                                                OperationErrorView {
+                                                    code: "profile.save_failed".into(),
+                                                    summary,
+                                                    retryable: true,
+                                                },
+                                            ),
+                                        },
+                                        Some(window),
+                                        cx,
+                                    );
+                                });
+                            }
+                        }
+                    }
+                    super::persistence::PersistenceEvent::WindowGeometrySaved(geometry) => {
+                        this.last_saved_geometry = Some(geometry);
+                    }
                 })
                 .is_err()
             {
@@ -303,27 +422,7 @@ pub(crate) fn spawn_tracker_list_result_bridge(
         while let Some(result) = results.recv().await {
             if this
                 .update_in(cx, |this, _window, cx| {
-                    if let Some(settings) = result.settings.as_ref()
-                        && result.result.is_ok()
-                    {
-                        this.settings = settings.clone();
-                    }
-                    let outcome = result.result.map_err(|summary| OperationErrorView {
-                        code: "settings.tracker_refresh_failed".into(),
-                        summary,
-                        retryable: true,
-                    });
-                    let mapped = result.settings.as_ref().map(map_settings);
-                    this.workspace.update(cx, |workspace, cx| {
-                        workspace.set_tracker_list_refresh_result(
-                            result.request_id,
-                            mapped,
-                            result.tracker_count,
-                            outcome,
-                            result.auto,
-                            cx,
-                        );
-                    });
+                    deliver_tracker_list_refresh_result(this, result, cx);
                 })
                 .is_err()
             {

@@ -22,7 +22,6 @@ use ariadeck_engine::{CoreInstallationView, CoreStore};
 use super::*;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(300);
-const USER_AGENT: &str = concat!("AriaDeck/", env!("CARGO_PKG_VERSION"));
 /// Hard ceiling on the extracted executable, independent of the catalog entry.
 /// Guards against a zip whose local header lies about the member's size.
 const MAX_EXTRACTED_BYTES: u64 = 64 * 1024 * 1024;
@@ -120,45 +119,9 @@ pub(crate) struct CoreDownloadResult {
     pub(crate) result: Result<(), String>,
 }
 
-/// Fetch the pinned archive, enforcing the declared size before it is buffered.
+/// Fetch the pinned archive, enforcing the declared size while streaming.
 async fn fetch_archive(entry: &CoreDownloadEntry) -> Result<Vec<u8>, String> {
-    let client = reqwest::Client::builder()
-        .timeout(FETCH_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|error| format!("Failed to build HTTP client: {error}"))?;
-    let response = client
-        .get(entry.url)
-        .send()
-        .await
-        .map_err(|error| format!("aria2 download failed: {error}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "aria2 download failed with HTTP {}.",
-            response.status()
-        ));
-    }
-    if let Some(len) = response.content_length()
-        && len != entry.size_bytes
-    {
-        return Err(format!(
-            "aria2 download has an unexpected size ({len} bytes, expected {}).",
-            entry.size_bytes
-        ));
-    }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| format!("aria2 download failed: {error}"))?;
-    if bytes.len() as u64 != entry.size_bytes {
-        return Err(format!(
-            "aria2 download has an unexpected size ({} bytes, expected {}).",
-            bytes.len(),
-            entry.size_bytes
-        ));
-    }
-    Ok(bytes.to_vec())
+    super::http::fetch_exact_bytes(entry.url, entry.size_bytes, FETCH_TIMEOUT, "aria2").await
 }
 
 #[must_use]

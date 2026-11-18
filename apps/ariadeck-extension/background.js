@@ -93,14 +93,21 @@ async function report(result) {
   }
 }
 
+let badgeClearTimer = null;
+
 async function badge(text, color, title) {
+  if (badgeClearTimer !== null) {
+    clearTimeout(badgeClearTimer);
+    badgeClearTimer = null;
+  }
   await chrome.action.setBadgeText({ text });
   await chrome.action.setBadgeBackgroundColor({ color });
   await chrome.action.setTitle({ title: `AriaDeck — ${title}` });
   // Clear after a moment so a stale marker is not mistaken for a new result.
   // A service worker can be torn down before this fires; the popup still shows
   // the recorded outcome, so the badge is a hint, not the record.
-  setTimeout(() => {
+  badgeClearTimer = setTimeout(() => {
+    badgeClearTimer = null;
     void chrome.action.setBadgeText({ text: "" });
     void chrome.action.setTitle({ title: "AriaDeck" });
   }, 5000);

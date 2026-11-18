@@ -39,10 +39,9 @@ use ariadeck_settings::{
     AppSettings, CloseBehavior, ColorScheme, CompletionPowerAction, DownloadProxyMode,
     DownloadProxySettings, FileAllocationSetting, JsonSettingsStore, JsonWindowGeometryStore,
     LanguagePreference, ListFilterPreference, ListSortDirectionPreference, ListSortKeyPreference,
-    NotificationSettings, NotificationVolume, PlatformSettings, ProfileEnvironment,
-    ProfileEnvironmentStore, ProxyCredentialRef, ProxyCredentialStore, SpeedLimitSettings,
-    SystemProxyCredentialStore, TransferPolicySettings, UiPreferences, WindowGeometry,
-    resolve_system_proxy,
+    NotificationSettings, NotificationVolume, PlatformSettings, ProfileEnvironmentStore,
+    ProxyCredentialRef, ProxyCredentialStore, SpeedLimitSettings, SystemProxyCredentialStore,
+    TransferPolicySettings, UiPreferences, WindowGeometry, resolve_system_proxy,
 };
 use ariadeck_ui::{
     AddDownloadAdvancedOptionsView, AddDownloadItemResultView, AddDownloadMetadataFileView,
@@ -99,26 +98,22 @@ use crate::metadata::parse_metadata;
 mod core_fetch;
 mod diagnostics;
 mod engine_setup;
+mod http;
 mod mapping;
 mod ops;
+mod persistence;
 mod settings_bridge;
 mod tracker_list;
 mod updates;
 
 // Re-export so DesktopRoot methods and tests keep short names.
-#[allow(unused_imports)]
 pub(crate) use core_fetch::*;
-#[allow(unused_imports)]
 pub(crate) use engine_setup::*;
-#[allow(unused_imports)]
 pub(crate) use mapping::*;
-#[allow(unused_imports)]
 pub(crate) use ops::*;
-#[allow(unused_imports)]
+pub(crate) use persistence::*;
 pub(crate) use settings_bridge::*;
-#[allow(unused_imports)]
 pub(crate) use tracker_list::*;
-#[allow(unused_imports)]
 pub(crate) use updates::*;
 
 /// Process-wide flag: true while AriaDeck is intentionally hidden to tray with
@@ -134,15 +129,14 @@ pub struct DesktopRoot {
     local_engine: Option<LocalEngineSupervisor>,
     runtime: Arc<Runtime>,
     query_sender: watch::Sender<TaskListQuery>,
-    settings_sender: Option<mpsc::UnboundedSender<SettingsPersistenceRequest>>,
-    settings_task: Option<JoinHandle<()>>,
+    persistence_sender: Option<mpsc::UnboundedSender<PersistenceCommand>>,
+    persistence_task: Option<JoinHandle<()>>,
+    settings_persistence_available: bool,
     tracker_list_sender: Option<mpsc::UnboundedSender<TrackerListRefreshRequest>>,
     /// Verified aria2 download worker (B4). Only ever fed by a button press.
     core_download_sender: Option<mpsc::UnboundedSender<CoreDownloadRequest>>,
     settings: AppSettings,
     data_dir: PathBuf,
-    profile_store: JsonProfileStore,
-    profile_env_store: ProfileEnvironmentStore,
     profile_catalog: ProfileCatalog,
     core_store: CoreStore,
     update_offer: Option<UpdateOffer>,
@@ -150,7 +144,6 @@ pub struct DesktopRoot {
     tray: Option<SystemTray>,
     window_hidden_to_tray: bool,
     is_keep_awake: bool,
-    window_geometry_store: JsonWindowGeometryStore,
     last_saved_geometry: Option<WindowGeometry>,
     pending_geometry: Option<WindowGeometry>,
     pending_metadata_paths: Vec<PathBuf>,
@@ -386,18 +379,20 @@ impl DesktopRoot {
         let credential_store =
             Arc::new(SystemProxyCredentialStore::default()) as Arc<dyn ProxyCredentialStore>;
         let proxy_reapply_store = settings_store.clone();
-        let (settings_sender, settings_task, settings_results) = settings_store.map_or_else(
-            || (None, None, None),
-            |store| {
-                let (sender, task, results) = spawn_settings_persistence(
-                    runtime.clone(),
-                    store,
-                    profile_env_store.clone(),
-                    download_destination_gateway.clone(),
-                    sync.clone(),
-                    credential_store.clone(),
-                );
-                (Some(sender), Some(task), Some(results))
+        let settings_persistence_available = settings_store.is_some();
+        let window_geometry_store = JsonWindowGeometryStore::new(data_dir.join("window.json"));
+        let last_saved_geometry = window_geometry_store.load();
+        let (persistence_sender, persistence_task, persistence_events) = spawn_persistence_worker(
+            runtime.clone(),
+            PersistenceWorkerDeps {
+                settings_store,
+                profile_store,
+                profile_env_store,
+                window_geometry_store,
+                destination_gateway: download_destination_gateway.clone(),
+                sync: sync.clone(),
+                credential_store: credential_store.clone(),
+                initial_active_profile_id: profile_catalog.active().map(|p| p.profile_id),
             },
         );
         let initial_engine_health = local_engine_health
@@ -562,9 +557,6 @@ impl DesktopRoot {
                 }
             },
         );
-        let window_geometry_store = JsonWindowGeometryStore::new(data_dir.join("window.json"));
-        let last_saved_geometry = window_geometry_store.load();
-
         // Intercept the native close control so Minimize-to-tray can keep the
         // process (and managed engine) alive without destroying the window.
         {
@@ -577,9 +569,7 @@ impl DesktopRoot {
         if let Some(handle) = sync.clone() {
             spawn_snapshot_bridge(handle, query_receiver, task_file_gateway.is_some(), cx);
         }
-        if let Some(results) = settings_results {
-            spawn_settings_result_bridge(results, window, cx);
-        }
+        spawn_persistence_event_bridge(persistence_events, window, cx);
         if let (Some(handle), Some(store)) = (sync.clone(), proxy_reapply_store.clone()) {
             spawn_proxy_reapply_bridge(
                 runtime.handle().clone(),
@@ -595,8 +585,8 @@ impl DesktopRoot {
             spawn_tracker_list_refresh_bridge(
                 runtime.handle().clone(),
                 store,
-                sync.clone(),
                 credential_store.clone(),
+                persistence_sender.clone(),
                 req_rx,
                 res_tx,
             );
@@ -642,14 +632,13 @@ impl DesktopRoot {
             local_engine,
             runtime,
             query_sender,
-            settings_sender,
-            settings_task,
+            persistence_sender: Some(persistence_sender),
+            persistence_task: Some(persistence_task),
+            settings_persistence_available,
             tracker_list_sender,
             core_download_sender,
             settings,
             data_dir: data_dir.clone(),
-            profile_store,
-            profile_env_store,
             profile_catalog,
             core_store,
             update_offer: None,
@@ -657,7 +646,6 @@ impl DesktopRoot {
             tray,
             window_hidden_to_tray: false,
             is_keep_awake: false,
-            window_geometry_store,
             last_saved_geometry,
             pending_geometry: None,
             pending_metadata_paths: initial_request.metadata_paths,
@@ -966,9 +954,11 @@ impl DesktopRoot {
         }
         let mut next = self.settings.clone();
         next.ui = ui;
-        // Persist through the same ordered settings worker when available so a
+        // Persist through the same ordered persistence worker when available so a
         // concurrent proxy/theme save cannot clobber list preferences.
-        if let Some(sender) = self.settings_sender.as_ref() {
+        if self.settings_persistence_available
+            && let Some(sender) = self.persistence_sender.as_ref()
+        {
             let request = SettingsPersistenceRequest {
                 request_id: ariadeck_ui::RequestId::from_u64(0),
                 settings: next.clone(),
@@ -980,7 +970,10 @@ impl DesktopRoot {
                 apply_bt_tracker: false,
                 active_profile_id: self.profile_catalog.active().map(|p| p.profile_id),
             };
-            if sender.send(request).is_ok() {
+            if sender
+                .send(PersistenceCommand::SaveSettings(Box::new(request)))
+                .is_ok()
+            {
                 self.settings = next;
             }
         } else {
@@ -1012,11 +1005,9 @@ impl DesktopRoot {
                 if this.last_saved_geometry == Some(geometry) {
                     return;
                 }
-                if let Err(error) = this.window_geometry_store.save(geometry) {
-                    tracing::debug!(%error, "failed to persist window geometry");
-                    return;
+                if let Some(sender) = this.persistence_sender.as_ref() {
+                    let _ = sender.send(PersistenceCommand::SaveWindowGeometry(geometry));
                 }
-                this.last_saved_geometry = Some(geometry);
             })
             .ok();
         })
@@ -1205,7 +1196,11 @@ impl DesktopRoot {
         let apply_speed_limit = settings.speed_limits != self.settings.speed_limits;
         let apply_transfer_policy = settings.transfer_policy != self.settings.transfer_policy;
         let apply_bt_tracker = settings.tracker_list != self.settings.tracker_list;
-        let Some(sender) = &self.settings_sender else {
+        let Some(sender) = self
+            .settings_persistence_available
+            .then_some(self.persistence_sender.as_ref())
+            .flatten()
+        else {
             self.deliver_settings_error(
                 request,
                 "Settings persistence is unavailable for this session.".into(),
@@ -1215,17 +1210,19 @@ impl DesktopRoot {
             return;
         };
         if sender
-            .send(SettingsPersistenceRequest {
-                request_id: request.request_id,
-                settings,
-                previous_settings: self.settings.clone(),
-                proxy_password,
-                apply_proxy,
-                apply_speed_limit,
-                apply_transfer_policy,
-                apply_bt_tracker,
-                active_profile_id: self.profile_catalog.active().map(|p| p.profile_id),
-            })
+            .send(PersistenceCommand::SaveSettings(Box::new(
+                SettingsPersistenceRequest {
+                    request_id: request.request_id,
+                    settings,
+                    previous_settings: self.settings.clone(),
+                    proxy_password,
+                    apply_proxy,
+                    apply_speed_limit,
+                    apply_transfer_policy,
+                    apply_bt_tracker,
+                    active_profile_id: self.profile_catalog.active().map(|p| p.profile_id),
+                },
+            )))
             .is_err()
         {
             self.deliver_settings_error(
@@ -1530,97 +1527,34 @@ impl DesktopRoot {
                 return;
             }
         };
-        let previous_id = self.profile_catalog.active_profile_id;
-        // Snapshot current engine-env into the profile being left.
-        if previous_id != profile_id {
-            let env = ProfileEnvironment::from_settings(&self.settings);
-            if let Err(error) = self.profile_env_store.save(previous_id.as_uuid(), &env) {
-                self.deliver_switch_profile_error(
-                    &request,
-                    format!("Failed to save environment for the current profile: {error}"),
-                    window,
-                    cx,
-                );
-                return;
-            }
-        }
-        if let Err(error) = self.profile_catalog.set_active(profile_id) {
-            self.deliver_switch_profile_error(&request, error.to_string(), window, cx);
-            return;
-        }
-        // Load (or seed) the activated profile's engine environment into live settings.
-        let mut next_settings = self.settings.clone();
-        match self
-            .profile_env_store
-            .load_or_initialize(profile_id.as_uuid(), &next_settings)
-        {
-            Ok(env) => env.apply_to(&mut next_settings),
-            Err(error) => {
-                self.deliver_switch_profile_error(
-                    &request,
-                    format!("Failed to load environment for the selected profile: {error}"),
-                    window,
-                    cx,
-                );
-                let _ = self.profile_catalog.set_active(previous_id);
-                return;
-            }
-        }
-        if let Some(entry) = self.profile_catalog.active_mut() {
-            entry.download_dir = next_settings.download_directory.clone();
-        }
-        if let Err(error) = self.profile_store.save_catalog(&self.profile_catalog) {
+        let Some(sender) = self.persistence_sender.as_ref() else {
             self.deliver_switch_profile_error(
                 &request,
-                format!("Failed to save active profile: {error}"),
+                "The persistence worker is unavailable.".into(),
                 window,
                 cx,
             );
-            let _ = self.profile_catalog.set_active(previous_id);
             return;
-        }
-        // Dual-write: settings.json env slice mirrors the active bag (D-043).
-        let settings_path = self.data_dir.join("settings.json");
-        if let Err(error) = JsonSettingsStore::new(settings_path).save(&next_settings) {
-            self.deliver_switch_profile_error(
-                &request,
-                format!("Failed to mirror profile environment into settings: {error}"),
-                window,
-                cx,
-            );
-            let _ = self.profile_catalog.set_active(previous_id);
-            let _ = self.profile_store.save_catalog(&self.profile_catalog);
-            return;
-        }
-        // Ensure the activated bag is persisted even if it was just seeded.
-        let env = ProfileEnvironment::from_settings(&next_settings);
-        if let Err(error) = self.profile_env_store.save(profile_id.as_uuid(), &env) {
-            self.deliver_switch_profile_error(
-                &request,
-                format!("Failed to save environment for the selected profile: {error}"),
-                window,
-                cx,
-            );
-            let _ = self.profile_catalog.set_active(previous_id);
-            let _ = self.profile_store.save_catalog(&self.profile_catalog);
-            return;
-        }
-        self.settings = next_settings;
-        let catalog = map_profile_catalog(&self.profile_catalog);
-        let settings_view = map_settings(&self.settings);
-        self.workspace.update(cx, |shell, cx| {
-            // Apply env bag into drafts first; switch result notice covers restart.
-            shell.apply_settings(settings_view, Some(window), cx);
-            shell.set_switch_profile_result(
-                SwitchProfileResultView {
+        };
+        if sender
+            .send(PersistenceCommand::SwitchProfile(Box::new(
+                ProfileSwitchRequest {
                     request_id: request.request_id,
-                    profile_id: request.profile_id.clone(),
-                    catalog,
-                    outcome: SwitchProfileOutcomeView::Success,
+                    profile_id,
+                    profile_id_raw: request.profile_id.clone(),
+                    current_catalog: self.profile_catalog.clone(),
+                    current_settings: self.settings.clone(),
                 },
+            )))
+            .is_err()
+        {
+            self.deliver_switch_profile_error(
+                &request,
+                "The persistence worker stopped unexpectedly.".into(),
+                window,
                 cx,
             );
-        });
+        }
     }
 
     fn deliver_switch_profile_error(
@@ -1663,50 +1597,35 @@ impl DesktopRoot {
             &self.settings,
         ) {
             Ok(catalog) => {
-                if let Err(error) = apply_profile_secret_updates(
-                    &catalog,
-                    &request.catalog,
-                    &request.secret_updates,
-                    &self.profile_catalog,
-                ) {
-                    self.deliver_save_profile_error(&request, error, window, cx);
-                    return;
-                }
-                if let Err(error) = self.profile_store.save_catalog(&catalog) {
+                let Some(sender) = self.persistence_sender.as_ref() else {
                     self.deliver_save_profile_error(
                         &request,
-                        format!("Failed to save profiles: {error}"),
+                        "The persistence worker is unavailable.".into(),
                         window,
                         cx,
                     );
                     return;
-                }
-                // Drop secrets and per-profile environment bags for removed profiles.
-                cleanup_removed_profile_secrets(&self.profile_catalog, &catalog);
-                cleanup_removed_profile_environments(
-                    &self.profile_env_store,
-                    &self.profile_catalog,
-                    &catalog,
-                );
-                // Ensure every profile has an environment bag (seed new drafts from current).
-                for entry in &catalog.profiles {
-                    let _ = self
-                        .profile_env_store
-                        .load_or_initialize(entry.profile_id.as_uuid(), &self.settings);
-                }
-                self.profile_catalog = catalog;
-                let view = map_profile_catalog(&self.profile_catalog);
-                self.workspace.update(cx, |shell, cx| {
-                    shell.set_save_profile_catalog_result(
-                        SaveProfileCatalogResultView {
+                };
+                if sender
+                    .send(PersistenceCommand::SaveProfileCatalog(Box::new(
+                        ProfileCatalogSaveJob {
                             request_id: request.request_id,
-                            catalog: view,
-                            outcome: SaveProfileCatalogOutcomeView::Success,
+                            request_catalog: request.catalog.clone(),
+                            next_catalog: catalog,
+                            secret_updates: request.secret_updates.clone(),
+                            previous_catalog: self.profile_catalog.clone(),
+                            current_settings: self.settings.clone(),
                         },
-                        Some(window),
+                    )))
+                    .is_err()
+                {
+                    self.deliver_save_profile_error(
+                        &request,
+                        "The persistence worker stopped unexpectedly.".into(),
+                        window,
                         cx,
                     );
-                });
+                }
             }
             Err(error) => self.deliver_save_profile_error(&request, error, window, cx),
         }
@@ -1860,7 +1779,9 @@ impl DesktopRoot {
         }
         let mut next = self.settings.clone();
         next.onboarding.core_setup_dismissed = true;
-        if let Some(sender) = self.settings_sender.as_ref() {
+        if self.settings_persistence_available
+            && let Some(sender) = self.persistence_sender.as_ref()
+        {
             let request = SettingsPersistenceRequest {
                 request_id: ariadeck_ui::RequestId::from_u64(0),
                 settings: next.clone(),
@@ -1872,7 +1793,10 @@ impl DesktopRoot {
                 apply_bt_tracker: false,
                 active_profile_id: self.profile_catalog.active().map(|p| p.profile_id),
             };
-            if sender.send(request).is_ok() {
+            if sender
+                .send(PersistenceCommand::SaveSettings(Box::new(request)))
+                .is_ok()
+            {
                 self.settings = next;
             }
         } else {
@@ -1940,8 +1864,13 @@ impl Drop for DesktopRoot {
         self.tray.take();
         self.tracker_list_sender.take();
         self.core_download_sender.take();
-        let settings_sender = self.settings_sender.take();
-        let settings_task = self.settings_task.take();
+        let persistence_sender = self.persistence_sender.take();
+        if let (Some(sender), Some(geometry)) =
+            (persistence_sender.as_ref(), self.pending_geometry.take())
+        {
+            let _ = sender.send(PersistenceCommand::SaveWindowGeometry(geometry));
+        }
+        let persistence_task = self.persistence_task.take();
         let sync = self.sync.take();
         let local_engine = self.local_engine.take();
         let runtime = self.runtime.clone();
@@ -1949,11 +1878,11 @@ impl Drop for DesktopRoot {
         let cleanup_started = Instant::now();
         runtime.spawn(async move {
             let _runtime = runtime_keepalive;
-            drop(settings_sender);
-            if let Some(task) = settings_task
+            drop(persistence_sender);
+            if let Some(task) = persistence_task
                 && let Err(error) = task.await
             {
-                tracing::warn!(%error, "settings persistence worker did not stop cleanly");
+                tracing::warn!(%error, "persistence worker did not stop cleanly");
             }
             if let Some(handle) = sync
                 && tokio::time::timeout(Duration::from_secs(2), handle.stop())
@@ -2412,20 +2341,42 @@ fn is_read_only_update_install() -> bool {
     false
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn build_windows_update_command(
+    package: &Path,
+    executable: &Path,
+) -> std::process::Command {
+    // Pass paths strictly via environment variables and `-LiteralPath` /
+    // `-FilePath` so characters like `&`, `%`, `^`, `;`, or quotes in user
+    // directories can never break quoting or inject shell commands.
+    let mut command = ariadeck_engine::console_free_command("powershell");
+    command
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "Start-Sleep -Seconds 2; \
+             $pkg = $env:ARIADECK_UPDATE_PACKAGE; \
+             $exe = $env:ARIADECK_UPDATE_EXECUTABLE; \
+             if ($pkg -and (Test-Path -LiteralPath $pkg)) { \
+                 Start-Process -FilePath $pkg -ArgumentList '/SILENT','/CLOSEAPPLICATIONS' -Wait; \
+                 Remove-Item -LiteralPath $pkg -Force -ErrorAction SilentlyContinue; \
+             }; \
+             if ($exe -and (Test-Path -LiteralPath $exe)) { \
+                 Start-Process -FilePath $exe; \
+             }",
+        ])
+        .env("ARIADECK_UPDATE_PACKAGE", package)
+        .env("ARIADECK_UPDATE_EXECUTABLE", executable);
+    command
+}
+
 fn launch_verified_update(package: PathBuf, executable: PathBuf) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        let cmd_line = format!(
-            "ping 127.0.0.1 -n 2 >nul & start /wait \"\" \"{}\" /SILENT /CLOSEAPPLICATIONS & start \"\" \"{}\" & del /f /q \"{}\"",
-            package.display(),
-            executable.display(),
-            package.display()
-        );
-        std::process::Command::new("cmd")
-            .args(["/c", &cmd_line])
-            .creation_flags(CREATE_NO_WINDOW)
+        build_windows_update_command(&package, &executable)
             .spawn()
             .map_err(|error| format!("Could not start the update installer: {error}"))?;
         Ok(())
@@ -2441,11 +2392,11 @@ fn launch_verified_update(package: PathBuf, executable: PathBuf) -> Result<(), S
         else {
             return Err("In-app update on macOS requires running from an .app bundle.".into());
         };
-        let staging_dir =
-            std::env::temp_dir().join(format!("AriaDeck-update-stage-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&staging_dir);
-        std::fs::create_dir_all(&staging_dir)
+        let staging_temp = tempfile::Builder::new()
+            .prefix("AriaDeck-update-stage-")
+            .tempdir()
             .map_err(|e| format!("Could not create macOS update staging directory: {e}"))?;
+        let staging_dir = staging_temp.path().to_path_buf();
 
         let tar_status = std::process::Command::new("/usr/bin/tar")
             .args(["-xzf"])
@@ -2463,6 +2414,7 @@ fn launch_verified_update(package: PathBuf, executable: PathBuf) -> Result<(), S
             return Err("Unpacked update does not contain AriaDeck.app.".into());
         }
 
+        let staging_dir = staging_temp.keep();
         std::process::Command::new("sh")
             .args([
                 "-c",

@@ -1,5 +1,6 @@
 //! Typed, versioned application settings and their persistence boundary.
 
+mod atomic_io;
 mod profile_env;
 mod system_proxy;
 
@@ -12,8 +13,7 @@ pub use system_proxy::{
 };
 
 use std::{
-    fs::{self, OpenOptions},
-    io::{self, Write},
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -990,41 +990,15 @@ pub fn export_settings_to_path(
 ) -> Result<(), SettingsError> {
     let path = path.as_ref();
     let payload = export_settings_json(settings)?;
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)
-        .map_err(|source| io_error("create the export directory", parent, source))?;
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| SettingsError::InvalidStorePath {
-            path: path.to_path_buf(),
-        })?;
-    let temp_path = parent.join(format!(
-        ".{}.{}.tmp",
-        file_name.to_string_lossy(),
-        Uuid::new_v4()
-    ));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp_path)
-            .map_err(|source| io_error("create the temporary export file", &temp_path, source))?;
-        file.write_all(payload.as_bytes())
-            .and_then(|_| file.write_all(b"\n"))
-            .map_err(|source| io_error("write the settings export", &temp_path, source))?;
-        file.flush()
-            .and_then(|_| file.sync_all())
-            .map_err(|source| io_error("flush the settings export", &temp_path, source))?;
-        replace_file(&temp_path, path)
-            .map_err(|source| io_error("replace the settings export", path, source))
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp_path);
-    }
-    result
+    atomic_io::write_atomic_json(
+        path,
+        payload.as_bytes(),
+        "create the export directory",
+        "create the temporary export file",
+        "write the settings export",
+        "flush the settings export",
+        "replace the settings export",
+    )
 }
 
 /// Read and validate a portable settings document from a user-selected path.
@@ -1440,40 +1414,17 @@ impl JsonSettingsStore {
 
     pub fn save(&self, settings: &AppSettings) -> Result<(), SettingsError> {
         settings.validate()?;
-        let (parent, file_name) = self.parent_and_file_name()?;
-        fs::create_dir_all(parent)
-            .map_err(|source| io_error("create the settings directory", parent, source))?;
         let payload = serde_json::to_vec_pretty(&SettingsDocument::from(settings))
             .map_err(SettingsError::Serialize)?;
-        let temp_path = parent.join(format!(
-            ".{}.{}.tmp",
-            file_name.to_string_lossy(),
-            Uuid::new_v4()
-        ));
-
-        let result = (|| {
-            let mut file = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&temp_path)
-                .map_err(|source| {
-                    io_error("create the temporary settings file", &temp_path, source)
-                })?;
-            file.write_all(&payload)
-                .map_err(|source| io_error("write the settings document", &temp_path, source))?;
-            file.write_all(b"\n")
-                .map_err(|source| io_error("finish the settings document", &temp_path, source))?;
-            file.flush()
-                .map_err(|source| io_error("flush the settings document", &temp_path, source))?;
-            file.sync_all()
-                .map_err(|source| io_error("sync the settings document", &temp_path, source))?;
-            replace_file(&temp_path, &self.path)
-                .map_err(|source| io_error("replace the settings document", &self.path, source))
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temp_path);
-        }
-        result
+        atomic_io::write_atomic_json(
+            &self.path,
+            &payload,
+            "create the settings directory",
+            "create the temporary settings file",
+            "write the settings document",
+            "sync the settings document",
+            "replace the settings document",
+        )
     }
 
     fn preserve_corrupt_document(&self) -> Result<PathBuf, SettingsError> {
@@ -1508,23 +1459,6 @@ impl JsonSettingsStore {
             .unwrap_or_else(|| Path::new("."));
         Ok((parent, file_name))
     }
-}
-
-#[cfg(windows)]
-fn replace_file(temp_path: &Path, target_path: &Path) -> io::Result<()> {
-    match fs::rename(temp_path, target_path) {
-        Ok(()) => Ok(()),
-        Err(first_error) if target_path.exists() => {
-            fs::remove_file(target_path)?;
-            fs::rename(temp_path, target_path).or(Err(first_error))
-        }
-        Err(error) => Err(error),
-    }
-}
-
-#[cfg(not(windows))]
-fn replace_file(temp_path: &Path, target_path: &Path) -> io::Result<()> {
-    fs::rename(temp_path, target_path)
 }
 
 fn io_error(operation: &'static str, path: &Path, source: io::Error) -> SettingsError {
@@ -1630,45 +1564,20 @@ impl JsonWindowGeometryStore {
 
     pub fn save(&self, geometry: WindowGeometry) -> Result<(), SettingsError> {
         let geometry = geometry.sanitized();
-        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(parent)
-            .map_err(|source| io_error("create the window-geometry directory", parent, source))?;
-        let file_name = self
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| SettingsError::InvalidStorePath {
-                path: self.path.clone(),
-            })?;
-        let temp_path = parent.join(format!(".{file_name}.tmp"));
         let payload = serde_json::to_vec_pretty(&WindowGeometryDocument {
             schema_version: WINDOW_GEOMETRY_SCHEMA_VERSION,
             geometry,
         })
         .map_err(SettingsError::Serialize)?;
-        {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&temp_path)
-                .map_err(|source| {
-                    io_error("write the window-geometry temp file", &temp_path, source)
-                })?;
-            file.write_all(&payload).map_err(|source| {
-                io_error("write the window-geometry temp file", &temp_path, source)
-            })?;
-            file.write_all(b"\n").map_err(|source| {
-                io_error("write the window-geometry temp file", &temp_path, source)
-            })?;
-            file.sync_all().map_err(|source| {
-                io_error("sync the window-geometry temp file", &temp_path, source)
-            })?;
-        }
-        replace_file(&temp_path, &self.path).map_err(|source| {
-            io_error("replace the window-geometry document", &self.path, source)
-        })?;
-        Ok(())
+        atomic_io::write_atomic_json(
+            &self.path,
+            &payload,
+            "create the window-geometry directory",
+            "write the window-geometry temp file",
+            "write the window-geometry temp file",
+            "sync the window-geometry temp file",
+            "replace the window-geometry document",
+        )
     }
 }
 

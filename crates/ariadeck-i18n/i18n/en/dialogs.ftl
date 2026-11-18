@@ -1,4 +1,3 @@
-## Dialogs (English)
 
 dialog-add-download = Add download
 dialog-add-input-links = Links
@@ -14,7 +13,6 @@ dialog-add-input-type-aria = Download source type
 dialog-add-mode-aria = Multiple link handling
 dialog-add-file-conflict-aria = Existing file handling
 dialog-add-cancel-aria = Cancel adding a download
-dialog-add-resize-links-input-aria = Drag to resize link input height, double-click to reset
 dialog-add-url-or-magnet = URL or magnet link
 dialog-add-no-sources = No sources detected
 dialog-add-sources-detected = { $n ->
@@ -140,8 +138,6 @@ dialog-details-sources = Sources and mirrors
 dialog-details-trackers = Trackers
 dialog-details-servers = Servers
 dialog-details-close = Close details
-dialog-details-share-ratio = Share ratio
-dialog-details-progress = Progress
 dialog-details-info = Info
 dialog-details-source = Source
 dialog-details-output = Output
@@ -181,7 +177,6 @@ dialog-details-seed-ratio-disabled = ratio disabled (0.0)
 dialog-details-seed-ratio-value = ratio { $ratio }
 dialog-details-seed-stop-rules = Stops at the first reached limit: { $ratio } · time { $time } min
 dialog-add-category = Category
-dialog-add-category-default = Default directory
 dialog-add-category-auto = Automatic
 dialog-add-category-auto-named = Auto · { $name }
 
@@ -199,7 +194,6 @@ dialog-core-setup-dismiss-aria = Close the aria2 setup guide without choosing a 
 dialog-power-countdown-title = All downloads completed
 dialog-power-countdown-desc = The computer will { $action } in { $seconds } seconds.
 dialog-power-cancel = Cancel
-dialog-power-execute-now = { $action } now
 power-action-verb-sleep = enter sleep mode
 power-action-verb-hibernate = hibernate
 power-action-verb-shutdown = shut down

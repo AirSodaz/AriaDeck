@@ -1,4 +1,3 @@
-## 应用内通知与命令反馈（简体中文）
 
 notice-select-task-first = 请先选择可见任务。
 notice-select-task-details = 请选择可见任务以查看详情。
@@ -63,9 +62,7 @@ notice-choose-metadata = 请至少选择一个 Torrent 或 Metalink 文件。
 notice-filename-empty = 请输入文件名。
 notice-filename-dot = 文件名不能是 "." 或 ".."。
 notice-filename-separators = 文件名不能包含路径分隔符。
-notice-stale-session = aria2 会话已变更。请确认当前状态后再提交。
 notice-refresh-details = 无法刷新任务详情：{ $summary }
-notice-outcome-unknown = 结果未知 · { $summary }
 
 # 命令进度 / 成功
 cmd-pause-all-progress = 正在暂停全部任务…

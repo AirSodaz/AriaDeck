@@ -698,13 +698,23 @@ enum UnavailableControlDisposition {
     Stop,
 }
 
-fn handle_unavailable_control(
+struct OfflineContext<'a> {
+    commands: &'a mut mpsc::Receiver<Control>,
+    store: &'a DownloadStore,
+    state: &'a ConnectionState,
+    activity: &'a mut ActivityMode,
+    cancellation: &'a mut watch::Receiver<bool>,
+    history: &'a Arc<dyn TaskHistoryStore>,
+    profile_id: ProfileId,
+}
+
+async fn handle_unavailable_control(
     control: Option<Control>,
     store: &DownloadStore,
     state: &ConnectionState,
     activity: &mut ActivityMode,
     force_refresh_retries: bool,
-    history: &dyn TaskHistoryStore,
+    history: &Arc<dyn TaskHistoryStore>,
     profile_id: ProfileId,
 ) -> UnavailableControlDisposition {
     match control {
@@ -721,10 +731,9 @@ fn handle_unavailable_control(
             category_id,
             sender,
         }) => {
-            // Persist while disconnected so affiliation survives reconnect seed.
-            if let Err(error) = history.set_task_category(profile_id, gid, category_id.as_deref()) {
-                tracing::warn!(%error, %gid, "failed to persist task category while offline");
-            }
+            // Persist off the async worker thread while disconnected so
+            // affiliation survives reconnect seed without stalling Tokio.
+            persist_task_category(history, profile_id, gid, category_id).await;
             let _ = sender.send(());
             UnavailableControlDisposition::Continue
         }
@@ -824,13 +833,8 @@ async fn run_coordinator(
         generation,
     ));
     // Seed durable history before connect so Completed/Failed remain visible offline.
-    match config.history.list(config.profile_id, 10_000) {
-        Ok(records) => match store.seed_local_history(generation, records) {
-            Ok(_) => {}
-            Err(error) => tracing::warn!(%error, "failed to seed local history at startup"),
-        },
-        Err(error) => tracing::warn!(%error, "failed to load local task history at startup"),
-    }
+    seed_initial_history_from_disk(&mut store, generation, &config.history, config.profile_id)
+        .await;
     let mut state = ConnectionState::Disconnected;
     let mut activity = ActivityMode::Foreground;
     let mut backoff = ReconnectBackoff::new(config.reconnect, backoff_seed());
@@ -879,9 +883,11 @@ async fn run_coordinator(
                     &state,
                     &mut activity,
                     false,
-                    config.history.as_ref(),
+                    &config.history,
                     config.profile_id,
-                ) {
+                )
+                .await
+                {
                     UnavailableControlDisposition::Continue
                     | UnavailableControlDisposition::RetryNow => {}
                     UnavailableControlDisposition::Stop => return,
@@ -893,15 +899,15 @@ async fn run_coordinator(
             Ok(connected) => connected,
             Err(error) => {
                 if !handle_connection_failure(&events, &mut state, &mut store, generation, &error) {
-                    if wait_for_manual_retry(
-                        &mut commands,
-                        &store,
-                        &state,
-                        &mut activity,
-                        &mut cancellation,
-                        config.history.as_ref(),
-                        config.profile_id,
-                    )
+                    if wait_for_manual_retry(OfflineContext {
+                        commands: &mut commands,
+                        store: &store,
+                        state: &state,
+                        activity: &mut activity,
+                        cancellation: &mut cancellation,
+                        history: &config.history,
+                        profile_id: config.profile_id,
+                    })
                     .await
                     {
                         backoff.reset();
@@ -917,15 +923,15 @@ async fn run_coordinator(
                             reason: connection_failure(&error),
                         },
                     );
-                    if wait_for_manual_retry(
-                        &mut commands,
-                        &store,
-                        &state,
-                        &mut activity,
-                        &mut cancellation,
-                        config.history.as_ref(),
-                        config.profile_id,
-                    )
+                    if wait_for_manual_retry(OfflineContext {
+                        commands: &mut commands,
+                        store: &store,
+                        state: &state,
+                        activity: &mut activity,
+                        cancellation: &mut cancellation,
+                        history: &config.history,
+                        profile_id: config.profile_id,
+                    })
                     .await
                     {
                         backoff.reset();
@@ -936,13 +942,15 @@ async fn run_coordinator(
                 let delay = backoff.next_delay();
                 if !wait_for_retry_delay(
                     delay,
-                    &mut commands,
-                    &store,
-                    &state,
-                    &mut activity,
-                    &mut cancellation,
-                    config.history.as_ref(),
-                    config.profile_id,
+                    OfflineContext {
+                        commands: &mut commands,
+                        store: &store,
+                        state: &state,
+                        activity: &mut activity,
+                        cancellation: &mut cancellation,
+                        history: &config.history,
+                        profile_id: config.profile_id,
+                    },
                 )
                 .await
                 {
@@ -975,9 +983,11 @@ async fn run_coordinator(
                     &state,
                     &mut activity,
                     false,
-                    config.history.as_ref(),
+                    &config.history,
                     config.profile_id,
-                ) {
+                )
+                .await
+                {
                     UnavailableControlDisposition::Continue
                     | UnavailableControlDisposition::RetryNow => {}
                     UnavailableControlDisposition::Stop => {
@@ -993,15 +1003,15 @@ async fn run_coordinator(
             Err(error) => {
                 session.close().await;
                 if !handle_connection_failure(&events, &mut state, &mut store, generation, &error) {
-                    if wait_for_manual_retry(
-                        &mut commands,
-                        &store,
-                        &state,
-                        &mut activity,
-                        &mut cancellation,
-                        config.history.as_ref(),
-                        config.profile_id,
-                    )
+                    if wait_for_manual_retry(OfflineContext {
+                        commands: &mut commands,
+                        store: &store,
+                        state: &state,
+                        activity: &mut activity,
+                        cancellation: &mut cancellation,
+                        history: &config.history,
+                        profile_id: config.profile_id,
+                    })
                     .await
                     {
                         backoff.reset();
@@ -1017,15 +1027,15 @@ async fn run_coordinator(
                             reason: connection_failure(&error),
                         },
                     );
-                    if wait_for_manual_retry(
-                        &mut commands,
-                        &store,
-                        &state,
-                        &mut activity,
-                        &mut cancellation,
-                        config.history.as_ref(),
-                        config.profile_id,
-                    )
+                    if wait_for_manual_retry(OfflineContext {
+                        commands: &mut commands,
+                        store: &store,
+                        state: &state,
+                        activity: &mut activity,
+                        cancellation: &mut cancellation,
+                        history: &config.history,
+                        profile_id: config.profile_id,
+                    })
                     .await
                     {
                         backoff.reset();
@@ -1036,13 +1046,15 @@ async fn run_coordinator(
                 let delay = backoff.next_delay();
                 if !wait_for_retry_delay(
                     delay,
-                    &mut commands,
-                    &store,
-                    &state,
-                    &mut activity,
-                    &mut cancellation,
-                    config.history.as_ref(),
-                    config.profile_id,
+                    OfflineContext {
+                        commands: &mut commands,
+                        store: &store,
+                        state: &state,
+                        activity: &mut activity,
+                        cancellation: &mut cancellation,
+                        history: &config.history,
+                        profile_id: config.profile_id,
+                    },
                 )
                 .await
                 {
@@ -1058,23 +1070,25 @@ async fn run_coordinator(
             generation,
             initial,
             &events,
-            config.history.as_ref(),
+            &config.history,
             config.profile_id,
-        ) {
+        )
+        .await
+        {
             Ok(capabilities) => capabilities,
             Err(error) => {
                 session.close().await;
                 let _ =
                     handle_connection_failure(&events, &mut state, &mut store, generation, &error);
-                if wait_for_manual_retry(
-                    &mut commands,
-                    &store,
-                    &state,
-                    &mut activity,
-                    &mut cancellation,
-                    config.history.as_ref(),
-                    config.profile_id,
-                )
+                if wait_for_manual_retry(OfflineContext {
+                    commands: &mut commands,
+                    store: &store,
+                    state: &state,
+                    activity: &mut activity,
+                    cancellation: &mut cancellation,
+                    history: &config.history,
+                    profile_id: config.profile_id,
+                })
                 .await
                 {
                     backoff.reset();
@@ -1086,22 +1100,22 @@ async fn run_coordinator(
         set_state(&events, &mut state, ConnectionState::Connected);
         let connected_at = Instant::now();
 
-        match run_connected(
-            session.as_ref(),
-            command_gateway.as_ref(),
-            details_gateway.as_ref(),
-            connection_gateway.as_ref(),
+        match run_connected(ConnectedContext {
+            session: session.as_ref(),
+            command_gateway: command_gateway.as_ref(),
+            details_gateway: details_gateway.as_ref(),
+            connection_gateway: connection_gateway.as_ref(),
             notifications,
-            &mut commands,
-            &mut store,
+            commands: &mut commands,
+            store: &mut store,
             generation,
-            &mut state,
-            &mut activity,
-            &config,
-            &events,
-            &mut cancellation,
-            &capabilities,
-        )
+            state: &mut state,
+            activity: &mut activity,
+            config: &config,
+            events: &events,
+            cancellation: &mut cancellation,
+            capabilities: &capabilities,
+        })
         .await
         {
             ConnectedExit::Stop => {
@@ -1117,15 +1131,15 @@ async fn run_coordinator(
                 let retryable =
                     handle_connection_failure(&events, &mut state, &mut store, generation, &error);
                 if !retryable {
-                    if wait_for_manual_retry(
-                        &mut commands,
-                        &store,
-                        &state,
-                        &mut activity,
-                        &mut cancellation,
-                        config.history.as_ref(),
-                        config.profile_id,
-                    )
+                    if wait_for_manual_retry(OfflineContext {
+                        commands: &mut commands,
+                        store: &store,
+                        state: &state,
+                        activity: &mut activity,
+                        cancellation: &mut cancellation,
+                        history: &config.history,
+                        profile_id: config.profile_id,
+                    })
                     .await
                     {
                         backoff.reset();
@@ -1142,15 +1156,15 @@ async fn run_coordinator(
                             reason: connection_failure(&error),
                         },
                     );
-                    if wait_for_manual_retry(
-                        &mut commands,
-                        &store,
-                        &state,
-                        &mut activity,
-                        &mut cancellation,
-                        config.history.as_ref(),
-                        config.profile_id,
-                    )
+                    if wait_for_manual_retry(OfflineContext {
+                        commands: &mut commands,
+                        store: &store,
+                        state: &state,
+                        activity: &mut activity,
+                        cancellation: &mut cancellation,
+                        history: &config.history,
+                        profile_id: config.profile_id,
+                    })
                     .await
                     {
                         backoff.reset();
@@ -1161,13 +1175,15 @@ async fn run_coordinator(
                 let delay = backoff.next_delay();
                 if !wait_for_retry_delay(
                     delay,
-                    &mut commands,
-                    &store,
-                    &state,
-                    &mut activity,
-                    &mut cancellation,
-                    config.history.as_ref(),
-                    config.profile_id,
+                    OfflineContext {
+                        commands: &mut commands,
+                        store: &store,
+                        state: &state,
+                        activity: &mut activity,
+                        cancellation: &mut cancellation,
+                        history: &config.history,
+                        profile_id: config.profile_id,
+                    },
                 )
                 .await
                 {
@@ -1178,23 +1194,40 @@ async fn run_coordinator(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_connected(
-    session: &dyn DownloadSyncSession,
-    command_gateway: Option<&Arc<dyn DownloadEngineGateway>>,
-    details_gateway: Option<&Arc<dyn TaskDetailsGateway>>,
-    connection_gateway: Option<&Arc<dyn TaskConnectionDetailsGateway>>,
-    mut notifications: mpsc::Receiver<RefreshHint>,
-    commands: &mut mpsc::Receiver<Control>,
-    store: &mut DownloadStore,
+struct ConnectedContext<'a> {
+    session: &'a dyn DownloadSyncSession,
+    command_gateway: Option<&'a Arc<dyn DownloadEngineGateway>>,
+    details_gateway: Option<&'a Arc<dyn TaskDetailsGateway>>,
+    connection_gateway: Option<&'a Arc<dyn TaskConnectionDetailsGateway>>,
+    notifications: mpsc::Receiver<RefreshHint>,
+    commands: &'a mut mpsc::Receiver<Control>,
+    store: &'a mut DownloadStore,
     generation: SessionGeneration,
-    state: &mut ConnectionState,
-    activity: &mut ActivityMode,
-    config: &CoordinatorConfig,
-    events: &broadcast::Sender<SyncEvent>,
-    cancellation: &mut watch::Receiver<bool>,
-    capabilities: &EngineCapabilities,
-) -> ConnectedExit {
+    state: &'a mut ConnectionState,
+    activity: &'a mut ActivityMode,
+    config: &'a CoordinatorConfig,
+    events: &'a broadcast::Sender<SyncEvent>,
+    cancellation: &'a mut watch::Receiver<bool>,
+    capabilities: &'a EngineCapabilities,
+}
+
+async fn run_connected(ctx: ConnectedContext<'_>) -> ConnectedExit {
+    let ConnectedContext {
+        session,
+        command_gateway,
+        details_gateway,
+        connection_gateway,
+        mut notifications,
+        commands,
+        store,
+        generation,
+        state,
+        activity,
+        config,
+        events,
+        cancellation,
+        capabilities,
+    } = ctx;
     let mut timers = PollTimers::new(config.refresh, *activity);
     let mut pending_tasks = HashSet::new();
     let mut pending_full = false;
@@ -1219,7 +1252,7 @@ async fn run_connected(
                                 generation,
                                 config.stopped_page_size,
                                 events,
-                                config.history.as_ref(),
+                                &config.history,
                                 config.profile_id,
                             ) => result,
                         };
@@ -1232,13 +1265,7 @@ async fn run_connected(
                         category_id,
                         sender,
                     }) => {
-                        if let Err(error) = config.history.set_task_category(
-                            config.profile_id,
-                            gid,
-                            category_id.as_deref(),
-                        ) {
-                            tracing::warn!(%error, %gid, "failed to persist task category");
-                        }
+                        persist_task_category(&config.history, config.profile_id, gid, category_id.clone()).await;
                         store.set_task_category_affiliation(gid, category_id);
                         let _ = sender.send(());
                     }
@@ -1258,10 +1285,11 @@ async fn run_connected(
                         match result {
                             Ok(page) => {
                                 persist_terminal_snapshots(
-                                    config.history.as_ref(),
+                                    &config.history,
                                     config.profile_id,
                                     page.tasks.iter().cloned(),
-                                );
+                                )
+                                .await;
                                 match store.apply_stopped_page(
                                     generation,
                                     page.offset,
@@ -1273,10 +1301,11 @@ async fn run_connected(
                                         seed_history_into_store(
                                             store,
                                             generation,
-                                            config.history.as_ref(),
+                                            &config.history,
                                             config.profile_id,
                                             events,
-                                        );
+                                        )
+                                        .await;
                                         let _ = sender.send(store.stopped_history());
                                     }
                                     Err(error) => {
@@ -1413,10 +1442,11 @@ async fn run_connected(
                                 .collect::<Vec<_>>();
                             if !deleted.is_empty() {
                                 delete_history_for_gids(
-                                    config.history.as_ref(),
+                                    &config.history,
                                     config.profile_id,
-                                    deleted.iter().copied(),
-                                );
+                                    deleted.clone(),
+                                )
+                                .await;
                                 match store.remove_history_only(generation, &deleted) {
                                     Ok(patch) => emit_patch(events, patch),
                                     Err(error) => {
@@ -1613,7 +1643,7 @@ async fn run_connected(
                                 generation,
                                 config.stopped_page_size,
                                 events,
-                                config.history.as_ref(),
+                                &config.history,
                                 config.profile_id,
                             ).await
                         } else {
@@ -1624,7 +1654,7 @@ async fn run_connected(
                                 generation,
                                 &gids,
                                 events,
-                                config.history.as_ref(),
+                                &config.history,
                                 config.profile_id,
                             ).await
                         }
@@ -1690,10 +1720,11 @@ async fn run_connected(
                         Ok(page) => {
                             let total = page.total;
                             persist_terminal_snapshots(
-                                config.history.as_ref(),
+                                &config.history,
                                 config.profile_id,
                                 page.tasks.iter().cloned(),
-                            );
+                            )
+                            .await;
                             match store.apply_stopped_page(
                                 generation,
                                 page.offset,
@@ -1722,7 +1753,7 @@ async fn refresh_all(
     generation: SessionGeneration,
     stopped_page_size: u32,
     events: &broadcast::Sender<SyncEvent>,
-    history: &dyn TaskHistoryStore,
+    history: &Arc<dyn TaskHistoryStore>,
     profile_id: ProfileId,
 ) -> Result<(), SyncError> {
     let global = session.refresh_global_stat().await?;
@@ -1749,7 +1780,7 @@ async fn refresh_all(
             .reconcile_live(generation, live.active, live.waiting)
             .map_err(SyncError::store)?,
     );
-    seed_history_into_store(store, generation, history, profile_id, events);
+    seed_history_into_store(store, generation, history, profile_id, events).await;
     Ok(())
 }
 
@@ -1759,7 +1790,7 @@ async fn refresh_loaded_stopped_pages(
     generation: SessionGeneration,
     stopped_page_size: u32,
     events: &broadcast::Sender<SyncEvent>,
-    history: &dyn TaskHistoryStore,
+    history: &Arc<dyn TaskHistoryStore>,
     profile_id: ProfileId,
 ) -> Result<(), SyncError> {
     let page_size = stopped_page_size.max(1);
@@ -1768,7 +1799,7 @@ async fn refresh_loaded_stopped_pages(
     loop {
         let page = session.refresh_stopped_page(offset, page_size).await?;
         let total = page.total;
-        persist_terminal_snapshots(history, profile_id, page.tasks.iter().cloned());
+        persist_terminal_snapshots(history, profile_id, page.tasks.iter().cloned()).await;
         emit_patch(
             events,
             store
@@ -1789,13 +1820,16 @@ async fn refresh_targeted(
     generation: SessionGeneration,
     gids: &[Gid],
     events: &broadcast::Sender<SyncEvent>,
-    history: &dyn TaskHistoryStore,
+    history: &Arc<dyn TaskHistoryStore>,
     profile_id: ProfileId,
 ) -> Result<(), SyncError> {
-    for (gid, snapshot) in session.refresh_tasks(gids).await? {
-        if let Some(snapshot) = snapshot.as_ref() {
-            persist_terminal_snapshots(history, profile_id, [snapshot.clone()]);
-        }
+    let refreshed = session.refresh_tasks(gids).await?;
+    let terminal_snapshots: Vec<TaskSnapshot> = refreshed
+        .iter()
+        .filter_map(|(_, snapshot)| snapshot.clone())
+        .collect();
+    persist_terminal_snapshots(history, profile_id, terminal_snapshots).await;
+    for (gid, snapshot) in refreshed {
         emit_patch(
             events,
             store
@@ -1813,20 +1847,43 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn persist_terminal_snapshots(
-    history: &dyn TaskHistoryStore,
+async fn persist_task_category(
+    history: &Arc<dyn TaskHistoryStore>,
+    profile_id: ProfileId,
+    gid: Gid,
+    category_id: Option<String>,
+) {
+    let history = Arc::clone(history);
+    let result = tokio::task::spawn_blocking(move || {
+        history.set_task_category(profile_id, gid, category_id.as_deref())
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(%error, %gid, "failed to persist task category");
+        }
+        Err(error) => {
+            tracing::warn!(%error, %gid, "task category persistence task failed");
+        }
+    }
+}
+
+async fn persist_terminal_snapshots(
+    history: &Arc<dyn TaskHistoryStore>,
     profile_id: ProfileId,
     tasks: impl IntoIterator<Item = TaskSnapshot>,
 ) {
     let now = now_unix_ms();
-    for snapshot in tasks {
-        if !matches!(
-            snapshot.status,
-            ariadeck_domain::DownloadStatus::Complete | ariadeck_domain::DownloadStatus::Error
-        ) {
-            continue;
-        }
-        let record = HistoryRecord {
+    let records: Vec<HistoryRecord> = tasks
+        .into_iter()
+        .filter(|snapshot| {
+            matches!(
+                snapshot.status,
+                ariadeck_domain::DownloadStatus::Complete | ariadeck_domain::DownloadStatus::Error
+            )
+        })
+        .map(|snapshot| HistoryRecord {
             profile_id,
             gid: snapshot.gid,
             status: snapshot.status,
@@ -1845,21 +1902,60 @@ fn persist_terminal_snapshots(
                 .filter(|uri| !uri.is_empty()),
             recorded_at_ms: now,
             updated_at_ms: now,
-        };
-        if let Err(error) = history.upsert(&record) {
-            tracing::warn!(%error, gid = %record.gid, "failed to persist task history");
-        }
+        })
+        .collect();
+    if records.is_empty() {
+        return;
+    }
+    let history = Arc::clone(history);
+    match tokio::task::spawn_blocking(move || history.upsert_batch(&records)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(%error, "failed to persist task history batch"),
+        Err(error) => tracing::warn!(%error, "task history persistence task failed"),
     }
 }
 
-fn seed_history_into_store(
+async fn seed_initial_history_from_disk(
     store: &mut DownloadStore,
     generation: SessionGeneration,
-    history: &dyn TaskHistoryStore,
+    history: &Arc<dyn TaskHistoryStore>,
+    profile_id: ProfileId,
+) {
+    let history = Arc::clone(history);
+    let loaded = tokio::task::spawn_blocking(move || history.list(profile_id, 10_000)).await;
+    match loaded {
+        Ok(Ok(records)) => {
+            if let Err(error) = store.seed_local_history(generation, records) {
+                tracing::warn!(%error, "failed to seed local history at startup");
+            }
+        }
+        Ok(Err(error)) => tracing::warn!(%error, "failed to load local task history at startup"),
+        Err(error) => tracing::warn!(%error, "startup task history task failed"),
+    }
+}
+
+async fn seed_history_into_store(
+    store: &mut DownloadStore,
+    generation: SessionGeneration,
+    history: &Arc<dyn TaskHistoryStore>,
     profile_id: ProfileId,
     events: &broadcast::Sender<SyncEvent>,
 ) {
-    match history.list(profile_id, 10_000) {
+    let history = Arc::clone(history);
+    let loaded = tokio::task::spawn_blocking(move || {
+        let records = history.list(profile_id, 10_000);
+        let categories = history.list_task_categories(profile_id);
+        (records, categories)
+    })
+    .await;
+    let (records_result, categories_result) = match loaded {
+        Ok(pair) => pair,
+        Err(error) => {
+            tracing::warn!(%error, "local task history load task failed");
+            return;
+        }
+    };
+    match records_result {
         Ok(records) => match store.seed_local_history(generation, records) {
             Ok(patch) => emit_patch(events, patch),
             Err(error) => {
@@ -1870,7 +1966,7 @@ fn seed_history_into_store(
             tracing::warn!(%error, "failed to load local task history");
         }
     }
-    match history.list_task_categories(profile_id) {
+    match categories_result {
         Ok(affiliations) => store.set_category_affiliations(affiliations),
         Err(error) => {
             tracing::warn!(%error, "failed to load task category affiliations");
@@ -1878,24 +1974,28 @@ fn seed_history_into_store(
     }
 }
 
-fn delete_history_for_gids(
-    history: &dyn TaskHistoryStore,
+async fn delete_history_for_gids(
+    history: &Arc<dyn TaskHistoryStore>,
     profile_id: ProfileId,
-    gids: impl IntoIterator<Item = Gid>,
+    gids: Vec<Gid>,
 ) {
-    for gid in gids {
-        if let Err(error) = history.remove(profile_id, gid) {
-            tracing::warn!(%error, %gid, "failed to remove task history row");
-        }
+    if gids.is_empty() {
+        return;
+    }
+    let history = Arc::clone(history);
+    match tokio::task::spawn_blocking(move || history.remove_batch(profile_id, &gids)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(%error, "failed to remove task history batch"),
+        Err(error) => tracing::warn!(%error, "task history removal task failed"),
     }
 }
 
-fn apply_initial_snapshot(
+async fn apply_initial_snapshot(
     store: &mut DownloadStore,
     generation: SessionGeneration,
     initial: InitialSyncSnapshot,
     events: &broadcast::Sender<SyncEvent>,
-    history: &dyn TaskHistoryStore,
+    history: &Arc<dyn TaskHistoryStore>,
     profile_id: ProfileId,
 ) -> Result<EngineCapabilities, SyncError> {
     validate_capabilities(&initial.capabilities)?;
@@ -1910,7 +2010,7 @@ fn apply_initial_snapshot(
             .update_global_stat(generation, initial.global_stat)
             .map_err(SyncError::store)?,
     );
-    persist_terminal_snapshots(history, profile_id, initial.stopped.tasks.iter().cloned());
+    persist_terminal_snapshots(history, profile_id, initial.stopped.tasks.iter().cloned()).await;
     emit_patch(
         events,
         store
@@ -1928,7 +2028,7 @@ fn apply_initial_snapshot(
             .reconcile_live(generation, initial.live.active, initial.live.waiting)
             .map_err(SyncError::store)?,
     );
-    seed_history_into_store(store, generation, history, profile_id, events);
+    seed_history_into_store(store, generation, history, profile_id, events).await;
     emit_patch(
         events,
         store
@@ -1974,17 +2074,16 @@ fn handle_connection_failure(
     error.retryable
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn wait_for_retry_delay(
-    delay: Duration,
-    commands: &mut mpsc::Receiver<Control>,
-    store: &DownloadStore,
-    state: &ConnectionState,
-    activity: &mut ActivityMode,
-    cancellation: &mut watch::Receiver<bool>,
-    history: &dyn TaskHistoryStore,
-    profile_id: ProfileId,
-) -> bool {
+async fn wait_for_retry_delay(delay: Duration, ctx: OfflineContext<'_>) -> bool {
+    let OfflineContext {
+        commands,
+        store,
+        state,
+        activity,
+        cancellation,
+        history,
+        profile_id,
+    } = ctx;
     let sleep = tokio::time::sleep(delay);
     tokio::pin!(sleep);
     loop {
@@ -2000,7 +2099,9 @@ async fn wait_for_retry_delay(
                 true,
                 history,
                 profile_id,
-            ) {
+            )
+            .await
+            {
                 UnavailableControlDisposition::Continue => {}
                 UnavailableControlDisposition::RetryNow => return true,
                 UnavailableControlDisposition::Stop => return false,
@@ -2009,16 +2110,16 @@ async fn wait_for_retry_delay(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn wait_for_manual_retry(
-    commands: &mut mpsc::Receiver<Control>,
-    store: &DownloadStore,
-    state: &ConnectionState,
-    activity: &mut ActivityMode,
-    cancellation: &mut watch::Receiver<bool>,
-    history: &dyn TaskHistoryStore,
-    profile_id: ProfileId,
-) -> bool {
+async fn wait_for_manual_retry(ctx: OfflineContext<'_>) -> bool {
+    let OfflineContext {
+        commands,
+        store,
+        state,
+        activity,
+        cancellation,
+        history,
+        profile_id,
+    } = ctx;
     loop {
         tokio::select! {
             biased;
@@ -2031,7 +2132,9 @@ async fn wait_for_manual_retry(
                 true,
                 history,
                 profile_id,
-            ) {
+            )
+            .await
+            {
                 UnavailableControlDisposition::Continue => {}
                 UnavailableControlDisposition::RetryNow => return true,
                 UnavailableControlDisposition::Stop => return false,
@@ -3197,15 +3300,10 @@ mod tests {
         };
         let (events, mut receiver) = broadcast::channel(16);
 
+        let history: Arc<dyn TaskHistoryStore> = Arc::new(NullHistoryStore);
         let profile_id = store.session().profile_id;
         if let Err(error) = refresh_all(
-            &session,
-            &mut store,
-            generation,
-            10,
-            &events,
-            &NullHistoryStore,
-            profile_id,
+            &session, &mut store, generation, 10, &events, &history, profile_id,
         )
         .await
         {

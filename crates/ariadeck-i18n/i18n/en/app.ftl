@@ -1,4 +1,3 @@
-## Common application chrome and shared labels (English)
 
 app-name = AriaDeck
 
@@ -30,7 +29,6 @@ task-source-metalink = Metalink
 task-name-resolving = Resolving filename
 
 # Connection / engine
-connection-disconnected = Disconnected
 connection-connecting = Connecting
 connection-authenticating = Authenticating
 connection-synchronizing = Synchronizing
@@ -53,15 +51,10 @@ action-open-settings = Open application settings
 action-clear-search = Clear search and task filter
 action-clear-activity = Clear activity history
 action-close-activity = Close activity history
-action-load-more-history = Load more stopped history
 activity-title = Activity
-activity-empty = No recent activity
 stale-data = Last known data
-text-field-menu = Text field menu
-dismiss-notification = Dismiss notification
 
 search-placeholder = Search downloads or GID
-search-aria = Search downloads
 
 # Sort
 sort-queue = Queue
@@ -79,22 +72,12 @@ button-cancel = Cancel
 button-save = Save
 button-close = Close
 button-delete = Delete
-button-apply = Apply
 button-clear = Clear
 
 # Language preference labels
 language-system = System
 language-english = English
 language-chinese-simplified = 简体中文
-
-# Relative time
-time-just-now = just now
-time-minute-ago = 1 minute ago
-time-minutes-ago = { $n } minutes ago
-time-hour-ago = 1 hour ago
-time-hours-ago = { $n } hours ago
-time-day-ago = 1 day ago
-time-days-ago = { $n } days ago
 
 # Tray / OS
 os-notification-title = AriaDeck

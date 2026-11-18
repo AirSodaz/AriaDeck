@@ -1,8 +1,8 @@
 # AriaDeck — Project Context
 
-**Status:** Product-ready core (MVP + download-manager surface). Landed: ACCESS-001, I18N-001 (en/zh-CN), SEC-001, PERF-001, RELEASE-001 (Windows).  
-**Last updated:** 2026-07-26
-**Stack:** Rust 1.96 · GPUI (Zed `v1.11.3`) · aria2 JSON-RPC (WebSocket) · Tokio  
+**Status:** Product-ready core (MVP + download-manager surface). Landed: ACCESS-001, I18N-001 (en/zh-CN), SEC-001, PERF-001, RELEASE-001 (Windows/macOS/Linux).  
+**Last updated:** 2026-11-18
+**Stack:** Rust 1.99.1 (MSRV 1.96) · GPUI via `gpui-kit` 0.9.0 · aria2 JSON-RPC (WebSocket) · Tokio  
 
 Single source of truth for intent, architecture, contracts, and residual work. Prefer code when it diverges; update this file when scope or boundaries change.  
 **Next work:** [`docs/roadmap.md`](roadmap.md) · **Release:** [`docs/release.md`](release.md) · **i18n:** [`docs/i18n.md`](i18n.md) · **Browser bridge:** [`docs/browser-bridge.md`](browser-bridge.md)
@@ -138,7 +138,7 @@ Env knobs: see root `README.md` (`ARIADECK_RPC_*`).
 | D-043 | **Per-profile engine environment (F3).** Frozen product contract — see §5.1 below |
 | D-044 | **Default download root:** new installs seed category dirs from the system Downloads folder (`USERPROFILE`/`HOME` + `Downloads`), overridable by `ARIADECK_DOWNLOAD_DIR`; not under app data |
 | D-046 | **B4 aria2 core setup.** One shared *Get aria2* panel serves both the first-run guide and Settings → Engine — discovery and download are not onboarding-only. **Discovery** reads the local filesystem only (env override → portable dir → scoop/WinGet/Chocolatey/Homebrew/system roots → `PATH`), probes each hit with `--version`, dedups by canonical path, and marks entries the core registry already holds. **Download** is user-initiated only: URL, byte size, and SHA-256 are pinned at compile time (`CORE_DOWNLOAD_CATALOG`); size is checked before the body is buffered, the digest before extraction, and only the exactly-named archive member is written, under a locally derived file name (no zip-slip surface). Targets upstream publishes no binary for have **no entry** and the UI says so rather than fetching something unverified. Verified installs enter the registry as `CoreSource::Managed` and stay restart-bound like any other core (D-029). The **first-run guide** opens only when the active profile is local-managed, the resolved executable fails `--version`, and `onboarding.core_setup_dismissed` is false; dismissing it — or handing off to Settings → Engine — sets that flag, and nothing else does (settings save, settings import, and profile activation all leave it alone). The guide and Settings → Engine share one path-input entity, so exactly one of them may be mounted per frame |
-| D-045 | **Browser bridge (host + IPC done; B3c extension and installer/settings pending).** Native messaging host only—no listening port; extension ID pinned via `allowed_origins`; installer opt-in like D-037/D-038. One-way write path: host forwards over the existing per-data-directory socket at protocol **v3** (`downloads` added; v2 still accepted, v4+ rejected). Payload whitelist is exhaustive—URL (`http`/`https` only), `referer`, `user_agent`, optional `cookie`; `dir`/`out`/auth/checksum/arbitrary options never accepted, and `filename` is a display hint only (D-001). Maps onto the existing `AddDownloadAdvancedOptions` so `validate()` (CRLF) and secret redaction (D-032) are reused. Cookies are off by default, origin-scoped, memory-only, never persisted to settings/history/logs/diagnostics (D-035). Default is confirm (fill, don't submit); auto-submit is opt-in, never silent (D-025), and cookie + auto-submit still confirms once per session. Forwarded items never spool to disk: while the engine is disconnected they wait in memory under the same 32-item cap as D-037/D-038. Full spec: [`browser-bridge.md`](browser-bridge.md) |
+| D-045 | **Browser bridge (host + IPC + MV3 extension + installer/settings done).** Native messaging host only—no listening port; extension ID pinned via `allowed_origins`; installer opt-in like D-037/D-038. One-way write path: host forwards over the existing per-data-directory socket at protocol **v3** (`downloads` added; v2 still accepted, v4+ rejected). Payload whitelist is exhaustive—URL (`http`/`https` only), `referer`, `user_agent`, optional `cookie`; `dir`/`out`/auth/checksum/arbitrary options never accepted, and `filename` is a display hint only (D-001). Maps onto the existing `AddDownloadAdvancedOptions` so `validate()` (CRLF) and secret redaction (D-032) are reused. Cookies are off by default, origin-scoped, memory-only, never persisted to settings/history/logs/diagnostics (D-035). Default is confirm (fill, don't submit); auto-submit is opt-in, never silent (D-025), and cookie + auto-submit still confirms once per session. Forwarded items never spool to disk: while the engine is disconnected they wait in memory under the same 32-item cap as D-037/D-038. Full spec: [`browser-bridge.md`](browser-bridge.md) |
 
 **SEC inventory (boundary):** raw URIs/options may live in domain for RPC/retry; list/details/clipboard/tracker/server URIs and option secrets must be redacted or keychain-only.  
 **PERF guards:** 10k stopped stress, light snapshot short-circuit, ActivityMode tray intervals, reconnect backoff.
@@ -189,7 +189,7 @@ Bootstrap, domain store, typed WS RPC, sync/reconnect, virtualized workspace, ad
 | --- | --- |
 | ACCESS | Manual NVDA / Narrator pass for the role, label, and focus baseline |
 | PERF | Manual memory under real aria2; no APM |
-| RELEASE | No prod signing cert; no macOS/Linux **packages** (CI verify covers win/mac/linux) |
+| RELEASE | No OS code-signing cert (Minisign update signatures + Windows/macOS/Linux packages are built and verified in CI) |
 | RELEASE | aria2 download catalog (D-046) is pinned to 1.37.0 Windows builds; refreshing it is a manual, hand-verified checksum bump per release |
 
 ### Explicitly deferred
@@ -206,7 +206,7 @@ Automatic / silent aria2 package channels (D-046 is explicit and user-initiated;
 | ADR | Decision |
 | --- | --- |
 | 001 | Application owns use cases/store (no GPUI/RPC/SQLite) |
-| 002 | Pin GPUI to Zed `v1.11.3` SHA `952d712dac48a4af2c54fb22c82d82a9d69b72d4` |
+| 002 | Consume GPUI via pinned `gpui-kit` 0.9.0; keep GPUI confined to `ariadeck-ui` / `ariadeck-desktop` |
 | 003 | Process path before networked core installer |
 | 004 | Mutable state scoped to engine session generation |
 | 005 | One actor per WebSocket; auth as transport decorator |

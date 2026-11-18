@@ -45,6 +45,15 @@ export function originOf(url) {
   }
 }
 
+/** Displayable host label for a stored origin, tolerating malformed entries. */
+export function hostLabelOf(origin) {
+  try {
+    return new URL(origin).host || String(origin);
+  } catch {
+    return String(origin);
+  }
+}
+
 export async function cookieOrigins() {
   const stored = await chrome.storage.local.get(STORAGE_KEY_COOKIE_ORIGINS);
   const origins = stored[STORAGE_KEY_COOKIE_ORIGINS];

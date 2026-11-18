@@ -197,15 +197,26 @@ pub fn available_disk_space(directory: &std::path::Path) -> Option<u64> {
 }
 
 #[cfg(windows)]
+#[allow(unsafe_code)]
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn SetThreadExecutionState(es_flags: u32) -> u32;
 }
 
 #[cfg(windows)]
+#[allow(unsafe_code)]
 #[link(name = "powrprof")]
 unsafe extern "system" {
     fn SetSuspendState(hibernate: u8, force_critical: u8, disable_wake_event: u8) -> u8;
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
+    fn SetForegroundWindow(hwnd: isize) -> i32;
+    fn BringWindowToTop(hwnd: isize) -> i32;
 }
 
 #[cfg(windows)]
@@ -215,9 +226,31 @@ const ES_AWAYMODE_REQUIRED: u32 = 0x0000_0040;
 #[cfg(windows)]
 const ES_CONTINUOUS: u32 = 0x8000_0000;
 
+/// Narrow Win32 platform boundary for true hide-to-tray / restore-from-tray.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub fn hide_show_win32(hwnd: isize, show: bool) -> bool {
+    const SW_HIDE: i32 = 0;
+    const SW_RESTORE: i32 = 9;
+    // SAFETY: `hwnd` is the live GPUI window handle belonging to this process;
+    // ShowWindow, BringWindowToTop, and SetForegroundWindow tolerate invalid
+    // handles safely and take only integer arguments.
+    unsafe {
+        ShowWindow(hwnd, if show { SW_RESTORE } else { SW_HIDE });
+        if show {
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+        }
+    }
+    true
+}
+
 /// Prevent or allow operating system sleep during active downloads (D5).
 #[cfg(windows)]
+#[allow(unsafe_code)]
 pub fn set_keep_awake(enabled: bool) {
+    // SAFETY: `SetThreadExecutionState` is a thread-local Win32 power-management
+    // API taking only bitflag integers with no pointer arguments.
     unsafe {
         if enabled {
             let res =
@@ -229,6 +262,14 @@ pub fn set_keep_awake(enabled: bool) {
             SetThreadExecutionState(ES_CONTINUOUS);
         }
     }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn suspend_system_win32(hibernate: bool) -> bool {
+    // SAFETY: `SetSuspendState` takes three boolean byte flags with no pointer
+    // arguments and returns a non-zero BOOLEAN on success.
+    unsafe { SetSuspendState(u8::from(hibernate), 0, 0) != 0 }
 }
 
 /// Prevent or allow operating system sleep during active downloads (D5).
@@ -284,8 +325,7 @@ pub fn execute_power_action(
         ariadeck_settings::CompletionPowerAction::Sleep => {
             #[cfg(windows)]
             {
-                let res = unsafe { SetSuspendState(0, 0, 0) };
-                if res != 0 {
+                if suspend_system_win32(false) {
                     Ok(())
                 } else {
                     Err("SetSuspendState(0, 0, 0) failed".to_string())
@@ -319,8 +359,7 @@ pub fn execute_power_action(
         ariadeck_settings::CompletionPowerAction::Hibernate => {
             #[cfg(windows)]
             {
-                let res = unsafe { SetSuspendState(1, 0, 0) };
-                if res != 0 {
+                if suspend_system_win32(true) {
                     Ok(())
                 } else {
                     let status = ariadeck_engine::console_free_command("shutdown")

@@ -1,4 +1,3 @@
-## 设置页（简体中文）
 
 settings-title = 应用设置
 settings-nav-general = 通用
@@ -37,7 +36,6 @@ settings-category-directory = 下载目录
 settings-category-directory-browse-aria = 选择该分类的下载目录
 settings-category-remove = 移除
 settings-category-no-directory = 未选择目录
-settings-category-default-name = 分类 { $n }
 notice-settings-categories = 已保存下载分类。
 
 settings-speed-limits = 速度限制

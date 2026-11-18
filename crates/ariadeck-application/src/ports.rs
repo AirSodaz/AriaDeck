@@ -295,7 +295,26 @@ impl HistoryStoreError {
 /// Local history persistence port. Implementations live outside this crate (ADR-001).
 pub trait TaskHistoryStore: Send + Sync {
     fn upsert(&self, record: &HistoryRecord) -> Result<(), HistoryStoreError>;
+
+    /// Persist a batch of history records; adapters backed by a database should
+    /// override this to commit in a single transaction.
+    fn upsert_batch(&self, records: &[HistoryRecord]) -> Result<(), HistoryStoreError> {
+        for record in records {
+            self.upsert(record)?;
+        }
+        Ok(())
+    }
+
     fn remove(&self, profile_id: ProfileId, gid: Gid) -> Result<(), HistoryStoreError>;
+
+    /// Remove multiple history rows (and their category affiliations) in one batch.
+    fn remove_batch(&self, profile_id: ProfileId, gids: &[Gid]) -> Result<(), HistoryStoreError> {
+        for &gid in gids {
+            self.remove(profile_id, gid)?;
+        }
+        Ok(())
+    }
+
     fn list(
         &self,
         profile_id: ProfileId,

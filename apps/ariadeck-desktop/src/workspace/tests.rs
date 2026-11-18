@@ -2216,13 +2216,18 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
             .expect("test runtime"),
     );
     let profile_env_store = ProfileEnvironmentStore::new(root.path());
-    let (sender, task, mut results) = spawn_settings_persistence(
+    let (sender, task, mut events) = spawn_persistence_worker(
         runtime.clone(),
-        store.clone(),
-        profile_env_store,
-        Some(Arc::new(LocalDownloadDestinationGateway::new())),
-        None,
-        Arc::new(SystemProxyCredentialStore::new("AriaDeck test")),
+        PersistenceWorkerDeps {
+            settings_store: Some(store.clone()),
+            profile_store: JsonProfileStore::new(root.path().join("profiles.json")),
+            profile_env_store,
+            window_geometry_store: JsonWindowGeometryStore::new(root.path().join("window.json")),
+            destination_gateway: Some(Arc::new(LocalDownloadDestinationGateway::new())),
+            sync: None,
+            credential_store: Arc::new(SystemProxyCredentialStore::new("AriaDeck test")),
+            initial_active_profile_id: None,
+        },
     );
     let first = AppSettings {
         color_scheme: ColorScheme::Dark,
@@ -2255,36 +2260,48 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
         tracker_list: Default::default(),
     };
     sender
-        .send(SettingsPersistenceRequest {
-            request_id: ariadeck_ui::RequestId::from_u64(1),
-            settings: first.clone(),
-            previous_settings: first.clone(),
-            proxy_password: ProxyPasswordUpdate::Unchanged,
-            apply_proxy: false,
-            apply_speed_limit: false,
-            apply_transfer_policy: false,
-            apply_bt_tracker: false,
-            active_profile_id: None,
-        })
+        .send(PersistenceCommand::SaveSettings(Box::new(
+            SettingsPersistenceRequest {
+                request_id: ariadeck_ui::RequestId::from_u64(1),
+                settings: first.clone(),
+                previous_settings: first.clone(),
+                proxy_password: ProxyPasswordUpdate::Unchanged,
+                apply_proxy: false,
+                apply_speed_limit: false,
+                apply_transfer_policy: false,
+                apply_bt_tracker: false,
+                active_profile_id: None,
+            },
+        )))
         .expect("queue first settings");
     sender
-        .send(SettingsPersistenceRequest {
-            request_id: ariadeck_ui::RequestId::from_u64(2),
-            settings: second.clone(),
-            previous_settings: first.clone(),
-            proxy_password: ProxyPasswordUpdate::Unchanged,
-            apply_proxy: false,
-            apply_speed_limit: false,
-            apply_transfer_policy: false,
-            apply_bt_tracker: false,
-            active_profile_id: None,
-        })
+        .send(PersistenceCommand::SaveSettings(Box::new(
+            SettingsPersistenceRequest {
+                request_id: ariadeck_ui::RequestId::from_u64(2),
+                settings: second.clone(),
+                previous_settings: first.clone(),
+                proxy_password: ProxyPasswordUpdate::Unchanged,
+                apply_proxy: false,
+                apply_speed_limit: false,
+                apply_transfer_policy: false,
+                apply_bt_tracker: false,
+                active_profile_id: None,
+            },
+        )))
         .expect("queue second settings");
     drop(sender);
 
     runtime.block_on(async {
-        let first_result = results.recv().await.expect("first result");
-        let second_result = results.recv().await.expect("second result");
+        let PersistenceEvent::SettingsSaved(first_result) =
+            events.recv().await.expect("first result")
+        else {
+            panic!("expected SettingsSaved event");
+        };
+        let PersistenceEvent::SettingsSaved(second_result) =
+            events.recv().await.expect("second result")
+        else {
+            panic!("expected SettingsSaved event");
+        };
         assert_eq!(first_result.request_id.get(), 1);
         assert!(
             first_result.result.is_ok(),
@@ -2561,4 +2578,37 @@ fn core_download_offer_matches_the_pinned_catalog_for_this_host() {
             );
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_update_command_passes_paths_via_env_without_shell_interpolation() {
+    let package = PathBuf::from(r"C:\Users\A&B^%TEMP%\AriaDeck & 'setup'.exe");
+    let executable = PathBuf::from(r"C:\Program Files\A&B\ariadeck-desktop.exe");
+    let command = build_windows_update_command(&package, &executable);
+
+    let args: Vec<String> = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        args.iter()
+            .all(|arg| !arg.contains("A&B") && !arg.contains("'setup'")),
+        "paths must never be interpolated into command arguments: {args:?}"
+    );
+
+    let envs: std::collections::HashMap<_, _> = command
+        .get_envs()
+        .filter_map(|(k, v)| Some((k.to_string_lossy().into_owned(), v?.to_os_string())))
+        .collect();
+    assert_eq!(
+        envs.get("ARIADECK_UPDATE_PACKAGE")
+            .map(std::ffi::OsString::as_os_str),
+        Some(package.as_os_str())
+    );
+    assert_eq!(
+        envs.get("ARIADECK_UPDATE_EXECUTABLE")
+            .map(std::ffi::OsString::as_os_str),
+        Some(executable.as_os_str())
+    );
 }
