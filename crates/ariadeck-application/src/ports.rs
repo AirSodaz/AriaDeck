@@ -1,6 +1,6 @@
 use ariadeck_domain::{
     ByteCount, DownloadStatus, EnginePath, Gid, ProfileId, SpeedLimitConfig, TaskConnectionDetails,
-    TaskDetails, TaskError, TaskSourceKind, TransferPolicyConfig,
+    TaskDetails, TaskError, TaskSnapshot, TaskSourceKind, TransferPolicyConfig,
 };
 use async_trait::async_trait;
 use thiserror::Error;
@@ -277,6 +277,80 @@ pub struct HistoryRecord {
     pub updated_at_ms: u64,
 }
 
+impl HistoryRecord {
+    /// Builds a durable history record from an adapter snapshot when terminal
+    /// (`Complete` or `Error`), redacting any source URI before storage (D-032).
+    #[must_use]
+    pub fn from_snapshot(
+        profile_id: ProfileId,
+        snapshot: &TaskSnapshot,
+        now_ms: u64,
+    ) -> Option<Self> {
+        if !matches!(
+            snapshot.status,
+            DownloadStatus::Complete | DownloadStatus::Error
+        ) {
+            return None;
+        }
+        Some(Self {
+            profile_id,
+            gid: snapshot.gid,
+            status: snapshot.status,
+            display_name: snapshot.display_name.clone(),
+            directory: snapshot.metadata.directory.clone(),
+            info_hash: snapshot.metadata.info_hash.clone(),
+            source_kind: snapshot.metadata.source_kind,
+            total_length: snapshot.total_length,
+            completed_length: snapshot.completed_length,
+            error: snapshot.error.clone(),
+            primary_uri_redacted: snapshot
+                .metadata
+                .primary_uri
+                .as_deref()
+                .map(ariadeck_domain::redact_source_uri)
+                .filter(|uri| !uri.is_empty()),
+            recorded_at_ms: now_ms,
+            updated_at_ms: now_ms,
+        })
+    }
+
+    /// Builds a durable history record from a domain task when terminal
+    /// (`Complete` or `Error`), redacting any source URI before storage (D-032).
+    #[must_use]
+    pub fn from_task(
+        profile_id: ProfileId,
+        task: &ariadeck_domain::DownloadTask,
+        now_ms: u64,
+    ) -> Option<Self> {
+        if !matches!(
+            task.status,
+            DownloadStatus::Complete | DownloadStatus::Error
+        ) {
+            return None;
+        }
+        Some(Self {
+            profile_id,
+            gid: task.gid,
+            status: task.status,
+            display_name: task.display_name.clone(),
+            directory: task.metadata.directory.clone(),
+            info_hash: task.metadata.info_hash.clone(),
+            source_kind: task.metadata.source_kind,
+            total_length: task.total_length,
+            completed_length: task.completed_length,
+            error: task.error.clone(),
+            primary_uri_redacted: task
+                .metadata
+                .primary_uri
+                .as_deref()
+                .map(ariadeck_domain::redact_source_uri)
+                .filter(|uri| !uri.is_empty()),
+            recorded_at_ms: now_ms,
+            updated_at_ms: now_ms,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 #[error("{message}")]
 pub struct HistoryStoreError {
@@ -342,7 +416,7 @@ pub trait TaskHistoryStore: Send + Sync {
         Ok(None)
     }
 
-    /// All category affiliations for a profile: (gid hex, category_id).
+    /// All category affiliations for a profile: `(gid, category_id)`.
     fn list_task_categories(
         &self,
         profile_id: ProfileId,

@@ -1,8 +1,8 @@
-//! Settings `about` section logic and rendering for `AppShell`.
+//! Settings `about` section logic and rendering for `SettingsPanelView`.
 
 use super::*;
 
-impl AppShell {
+impl SettingsPanelView {
     pub(crate) fn render_settings_about(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
         let app_title = self.t("settings-about-app");
@@ -26,7 +26,7 @@ impl AppShell {
         let diagnostics_description = self.t("settings-diagnostics-description");
         let diagnostics_aria = self.t("settings-diagnostics-export-aria");
         let aria2_version = {
-            let version = self.snapshot.capabilities.version.trim();
+            let version = self.aria2_version.trim();
             if version.is_empty() {
                 self.t("settings-about-aria2-unknown")
             } else {
@@ -40,40 +40,30 @@ impl AppShell {
         } else {
             authors
         };
-        let diagnostic_shell = cx.entity().downgrade();
         let diagnostic_button = KitButton::new("export-diagnostics")
             .icon(gpui_kit::component::Icon::new(IconName::Download))
             .label(diagnostics_label.clone())
             .accessibility_label(diagnostics_aria)
-            .on_click(move |_, window, cx| {
-                diagnostic_shell
-                    .update(cx, |shell, cx| shell.export_diagnostics(window, cx))
-                    .ok();
-            });
-        let transfer_pending = self.pending_settings_save.is_some();
-        let export_shell = cx.entity().downgrade();
+            .on_click(cx.listener(|_this, _, _, cx| {
+                cx.emit(SettingsPanelEvent::ExportDiagnostics);
+            }));
+        let transfer_pending = self.is_pending();
         let settings_export_button = KitButton::new("export-settings")
             .icon(gpui_kit::component::Icon::new(IconName::Download))
             .label(settings_export_label.clone())
             .accessibility_label(settings_export_aria)
             .disabled(transfer_pending)
-            .on_click(move |_, window, cx| {
-                export_shell
-                    .update(cx, |shell, cx| shell.export_settings_file(window, cx))
-                    .ok();
-            });
-        let import_shell = cx.entity().downgrade();
+            .on_click(cx.listener(|_this, _, _, cx| {
+                cx.emit(SettingsPanelEvent::ExportSettings);
+            }));
         let settings_import_button = KitButton::new("import-settings")
             .icon(gpui_kit::component::Icon::new(IconName::ArrowUp))
             .label(settings_import_label.clone())
             .accessibility_label(settings_import_aria)
             .disabled(transfer_pending)
-            .on_click(move |_, window, cx| {
-                import_shell
-                    .update(cx, |shell, cx| shell.import_settings_file(window, cx))
-                    .ok();
-            });
-        let update_check_shell = cx.entity().downgrade();
+            .on_click(cx.listener(|_this, _, _, cx| {
+                cx.emit(SettingsPanelEvent::ImportSettings);
+            }));
         let update_check_button = KitButton::new("check-for-updates")
             .icon(gpui_kit::component::Icon::new(IconName::RefreshCw))
             .label(self.t("settings-update-check"))
@@ -90,11 +80,9 @@ impl AppShell {
                             | crate::UpdateStatusView::Downloaded { .. }
                     ),
             )
-            .on_click(move |_, _, cx| {
-                update_check_shell
-                    .update(cx, |shell, cx| shell.request_update_check(cx))
-                    .ok();
-            });
+            .on_click(cx.listener(|_this, _, _, cx| {
+                cx.emit(SettingsPanelEvent::CheckForUpdates);
+            }));
         let update_info = match &self.update_status {
             crate::UpdateStatusView::Disabled => self.t("settings-update-disabled"),
             crate::UpdateStatusView::Checking => self.t("settings-update-checking"),
@@ -137,33 +125,27 @@ impl AppShell {
                     .child(self.t("settings-update-open-release"));
                 let mut actions = div().flex().flex_row().gap_2().child(release_link);
                 if *installer_available && !self.update_portable {
-                    let download_shell = cx.entity().downgrade();
                     actions = actions.child(
                         KitButton::new("download-update-installer")
                             .primary()
                             .icon(gpui_kit::component::Icon::new(IconName::Download))
                             .label(self.t("settings-update-download-install"))
-                            .on_click(move |_, _, cx| {
-                                download_shell
-                                    .update(cx, |shell, cx| shell.request_update_download(cx))
-                                    .ok();
-                            }),
+                            .on_click(cx.listener(|_this, _, _, cx| {
+                                cx.emit(SettingsPanelEvent::DownloadUpdate);
+                            })),
                     );
                 }
                 actions
             }
             crate::UpdateStatusView::Downloaded { .. } if !self.update_portable => {
-                let install_shell = cx.entity().downgrade();
                 div().flex().child(
                     KitButton::new("install-update")
                         .primary()
                         .icon(gpui_kit::component::Icon::new(IconName::Check))
                         .label(self.t("settings-update-install"))
-                        .on_click(move |_, _, cx| {
-                            install_shell
-                                .update(cx, |shell, cx| shell.request_update_install(cx))
-                                .ok();
-                        }),
+                        .on_click(cx.listener(|_this, _, _, cx| {
+                            cx.emit(SettingsPanelEvent::InstallUpdate);
+                        })),
                 )
             }
             _ => div(),

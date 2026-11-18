@@ -153,7 +153,10 @@ impl AppShell {
             }
             match task.status {
                 TaskStatusView::Complete => {
-                    completed.push((task.identity.clone(), task_display_name(task)));
+                    completed.push((
+                        task.identity.clone(),
+                        task_display_name(task, &self.translator),
+                    ));
                 }
                 TaskStatusView::Failed => {
                     let detail = task.error.as_ref().map(|error| {
@@ -163,19 +166,25 @@ impl AppShell {
                             error.summary.clone()
                         }
                     });
-                    failed.push((task.identity.clone(), task_display_name(task), detail));
+                    failed.push((
+                        task.identity.clone(),
+                        task_display_name(task, &self.translator),
+                        detail,
+                    ));
                 }
                 _ => {}
             }
         }
 
-        // Drop identities that left the loaded workspace to bound memory.
-        self.known_task_status.retain(|identity, _| {
-            self.snapshot
-                .tasks
-                .iter()
-                .any(|task| &task.identity == identity)
-        });
+        // Drop identities that left the loaded workspace to bound memory in O(N).
+        let present_identities: HashSet<&TaskIdentity> = self
+            .snapshot
+            .tasks
+            .iter()
+            .map(|task| &task.identity)
+            .collect();
+        self.known_task_status
+            .retain(|identity, _| present_identities.contains(identity));
 
         if seed_only {
             return;
@@ -184,9 +193,12 @@ impl AppShell {
         if !completed.is_empty() {
             let count = completed.len() as u32;
             let summary = if count == 1 {
-                format!("{} finished downloading.", completed[0].1)
+                self.t_args(
+                    "notice-task-completed-single",
+                    &[("name", FluentValue::from(completed[0].1.as_str()))],
+                )
             } else {
-                format!("{count} downloads finished.")
+                self.t_count("notice-task-completed-multiple", u64::from(count))
             };
             let detail = if count == 1 {
                 None
@@ -218,9 +230,12 @@ impl AppShell {
         if !failed.is_empty() {
             let count = failed.len() as u32;
             let summary = if count == 1 {
-                format!("{} failed.", failed[0].1)
+                self.t_args(
+                    "notice-task-failed-single",
+                    &[("name", FluentValue::from(failed[0].1.as_str()))],
+                )
             } else {
-                format!("{count} downloads failed.")
+                self.t_count("notice-task-failed-multiple", u64::from(count))
             };
             let detail = if count == 1 {
                 failed[0].2.clone()

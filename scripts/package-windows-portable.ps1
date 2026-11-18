@@ -1,15 +1,18 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  Build a Windows x64 portable package for AriaDeck (RELEASE-001).
+  Build a Windows portable package for AriaDeck (RELEASE-001).
 
 .DESCRIPTION
-  Stages dist/AriaDeck-<version>-windows-x64-portable/ with:
+  Stages dist/AriaDeck_<version>_windows-<arch>-portable/ with:
     - ariadeck-desktop.exe
     - ariadeck-bridge.exe  (browser bridge native messaging host, D-045)
     - ariadeck.portable  (enables <exe_dir>/data)
     - LICENSE, THIRD_PARTY_NOTICES.md, README-portable.txt
   Optionally zips the folder and signs binaries when signing env is set.
+
+.PARAMETER Arch
+  Target Windows architecture ("x64" or "arm64").
 
 .PARAMETER SkipBuild
   Skip cargo build (use an existing release binary).
@@ -21,6 +24,7 @@
   Attempt Authenticode signing when ARIADECK_SIGN_TOOL / signtool is available.
 #>
 param(
+    [ValidateSet("x64", "arm64")]
     [string]$Arch = "x64",
     [switch]$SkipBuild,
     [switch]$SkipZip,
@@ -28,59 +32,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent $PSScriptRoot
-if (-not (Test-Path (Join-Path $Root "Cargo.toml"))) {
-    $Root = $PSScriptRoot
-    if (-not (Test-Path (Join-Path $Root "Cargo.toml"))) {
-        throw "Cannot locate workspace root (Cargo.toml)."
-    }
-}
+. (Join-Path $PSScriptRoot "windows-common.ps1")
 
+$Root = Get-AriaDeckWorkspaceRoot -ScriptDir $PSScriptRoot
 Set-Location $Root
 
-function Get-WorkspaceVersion {
-    $toml = Get-Content (Join-Path $Root "Cargo.toml") -Raw
-    if ($toml -match '\[workspace\.package\][\s\S]*?version\s*=\s*"([^"]+)"') {
-        return $Matches[1]
-    }
-    return "0.0.0"
-}
-
-function Invoke-OptionalSign {
-    param([string]$Path)
-    if (-not $Sign) { return }
-    $tool = $env:ARIADECK_SIGN_TOOL
-    if (-not $tool) {
-        $cmd = Get-Command signtool -ErrorAction SilentlyContinue
-        if ($cmd) { $tool = $cmd.Source }
-    }
-    if (-not $tool) {
-        Write-Warning "Signing requested but signtool/ARIADECK_SIGN_TOOL not found; skipping $Path"
-        return
-    }
-    $thumb = $env:ARIADECK_SIGN_CERT_THUMBPRINT
-    $desc = $env:ARIADECK_SIGN_DESCRIPTION
-    if (-not $desc) { $desc = "AriaDeck" }
-    if ($thumb) {
-        & $tool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /sha1 $thumb /d $desc $Path
-    } elseif ($env:ARIADECK_SIGN_PFX) {
-        $pass = $env:ARIADECK_SIGN_PFX_PASSWORD
-        if ($pass) {
-            & $tool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $env:ARIADECK_SIGN_PFX /p $pass /d $desc $Path
-        } else {
-            & $tool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $env:ARIADECK_SIGN_PFX /d $desc $Path
-        }
-    } else {
-        Write-Warning "Signing requested but ARIADECK_SIGN_CERT_THUMBPRINT or ARIADECK_SIGN_PFX not set; skipping $Path"
-        return
-    }
-    if ($LASTEXITCODE -ne 0) {
-        throw "signtool failed for $Path (exit $LASTEXITCODE)"
-    }
-    Write-Host "Signed $Path"
-}
-
-$Version = Get-WorkspaceVersion
+$Version = Get-AriaDeckWorkspaceVersion -WorkspaceRoot $Root
 $ArtifactName = "AriaDeck_${Version}_windows-${Arch}-portable"
 $DistRoot = Join-Path $Root "dist"
 $Stage = Join-Path $DistRoot $ArtifactName
@@ -161,8 +118,8 @@ Docs: https://github.com/AirSodaz/AriaDeck (packaging details: docs/release.md)
 "@
 Set-Content -Path (Join-Path $Stage "README-portable.txt") -Value $portableReadme -Encoding UTF8
 
-Invoke-OptionalSign -Path (Join-Path $Stage "ariadeck-desktop.exe")
-Invoke-OptionalSign -Path (Join-Path $Stage "ariadeck-bridge.exe")
+Invoke-AriaDeckOptionalSign -Path (Join-Path $Stage "ariadeck-desktop.exe") -Sign:$Sign
+Invoke-AriaDeckOptionalSign -Path (Join-Path $Stage "ariadeck-bridge.exe") -Sign:$Sign
 
 if (-not $SkipZip) {
     $zip = Join-Path $DistRoot "$ArtifactName.zip"

@@ -9,6 +9,7 @@ description = "Fluent-based localization catalogs for AriaDeck (en, zh-CN)"
 
 [dependencies]
 fluent-bundle.workspace = true
+fluent-syntax.workspace = true
 rust-embed.workspace = true
 sys-locale.workspace = true
 unic-langid.workspace = true

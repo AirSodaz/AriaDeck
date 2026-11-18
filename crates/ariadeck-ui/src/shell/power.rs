@@ -10,7 +10,8 @@ use gpui_kit::component::{
 };
 
 use super::{
-    AppShell, AppShellEvent, ProxyPasswordUpdateView, SettingsSaveSource, StatusBarPopover,
+    ActiveModal, AppShell, AppShellEvent, ProxyPasswordUpdateView, SettingsSaveSource,
+    StatusBarPopover,
 };
 use crate::{CompletionPowerActionView, Icon, IconName, IconSize};
 
@@ -21,6 +22,23 @@ pub struct PowerCountdownState {
 }
 
 impl AppShell {
+    pub(crate) fn power_countdown(&self) -> Option<PowerCountdownState> {
+        match &self.active_modal {
+            Some(ActiveModal::PowerCountdown(state)) => Some(*state),
+            _ => None,
+        }
+    }
+
+    fn clear_power_countdown_modal(&mut self) -> Option<PowerCountdownState> {
+        match self.active_modal.take() {
+            Some(ActiveModal::PowerCountdown(state)) => Some(state),
+            other => {
+                self.active_modal = other;
+                None
+            }
+        }
+    }
+
     pub(crate) fn check_power_action_trigger(&mut self, cx: &mut Context<Self>) {
         if !self.settings.platform.action_after_done.is_armed() {
             return;
@@ -29,8 +47,7 @@ impl AppShell {
         if self.snapshot.counts.active > 0 {
             self.power_had_active_tasks = true;
             // If a countdown was running and a new task started downloading, cancel it.
-            if self.power_countdown.is_some() {
-                self.power_countdown = None;
+            if self.clear_power_countdown_modal().is_some() {
                 self.power_countdown_generation = self.power_countdown_generation.wrapping_add(1);
                 self.sync_kit_modals_deferred(cx);
                 cx.notify();
@@ -38,7 +55,7 @@ impl AppShell {
         } else if self.power_had_active_tasks
             && self.snapshot.counts.active == 0
             && self.snapshot.counts.waiting == 0
-            && self.power_countdown.is_none()
+            && self.power_countdown().is_none()
         {
             self.start_power_countdown(self.settings.platform.action_after_done, cx);
         }
@@ -49,10 +66,10 @@ impl AppShell {
         action: CompletionPowerActionView,
         cx: &mut Context<Self>,
     ) {
-        self.power_countdown = Some(PowerCountdownState {
+        self.active_modal = Some(ActiveModal::PowerCountdown(PowerCountdownState {
             action,
             remaining_seconds: 30,
-        });
+        }));
         self.power_countdown_generation = self.power_countdown_generation.wrapping_add(1);
         let generation = self.power_countdown_generation;
 
@@ -100,7 +117,7 @@ impl AppShell {
     }
 
     pub(crate) fn tick_power_countdown(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(countdown) = &mut self.power_countdown else {
+        let Some(ActiveModal::PowerCountdown(countdown)) = &mut self.active_modal else {
             return false;
         };
 
@@ -110,10 +127,10 @@ impl AppShell {
             true
         } else {
             let action = countdown.action;
-            self.power_countdown = None;
+            self.active_modal = None;
             self.power_had_active_tasks = false;
             self.settings.platform.action_after_done = CompletionPowerActionView::None;
-            self.settings_page.draft_action_after_done = CompletionPowerActionView::None;
+            self.sync_settings_panel_power_draft(cx);
             let settings = self.settings.clone();
             self.request_settings_save(
                 settings,
@@ -129,11 +146,11 @@ impl AppShell {
     }
 
     pub(crate) fn cancel_power_countdown(&mut self, cx: &mut Context<Self>) {
-        self.power_countdown = None;
+        self.clear_power_countdown_modal();
         self.power_countdown_generation = self.power_countdown_generation.wrapping_add(1);
         self.power_had_active_tasks = false;
         self.settings.platform.action_after_done = CompletionPowerActionView::None;
-        self.settings_page.draft_action_after_done = CompletionPowerActionView::None;
+        self.sync_settings_panel_power_draft(cx);
         let settings = self.settings.clone();
         self.request_settings_save(
             settings,
@@ -147,14 +164,14 @@ impl AppShell {
     }
 
     pub(crate) fn execute_power_action_now(&mut self, cx: &mut Context<Self>) {
-        let Some(countdown) = self.power_countdown.take() else {
+        let Some(countdown) = self.clear_power_countdown_modal() else {
             return;
         };
         self.power_countdown_generation = self.power_countdown_generation.wrapping_add(1);
         let action = countdown.action;
         self.power_had_active_tasks = false;
         self.settings.platform.action_after_done = CompletionPowerActionView::None;
-        self.settings_page.draft_action_after_done = CompletionPowerActionView::None;
+        self.sync_settings_panel_power_draft(cx);
         let settings = self.settings.clone();
         self.request_settings_save(
             settings,
@@ -176,9 +193,9 @@ impl AppShell {
             return;
         }
         self.settings.platform.action_after_done = action;
-        self.settings_page.draft_action_after_done = action;
+        self.sync_settings_panel_power_draft(cx);
         if action.is_armed() {
-            if let Some(countdown) = &mut self.power_countdown {
+            if let Some(ActiveModal::PowerCountdown(countdown)) = &mut self.active_modal {
                 countdown.action = action;
             } else {
                 self.power_had_active_tasks = self.snapshot.counts.active > 0;
@@ -194,7 +211,7 @@ impl AppShell {
             );
         } else {
             self.power_had_active_tasks = false;
-            self.power_countdown = None;
+            self.clear_power_countdown_modal();
             self.power_countdown_generation = self.power_countdown_generation.wrapping_add(1);
             self.sync_kit_modals_deferred(cx);
         }
@@ -211,8 +228,7 @@ impl AppShell {
     pub(crate) fn toggle_keep_awake(&mut self, cx: &mut Context<Self>) {
         self.settings.platform.keep_awake_while_active =
             !self.settings.platform.keep_awake_while_active;
-        self.settings_page.draft_keep_awake_while_active =
-            self.settings.platform.keep_awake_while_active;
+        self.sync_settings_panel_power_draft(cx);
         let settings = self.settings.clone();
         self.request_settings_save(
             settings,
@@ -221,6 +237,16 @@ impl AppShell {
             cx,
         );
         cx.notify();
+    }
+
+    fn sync_settings_panel_power_draft(&self, cx: &mut Context<Self>) {
+        if let Some((panel, _)) = &self.settings_panel {
+            let action = self.settings.platform.action_after_done;
+            let keep_awake = self.settings.platform.keep_awake_while_active;
+            panel.update(cx, |panel, cx| {
+                panel.sync_power_draft(action, keep_awake, cx);
+            });
+        }
     }
 
     #[cfg(test)]

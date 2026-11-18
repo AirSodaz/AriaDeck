@@ -1,6 +1,40 @@
-//! Split from workspace.rs — settings_bridge.
+//! Settings persistence bridges, credential helpers, and GPUI event pumps
+//! between Tokio workers and [`super::DesktopRoot`].
 
-use super::*;
+use std::{fs, sync::Arc, time::Duration};
+
+use ariadeck_application::{
+    DownloadDestinationGateway, DownloadDestinationRequest, DownloadProxyConfig,
+    DownloadProxyMode as ApplicationProxyMode, SyncHandle, TaskListQuery,
+};
+use ariadeck_domain::{
+    ByteRate, ConnectionState, EnginePath, SpeedLimitConfig, TransferPolicyConfig,
+};
+use ariadeck_engine::LocalEngineHealthHandle;
+use ariadeck_settings::{
+    AppSettings, DownloadProxyMode, FileAllocationSetting, JsonSettingsStore, ProxyCredentialRef,
+    ProxyCredentialStore, resolve_system_proxy,
+};
+use ariadeck_ui::{
+    CoreCommandOutcomeView, CoreDownloadResultView, OperationErrorView,
+    SaveProfileCatalogOutcomeView, SaveProfileCatalogResultView, SettingsSaveOutcomeView,
+    SettingsSaveResultView, SwitchProfileOutcomeView, SwitchProfileResultView,
+};
+use gpui::{Context, Window};
+use secrecy::SecretString;
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinHandle,
+};
+
+use super::{
+    DesktopRoot, ProxyPasswordUpdate,
+    core_fetch::CoreDownloadResult,
+    mapping::{
+        map_core_registry, map_local_engine_health, map_profile_catalog, map_settings, map_snapshot,
+    },
+    tracker_list::TrackerListRefreshResult,
+};
 
 pub(crate) struct CredentialMutation {
     pub(crate) credential: Option<ProxyCredentialRef>,
@@ -401,7 +435,7 @@ pub(crate) fn spawn_persistence_event_bridge(
                         }
                     }
                     super::persistence::PersistenceEvent::WindowGeometrySaved(geometry) => {
-                        this.last_saved_geometry = Some(geometry);
+                        this.platform.record_saved_geometry(geometry);
                     }
                 })
                 .is_err()
@@ -505,7 +539,17 @@ pub(crate) fn spawn_proxy_reapply_bridge(
                     .and_then(|result| result);
                 let result = match loaded {
                     Ok((settings, password)) => {
-                        let proxy_result = match map_download_proxy_config(&settings, password) {
+                        let proxy_settings = settings.clone();
+                        let proxy_config = runtime
+                            .spawn_blocking(move || {
+                                map_download_proxy_config(&proxy_settings, password)
+                            })
+                            .await
+                            .map_err(|error| {
+                                format!("Download proxy resolution task failed: {error}")
+                            })
+                            .and_then(|res| res);
+                        let proxy_result = match proxy_config {
                             Ok(proxy) => handle
                                 .apply_download_proxy(snapshot.session, proxy)
                                 .await

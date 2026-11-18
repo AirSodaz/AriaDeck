@@ -82,3 +82,14 @@ language-chinese-simplified = 简体中文
 # Tray / OS
 os-notification-title = AriaDeck
 os-notification-title-error = AriaDeck — Error
+
+# Toolbar & task overview
+toolbar-action-unavailable = { $label } unavailable
+task-overview-share-ratio = Share ratio
+task-overview-progress = Progress
+task-overview-observed-session = { $duration } observed this session
+task-overview-remaining = { $duration } remaining
+task-overview-error-code = Error { $code }: { $summary }
+task-overview-uploaded = Uploaded { $bytes }
+task-overview-upload-rate = Up { $rate }
+loading-label = Loading

@@ -1,9 +1,9 @@
-//! Settings `engine` section logic and rendering for `AppShell`.
+//! Settings `engine` section logic and rendering for `SettingsPanelView`.
 
 use super::*;
 
-impl AppShell {
-    pub(crate) fn render_settings_engine(&mut self, cx: &mut Context<Self>) -> Div {
+impl SettingsPanelView {
+    pub(super) fn render_settings_engine(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
         let cores = self.cores.clone();
         let can_rollback = cores
@@ -147,13 +147,12 @@ impl AppShell {
                                             )
                                         })
                                         .disabled(is_active)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.request_core_command(
+                                        .on_click(cx.listener(move |_this, _, _, cx| {
+                                            cx.emit(SettingsPanelEvent::CoreCommand(
                                                 CoreCommandView::Activate {
                                                     core_id: activate_id.clone(),
                                                 },
-                                                cx,
-                                            );
+                                            ));
                                         }));
                                         if !is_active {
                                             button = button.primary();
@@ -174,13 +173,12 @@ impl AppShell {
                                             )],
                                         ))
                                         .on_click(
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.request_core_command(
+                                            cx.listener(move |_this, _, _, cx| {
+                                                cx.emit(SettingsPanelEvent::CoreCommand(
                                                     CoreCommandView::Verify {
                                                         core_id: verify_id.clone(),
                                                     },
-                                                    cx,
-                                                );
+                                                ));
                                             }),
                                         ),
                                     )
@@ -199,13 +197,12 @@ impl AppShell {
                                         ))
                                         .disabled(is_active)
                                         .on_click(
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.request_core_command(
+                                            cx.listener(move |_this, _, _, cx| {
+                                                cx.emit(SettingsPanelEvent::CoreCommand(
                                                     CoreCommandView::Remove {
                                                         core_id: remove_id.clone(),
                                                     },
-                                                    cx,
-                                                );
+                                                ));
                                             }),
                                         ),
                                     ),
@@ -218,14 +215,11 @@ impl AppShell {
                         .label(self.t("settings-core-rollback"))
                         .accessibility_label(self.t("settings-core-rollback-aria"))
                         .disabled(!can_rollback)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.request_core_command(CoreCommandView::Rollback, cx);
+                        .on_click(cx.listener(|_this, _, _, cx| {
+                            cx.emit(SettingsPanelEvent::CoreCommand(CoreCommandView::Rollback));
                         })),
                 ),
             )
-            // B4: the same Get-aria2 panel the first-run guide shows. Discovery,
-            // verified download, and manual import are not onboarding-only —
-            // switching or repairing a core later needs exactly these controls.
             .child(
                 div()
                     .mt_4()
@@ -239,7 +233,7 @@ impl AppShell {
                         self.t("core-setup-section"),
                         colors,
                     ))
-                    .child(self.render_core_setup_panel("settings", cx)),
+                    .child(self.core_setup_panel.clone()),
             )
     }
 }

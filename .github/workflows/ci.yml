@@ -180,6 +180,21 @@ jobs:
           if (-not $iscc) { throw "ISCC.exe not found after installing Inno Setup" }
           Write-Host "ISCC: $iscc"
 
+      - name: Ensure WiX Toolset
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $wixFound = @(
+            (Get-Command candle -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),
+            "${env:ProgramFiles(x86)}\WiX Toolset v3.11\bin\candle.exe",
+            "$env:ProgramFiles\WiX Toolset v3.11\bin\candle.exe",
+            "$env:WIX\bin\candle.exe"
+          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+          if (-not $wixFound) {
+            choco install wixtoolset --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "choco install wixtoolset failed (exit $LASTEXITCODE)" }
+          }
+
       - name: Package installer and MSI
         shell: pwsh
         run: ./scripts/package-windows-installer.ps1 -Arch ${{ matrix.arch }} -SkipStage

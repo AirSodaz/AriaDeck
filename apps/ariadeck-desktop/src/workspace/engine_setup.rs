@@ -1,6 +1,34 @@
-//! Split from workspace.rs — engine_setup.
+//! Engine setup, RPC runtime configuration, local aria2 supervision, and
+//! profile secret management.
 
-use super::*;
+use std::{
+    collections::HashMap,
+    env,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
+
+use ariadeck_application::{
+    CoordinatorConfig, ReconnectPolicy, SyncHandle, spawn_sync_coordinator,
+};
+use ariadeck_domain::ProfileId;
+use ariadeck_engine::{
+    CoreStore, LocalEngineSupervisor, ProfileCatalog, ProfileEntry, ProfileKind,
+};
+use ariadeck_history::SqliteHistoryStore;
+use ariadeck_rpc::{
+    Aria2Client, AuthenticatedTransport, RpcSecret, RpcSyncConnector, WebSocketConfig,
+    WebSocketTransport,
+};
+use ariadeck_settings::{
+    AppSettings, ProfileEnvironmentStore, ProxyCredentialRef, ProxyCredentialStore,
+    SystemProxyCredentialStore,
+};
+use ariadeck_ui::ProfileRpcSecretUpdateView;
+use secrecy::SecretString;
+use tokio::runtime::Runtime;
+use url::Url;
 
 #[derive(Debug)]
 pub(crate) struct RpcRuntimeConfig {
@@ -143,64 +171,47 @@ pub(crate) fn rpc_secret_store() -> SystemProxyCredentialStore {
     SystemProxyCredentialStore::new("AriaDeck rpc secret")
 }
 
-/// Persist Set/Clear secret mutations against the keyring using catalog secret_ref values.
+/// Persist Set/Clear secret mutations against the keyring, keyed strictly by `ProfileId`.
 pub(crate) fn apply_profile_secret_updates(
     catalog: &ProfileCatalog,
-    view: &ProfileCatalogView,
-    secret_updates: &std::collections::HashMap<String, ProfileRpcSecretUpdateView>,
+    secret_updates: &HashMap<ProfileId, ProfileRpcSecretUpdateView>,
     previous: &ProfileCatalog,
 ) -> Result<(), String> {
     if secret_updates.is_empty() {
         return Ok(());
     }
     let store = rpc_secret_store();
-    for entry in &view.profiles {
-        let Some(update) = secret_updates.get(&entry.profile_id) else {
-            continue;
-        };
-        // Resolve the catalog entry for this view row (draft ids already mapped to UUIDs).
-        let profile = catalog
-            .profiles
-            .iter()
-            .find(|profile| {
-                entry.profile_id.parse::<ProfileId>().ok() == Some(profile.profile_id)
-                    || profile.name == entry.name.trim()
-            })
-            .or_else(|| {
-                // Fallback: match by endpoint for remotes.
-                catalog.profiles.iter().find(|profile| {
-                    profile.kind == ProfileKind::RemoteRpc
-                        && profile.endpoint.as_deref() == Some(entry.endpoint.trim())
-                })
-            });
+    apply_profile_secret_updates_with_store(&store, catalog, secret_updates, previous)
+}
+
+pub(crate) fn apply_profile_secret_updates_with_store(
+    store: &dyn ProxyCredentialStore,
+    catalog: &ProfileCatalog,
+    secret_updates: &HashMap<ProfileId, ProfileRpcSecretUpdateView>,
+    previous: &ProfileCatalog,
+) -> Result<(), String> {
+    for (profile_id, update) in secret_updates {
         match update {
             ProfileRpcSecretUpdateView::Unchanged => {}
             ProfileRpcSecretUpdateView::Clear => {
-                let refs = previous
-                    .profiles
-                    .iter()
-                    .filter(|profile| {
-                        entry.profile_id.parse::<ProfileId>().ok() == Some(profile.profile_id)
-                            || profile
-                                .endpoint
-                                .as_deref()
-                                .is_some_and(|endpoint| endpoint == entry.endpoint.trim())
-                    })
-                    .filter_map(|profile| profile.secret_ref);
-                for secret_ref in refs {
+                if let Some(secret_ref) = previous
+                    .get(*profile_id)
+                    .and_then(|profile| profile.secret_ref)
+                {
                     let credential = ProxyCredentialRef::from_uuid(secret_ref.as_uuid());
                     let _ = store.delete(credential);
                 }
             }
             ProfileRpcSecretUpdateView::Set(password) => {
-                let secret_ref = profile.and_then(|profile| profile.secret_ref).ok_or_else(
-                    || {
-                        format!(
-                            "Remote profile {} is missing a secret reference after save mapping.",
-                            entry.name
-                        )
-                    },
-                )?;
+                let profile = catalog.get(*profile_id).ok_or_else(|| {
+                    format!("Remote profile {profile_id} was not found in the mapped catalog.")
+                })?;
+                let secret_ref = profile.secret_ref.ok_or_else(|| {
+                    format!(
+                        "Remote profile {} is missing a secret reference after save mapping.",
+                        profile.name
+                    )
+                })?;
                 let credential = ProxyCredentialRef::from_uuid(secret_ref.as_uuid());
                 let secret = SecretString::new(password.clone().into_inner());
                 store
@@ -311,38 +322,6 @@ pub(crate) fn local_engine_executable_missing(data_dir: &Path, profile_executabl
 }
 
 /// Hide the GPUI window without destroying it so tray sessions can restore it.
-pub(crate) fn hide_native_window(window: &Window) -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        // Use the HasWindowHandle trait explicitly; Window::window_handle()
-        // returns the GPUI AnyWindowHandle id, not the OS handle.
-        if let Ok(handle) = HasWindowHandle::window_handle(window)
-            && let RawWindowHandle::Win32(win32) = handle.as_raw()
-        {
-            return crate::platform::hide_show_win32(win32.hwnd.get(), false);
-        }
-    }
-    // Fallback on non-Windows or when the raw handle is unavailable: minimize
-    // keeps the process alive and the tray menu can still restore/activate.
-    window.minimize_window();
-    true
-}
-
-pub(crate) fn show_native_window(window: &Window) -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(handle) = HasWindowHandle::window_handle(window)
-            && let RawWindowHandle::Win32(win32) = handle.as_raw()
-        {
-            let restored = crate::platform::hide_show_win32(win32.hwnd.get(), true);
-            window.activate_window();
-            return restored;
-        }
-    }
-    window.activate_window();
-    true
-}
-
 // Data-dir resolution lives in `ariadeck-ipc` so the native messaging host
 // addresses the same instance socket (D-045 §4).
 pub(crate) use ariadeck_ipc::default_data_dir;
@@ -374,4 +353,116 @@ pub(crate) fn resolve_download_dir(
         return downloads;
     }
     data_dir.join("downloads")
+}
+
+pub(crate) fn create_sync_handle(
+    runtime: &Runtime,
+    data_dir: &Path,
+    settings: &AppSettings,
+    catalog: &ProfileCatalog,
+    child_spawn_hook: Option<ariadeck_engine::ChildSpawnHook>,
+) -> Result<(SyncHandle, Option<LocalEngineSupervisor>, Option<String>), String> {
+    // One-shot env override for smoke tests still wins over the catalog.
+    let external_endpoint = env::var("ARIADECK_RPC_URL")
+        .ok()
+        .filter(|endpoint| !endpoint.trim().is_empty());
+    let active = catalog
+        .active()
+        .ok_or_else(|| "Profile catalog has no active profile.".to_owned())?;
+    let remote_from_catalog = active.kind == ProfileKind::RemoteRpc;
+    let is_remote = external_endpoint.is_some() || remote_from_catalog;
+    let rpc_runtime = RpcRuntimeConfig::from_values(is_remote, |name| env::var(name).ok())?;
+    let mut engine_startup_notice = None;
+    let (endpoint, secret, local_engine, profile_id) = if let Some(endpoint) = external_endpoint {
+        if endpoint.trim() != endpoint {
+            return Err("ARIADECK_RPC_URL must not contain surrounding whitespace.".into());
+        }
+        let endpoint =
+            Url::parse(&endpoint).map_err(|error| format!("Invalid ARIADECK_RPC_URL: {error}"))?;
+        let profile_id = env::var("ARIADECK_PROFILE_ID")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(active.profile_id);
+        let secret = env::var("ARIADECK_RPC_SECRET")
+            .ok()
+            .filter(|secret| !secret.is_empty())
+            .map(RpcSecret::new);
+        (endpoint, secret, None, profile_id)
+    } else if remote_from_catalog {
+        let endpoint_str = active
+            .endpoint
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "Active remote profile is missing an endpoint.".to_owned())?;
+        let endpoint = Url::parse(endpoint_str)
+            .map_err(|error| format!("Invalid remote profile endpoint: {error}"))?;
+        let secret = load_profile_rpc_secret(active)?;
+        (endpoint, secret, None, active.profile_id)
+    } else {
+        let config = active
+            .as_local_config()
+            .ok_or_else(|| "Active local profile is missing a data directory.".to_owned())?;
+        // Prefer settings download directory for the live session.
+        let mut config = config;
+        config.download_dir = settings.download_directory.clone();
+        if config.data_dir.as_os_str().is_empty() {
+            config.data_dir = data_dir.to_path_buf();
+        }
+        // Executable resolution: env override → profile pin → managed core → discovery.
+        config.executable = resolve_local_executable(data_dir, &config.executable)?;
+        let process = LocalEngineSupervisor::spawn_with_child_hook(&config, child_spawn_hook)
+            .map_err(|error| format!("Failed to start local aria2: {error}"))?;
+        // Successful start: remember the active managed core as last working when present.
+        let _ = CoreStore::new(data_dir).mark_active_as_last_working();
+        let mut notices = Vec::new();
+        if process.session_was_recovered() {
+            let notice = match process.session_recovery_backup() {
+                Some(backup) => format!(
+                    "Corrupt aria2 session data was reset so downloads could start; the original was preserved at {}.",
+                    backup.display()
+                ),
+                None => "Corrupt aria2 session data was reset so downloads could start.".to_owned(),
+            };
+            tracing::warn!(%notice, "local aria2 session file was recovered");
+            notices.push(notice);
+        }
+        engine_startup_notice = (!notices.is_empty()).then(|| notices.join(" "));
+        let endpoint = process.endpoint().clone();
+        let secret = Some(RpcSecret::new(process.secret().to_owned()));
+        (endpoint, secret, Some(process), config.profile_id)
+    };
+
+    let mut websocket = WebSocketConfig::new(endpoint.clone());
+    websocket.connect_timeout = rpc_runtime.connect_timeout;
+    websocket.request_timeout = rpc_runtime.request_timeout;
+    websocket.allow_insecure_remote = rpc_runtime.allow_insecure_remote;
+    websocket.validate().map_err(|error| error.to_string())?;
+    let connector = Arc::new(RpcSyncConnector::new(websocket, secret));
+    let mut coordinator = CoordinatorConfig::new(profile_id);
+    coordinator.reconnect = rpc_runtime.reconnect;
+    match SqliteHistoryStore::open(data_dir.join("history.sqlite")) {
+        Ok(store) => {
+            coordinator.history = std::sync::Arc::new(store);
+        }
+        Err(error) => {
+            tracing::warn!(%error, "local task history is unavailable");
+        }
+    }
+    tracing::info!(
+        scheme = endpoint.scheme(),
+        host = endpoint.host_str().unwrap_or("unknown"),
+        port = endpoint.port_or_known_default(),
+        connect_timeout_ms = rpc_runtime.connect_timeout.as_millis(),
+        request_timeout_ms = rpc_runtime.request_timeout.as_millis(),
+        reconnect_base_ms = rpc_runtime.reconnect.base_delay.as_millis(),
+        reconnect_max_ms = rpc_runtime.reconnect.max_delay.as_millis(),
+        reconnect_max_attempts = ?rpc_runtime.reconnect.max_attempts,
+        "configured external aria2 RPC profile"
+    );
+    let _runtime_guard = runtime.enter();
+    Ok((
+        spawn_sync_coordinator(connector, coordinator),
+        local_engine,
+        engine_startup_notice,
+    ))
 }

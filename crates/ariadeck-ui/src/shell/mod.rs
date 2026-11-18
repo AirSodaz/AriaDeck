@@ -94,10 +94,12 @@ mod power;
 mod profiles;
 mod settings;
 mod task_list;
-use core_setup::CoreSetupState;
+use core_setup::{CoreSetupPanelView, CoreSetupState};
+use details::TaskDetailsPanelView;
+use dialogs_add::AddDownloadDialogView;
 #[allow(unused_imports)]
 use helpers::*;
-use modals::ModalKind;
+use modals::{ActiveModal, ModalKind};
 pub use power::PowerCountdownState;
 
 const SPEED_CHART_SAMPLES: usize = 120;
@@ -260,27 +262,6 @@ struct PendingMetadataPreview {
     paths: Vec<PathBuf>,
 }
 
-#[derive(Default)]
-struct AddDownloadDialog {
-    open: bool,
-    input_mode: AddDownloadInputModeView,
-    mode: AddDownloadModeView,
-    file_conflict: FileConflictPolicyView,
-    /// Selected download category id (C1); None uses settings default / global dir.
-    category_id: Option<String>,
-    /// Collapsed by default so the common path stays simple (ADD-005).
-    advanced_open: bool,
-    /// Filled from a browser hand-off (D-045). Confirming such a dialog is what
-    /// satisfies the once-per-session confirmation for cookies + auto-submit.
-    from_bridge: bool,
-    metadata_files: Vec<AddDownloadMetadataPreviewView>,
-    active_metadata_file: Option<usize>,
-    preview_pending: Option<PendingMetadataPreview>,
-    pending: Option<PendingAddDownload>,
-    error: Option<OperationErrorView>,
-    results: Vec<AddDownloadItemResultView>,
-}
-
 struct PendingTaskCommand {
     request_id: RequestId,
     session: EngineSessionView,
@@ -303,7 +284,7 @@ struct PendingBatchTaskCommand {
 
 enum TaskDetailsLoadState {
     Loading,
-    Ready { details: Box<TaskDetailsView> },
+    Ready { details: Arc<TaskDetailsView> },
     Failed { error: OperationErrorView },
     Stale,
 }
@@ -320,7 +301,7 @@ struct PendingTaskOpen {
 
 enum TaskDetailsPresentation {
     Loading,
-    Ready(Box<TaskDetailsView>),
+    Ready(Arc<TaskDetailsView>),
     Failed(String),
     Stale,
 }
@@ -332,25 +313,6 @@ enum TaskDetailsTab {
     Files,
     Network,
     Options,
-}
-
-struct TaskDetailsDrawer {
-    identity: TaskIdentity,
-    overview: DownloadRowView,
-    session: EngineSessionView,
-    state: TaskDetailsLoadState,
-    pending: Option<PendingTaskDetails>,
-    open_pending: Option<PendingTaskOpen>,
-    tab: TaskDetailsTab,
-    file_scroll: UniformListScrollHandle,
-    info_scroll: ScrollHandle,
-    network_scroll: ScrollHandle,
-    options_scroll: ScrollHandle,
-    rendered_file_range: Range<usize>,
-    /// Last time a ready→ready details RPC was emitted (coalesce rapid revisions).
-    last_ready_refresh_at: Option<Instant>,
-    /// True when a revision-driven refresh was deferred by the min interval.
-    refresh_coalesced: bool,
 }
 
 pub(crate) const DEFAULT_LINKS_INPUT_HEIGHT: f32 = 120.0;
@@ -433,8 +395,6 @@ pub(crate) struct SettingsPage {
     draft_tracker_enabled: bool,
     draft_tracker_source: crate::TrackerListSourceView,
     draft_tracker_auto_refresh: bool,
-    /// In-flight network refresh of the tracker list.
-    pending_tracker_refresh: Option<RequestId>,
     clear_proxy_password: bool,
     /// Profile id currently open in the inline editor (Settings → Profiles).
     editing_profile_id: Option<String>,
@@ -454,7 +414,6 @@ pub(crate) struct PendingProfileDelete {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PathPickTarget {
-    CoreExecutable,
     ProfileExecutable,
     /// Browse path for a draft category by index.
     CategoryDirectory {
@@ -600,7 +559,6 @@ struct BatchFailureDetails {
 /// Settings-page InputState entities, grouped for navigation and theme updates.
 pub(crate) struct SettingsInputs {
     pub(crate) directory: Entity<InputState>,
-    pub(crate) core_path: Entity<InputState>,
     pub(crate) profile_name: Entity<InputState>,
     pub(crate) profile_executable: Entity<InputState>,
     pub(crate) profile_endpoint: Entity<InputState>,
@@ -626,10 +584,9 @@ pub(crate) struct SettingsInputs {
 
 #[allow(dead_code)]
 impl SettingsInputs {
-    pub(crate) fn all(&self) -> [&Entity<InputState>; 23] {
+    pub(crate) fn all(&self) -> [&Entity<InputState>; 22] {
         [
             &self.directory,
-            &self.core_path,
             &self.profile_name,
             &self.profile_executable,
             &self.profile_endpoint,
@@ -655,7 +612,7 @@ impl SettingsInputs {
     }
 }
 
-/// Add-download advanced option InputState entities.
+/// Add-download advanced option InputState entities (lazily owned by `AddDownloadDialogView`).
 pub(crate) struct AddInputs {
     pub(crate) referer: Entity<InputState>,
     pub(crate) user_agent: Entity<InputState>,
@@ -664,41 +621,6 @@ pub(crate) struct AddInputs {
     pub(crate) http_user: Entity<InputState>,
     pub(crate) http_passwd: Entity<InputState>,
     pub(crate) checksum: Entity<InputState>,
-}
-
-#[allow(dead_code)]
-impl AddInputs {
-    pub(crate) fn all(&self) -> [&Entity<InputState>; 7] {
-        [
-            &self.referer,
-            &self.user_agent,
-            &self.headers,
-            &self.cookie,
-            &self.http_user,
-            &self.http_passwd,
-            &self.checksum,
-        ]
-    }
-}
-
-/// Per-task dialog InputState entities.
-pub(crate) struct TaskInputs {
-    pub(crate) download_limit: Entity<InputState>,
-    pub(crate) upload_limit: Entity<InputState>,
-    pub(crate) seed_ratio: Entity<InputState>,
-    pub(crate) seed_time: Entity<InputState>,
-}
-
-#[allow(dead_code)]
-impl TaskInputs {
-    pub(crate) fn all(&self) -> [&Entity<InputState>; 4] {
-        [
-            &self.download_limit,
-            &self.upload_limit,
-            &self.seed_ratio,
-            &self.seed_time,
-        ]
-    }
 }
 
 pub struct AppShell {
@@ -717,13 +639,9 @@ pub struct AppShell {
     selected_tasks: HashSet<TaskIdentity>,
     range_anchor: Option<TaskIdentity>,
     search_input: Entity<InputState>,
-    add_input: Entity<TextareaState>,
-    add_inputs: AddInputs,
-    output_name_input: Entity<InputState>,
-    settings_inputs: SettingsInputs,
-    add_dialog: AddDownloadDialog,
+    active_modal: Option<ActiveModal>,
     active_kit_modal: Option<ModalKind>,
-    settings_page: SettingsPage,
+    settings_panel: Option<(Entity<settings::SettingsPanelView>, Subscription)>,
     /// Discovery / verified-download state for the shared Get-aria2 panel (B4).
     core_setup: CoreSetupState,
     update_status: crate::UpdateStatusView,
@@ -736,23 +654,18 @@ pub struct AppShell {
     /// the one configuration that never gets a fully silent path.
     bridge_auto_submit_unlocked: bool,
     pending_settings_save: Option<PendingSettingsSave>,
+    pending_tracker_refresh: Option<RequestId>,
     pending_task_command: Option<PendingTaskCommand>,
     pending_global_task_command: Option<PendingGlobalTaskCommand>,
     pending_batch_command: Option<PendingBatchTaskCommand>,
     pending_load_more_stopped: bool,
-    batch_failure_details: Option<BatchFailureDetails>,
-    output_name_dialog: Option<TaskOutputNameDialog>,
-    task_inputs: TaskInputs,
-    task_speed_limit_dialog: Option<TaskSpeedLimitDialog>,
-    task_options_dialog: Option<TaskOptionsDialog>,
-    details_drawer: Option<TaskDetailsDrawer>,
+    details_panel: Option<Entity<TaskDetailsPanelView>>,
+    _details_panel_sub: Option<Subscription>,
     details_drawer_width: f32,
     details_sheet_open: bool,
-    remove_confirmation: Option<RemoveConfirmation>,
     active_status_popover: Option<StatusBarPopover>,
     speed_popover_previous_focus: Option<WeakFocusHandle>,
     context_menu_target: Option<TaskIdentity>,
-    power_countdown: Option<PowerCountdownState>,
     power_had_active_tasks: bool,
     power_countdown_generation: u64,
     status_notice: Option<StatusNotice>,
@@ -765,20 +678,12 @@ pub struct AppShell {
     known_task_status: HashMap<TaskIdentity, TaskStatusView>,
     next_request_id: u64,
     links_input_height: f32,
-    links_input_drag_origin: Option<(Pixels, f32)>,
     list_scroll: UniformListScrollHandle,
-    settings_scroll: ScrollHandle,
-    metadata_file_scroll: UniformListScrollHandle,
     focus_handle: FocusHandle,
     rendered_range: Range<usize>,
     _search_subscription: Subscription,
-    _add_subscription: Subscription,
-    _add_advanced_subscriptions: [Subscription; 7],
-    _output_name_subscription: Subscription,
-    _task_speed_limit_subscriptions: [Subscription; 2],
-    _task_options_subscriptions: [Subscription; 2],
-    _settings_subscriptions: Vec<Subscription>,
     _window_bounds_subscription: Subscription,
+    _window_appearance_subscription: Subscription,
 }
 
 impl gpui::EventEmitter<AppShellEvent> for AppShell {}
@@ -844,331 +749,22 @@ impl AppShell {
                 }
             },
         );
-        let add_placeholder = initial_translator.t("dialog-add-url-placeholder");
-        let add_input = cx.new(|cx| TextareaState::new(window, cx).placeholder(add_placeholder));
-        let add_subscription = cx.subscribe(
-            &add_input,
-            |this: &mut Self, _input, event: &InputEvent, cx| {
-                if let InputEvent::Change = event
-                    && this.add_dialog.open
-                    && this.add_dialog.pending.is_none()
-                {
-                    let changed = this.add_dialog.error.take().is_some()
-                        || !this.add_dialog.results.is_empty();
-                    this.add_dialog.results.clear();
-                    if changed {
-                        cx.notify();
-                    }
-                }
-            },
-        );
-
-        let make_input = |placeholder: SharedString,
-                          masked: bool,
-                          window: &mut Window,
-                          cx: &mut Context<Self>| {
-            cx.new(|cx| {
-                let mut state = InputState::new(window, cx).placeholder(placeholder);
-                if masked {
-                    state = state.masked(true);
-                }
-                state
-            })
-        };
-
-        let add_referer_input = make_input("https://example.test/page".into(), false, window, cx);
-        let add_user_agent_input = make_input(
-            initial_translator
-                .t("dialog-add-user-agent-placeholder")
-                .into(),
-            false,
-            window,
-            cx,
-        );
-        let add_headers_input = make_input(
-            initial_translator
-                .t("dialog-add-headers-placeholder")
-                .into(),
-            false,
-            window,
-            cx,
-        );
-        let add_cookie_input = make_input("session=…".into(), true, window, cx);
-        let add_http_user_input = make_input(
-            initial_translator
-                .t("dialog-add-http-username-placeholder")
-                .into(),
-            false,
-            window,
-            cx,
-        );
-        let add_http_passwd_input = make_input(
-            initial_translator
-                .t("dialog-add-http-password-placeholder")
-                .into(),
-            true,
-            window,
-            cx,
-        );
-        let add_checksum_input = make_input("sha-256=…".into(), false, window, cx);
-
-        let add_advanced_subscriptions = [
-            &add_referer_input,
-            &add_user_agent_input,
-            &add_headers_input,
-            &add_cookie_input,
-            &add_http_user_input,
-            &add_http_passwd_input,
-            &add_checksum_input,
-        ]
-        .map(|input| {
-            cx.subscribe(input, |this: &mut Self, _input, event: &InputEvent, cx| {
-                if let InputEvent::Change = event
-                    && this.add_dialog.open
-                    && this.add_dialog.pending.is_none()
-                    && this.add_dialog.error.take().is_some()
-                {
-                    cx.notify();
-                }
-            })
-        });
-
-        let output_name_input = make_input("archive.iso".into(), false, window, cx);
-        let output_name_subscription = cx.subscribe(
-            &output_name_input,
-            |this: &mut Self, _input, event: &InputEvent, cx| {
-                if let InputEvent::Change = event
-                    && let Some(dialog) = &mut this.output_name_dialog
-                    && this.pending_task_command.is_none()
-                    && dialog.error.take().is_some()
-                {
-                    cx.notify();
-                }
-            },
-        );
-
-        let task_download_limit_input = make_input(
-            initial_translator
-                .t("input-download-limit-placeholder")
-                .into(),
-            false,
-            window,
-            cx,
-        );
-        let task_upload_limit_input = make_input(
-            initial_translator
-                .t("input-upload-limit-placeholder")
-                .into(),
-            false,
-            window,
-            cx,
-        );
-        let task_speed_limit_subscriptions = [&task_download_limit_input, &task_upload_limit_input]
-            .map(|input| {
-                cx.subscribe(input, |this: &mut Self, _input, event: &InputEvent, cx| {
-                    if let InputEvent::Change = event
-                        && let Some(dialog) = &mut this.task_speed_limit_dialog
-                        && this.pending_task_command.is_none()
-                        && dialog.error.take().is_some()
-                    {
-                        cx.notify();
-                    }
-                })
-            });
-
-        let task_seed_ratio_input = make_input(
-            initial_translator
-                .t("dialog-task-options-seed-ratio-placeholder")
-                .into(),
-            false,
-            window,
-            cx,
-        );
-        let task_seed_time_input = make_input(
-            initial_translator
-                .t("dialog-task-options-seed-time-placeholder")
-                .into(),
-            false,
-            window,
-            cx,
-        );
-        let task_options_subscriptions =
-            [&task_seed_ratio_input, &task_seed_time_input].map(|input| {
-                cx.subscribe(input, |this: &mut Self, _input, event: &InputEvent, cx| {
-                    if let InputEvent::Change = event
-                        && let Some(dialog) = &mut this.task_options_dialog
-                        && this.pending_task_command.is_none()
-                        && dialog.error.take().is_some()
-                    {
-                        cx.notify();
-                    }
-                })
-            });
-
-        let settings_directory_input = make_input("D:\\Downloads".into(), false, window, cx);
-        let settings_core_path_input = make_input(
-            if cfg!(windows) {
-                "C:\\path\\to\\aria2c.exe"
-            } else {
-                "/usr/bin/aria2c"
-            }
-            .into(),
-            false,
-            window,
-            cx,
-        );
-        let settings_profile_name_input = make_input(
-            initial_translator
-                .t("settings-profile-name-placeholder")
-                .into(),
-            false,
-            window,
-            cx,
-        );
-        let settings_profile_executable_input = make_input(
-            initial_translator
-                .t("settings-profile-executable-placeholder")
-                .into(),
-            false,
-            window,
-            cx,
-        );
-        let settings_profile_endpoint_input =
-            make_input("wss://host:6800/jsonrpc".into(), false, window, cx);
-        let settings_profile_secret_input = make_input(
-            initial_translator
-                .t("settings-profile-secret-placeholder")
-                .into(),
-            true,
-            window,
-            cx,
-        );
-        let settings_all_proxy_input =
-            make_input("http://proxy.example:8080".into(), false, window, cx);
-        let settings_http_proxy_input =
-            make_input("http://proxy.example:8080".into(), false, window, cx);
-        let settings_https_proxy_input =
-            make_input("http://proxy.example:8080".into(), false, window, cx);
-        let settings_ftp_proxy_input =
-            make_input("http://proxy.example:8080".into(), false, window, cx);
-        let settings_no_proxy_input =
-            make_input("localhost, 127.0.0.1, 10.0.0.0/8".into(), false, window, cx);
-        let settings_proxy_username_input = make_input(
-            initial_translator
-                .t("settings-proxy-username-placeholder")
-                .into(),
-            false,
-            window,
-            cx,
-        );
-        let settings_proxy_password_input = make_input(
-            initial_translator
-                .t("settings-proxy-password-placeholder")
-                .into(),
-            true,
-            window,
-            cx,
-        );
-        let settings_download_limit_input = make_input(
-            initial_translator
-                .t("input-download-limit-placeholder")
-                .into(),
-            false,
-            window,
-            cx,
-        );
-        let settings_upload_limit_input = make_input(
-            initial_translator
-                .t("input-upload-limit-placeholder")
-                .into(),
-            false,
-            window,
-            cx,
-        );
-        let settings_max_concurrent_input = make_input("5".into(), false, window, cx);
-        let settings_max_connection_input = make_input("1-16".into(), false, window, cx);
-        let settings_split_input = make_input("5".into(), false, window, cx);
-        let settings_min_split_size_input = make_input("20M".into(), false, window, cx);
-        let settings_tracker_custom_url_input =
-            make_input("https://example.com/trackers.txt".into(), false, window, cx);
-        let settings_tracker_list_text_input =
-            make_input("https://tracker.example/announce".into(), false, window, cx);
-        let settings_category_name_input = make_input(
-            initial_translator
-                .t("settings-category-name-placeholder")
-                .into(),
-            false,
-            window,
-            cx,
-        );
-        let settings_category_extensions_input =
-            make_input("mp4, mkv, zip".into(), false, window, cx);
-
-        let mut settings_subscriptions = [
-            &settings_directory_input,
-            &settings_core_path_input,
-            &settings_profile_name_input,
-            &settings_profile_executable_input,
-            &settings_profile_endpoint_input,
-            &settings_profile_secret_input,
-            &settings_all_proxy_input,
-            &settings_http_proxy_input,
-            &settings_https_proxy_input,
-            &settings_ftp_proxy_input,
-            &settings_no_proxy_input,
-            &settings_proxy_username_input,
-            &settings_download_limit_input,
-            &settings_upload_limit_input,
-            &settings_max_concurrent_input,
-            &settings_max_connection_input,
-            &settings_split_input,
-            &settings_min_split_size_input,
-            &settings_tracker_custom_url_input,
-            &settings_tracker_list_text_input,
-            &settings_category_name_input,
-            &settings_category_extensions_input,
-        ]
-        .into_iter()
-        .map(|input| {
-            cx.subscribe(input, |this: &mut Self, _input, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change)
-                    && this.page == AppPage::Settings
-                    && this.pending_settings_save.is_none()
-                    && this.settings_page.error.take().is_some()
-                {
-                    cx.notify();
-                }
-            })
-        })
-        .collect::<Vec<_>>();
-        settings_subscriptions.push(cx.subscribe(
-            &settings_proxy_password_input,
-            |this: &mut Self, _input, event: &InputEvent, cx| {
-                if let InputEvent::Change = event {
-                    let changed = this.settings_page.clear_proxy_password
-                        || (this.page == AppPage::Settings
-                            && this.pending_settings_save.is_none()
-                            && this.settings_page.error.is_some());
-                    this.settings_page.clear_proxy_password = false;
-                    this.settings_page.error = None;
-                    if changed {
-                        cx.notify();
-                    }
-                }
-            },
-        ));
         let window_bounds_subscription = cx.observe_window_bounds(window, |this, window, cx| {
             this.emit_window_geometry(window, cx);
             this.sync_details_sheet(window, cx);
             cx.notify();
         });
-        let _window_appearance_subscription =
+        let window_appearance_subscription =
             cx.observe_window_appearance(window, |this, window, cx| {
                 if this.settings.color_scheme == ColorSchemeView::System {
                     let theme = resolve_theme(ColorSchemeView::System, window);
                     if this.theme.mode != theme.mode || this.theme.colors != theme.colors {
                         this.theme = theme;
                         this.theme.sync_to_kit(Some(window), cx);
+                        this.sync_active_modal_context(None, cx);
+                        this.sync_settings_panel(None, cx);
+                        this.sync_details_panel_context(cx);
+                        this.sync_core_setup_panels(cx);
                         cx.notify();
                     }
                 }
@@ -1180,7 +776,7 @@ impl AppShell {
             window_handle,
             theme,
             translator: translator_for_language(settings.language),
-            settings: settings.clone(),
+            settings,
             profiles: ProfileCatalogView::default(),
             cores: CoreRegistryView::default(),
             page: AppPage::Downloads,
@@ -1191,70 +787,9 @@ impl AppShell {
             selected_tasks: HashSet::new(),
             range_anchor: None,
             search_input,
-            add_input,
-            add_inputs: AddInputs {
-                referer: add_referer_input,
-                user_agent: add_user_agent_input,
-                headers: add_headers_input,
-                cookie: add_cookie_input,
-                http_user: add_http_user_input,
-                http_passwd: add_http_passwd_input,
-                checksum: add_checksum_input,
-            },
-            output_name_input,
-            settings_inputs: SettingsInputs {
-                directory: settings_directory_input,
-                core_path: settings_core_path_input,
-                profile_name: settings_profile_name_input,
-                profile_executable: settings_profile_executable_input,
-                profile_endpoint: settings_profile_endpoint_input,
-                profile_secret: settings_profile_secret_input,
-                all_proxy: settings_all_proxy_input,
-                http_proxy: settings_http_proxy_input,
-                https_proxy: settings_https_proxy_input,
-                ftp_proxy: settings_ftp_proxy_input,
-                no_proxy: settings_no_proxy_input,
-                proxy_username: settings_proxy_username_input,
-                proxy_password: settings_proxy_password_input,
-                download_limit: settings_download_limit_input,
-                upload_limit: settings_upload_limit_input,
-                max_concurrent: settings_max_concurrent_input,
-                max_connection: settings_max_connection_input,
-                split: settings_split_input,
-                min_split_size: settings_min_split_size_input,
-                tracker_custom_url: settings_tracker_custom_url_input,
-                tracker_list_text: settings_tracker_list_text_input,
-                category_name: settings_category_name_input,
-                category_extensions: settings_category_extensions_input,
-            },
-            add_dialog: AddDownloadDialog::default(),
+            active_modal: None,
             active_kit_modal: None,
-            settings_page: SettingsPage {
-                draft_color_scheme: settings.color_scheme,
-                draft_language: settings.language,
-                draft_proxy_mode: settings.download_proxy.mode,
-                draft_check_certificate: settings.download_proxy.check_certificate,
-                draft_file_allocation: settings.transfer_policy.file_allocation,
-                draft_check_integrity: settings.transfer_policy.check_integrity,
-                draft_notification_volume: settings.notifications.volume,
-                draft_notify_on_completion: settings.notifications.notify_on_completion,
-                draft_notify_on_error: settings.notifications.notify_on_error,
-                draft_notify_on_engine_events: settings.notifications.notify_on_engine_events,
-                draft_os_notifications: settings.notifications.os_notifications,
-                draft_notify_on_low_disk: settings.notifications.notify_on_low_disk,
-                draft_close_behavior: settings.platform.close_behavior,
-                draft_show_tray_icon: settings.platform.show_tray_icon,
-                draft_start_minimized_to_tray: settings.platform.start_minimized_to_tray,
-                draft_keep_awake_while_active: settings.platform.keep_awake_while_active,
-                draft_action_after_done: settings.platform.action_after_done,
-                draft_bridge_allow_cookies: settings.browser_bridge.allow_cookies,
-                draft_bridge_auto_submit: settings.browser_bridge.auto_submit,
-                draft_categories: settings.categories.clone(),
-                draft_tracker_enabled: settings.tracker_list.enabled,
-                draft_tracker_source: settings.tracker_list.source,
-                draft_tracker_auto_refresh: settings.tracker_list.auto_refresh,
-                ..SettingsPage::default()
-            },
+            settings_panel: None,
             core_setup: CoreSetupState::default(),
             update_status: crate::UpdateStatusView::Disabled,
             update_enabled: false,
@@ -1263,28 +798,18 @@ impl AppShell {
             pending_update_download: None,
             bridge_auto_submit_unlocked: false,
             pending_settings_save: None,
+            pending_tracker_refresh: None,
             pending_task_command: None,
             pending_global_task_command: None,
             pending_batch_command: None,
             pending_load_more_stopped: false,
-            batch_failure_details: None,
-            output_name_dialog: None,
-            task_inputs: TaskInputs {
-                download_limit: task_download_limit_input,
-                upload_limit: task_upload_limit_input,
-                seed_ratio: task_seed_ratio_input,
-                seed_time: task_seed_time_input,
-            },
-            task_speed_limit_dialog: None,
-            task_options_dialog: None,
-            details_drawer: None,
+            details_panel: None,
+            _details_panel_sub: None,
             details_drawer_width: DETAILS_DRAWER_WIDTH,
             details_sheet_open: false,
-            remove_confirmation: None,
             active_status_popover: None,
             speed_popover_previous_focus: None,
             context_menu_target: None,
-            power_countdown: None,
             power_had_active_tasks: false,
             power_countdown_generation: 0,
             status_notice: None,
@@ -1296,20 +821,12 @@ impl AppShell {
             known_task_status: HashMap::new(),
             next_request_id: 1,
             links_input_height: DEFAULT_LINKS_INPUT_HEIGHT,
-            links_input_drag_origin: None,
             list_scroll: UniformListScrollHandle::new(),
-            settings_scroll: ScrollHandle::new(),
-            metadata_file_scroll: UniformListScrollHandle::new(),
             focus_handle,
             rendered_range: 0..0,
             _search_subscription: search_subscription,
-            _add_subscription: add_subscription,
-            _add_advanced_subscriptions: add_advanced_subscriptions,
-            _output_name_subscription: output_name_subscription,
-            _task_speed_limit_subscriptions: task_speed_limit_subscriptions,
-            _task_options_subscriptions: task_options_subscriptions,
-            _settings_subscriptions: settings_subscriptions,
             _window_bounds_subscription: window_bounds_subscription,
+            _window_appearance_subscription: window_appearance_subscription,
         }
     }
 
@@ -1345,8 +862,13 @@ impl AppShell {
             self.snapshot.speed_history = snapshot.speed_history;
             self.snapshot.counts = snapshot.counts;
             self.snapshot.stopped_history = snapshot.stopped_history;
+            let version_changed =
+                self.snapshot.capabilities.version != snapshot.capabilities.version;
             self.snapshot.capabilities = snapshot.capabilities;
             self.snapshot.local_path_actions_available = snapshot.local_path_actions_available;
+            if version_changed {
+                self.sync_settings_panel(None, cx);
+            }
             self.check_power_action_trigger(cx);
             cx.notify();
             return;
@@ -1387,12 +909,14 @@ impl AppShell {
             .flatten();
         let drawer_successor = (!profile_changed)
             .then(|| {
-                self.details_drawer
-                    .as_ref()
-                    .and_then(|drawer| successor_task(&self.snapshot, &snapshot, &drawer.identity))
+                self.details_panel.as_ref().and_then(|panel| {
+                    let identity = panel.read(cx).identity.clone();
+                    successor_task(&self.snapshot, &snapshot, &identity)
+                })
             })
             .flatten();
-        let details_revision_advanced = self.details_drawer.as_ref().is_some_and(|drawer| {
+        let details_revision_advanced = self.details_panel.as_ref().is_some_and(|panel| {
+            let drawer = panel.read(cx);
             snapshot
                 .tasks
                 .iter()
@@ -1404,41 +928,46 @@ impl AppShell {
             self.selected = None;
             self.selected_tasks.clear();
             self.range_anchor = None;
-            self.details_drawer = None;
-            self.batch_failure_details = None;
+            self.clear_details_panel();
+            if matches!(self.active_modal, Some(ActiveModal::BatchFailureDetails(_))) {
+                self.active_modal = None;
+                self.sync_kit_modals_deferred(cx);
+            }
         }
 
         if session_changed {
-            if self.add_dialog.pending.take().is_some() {
-                self.add_dialog.error = Some(stale_session_error());
+            if let Some(view) = self.add_dialog_view().cloned() {
+                view.update(cx, |dialog, cx| {
+                    if dialog.pending.take().is_some() {
+                        dialog.error = Some(stale_session_error());
+                        cx.notify();
+                    }
+                });
+                self.set_add_dialog_busy(cx);
             }
             if let Some(pending) = self.pending_task_command.take() {
                 if matches!(&pending.command, TaskCommandView::SetOutputName { .. }) {
-                    if let Some(dialog) = &mut self.output_name_dialog {
+                    if let Some(ActiveModal::OutputName { dialog, .. }) = &mut self.active_modal {
                         dialog.error = Some(stale_session_error());
                     }
                 } else {
-                    self.show_notice(
-                        "The engine session changed before the command completed. Its outcome was not replayed.",
-                        true,
-                        cx,
-                    );
+                    self.show_notice(self.t("notice-session-changed-command"), true, cx);
                 }
             }
             if self.pending_batch_command.take().is_some() {
-                self.show_notice(
-                    "The engine session changed before the batch command completed. Its outcome was not replayed.",
-                    true,
-                    cx,
-                );
+                self.show_notice(self.t("notice-session-changed-batch"), true, cx);
             }
             if self.pending_load_more_stopped {
                 self.pending_load_more_stopped = false;
             }
-            if let (Some(drawer), Some(session)) = (&mut self.details_drawer, &next_session) {
-                drawer.session = session.clone();
-                drawer.state = TaskDetailsLoadState::Stale;
-                drawer.pending = None;
+            if let (Some(panel), Some(session)) = (self.details_panel.clone(), &next_session) {
+                let session = session.clone();
+                panel.update(cx, |drawer, cx| {
+                    drawer.session = session;
+                    drawer.state = TaskDetailsLoadState::Stale;
+                    drawer.pending = None;
+                    cx.notify();
+                });
             }
         }
 
@@ -1457,11 +986,14 @@ impl AppShell {
         if let Some(successor) = anchor_successor {
             self.range_anchor = Some(successor.identity);
         }
-        if let (Some(drawer), Some(successor)) = (&mut self.details_drawer, drawer_successor) {
-            drawer.identity = successor.identity.clone();
-            drawer.overview = successor;
-            drawer.state = TaskDetailsLoadState::Stale;
-            drawer.pending = None;
+        if let (Some(panel), Some(successor)) = (self.details_panel.clone(), drawer_successor) {
+            panel.update(cx, |drawer, cx| {
+                drawer.identity = successor.identity.clone();
+                drawer.overview = successor;
+                drawer.state = TaskDetailsLoadState::Stale;
+                drawer.pending = None;
+                cx.notify();
+            });
         }
 
         if self.selected.as_ref().is_none_or(|selected| {
@@ -1479,32 +1011,44 @@ impl AppShell {
             self.selected = Some(visible_selected.identity.clone());
         }
 
-        if let Some(drawer) = &mut self.details_drawer {
-            if let Some(task) = self
-                .snapshot
-                .tasks
-                .iter()
-                .find(|task| task.identity == drawer.identity)
-            {
-                let left_active_state = drawer.overview.status.uses_active_connections()
-                    && !task.status.uses_active_connections();
-                drawer.overview = task.clone();
-                if left_active_state
-                    && let TaskDetailsLoadState::Ready { details } = &mut drawer.state
-                {
-                    details.peers.clear();
-                    details.servers.clear();
+        if let Some(panel) = self.details_panel.clone() {
+            let tasks = &self.snapshot.tasks;
+            let commands_available = self.snapshot.commands_available();
+            let local_path_actions_available = self.snapshot.local_path_actions_available;
+            let theme = self.theme;
+            let translator = self.translator.clone();
+            let drawer_width = self.details_drawer_width;
+            panel.update(cx, |drawer, cx| {
+                if let Some(task) = tasks.iter().find(|task| task.identity == drawer.identity) {
+                    let left_active_state = drawer.overview.status.uses_active_connections()
+                        && !task.status.uses_active_connections();
+                    drawer.overview = task.clone();
+                    if left_active_state
+                        && let TaskDetailsLoadState::Ready { details } = &mut drawer.state
+                    {
+                        let details = Arc::make_mut(details);
+                        details.peers.clear();
+                        details.servers.clear();
+                    }
                 }
-            }
-            if !self.snapshot.commands_available() {
-                drawer.state = TaskDetailsLoadState::Stale;
-                drawer.pending = None;
-            }
+                if !commands_available {
+                    drawer.state = TaskDetailsLoadState::Stale;
+                    drawer.pending = None;
+                }
+                drawer.sync_context(
+                    theme,
+                    translator,
+                    commands_available,
+                    local_path_actions_available,
+                    drawer_width,
+                    cx,
+                );
+            });
         }
 
         let force_details_refresh =
             followed_task || session_changed || !previous_commands_available;
-        let should_refresh_details = self.details_drawer.is_some()
+        let should_refresh_details = self.details_panel.is_some()
             && self.snapshot.commands_available()
             && (force_details_refresh || details_revision_advanced);
         if should_refresh_details {
@@ -1522,15 +1066,15 @@ impl AppShell {
         self.engine_health = health;
         match &self.engine_health {
             EngineHealthView::Running { restarts } if *restarts > 0 => {
-                let message = format!(
-                    "Local aria2 recovered after {restarts} restart attempt{}.",
-                    if *restarts == 1 { "" } else { "s" }
-                );
+                let message = self.t_count("notice-engine-recovered", u64::from(*restarts));
                 self.record_activity(ActivityKindView::Engine, message.clone(), None, None, 1, cx);
                 self.show_automatic_notice(message, false, true, cx);
             }
             EngineHealthView::Failed { summary } => {
-                let message = format!("Local aria2 could not be restarted: {summary}");
+                let message = self.t_args(
+                    "notice-engine-restart-failed",
+                    &[("summary", FluentValue::from(summary.as_str()))],
+                );
                 self.record_activity(ActivityKindView::Engine, message.clone(), None, None, 1, cx);
                 self.show_automatic_notice(message, true, true, cx);
             }
@@ -1544,19 +1088,29 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let matches_pending = self.add_dialog.pending.as_ref().is_some_and(|pending| {
+        let Some(view) = self.add_dialog_view().cloned() else {
+            return;
+        };
+        let matches_pending = view.read(cx).pending.as_ref().is_some_and(|pending| {
             pending.request_id == result.request_id && pending.session == result.session
         });
         if !matches_pending {
             return;
         }
 
-        self.add_dialog.pending = None;
+        view.update(cx, |dialog, cx| {
+            dialog.pending = None;
+            cx.notify();
+        });
+        self.set_add_dialog_busy(cx);
         if result.items.is_empty() {
-            self.add_dialog.error = Some(OperationErrorView {
-                code: "application.internal".into(),
-                summary: "The add request returned no item results.".into(),
-                retryable: false,
+            view.update(cx, |dialog, cx| {
+                dialog.error = Some(OperationErrorView {
+                    code: "application.internal".into(),
+                    summary: "The add request returned no item results.".into(),
+                    retryable: false,
+                });
+                cx.notify();
             });
             cx.notify();
             return;
@@ -1592,15 +1146,10 @@ impl AppShell {
         }
 
         if all_succeeded {
-            self.add_input
-                .update(cx, |input, cx| input.set_value("", window, cx));
-            self.add_dialog.metadata_files.clear();
-            self.add_dialog.active_metadata_file = None;
             self.show_notice(
-                format!(
-                    "{} download{} accepted by aria2.",
-                    accepted.len(),
-                    if accepted.len() == 1 { "" } else { "s" }
+                self.t_count(
+                    "notice-add-accepted",
+                    u64::try_from(accepted.len()).unwrap_or(u64::MAX),
                 ),
                 false,
                 cx,
@@ -1611,14 +1160,9 @@ impl AppShell {
 
         if accepted.is_empty() && existing_duplicates.len() == result.items.len() {
             self.show_notice(
-                format!(
-                    "{} download{} already in the transfer list.",
-                    existing_duplicates.len(),
-                    if existing_duplicates.len() == 1 {
-                        " is"
-                    } else {
-                        "s are"
-                    }
+                self.t_count(
+                    "notice-add-duplicates",
+                    u64::try_from(existing_duplicates.len()).unwrap_or(u64::MAX),
                 ),
                 false,
                 cx,
@@ -1655,18 +1199,30 @@ impl AppShell {
                 AddDownloadSourceView::Uri { .. } => None,
             })
             .collect::<HashSet<_>>();
-        self.add_dialog
-            .metadata_files
-            .retain(|preview| retryable_metadata_paths.contains(&metadata_path_key(&preview.path)));
-        self.add_dialog.active_metadata_file =
-            (!self.add_dialog.metadata_files.is_empty()).then_some(0);
-        self.add_input
-            .update(cx, |input, cx| input.set_value(retryable_uris, window, cx));
-        self.add_dialog.results = result.items;
+        view.update(cx, |dialog, cx| {
+            dialog.metadata_files.retain(|preview| {
+                retryable_metadata_paths.contains(&metadata_path_key(&preview.path))
+            });
+            dialog.active_metadata_file = (!dialog.metadata_files.is_empty()).then_some(0);
+            dialog
+                .add_input
+                .update(cx, |input, cx| input.set_value(retryable_uris, window, cx));
+            dialog.results = result.items;
+            cx.notify();
+        });
         self.show_notice(
-            format!(
-                "{} accepted, {failed_count} need attention.",
-                accepted.len()
+            self.t_args(
+                "notice-add-partial",
+                &[
+                    (
+                        "accepted",
+                        FluentValue::from(i64::try_from(accepted.len()).unwrap_or(i64::MAX)),
+                    ),
+                    (
+                        "failed",
+                        FluentValue::from(i64::try_from(failed_count).unwrap_or(i64::MAX)),
+                    ),
+                ],
             ),
             true,
             cx,
@@ -1679,60 +1235,67 @@ impl AppShell {
         result: AddDownloadMetadataPreviewResultView,
         cx: &mut Context<Self>,
     ) {
-        let Some(pending) = self.add_dialog.preview_pending.as_ref() else {
+        let Some(view) = self.add_dialog_view().cloned() else {
             return;
         };
-        if pending.request_id != result.request_id
-            || pending.paths.len() != result.items.len()
-            || !pending
-                .paths
-                .iter()
-                .zip(&result.items)
-                .all(|(path, item)| path == &item.path)
-        {
-            return;
-        }
+        let matched = view.update(cx, |dialog, cx| {
+            let Some(pending) = dialog.preview_pending.as_ref() else {
+                return false;
+            };
+            if pending.request_id != result.request_id
+                || pending.paths.len() != result.items.len()
+                || !pending
+                    .paths
+                    .iter()
+                    .zip(&result.items)
+                    .all(|(path, item)| path == &item.path)
+            {
+                return false;
+            }
 
-        self.add_dialog.preview_pending = None;
-        let previous_error = self.add_dialog.error.take();
-        let mut failures = Vec::new();
-        for item in result.items {
-            match item.outcome {
-                AddDownloadMetadataPreviewOutcomeView::Ready(preview) => {
-                    let key = metadata_path_key(&preview.path);
-                    if self
-                        .add_dialog
-                        .metadata_files
-                        .iter()
-                        .all(|known| metadata_path_key(&known.path) != key)
-                    {
-                        self.add_dialog.metadata_files.push(preview);
+            dialog.preview_pending = None;
+            let previous_error = dialog.error.take();
+            let mut failures = Vec::new();
+            for item in result.items {
+                match item.outcome {
+                    AddDownloadMetadataPreviewOutcomeView::Ready(preview) => {
+                        let key = metadata_path_key(&preview.path);
+                        if dialog
+                            .metadata_files
+                            .iter()
+                            .all(|known| metadata_path_key(&known.path) != key)
+                        {
+                            dialog.metadata_files.push(preview);
+                        }
+                    }
+                    AddDownloadMetadataPreviewOutcomeView::Failed(error) => {
+                        failures.push(format!("{}: {}", item.path.display(), error.summary));
                     }
                 }
-                AddDownloadMetadataPreviewOutcomeView::Failed(error) => {
-                    failures.push(format!("{}: {}", item.path.display(), error.summary));
-                }
             }
+            if dialog.active_metadata_file.is_none() && !dialog.metadata_files.is_empty() {
+                dialog.active_metadata_file = Some(0);
+            }
+            dialog.error = match (previous_error, failures.is_empty()) {
+                (None, true) => None,
+                (Some(error), true) => Some(error),
+                (previous, false) => Some(OperationErrorView {
+                    code: "validation.invalid_metadata".into(),
+                    summary: previous.map_or_else(
+                        || failures.join(" "),
+                        |error| format!("{} {}", error.summary, failures.join(" ")),
+                    ),
+                    retryable: false,
+                }),
+            };
+            dialog.results.clear();
+            cx.notify();
+            true
+        });
+        if matched {
+            self.set_add_dialog_busy(cx);
+            cx.notify();
         }
-        if self.add_dialog.active_metadata_file.is_none()
-            && !self.add_dialog.metadata_files.is_empty()
-        {
-            self.add_dialog.active_metadata_file = Some(0);
-        }
-        self.add_dialog.error = match (previous_error, failures.is_empty()) {
-            (None, true) => None,
-            (Some(error), true) => Some(error),
-            (previous, false) => Some(OperationErrorView {
-                code: "validation.invalid_metadata".into(),
-                summary: previous.map_or_else(
-                    || failures.join(" "),
-                    |error| format!("{} {}", error.summary, failures.join(" ")),
-                ),
-                retryable: false,
-            }),
-        };
-        self.add_dialog.results.clear();
-        cx.notify();
     }
 
     pub fn set_task_command_result(
@@ -1762,7 +1325,8 @@ impl AppShell {
                         self.selected_tasks.remove(&result.identity);
                         self.range_anchor = None;
                         self.selected = None;
-                        self.details_drawer = None;
+                        self.clear_details_panel();
+                        self.sync_details_sheet(window, cx);
                         self.context_menu_target = None;
                         // Recovery path: files stay on disk or in Trash (see
                         // success_label). Restore list focus for continued work.
@@ -1775,7 +1339,8 @@ impl AppShell {
                             self.selected = Some(identity);
                         }
                         self.range_anchor = self.selected.clone();
-                        self.details_drawer = None;
+                        self.clear_details_panel();
+                        self.sync_details_sheet(window, cx);
                     }
                     TaskCommandView::SetOutputName { .. } => {
                         self.close_task_output_name(window, cx);
@@ -1804,19 +1369,20 @@ impl AppShell {
                     );
                 }
                 if matches!(result.command, TaskCommandView::SetOutputName { .. }) {
-                    if let Some(dialog) = &mut self.output_name_dialog {
+                    if let Some(ActiveModal::OutputName { dialog, .. }) = &mut self.active_modal {
                         dialog.error = Some(error);
                     } else {
                         self.show_notice(self.te(&error), true, cx);
                     }
                 } else if matches!(result.command, TaskCommandView::SetSpeedLimit { .. }) {
-                    if let Some(dialog) = &mut self.task_speed_limit_dialog {
+                    if let Some(ActiveModal::TaskSpeedLimit { dialog, .. }) = &mut self.active_modal
+                    {
                         dialog.error = Some(error);
                     } else {
                         self.show_notice(self.te(&error), true, cx);
                     }
                 } else if matches!(result.command, TaskCommandView::SetOptions { .. }) {
-                    if let Some(dialog) = &mut self.task_options_dialog {
+                    if let Some(ActiveModal::TaskOptions { dialog, .. }) = &mut self.active_modal {
                         dialog.error = Some(error);
                     } else {
                         self.show_notice(self.te(&error), true, cx);
@@ -1890,17 +1456,23 @@ impl AppShell {
                     &[],
                 );
                 let summary = if result.command == BatchTaskCommandView::Retry {
-                    format!(
-                        "Created {} new retry task{}; failed results were kept.",
-                        succeeded.len(),
-                        if succeeded.len() == 1 { "" } else { "s" }
+                    self.t_count(
+                        "notice-batch-retry-succeeded",
+                        u64::try_from(succeeded.len()).unwrap_or(u64::MAX),
                     )
                 } else {
-                    format!(
-                        "{} completed for {} task{}.",
-                        result.command.label(),
-                        succeeded.len(),
-                        if succeeded.len() == 1 { "" } else { "s" }
+                    let action = self.t(commands::batch_task_command_label_key(result.command));
+                    self.t_args(
+                        "notice-batch-succeeded",
+                        &[
+                            ("action", FluentValue::from(action.as_str())),
+                            (
+                                "count",
+                                FluentValue::from(
+                                    i64::try_from(succeeded.len()).unwrap_or(i64::MAX),
+                                ),
+                            ),
+                        ],
                     )
                 };
                 self.show_notice(summary, false, cx);
@@ -1914,18 +1486,38 @@ impl AppShell {
                     &failed,
                 );
                 let summary = if result.command == BatchTaskCommandView::Retry {
-                    format!(
-                        "Retry created {} new task{}; {} failed. Original failed results were kept and unresolved items remain selected.",
-                        succeeded.len(),
-                        if succeeded.len() == 1 { "" } else { "s" },
-                        failed.len()
+                    self.t_args(
+                        "notice-batch-retry-partial",
+                        &[
+                            (
+                                "succeeded",
+                                FluentValue::from(
+                                    i64::try_from(succeeded.len()).unwrap_or(i64::MAX),
+                                ),
+                            ),
+                            (
+                                "failed",
+                                FluentValue::from(i64::try_from(failed.len()).unwrap_or(i64::MAX)),
+                            ),
+                        ],
                     )
                 } else {
-                    format!(
-                        "{}: {} succeeded, {} failed. Failed tasks remain selected.",
-                        result.command.label(),
-                        succeeded.len(),
-                        failed.len()
+                    let action = self.t(commands::batch_task_command_label_key(result.command));
+                    self.t_args(
+                        "notice-batch-partial",
+                        &[
+                            ("action", FluentValue::from(action.as_str())),
+                            (
+                                "succeeded",
+                                FluentValue::from(
+                                    i64::try_from(succeeded.len()).unwrap_or(i64::MAX),
+                                ),
+                            ),
+                            (
+                                "failed",
+                                FluentValue::from(i64::try_from(failed.len()).unwrap_or(i64::MAX)),
+                            ),
+                        ],
                     )
                 };
                 self.show_notice(summary, true, cx);
@@ -1966,7 +1558,10 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.batch_failure_details = Some(BatchFailureDetails { command, failures });
+        self.active_modal = Some(ActiveModal::BatchFailureDetails(BatchFailureDetails {
+            command,
+            failures,
+        }));
         self.sync_kit_modals(window, cx);
     }
 
@@ -1980,9 +1575,10 @@ impl AppShell {
     }
 
     fn close_batch_failure_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.batch_failure_details.take().is_none() {
+        if !matches!(self.active_modal, Some(ActiveModal::BatchFailureDetails(_))) {
             return;
         }
+        self.active_modal = None;
         self.sync_kit_modals(window, cx);
         if !has_kit_root(window) {
             window.focus(&self.focus_handle, cx);
@@ -2022,7 +1618,7 @@ impl AppShell {
             requested.contains(identity) && !failed_identities.contains(identity)
         }) {
             self.selected = self.selected_tasks.iter().next().cloned();
-            self.details_drawer = None;
+            self.clear_details_panel();
             self.context_menu_target = None;
         }
         if self.selected_tasks.is_empty() {
@@ -2036,29 +1632,26 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         let commands_available = self.snapshot.commands_available();
+        let Some(panel) = self.details_panel.clone() else {
+            return;
+        };
         let mut refresh_failure = None;
-        let request_again = {
-            let Some(drawer) = &mut self.details_drawer else {
-                return;
-            };
-            let Some(pending) = drawer.pending.as_ref() else {
-                return;
-            };
+        let outcome = panel.update(cx, |drawer, cx| {
+            let pending = drawer.pending.as_ref()?;
             if pending.request_id != result.request_id
                 || drawer.session != result.session
                 || drawer.identity != result.identity
             {
-                return;
+                return None;
             }
 
-            let pending = drawer
-                .pending
-                .take()
-                .expect("matched pending details request");
+            let pending = drawer.pending.take()?;
             let background_refresh = matches!(drawer.state, TaskDetailsLoadState::Ready { .. });
             match result.outcome {
                 TaskDetailsOutcomeView::Ready(details) => {
-                    drawer.state = TaskDetailsLoadState::Ready { details };
+                    drawer.state = TaskDetailsLoadState::Ready {
+                        details: Arc::from(details),
+                    };
                 }
                 TaskDetailsOutcomeView::Failed(error) if background_refresh => {
                     refresh_failure = Some(error);
@@ -2067,7 +1660,15 @@ impl AppShell {
                     drawer.state = TaskDetailsLoadState::Failed { error };
                 }
             }
-            commands_available && drawer.overview.revision > pending.source_revision
+            cx.notify();
+            Some((
+                commands_available && drawer.overview.revision > pending.source_revision,
+                drawer.refresh_coalesced,
+            ))
+        });
+
+        let Some((request_again, refresh_coalesced)) = outcome else {
+            return;
         };
 
         if request_again {
@@ -2084,11 +1685,7 @@ impl AppShell {
                 true,
                 cx,
             );
-        } else if self
-            .details_drawer
-            .as_ref()
-            .is_some_and(|drawer| drawer.refresh_coalesced)
-        {
+        } else if refresh_coalesced {
             self.request_current_details(true, cx);
             cx.notify();
         } else {
@@ -2097,25 +1694,32 @@ impl AppShell {
     }
 
     pub fn set_task_open_result(&mut self, result: TaskOpenResultView, cx: &mut Context<Self>) {
-        let Some(drawer) = &mut self.details_drawer else {
+        let Some(panel) = self.details_panel.clone() else {
             return;
         };
-        let Some(pending) = drawer.open_pending.as_ref() else {
-            return;
-        };
-        if pending.request_id != result.request_id
-            || pending.target != result.target
-            || drawer.session != result.session
-            || drawer.identity != result.identity
-        {
+        let matched = panel.update(cx, |drawer, cx| {
+            let Some(pending) = drawer.open_pending.as_ref() else {
+                return false;
+            };
+            if pending.request_id != result.request_id
+                || pending.target != result.target
+                || drawer.session != result.session
+                || drawer.identity != result.identity
+            {
+                return false;
+            }
+            drawer.open_pending = None;
+            cx.notify();
+            true
+        });
+        if !matched {
             return;
         }
-        drawer.open_pending = None;
         match result.outcome {
             TaskOpenOutcomeView::Success => self.show_notice(
                 match result.target {
-                    TaskOpenTargetView::Download => "Opened the downloaded item.",
-                    TaskOpenTargetView::Folder => "Opened the download folder.",
+                    TaskOpenTargetView::Download => self.t("notice-opened-download"),
+                    TaskOpenTargetView::Folder => self.t("notice-opened-folder"),
                 },
                 false,
                 cx,
@@ -2184,81 +1788,6 @@ impl AppShell {
         self.search_input.update(cx, |input, cx| {
             input.set_placeholder(search_placeholder, window, cx);
         });
-
-        let add_url_placeholder = self.t("dialog-add-url-placeholder");
-        self.add_input.update(cx, |input, cx| {
-            input.set_placeholder(add_url_placeholder, window, cx);
-        });
-
-        let localized_inputs: [(&Entity<InputState>, &'static str); 16] = [
-            (
-                &self.add_inputs.user_agent,
-                "dialog-add-user-agent-placeholder",
-            ),
-            (&self.add_inputs.headers, "dialog-add-headers-placeholder"),
-            (
-                &self.add_inputs.http_user,
-                "dialog-add-http-username-placeholder",
-            ),
-            (
-                &self.add_inputs.http_passwd,
-                "dialog-add-http-password-placeholder",
-            ),
-            (
-                &self.task_inputs.download_limit,
-                "input-download-limit-placeholder",
-            ),
-            (
-                &self.task_inputs.upload_limit,
-                "input-upload-limit-placeholder",
-            ),
-            (
-                &self.task_inputs.seed_ratio,
-                "dialog-task-options-seed-ratio-placeholder",
-            ),
-            (
-                &self.task_inputs.seed_time,
-                "dialog-task-options-seed-time-placeholder",
-            ),
-            (
-                &self.settings_inputs.profile_name,
-                "settings-profile-name-placeholder",
-            ),
-            (
-                &self.settings_inputs.profile_executable,
-                "settings-profile-executable-placeholder",
-            ),
-            (
-                &self.settings_inputs.profile_secret,
-                "settings-profile-secret-placeholder",
-            ),
-            (
-                &self.settings_inputs.proxy_username,
-                "settings-proxy-username-placeholder",
-            ),
-            (
-                &self.settings_inputs.proxy_password,
-                "settings-proxy-password-placeholder",
-            ),
-            (
-                &self.settings_inputs.download_limit,
-                "input-download-limit-placeholder",
-            ),
-            (
-                &self.settings_inputs.upload_limit,
-                "input-upload-limit-placeholder",
-            ),
-            (
-                &self.settings_inputs.category_name,
-                "settings-category-name-placeholder",
-            ),
-        ];
-        for (entity, key) in localized_inputs {
-            let placeholder = self.t(key);
-            entity.update(cx, |input, cx| {
-                input.set_placeholder(placeholder, window, cx);
-            });
-        }
     }
 
     pub fn settings(&self) -> &SettingsView {
@@ -2391,7 +1920,7 @@ impl AppShell {
 
     fn set_filter(&mut self, filter: WorkspaceFilter, window: &mut Window, cx: &mut Context<Self>) {
         let query_changed = self.query.filter != filter;
-        self.page = AppPage::Downloads;
+        self.leave_settings_page();
         self.active_status_popover = None;
         if query_changed {
             self.query.filter = filter;
@@ -2414,7 +1943,7 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         let query_changed = self.query.category_id != category_id;
-        self.page = AppPage::Downloads;
+        self.leave_settings_page();
         self.active_status_popover = None;
         if query_changed {
             self.query.category_id = category_id;
@@ -2454,7 +1983,7 @@ impl AppShell {
     }
 
     fn focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
-        self.page = AppPage::Downloads;
+        self.leave_settings_page();
         self.active_status_popover = None;
         window.focus(&self.search_input.focus_handle(cx), cx);
         cx.notify();
@@ -2478,7 +2007,7 @@ impl AppShell {
     }
 
     fn clear_search(&mut self, _: &ClearSearch, window: &mut Window, cx: &mut Context<Self>) {
-        if self.power_countdown.is_some() {
+        if self.power_countdown().is_some() {
             self.cancel_power_countdown(cx);
         } else if self.context_menu_target.take().is_some() {
             cx.notify();
@@ -2488,17 +2017,17 @@ impl AppShell {
                 StatusBarPopover::Speed => self.close_speed_popover(window, cx),
                 StatusBarPopover::Power => self.close_power_popover(cx),
             }
-        } else if self.output_name_dialog.is_some() {
+        } else if matches!(self.active_modal, Some(ActiveModal::OutputName { .. })) {
             self.close_task_output_name(window, cx);
-        } else if self.task_speed_limit_dialog.is_some() {
+        } else if matches!(self.active_modal, Some(ActiveModal::TaskSpeedLimit { .. })) {
             self.close_task_speed_limit(window, cx);
-        } else if self.task_options_dialog.is_some() {
+        } else if matches!(self.active_modal, Some(ActiveModal::TaskOptions { .. })) {
             self.close_task_options(window, cx);
-        } else if self.remove_confirmation.is_some() {
+        } else if matches!(self.active_modal, Some(ActiveModal::RemoveConfirmation(_))) {
             self.close_remove_confirmation(window, cx);
         } else if self.page == AppPage::Settings {
             self.close_settings(window, cx);
-        } else if self.details_drawer.is_some() {
+        } else if self.details_panel.is_some() {
             // Overlay and inline drawers both dismiss before clearing search/selection.
             self.close_task_details(window, cx);
         } else if !self.search_input.read(cx).value().is_empty() {
@@ -2595,7 +2124,7 @@ impl AppShell {
         self.selected = Some(task.identity.clone());
         self.list_scroll
             .scroll_to_item(index, ScrollStrategy::Nearest);
-        if self.details_drawer.is_some() {
+        if self.details_panel.is_some() {
             self.open_details_for(task, cx);
         }
         window.focus(&self.focus_handle, cx);
@@ -2609,10 +2138,7 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         if self.page != AppPage::Downloads
-            || self.add_dialog.open
-            || self.output_name_dialog.is_some()
-            || self.remove_confirmation.is_some()
-            || self.batch_failure_details.is_some()
+            || self.active_modal.is_some()
             || self.snapshot.tasks.is_empty()
         {
             return;
@@ -2736,8 +2262,12 @@ impl AppShell {
             self.low_disk_active = true;
             let threshold = format_bytes(prefs.low_disk_threshold_bytes);
             let free = format_bytes(available);
-            let message = format!(
-                "Low disk space: {free} free (threshold {threshold}). New downloads may fail."
+            let message = self.t_args(
+                "notice-low-disk-space",
+                &[
+                    ("free", FluentValue::from(free.as_str())),
+                    ("threshold", FluentValue::from(threshold.as_str())),
+                ],
             );
             self.record_activity(ActivityKindView::Error, message.clone(), None, None, 1, cx);
             self.show_automatic_notice(message, true, false, cx);
@@ -2803,8 +2333,7 @@ impl Render for AppShell {
             }
         }
         let colors = self.theme.colors;
-        let metadata_drop_enabled =
-            self.add_dialog.pending.is_none() && self.add_dialog.preview_pending.is_none();
+        let metadata_drop_enabled = self.can_open_metadata_paths();
         let shell_layout = shell_layout(f32::from(window.viewport_size().width));
         div()
             .id("download-workspace")
@@ -2872,7 +2401,11 @@ impl Render for AppShell {
                                 cx,
                             )
                             .into_any_element(),
-                        AppPage::Settings => self.render_settings_page(cx).into_any_element(),
+                        AppPage::Settings => self
+                            .settings_panel
+                            .as_ref()
+                            .map(|(panel, _)| panel.clone().into_any_element())
+                            .unwrap_or_else(|| div().into_any_element()),
                     }),
             )
             .child(self.render_status_bar(cx))

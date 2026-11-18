@@ -103,6 +103,10 @@ pub struct DownloadStore {
     pub(crate) active_order: Vec<Gid>,
     pub(crate) waiting_order: Vec<Gid>,
     pub(crate) stopped_order: Vec<Gid>,
+    /// Fast membership mirror of `stopped_order` so 500ms live ticks avoid
+    /// scanning `stopped_pages` or building 10k-entry `HashSet`s when nothing
+    /// transitioned between live and stopped.
+    stopped_set: HashSet<Gid>,
     /// GIDs present only in durable local history (not in engine stopped pages).
     pub(crate) history_order: Vec<Gid>,
     history_only: HashSet<Gid>,
@@ -128,6 +132,7 @@ impl DownloadStore {
             active_order: Vec::new(),
             waiting_order: Vec::new(),
             stopped_order: Vec::new(),
+            stopped_set: HashSet::new(),
             history_order: Vec::new(),
             history_only: HashSet::new(),
             category_by_gid: HashMap::new(),
@@ -250,22 +255,32 @@ impl DownloadStore {
         &mut self,
         affiliations: impl IntoIterator<Item = (Gid, String)>,
     ) {
-        self.category_by_gid.clear();
+        let mut next = HashMap::new();
         for (gid, category_id) in affiliations {
             if !category_id.is_empty() {
-                self.category_by_gid.insert(gid, category_id);
+                next.insert(gid, category_id);
             }
+        }
+        if self.category_by_gid != next {
+            self.category_by_gid = next;
+            self.revision = self.revision.saturating_add(1);
         }
     }
 
     pub fn set_task_category_affiliation(&mut self, gid: Gid, category_id: Option<String>) {
-        match category_id {
+        let changed = match category_id {
             Some(id) if !id.is_empty() => {
-                self.category_by_gid.insert(gid, id);
+                if self.category_by_gid.get(&gid) == Some(&id) {
+                    false
+                } else {
+                    self.category_by_gid.insert(gid, id);
+                    true
+                }
             }
-            _ => {
-                self.category_by_gid.remove(&gid);
-            }
+            _ => self.category_by_gid.remove(&gid).is_some(),
+        };
+        if changed {
+            self.revision = self.revision.saturating_add(1);
         }
     }
 
@@ -292,11 +307,11 @@ impl DownloadStore {
             .chain(&self.waiting_order)
             .copied()
             .collect();
-        let engine_stopped: HashSet<Gid> = self.stopped_order.iter().copied().collect();
 
         let previous_history = self.history_order.clone();
+        let previous_history_only = std::mem::take(&mut self.history_only);
         self.history_order.clear();
-        self.history_only.clear();
+        let mut updated_gids = HashSet::new();
 
         for record in records {
             if record.profile_id != self.session.profile_id {
@@ -308,7 +323,7 @@ impl DownloadStore {
             ) {
                 continue;
             }
-            if live.contains(&record.gid) || engine_stopped.contains(&record.gid) {
+            if live.contains(&record.gid) || self.stopped_set.contains(&record.gid) {
                 // Engine is authoritative for this GID; keep a search hint if missing.
                 if !self.tasks.contains_key(&record.gid) {
                     let task = download_task_from_history(&record);
@@ -326,7 +341,7 @@ impl DownloadStore {
             let search_name = task.display_name.to_lowercase();
             if self.tasks.insert(record.gid, task).is_none() {
                 patch.inserted.push(record.gid);
-            } else if !patch.updated.iter().any(|item| item.gid == record.gid) {
+            } else if updated_gids.insert(record.gid) {
                 patch.updated.push(TaskFieldPatch {
                     gid: record.gid,
                     fields: TaskFields::all(),
@@ -334,6 +349,20 @@ impl DownloadStore {
                 });
             }
             self.search_index.insert(record.gid, search_name);
+        }
+
+        // Remove previously history-only tasks that were purged from SQLite and
+        // are no longer owned by live/engine-stopped collections.
+        for orphan_gid in previous_history_only {
+            if !self.history_only.contains(&orphan_gid)
+                && !live.contains(&orphan_gid)
+                && !self.stopped_set.contains(&orphan_gid)
+                && self.tasks.remove(&orphan_gid).is_some()
+            {
+                self.search_index.remove(&orphan_gid);
+                self.category_by_gid.remove(&orphan_gid);
+                patch.removed.push(orphan_gid);
+            }
         }
 
         if previous_history != self.history_order {
@@ -355,6 +384,7 @@ impl DownloadStore {
         for gid in &remove_set {
             if self.history_only.remove(gid) && self.tasks.remove(gid).is_some() {
                 self.search_index.remove(gid);
+                self.category_by_gid.remove(gid);
                 patch.removed.push(*gid);
             }
         }
@@ -428,18 +458,19 @@ impl DownloadStore {
             self.upsert(snapshot, &mut patch)?;
         }
 
-        let previous_stopped = self.stopped_order.clone();
-        for page in self.stopped_pages.values_mut() {
-            page.retain(|gid| !new_live.contains(gid));
-        }
-        self.rebuild_stopped_order();
-        if previous_stopped != self.stopped_order {
-            patch.record_order(TaskCollection::Stopped);
+        if new_live.iter().any(|gid| self.stopped_set.contains(gid)) {
+            let previous_stopped = self.stopped_order.clone();
+            for page in self.stopped_pages.values_mut() {
+                page.retain(|gid| !new_live.contains(gid));
+            }
+            self.rebuild_stopped_order();
+            if previous_stopped != self.stopped_order {
+                patch.record_order(TaskCollection::Stopped);
+            }
         }
 
-        let stopped = self.stopped_order.iter().copied().collect::<HashSet<_>>();
         for gid in old_live.difference(&new_live).copied() {
-            if !stopped.contains(&gid) && self.tasks.remove(&gid).is_some() {
+            if !self.stopped_set.contains(&gid) && self.tasks.remove(&gid).is_some() {
                 self.search_index.remove(&gid);
                 self.seeding_started_at.remove(&gid);
                 patch.removed.push(gid);
@@ -604,6 +635,7 @@ impl DownloadStore {
             if self.tasks.remove(gid).is_some() {
                 self.search_index.remove(gid);
                 self.seeding_started_at.remove(gid);
+                self.category_by_gid.remove(gid);
                 patch.removed.push(*gid);
             }
             self.history_only.remove(gid);
@@ -694,14 +726,15 @@ impl DownloadStore {
     }
 
     fn rebuild_stopped_order(&mut self) {
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::with_capacity(self.stopped_order.len());
         self.stopped_order = self
             .stopped_pages
             .values()
             .flatten()
             .copied()
-            .filter(|gid| seen.insert(*gid) && self.tasks.contains_key(gid))
+            .filter(|gid| self.tasks.contains_key(gid) && seen.insert(*gid))
             .collect();
+        self.stopped_set = seen;
         // Engine stopped pages win over durable history for the same GID.
         if !self.history_only.is_empty() {
             for gid in &self.stopped_order {
@@ -1284,5 +1317,56 @@ mod tests {
             store.speed_history().samples().len(),
             crate::DEFAULT_SPEED_HISTORY_CAPACITY.min(1_000)
         );
+    }
+
+    #[test]
+    fn category_updates_bump_revision_and_removals_clean_category_and_orphans() {
+        let profile_id = ProfileId::new();
+        let mut store = DownloadStore::new(EngineSession::new(
+            profile_id,
+            ariadeck_domain::EngineSessionId::new(),
+            generation(),
+        ));
+        let gid_a = Gid::from_u64(0x10);
+        let gid_b = Gid::from_u64(0x20);
+        let record = |gid| HistoryRecord {
+            profile_id,
+            gid,
+            status: DownloadStatus::Complete,
+            display_name: format!("file-{gid}.bin"),
+            directory: None,
+            info_hash: None,
+            source_kind: ariadeck_domain::TaskSourceKind::DirectUri,
+            total_length: ariadeck_domain::ByteCount::new(100),
+            completed_length: ariadeck_domain::ByteCount::new(100),
+            error: None,
+            primary_uri_redacted: None,
+            recorded_at_ms: 1,
+            updated_at_ms: 1,
+        };
+        store
+            .seed_local_history(generation(), vec![record(gid_a), record(gid_b)])
+            .expect("seed two history records");
+        let rev_before = store.revision();
+        store.set_task_category_affiliation(gid_a, Some("cat-1".into()));
+        assert!(store.revision() > rev_before);
+        let rev_after = store.revision();
+        // Idempotent set does not bump revision.
+        store.set_task_category_affiliation(gid_a, Some("cat-1".into()));
+        assert_eq!(store.revision(), rev_after);
+
+        // Re-seeding with only gid_b drops orphan gid_a from tasks, search_index, and categories.
+        let patch = store
+            .seed_local_history(generation(), vec![record(gid_b)])
+            .expect("re-seed without gid_a");
+        assert!(patch.removed.contains(&gid_a));
+        assert!(store.task(gid_a).is_none());
+        assert!(store.task_category_id(gid_a).is_none());
+
+        store.set_task_category_affiliation(gid_b, Some("cat-2".into()));
+        store
+            .remove_tasks(generation(), &[gid_b])
+            .expect("remove gid_b");
+        assert!(store.task_category_id(gid_b).is_none());
     }
 }

@@ -3,8 +3,6 @@
 //! Tray events are polled from the GPUI main thread. Managed engines always stop
 //! when AriaDeck quits; remote engines are never stopped by this process.
 
-use std::sync::OnceLock;
-
 use notify_rust::Notification;
 use tray_icon::{
     Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
@@ -27,11 +25,10 @@ struct TrayMenuIds {
     quit: String,
 }
 
-static TRAY_MENU_IDS: OnceLock<TrayMenuIds> = OnceLock::new();
-
 /// Owns the tray icon for the process lifetime.
 pub struct SystemTray {
     icon: TrayIcon,
+    menu_ids: TrayMenuIds,
 }
 
 impl SystemTray {
@@ -70,12 +67,12 @@ impl SystemTray {
             .map_err(|error| error.to_string())?;
         menu.append(&quit).map_err(|error| error.to_string())?;
 
-        let _ = TRAY_MENU_IDS.set(TrayMenuIds {
+        let menu_ids = TrayMenuIds {
             show: show.id().0.clone(),
             pause_all: pause_all.id().0.clone(),
             resume_all: resume_all.id().0.clone(),
             quit: quit.id().0.clone(),
-        });
+        };
 
         let icon = tray_icon_image()?;
         let tray = TrayIconBuilder::new()
@@ -86,7 +83,10 @@ impl SystemTray {
             .build()
             .map_err(|error| error.to_string())?;
 
-        Ok(Self { icon: tray })
+        Ok(Self {
+            icon: tray,
+            menu_ids,
+        })
     }
 
     pub fn set_visible(&self, visible: bool) {
@@ -111,11 +111,8 @@ impl SystemTray {
                 push_unique(&mut actions, TrayAction::Show);
             }
         }
-        let ids = TRAY_MENU_IDS.get();
+        let ids = &self.menu_ids;
         while let Ok(event) = MenuEvent::receiver().try_recv() {
-            let Some(ids) = ids else {
-                continue;
-            };
             let id = event.id.0.as_str();
             if id == ids.show {
                 push_unique(&mut actions, TrayAction::Show);
@@ -201,6 +198,165 @@ pub fn available_disk_space(directory: &std::path::Path) -> Option<u64> {
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn SetThreadExecutionState(es_flags: u32) -> u32;
+    fn CreateJobObjectW(security_attributes: *mut core::ffi::c_void, name: *const u16) -> isize;
+    fn SetInformationJobObject(
+        job: isize,
+        info_class: u32,
+        info: *const core::ffi::c_void,
+        info_len: u32,
+    ) -> i32;
+    fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> isize;
+    fn AssignProcessToJobObject(job: isize, process: isize) -> i32;
+    fn CloseHandle(handle: isize) -> i32;
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+struct JobObjectBasicLimitInformation {
+    per_process_user_time_limit: i64,
+    per_job_user_time_limit: i64,
+    limit_flags: u32,
+    minimum_working_set_size: usize,
+    maximum_working_set_size: usize,
+    active_process_limit: u32,
+    affinity: usize,
+    priority_class: u32,
+    scheduling_class: u32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+struct IoCounters {
+    read_operation_count: u64,
+    write_operation_count: u64,
+    other_operation_count: u64,
+    read_transfer_count: u64,
+    write_transfer_count: u64,
+    other_transfer_count: u64,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+struct JobObjectExtendedLimitInformation {
+    basic_limit_information: JobObjectBasicLimitInformation,
+    io_info: IoCounters,
+    process_memory_limit: usize,
+    job_memory_limit: usize,
+    peak_process_memory_used: usize,
+    peak_job_memory_used: usize,
+}
+
+/// Process-lifetime OS job guard that ensures managed `aria2c` children are
+/// automatically terminated by Windows if AriaDeck crashes or exits abnormally.
+#[cfg(windows)]
+pub struct ChildProcessJob {
+    handle: isize,
+}
+
+#[cfg(windows)]
+impl ChildProcessJob {
+    #[allow(unsafe_code)]
+    pub fn try_new() -> Result<Self, String> {
+        const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: u32 = 9;
+        const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
+
+        // SAFETY: Passing null security attributes and null name creates an
+        // anonymous Job Object owned by this process.
+        let handle = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
+        if handle == 0 {
+            return Err(format!(
+                "CreateJobObjectW failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let mut info = JobObjectExtendedLimitInformation::default();
+        info.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let info_len =
+            u32::try_from(std::mem::size_of::<JobObjectExtendedLimitInformation>()).unwrap_or(0);
+        // SAFETY: `handle` is a valid Job Object handle and `info` points to a
+        // properly aligned, initialized `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`
+        // whose byte size is passed in `info_len`.
+        let ok = unsafe {
+            SetInformationJobObject(
+                handle,
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+                (&raw const info).cast(),
+                info_len,
+            )
+        };
+        if ok == 0 {
+            let err = std::io::Error::last_os_error();
+            // SAFETY: `handle` is a valid owned handle created above.
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Err(format!("SetInformationJobObject failed: {err}"));
+        }
+
+        Ok(Self { handle })
+    }
+
+    #[allow(unsafe_code)]
+    pub fn assign_pid(&self, pid: u32) {
+        const PROCESS_TERMINATE: u32 = 0x0001;
+        const PROCESS_SET_QUOTA: u32 = 0x0100;
+
+        // SAFETY: `OpenProcess` opens a handle to the child PID with only the
+        // rights required by `AssignProcessToJobObject`; both handles are valid
+        // and the process handle is closed immediately after assignment.
+        unsafe {
+            let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+            if process == 0 {
+                tracing::debug!(
+                    pid,
+                    error = %std::io::Error::last_os_error(),
+                    "OpenProcess failed while attaching aria2c to job object"
+                );
+                return;
+            }
+            let assigned = AssignProcessToJobObject(self.handle, process);
+            if assigned == 0 {
+                tracing::debug!(
+                    pid,
+                    error = %std::io::Error::last_os_error(),
+                    "AssignProcessToJobObject failed for managed aria2c"
+                );
+            }
+            CloseHandle(process);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ChildProcessJob {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        if self.handle != 0 {
+            // SAFETY: `self.handle` is uniquely owned by this `ChildProcessJob`
+            // and has not been closed previously.
+            unsafe {
+                CloseHandle(self.handle);
+            }
+            self.handle = 0;
+        }
+    }
+}
+
+/// No-op job guard on non-Windows platforms.
+#[cfg(not(windows))]
+pub struct ChildProcessJob;
+
+#[cfg(not(windows))]
+impl ChildProcessJob {
+    pub fn try_new() -> Result<Self, String> {
+        Ok(Self)
+    }
+
+    pub fn assign_pid(&self, _pid: u32) {}
 }
 
 #[cfg(windows)]
@@ -472,5 +628,11 @@ mod tests {
     #[test]
     fn platform_set_keep_awake_does_not_panic() {
         set_keep_awake(false);
+    }
+
+    #[test]
+    fn child_process_job_initializes_cleanly() {
+        let job = ChildProcessJob::try_new().expect("job object should initialize");
+        drop(job);
     }
 }

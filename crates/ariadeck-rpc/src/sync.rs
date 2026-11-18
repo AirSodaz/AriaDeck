@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 
@@ -7,7 +7,7 @@ use ariadeck_application::{
     ConnectedSyncSession, DownloadSyncConnector, DownloadSyncSession, EngineCapabilities,
     InitialSyncSnapshot, LiveSyncSnapshot, RefreshHint, StoppedPage, SyncError, SyncErrorKind,
 };
-use ariadeck_domain::{Gid, GlobalStat, TaskMetadata, TaskSnapshot};
+use ariadeck_domain::{Gid, GlobalStat, TaskMetadata, TaskNameState, TaskSnapshot};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
@@ -52,6 +52,8 @@ impl DownloadSyncConnector for RpcSyncConnector {
     }
 }
 
+const MAX_METADATA_CACHE_ENTRIES: usize = 4_096;
+
 struct RpcSyncSession {
     client: Arc<Aria2Client<AuthenticatedTransport<WebSocketTransport>>>,
     transport: WebSocketTransport,
@@ -64,9 +66,15 @@ impl RpcSyncSession {
             .metadata_cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for task in tasks {
-            cache.insert(task.gid, (task.display_name.clone(), task.metadata.clone()));
-        }
+        insert_resolved_tasks(&mut cache, tasks.iter());
+    }
+
+    fn prune_cache(&self, live_gids: &HashSet<Gid>) {
+        let mut cache = self
+            .metadata_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        prune_metadata_cache(&mut cache, live_gids, MAX_METADATA_CACHE_ENTRIES);
     }
 
     async fn enrich_live_tasks(
@@ -84,6 +92,7 @@ impl RpcSyncSession {
                     let followed_by = std::mem::take(&mut task.metadata.followed_by);
                     let belongs_to = task.metadata.belongs_to;
                     task.display_name.clone_from(display_name);
+                    task.name_state = TaskNameState::Resolved;
                     task.metadata.clone_from(metadata);
                     task.metadata.followed_by = followed_by;
                     task.metadata.belongs_to = belongs_to;
@@ -93,7 +102,6 @@ impl RpcSyncSession {
             }
         }
         if missing.is_empty() {
-            self.remember_tasks(&tasks);
             return Ok(tasks);
         }
 
@@ -106,16 +114,47 @@ impl RpcSyncSession {
             .into_iter()
             .filter_map(|(gid, task)| task.map(|task| (gid, task)))
             .collect::<HashMap<_, _>>();
-        self.remember_tasks(&discovered.values().cloned().collect::<Vec<_>>());
+        {
+            let mut cache = self
+                .metadata_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            insert_resolved_tasks(&mut cache, discovered.values());
+        }
         for task in &mut tasks {
             if let Some(discovered) = discovered.get(&task.gid) {
                 task.display_name.clone_from(&discovered.display_name);
+                task.name_state = discovered.name_state;
                 task.metadata.clone_from(&discovered.metadata);
             }
         }
-        self.remember_tasks(&tasks);
         Ok(tasks)
     }
+}
+
+fn insert_resolved_tasks<'a>(
+    cache: &mut HashMap<Gid, (String, TaskMetadata)>,
+    tasks: impl Iterator<Item = &'a TaskSnapshot>,
+) {
+    for task in tasks {
+        // Never pin a `Resolving` GID placeholder in cache, or future live ticks
+        // would keep overwriting the task without re-probing for the real name.
+        if task.name_state == TaskNameState::Resolving {
+            continue;
+        }
+        cache.insert(task.gid, (task.display_name.clone(), task.metadata.clone()));
+    }
+}
+
+fn prune_metadata_cache(
+    cache: &mut HashMap<Gid, (String, TaskMetadata)>,
+    live_gids: &HashSet<Gid>,
+    max_entries: usize,
+) {
+    if cache.len() <= max_entries {
+        return;
+    }
+    cache.retain(|gid, _| live_gids.contains(gid));
 }
 
 #[async_trait]
@@ -171,6 +210,12 @@ impl DownloadSyncSession for RpcSyncSession {
             .map_err(map_sync_error)?;
         let active = self.enrich_live_tasks(snapshot.active).await?;
         let waiting = self.enrich_live_tasks(snapshot.waiting).await?;
+        let live_gids = active
+            .iter()
+            .chain(&waiting)
+            .map(|task| task.gid)
+            .collect::<HashSet<_>>();
+        self.prune_cache(&live_gids);
         Ok(LiveSyncSnapshot { active, waiting })
     }
 
@@ -275,9 +320,7 @@ fn map_sync_error(error: RpcError) -> SyncError {
         RpcError::Tls(_) => (SyncErrorKind::Tls, false),
         RpcError::Authentication(_) => (SyncErrorKind::Authentication, false),
         RpcError::Timeout { .. } => (SyncErrorKind::Timeout, true),
-        RpcError::Remote { message, .. }
-            if message.to_ascii_lowercase().contains("unauthorized") =>
-        {
+        RpcError::Remote { .. } if error.is_unauthorized() => {
             (SyncErrorKind::Authentication, false)
         }
         RpcError::Remote { .. } | RpcError::Protocol(_) | RpcError::InvalidData { .. } => {
@@ -356,5 +399,42 @@ mod tests {
         forward_notification_hints(notification_receiver, closed, sender).await;
 
         assert_eq!(receiver.recv().await, None);
+    }
+
+    #[test]
+    fn metadata_cache_skips_resolving_tasks_and_prunes_stale_entries() {
+        let mut cache = HashMap::new();
+        let resolving_gid = Gid::from_u64(1);
+        let resolved_gid = Gid::from_u64(2);
+        let stale_gid = Gid::from_u64(3);
+
+        let mut resolving = TaskSnapshot::new(
+            resolving_gid,
+            ariadeck_domain::DownloadStatus::Active,
+            resolving_gid.to_string(),
+        );
+        resolving.name_state = TaskNameState::Resolving;
+        let mut resolved = TaskSnapshot::new(
+            resolved_gid,
+            ariadeck_domain::DownloadStatus::Active,
+            "ubuntu.iso",
+        );
+        resolved.name_state = TaskNameState::Resolved;
+        let mut stale = TaskSnapshot::new(
+            stale_gid,
+            ariadeck_domain::DownloadStatus::Complete,
+            "old.iso",
+        );
+        stale.name_state = TaskNameState::Resolved;
+
+        insert_resolved_tasks(&mut cache, [resolving, resolved, stale].iter());
+        assert!(!cache.contains_key(&resolving_gid));
+        assert!(cache.contains_key(&resolved_gid));
+        assert!(cache.contains_key(&stale_gid));
+
+        let live = HashSet::from([resolved_gid]);
+        prune_metadata_cache(&mut cache, &live, 1);
+        assert!(cache.contains_key(&resolved_gid));
+        assert!(!cache.contains_key(&stale_gid));
     }
 }

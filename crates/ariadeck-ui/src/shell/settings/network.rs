@@ -1,10 +1,86 @@
-//! Settings `network` section logic and rendering for `AppShell`.
+//! Settings `network` section logic and rendering for `SettingsPanelView`.
 
 use super::*;
 
-impl AppShell {
+impl SettingsPanelView {
+    /// Build the current proxy settings draft and password mutation from form state.
+    pub(super) fn read_proxy_draft(
+        &self,
+        cx: &App,
+    ) -> (DownloadProxySettingsView, ProxyPasswordUpdateView) {
+        let password = self
+            .settings_inputs
+            .proxy_password
+            .read(cx)
+            .value()
+            .to_owned();
+        let password_update = if self.settings_page.clear_proxy_password {
+            ProxyPasswordUpdateView::Clear
+        } else if password.is_empty() {
+            ProxyPasswordUpdateView::Unchanged
+        } else {
+            ProxyPasswordUpdateView::Set(SecretStringView::new(password))
+        };
+        let has_password = match &password_update {
+            ProxyPasswordUpdateView::Unchanged => self.settings.download_proxy.has_password,
+            ProxyPasswordUpdateView::Detach | ProxyPasswordUpdateView::Clear => false,
+            ProxyPasswordUpdateView::Set(_) => true,
+        };
+        let draft = DownloadProxySettingsView {
+            mode: self.settings_page.draft_proxy_mode,
+            all_proxy: self
+                .settings_inputs
+                .all_proxy
+                .read(cx)
+                .value()
+                .trim()
+                .into(),
+            http_proxy: self
+                .settings_inputs
+                .http_proxy
+                .read(cx)
+                .value()
+                .trim()
+                .into(),
+            https_proxy: self
+                .settings_inputs
+                .https_proxy
+                .read(cx)
+                .value()
+                .trim()
+                .into(),
+            ftp_proxy: self
+                .settings_inputs
+                .ftp_proxy
+                .read(cx)
+                .value()
+                .trim()
+                .into(),
+            no_proxy: self
+                .settings_inputs
+                .no_proxy
+                .read(cx)
+                .value()
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(ToOwned::to_owned)
+                .collect(),
+            username: self
+                .settings_inputs
+                .proxy_username
+                .read(cx)
+                .value()
+                .trim()
+                .into(),
+            has_password,
+            check_certificate: self.settings_page.draft_check_certificate,
+        };
+        (draft, password_update)
+    }
+
     pub(crate) fn select_proxy_mode(&mut self, mode: ProxyModeView, cx: &mut Context<Self>) {
-        if self.pending_settings_save.is_some() || mode == self.settings_page.draft_proxy_mode {
+        if self.is_pending() || mode == self.settings_page.draft_proxy_mode {
             return;
         }
         self.settings_page.draft_proxy_mode = mode;
@@ -17,7 +93,7 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.pending_settings_save.is_some() || !self.settings.download_proxy.has_password {
+        if self.is_pending() || !self.settings.download_proxy.has_password {
             return;
         }
         let clear = !self.settings_page.clear_proxy_password;
@@ -32,158 +108,31 @@ impl AppShell {
     }
 
     pub(crate) fn submit_proxy_settings(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
+        let (draft, password_update) = self.read_proxy_draft(cx);
         let mut settings = self.settings.clone();
-        let password = self
-            .settings_inputs
-            .proxy_password
-            .read(cx)
-            .value()
-            .to_owned();
-        let password_update = if self.settings_page.clear_proxy_password {
-            ProxyPasswordUpdateView::Clear
-        } else if password.is_empty() {
-            ProxyPasswordUpdateView::Unchanged
-        } else {
-            ProxyPasswordUpdateView::Set(SecretStringView::new(password))
-        };
-        settings.download_proxy = DownloadProxySettingsView {
-            mode: self.settings_page.draft_proxy_mode,
-            all_proxy: self
-                .settings_inputs
-                .all_proxy
-                .read(cx)
-                .value()
-                .trim()
-                .into(),
-            http_proxy: self
-                .settings_inputs
-                .http_proxy
-                .read(cx)
-                .value()
-                .trim()
-                .into(),
-            https_proxy: self
-                .settings_inputs
-                .https_proxy
-                .read(cx)
-                .value()
-                .trim()
-                .into(),
-            ftp_proxy: self
-                .settings_inputs
-                .ftp_proxy
-                .read(cx)
-                .value()
-                .trim()
-                .into(),
-            no_proxy: self
-                .settings_inputs
-                .no_proxy
-                .read(cx)
-                .value()
-                .split(',')
-                .map(str::trim)
-                .filter(|entry| !entry.is_empty())
-                .map(ToOwned::to_owned)
-                .collect(),
-            username: self
-                .settings_inputs
-                .proxy_username
-                .read(cx)
-                .value()
-                .trim()
-                .into(),
-            has_password: match &password_update {
-                ProxyPasswordUpdateView::Unchanged => self.settings.download_proxy.has_password,
-                ProxyPasswordUpdateView::Detach => false,
-                ProxyPasswordUpdateView::Clear => false,
-                ProxyPasswordUpdateView::Set(_) => true,
-            },
-            check_certificate: self.settings_page.draft_check_certificate,
-        };
+        settings.download_proxy = draft;
         self.request_settings_save(settings, password_update, SettingsSaveSource::Proxy, cx);
     }
 
     pub(crate) fn toggle_check_certificate(&mut self, cx: &mut Context<Self>) {
-        if self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         self.settings_page.draft_check_certificate = !self.settings_page.draft_check_certificate;
         cx.notify();
     }
 
-    pub(crate) fn render_settings_network(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn render_settings_network(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
-        let pending = self.pending_settings_save.is_some();
-        let password_changed = !self
-            .settings_inputs
-            .proxy_password
-            .read(cx)
-            .value()
-            .is_empty();
+        let pending = self.is_pending();
+        let (proxy_draft, _) = self.read_proxy_draft(cx);
         let password_cleared = self.settings_page.clear_proxy_password;
-        let proxy_has_password = if password_changed {
-            true
-        } else if password_cleared {
-            false
-        } else {
-            self.settings.download_proxy.has_password
-        };
-        let proxy_draft = DownloadProxySettingsView {
-            mode: self.settings_page.draft_proxy_mode,
-            all_proxy: self
-                .settings_inputs
-                .all_proxy
-                .read(cx)
-                .value()
-                .trim()
-                .into(),
-            http_proxy: self
-                .settings_inputs
-                .http_proxy
-                .read(cx)
-                .value()
-                .trim()
-                .into(),
-            https_proxy: self
-                .settings_inputs
-                .https_proxy
-                .read(cx)
-                .value()
-                .trim()
-                .into(),
-            ftp_proxy: self
-                .settings_inputs
-                .ftp_proxy
-                .read(cx)
-                .value()
-                .trim()
-                .into(),
-            no_proxy: self
-                .settings_inputs
-                .no_proxy
-                .read(cx)
-                .value()
-                .split(',')
-                .map(str::trim)
-                .filter(|entry| !entry.is_empty())
-                .map(ToOwned::to_owned)
-                .collect(),
-            username: self
-                .settings_inputs
-                .proxy_username
-                .read(cx)
-                .value()
-                .trim()
-                .into(),
-            has_password: proxy_has_password,
-            check_certificate: self.settings_page.draft_check_certificate,
-        };
-        let manual_proxy = proxy_draft.mode == ProxyModeView::Manual;
-        let system_proxy = proxy_draft.mode == ProxyModeView::System;
+        let proxy_has_password = proxy_draft.has_password;
+        let manual_proxy = self.settings_page.draft_proxy_mode == ProxyModeView::Manual;
+        let system_proxy = self.settings_page.draft_proxy_mode == ProxyModeView::System;
         let draft_check_certificate = self.settings_page.draft_check_certificate;
         let password_button_label = if password_cleared {
             self.t("settings-proxy-password-keep")
@@ -195,11 +144,11 @@ impl AppShell {
         } else {
             IconName::Trash2
         };
-        let proxy_shell = cx.entity().downgrade();
+        let proxy_panel = cx.entity().downgrade();
         let proxy_mode_control = SegmentedControl::new(
             "settings-proxy-mode",
             ProxyModeView::all().map(|mode| Segment::new(self.t(mode.message_key()))),
-            proxy_draft.mode.index(),
+            self.settings_page.draft_proxy_mode.index(),
             self.theme,
         )
         .aria_label(self.t("settings-proxy-mode-aria"))
@@ -210,11 +159,11 @@ impl AppShell {
                 2 => ProxyModeView::Manual,
                 _ => ProxyModeView::Disabled,
             };
-            proxy_shell
-                .update(cx, |shell, cx| shell.select_proxy_mode(mode, cx))
+            proxy_panel
+                .update(cx, |panel, cx| panel.select_proxy_mode(mode, cx))
                 .ok();
         });
-        let cert_shell = cx.entity().downgrade();
+        let cert_panel = cx.entity().downgrade();
         settings_section_owned(self.t("settings-network-proxy"), colors)
             .child(
                 div()
@@ -234,8 +183,8 @@ impl AppShell {
                         .accessibility_label(self.t("settings-proxy-check-certificate-aria"))
                         .disabled(pending)
                         .on_change(move |_, _, cx| {
-                            cert_shell
-                                .update(cx, |shell, cx| shell.toggle_check_certificate(cx))
+                            cert_panel
+                                .update(cx, |panel, cx| panel.toggle_check_certificate(cx))
                                 .ok();
                         }),
                     colors,

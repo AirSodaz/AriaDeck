@@ -388,13 +388,9 @@ impl DownloadTask {
             TaskFields::ERROR,
             &mut changed,
         );
-        let metadata = merge_task_metadata(&self.metadata, snapshot.metadata);
-        update_field(
-            &mut self.metadata,
-            metadata,
-            TaskFields::METADATA,
-            &mut changed,
-        );
+        if merge_task_metadata_in_place(&mut self.metadata, snapshot.metadata) {
+            changed.insert(TaskFields::METADATA);
+        }
 
         if !changed.is_empty() {
             self.revision = self.revision.saturating_add(1);
@@ -428,28 +424,47 @@ impl DownloadTask {
     }
 }
 
-fn merge_task_metadata(current: &TaskMetadata, incoming: TaskMetadata) -> TaskMetadata {
-    TaskMetadata {
-        directory: incoming.directory.or_else(|| current.directory.clone()),
-        primary_uri: incoming.primary_uri.or_else(|| current.primary_uri.clone()),
-        info_hash: incoming.info_hash.or_else(|| current.info_hash.clone()),
-        file_count: if incoming.file_count == 0 {
-            current.file_count
-        } else {
-            incoming.file_count
-        },
-        followed_by: if incoming.followed_by.is_empty() {
-            current.followed_by.clone()
-        } else {
-            incoming.followed_by
-        },
-        belongs_to: incoming.belongs_to.or(current.belongs_to),
-        source_kind: if incoming.source_kind == TaskSourceKind::Unknown {
-            current.source_kind
-        } else {
-            incoming.source_kind
-        },
+fn merge_task_metadata_in_place(current: &mut TaskMetadata, incoming: TaskMetadata) -> bool {
+    let mut changed = false;
+    if let Some(directory) = incoming.directory
+        && current.directory.as_ref() != Some(&directory)
+    {
+        current.directory = Some(directory);
+        changed = true;
     }
+    if let Some(primary_uri) = incoming.primary_uri
+        && current.primary_uri.as_ref() != Some(&primary_uri)
+    {
+        current.primary_uri = Some(primary_uri);
+        changed = true;
+    }
+    if let Some(info_hash) = incoming.info_hash
+        && current.info_hash.as_ref() != Some(&info_hash)
+    {
+        current.info_hash = Some(info_hash);
+        changed = true;
+    }
+    if incoming.file_count != 0 && current.file_count != incoming.file_count {
+        current.file_count = incoming.file_count;
+        changed = true;
+    }
+    if !incoming.followed_by.is_empty() && current.followed_by != incoming.followed_by {
+        current.followed_by = incoming.followed_by;
+        changed = true;
+    }
+    if let Some(belongs_to) = incoming.belongs_to
+        && current.belongs_to != Some(belongs_to)
+    {
+        current.belongs_to = Some(belongs_to);
+        changed = true;
+    }
+    if incoming.source_kind != TaskSourceKind::Unknown
+        && current.source_kind != incoming.source_kind
+    {
+        current.source_kind = incoming.source_kind;
+        changed = true;
+    }
+    changed
 }
 
 fn update_field<T: PartialEq>(

@@ -2,15 +2,19 @@
 //!
 //! Fetch is explicit (Refresh now) or opt-in auto-refresh. Defaults never
 //! download on first run. TLS uses OS trust via reqwest rustls native roots.
+//! Refresh reads `settings.json` directly without touching the OS keyring.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ariadeck_domain::{MAX_TRACKER_LIST_BODY_BYTES, format_tracker_list_text, parse_tracker_list};
 use ariadeck_settings::{AppSettings, JsonSettingsStore, TrackerListSettings};
+use tokio::sync::mpsc;
 
-use super::persistence::{PersistenceCommand, TrackerRefreshCommit};
-use super::settings_bridge::spawn_proxy_settings_load;
-use super::*;
+use super::{
+    engine_setup::default_download_dir,
+    http::fetch_bounded_bytes,
+    persistence::{PersistenceCommand, TrackerRefreshCommit},
+};
 
 /// Auto-refresh interval when enabled (once per day).
 pub(crate) const TRACKER_AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -35,7 +39,7 @@ pub(crate) struct TrackerListRefreshResult {
 }
 
 pub(crate) async fn fetch_tracker_list_body(url: &str) -> Result<String, String> {
-    let bytes = super::http::fetch_bounded_bytes(
+    let bytes = fetch_bounded_bytes(
         url,
         MAX_TRACKER_LIST_BODY_BYTES,
         FETCH_TIMEOUT,
@@ -81,19 +85,24 @@ enum TrackerFetchOutcome {
     Immediate(Box<TrackerListRefreshResult>),
 }
 
+async fn load_settings_without_keyring(store: JsonSettingsStore) -> Result<AppSettings, String> {
+    tokio::task::spawn_blocking(move || {
+        let defaults = AppSettings::new(default_download_dir());
+        store
+            .load_or_initialize(&defaults)
+            .map(|loaded| loaded.settings)
+            .map_err(|error| format!("Could not load settings: {error}"))
+    })
+    .await
+    .map_err(|error| format!("settings load task failed: {error}"))?
+}
+
 async fn fetch_and_prepare_tracker_refresh(
     store: JsonSettingsStore,
-    credential_store: Arc<dyn ProxyCredentialStore>,
     request: TrackerListRefreshRequest,
 ) -> TrackerFetchOutcome {
-    let loaded =
-        spawn_proxy_settings_load(&tokio::runtime::Handle::current(), store, credential_store)
-            .await
-            .map_err(|error| format!("settings load task failed: {error}"))
-            .and_then(|result| result);
-
-    let (mut settings, _password) = match loaded {
-        Ok(pair) => pair,
+    let mut settings = match load_settings_without_keyring(store).await {
+        Ok(settings) => settings,
         Err(error) => {
             return TrackerFetchOutcome::Immediate(Box::new(TrackerListRefreshResult {
                 request_id: request.request_id,
@@ -190,7 +199,6 @@ async fn fetch_and_prepare_tracker_refresh(
 pub(crate) fn spawn_tracker_list_refresh_bridge(
     runtime: tokio::runtime::Handle,
     store: JsonSettingsStore,
-    credential_store: Arc<dyn ProxyCredentialStore>,
     persistence: mpsc::UnboundedSender<PersistenceCommand>,
     mut requests: mpsc::UnboundedReceiver<TrackerListRefreshRequest>,
     results: mpsc::UnboundedSender<TrackerListRefreshResult>,
@@ -201,8 +209,7 @@ pub(crate) fn spawn_tracker_list_refresh_bridge(
     runtime.spawn(async move {
         while let Some(request) = requests.recv().await {
             let store = store.clone();
-            let credentials = credential_store.clone();
-            match fetch_and_prepare_tracker_refresh(store, credentials, request).await {
+            match fetch_and_prepare_tracker_refresh(store, request).await {
                 TrackerFetchOutcome::Commit(commit) => {
                     if persistence
                         .send(PersistenceCommand::CommitTrackerRefresh(commit))

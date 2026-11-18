@@ -3,11 +3,12 @@
 //! Catalogs live under `i18n/{locale}/*.ftl` and are embedded at compile time.
 //! Missing keys fall back through the active locale → English.
 
-use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, OnceLock};
 
 use fluent_bundle::FluentResource;
 use fluent_bundle::concurrent::FluentBundle;
+use fluent_syntax::ast;
 use rust_embed::Embed;
 use unic_langid::{LanguageIdentifier, langid};
 
@@ -150,6 +151,17 @@ struct CatalogAssets;
 
 type Bundle = FluentBundle<FluentResource>;
 
+static EN_BUNDLE: OnceLock<Arc<Bundle>> = OnceLock::new();
+static ZH_CN_BUNDLE: OnceLock<Arc<Bundle>> = OnceLock::new();
+
+fn cached_bundle(locale: LocaleId) -> Arc<Bundle> {
+    let slot = match locale {
+        LocaleId::En => &EN_BUNDLE,
+        LocaleId::ZhCn => &ZH_CN_BUNDLE,
+    };
+    Arc::clone(slot.get_or_init(|| Arc::new(load_bundle(locale).0)))
+}
+
 /// Process-wide translator: one active locale with English fallback.
 #[derive(Clone)]
 pub struct Translator {
@@ -174,13 +186,15 @@ impl Default for Translator {
 
 impl Translator {
     /// Load embedded catalogs for `locale` (with English always available).
+    ///
+    /// Parsed bundles are cached once per process via `OnceLock`.
     #[must_use]
     pub fn new(locale: LocaleId) -> Self {
-        let fallback = Arc::new(load_bundle(LocaleId::En));
+        let fallback = cached_bundle(LocaleId::En);
         let primary = if locale == LocaleId::En {
             Arc::clone(&fallback)
         } else {
-            Arc::new(load_bundle(locale))
+            cached_bundle(locale)
         };
         Self {
             locale,
@@ -234,85 +248,146 @@ fn format_in(bundle: &Bundle, id: &str, args: Option<&FluentArgs>) -> Option<Str
     Some(value.into_owned())
 }
 
-fn load_bundle(locale: LocaleId) -> Bundle {
+fn locale_ftl_files(locale: LocaleId) -> Vec<String> {
+    let prefix = format!("{}/", locale.bcp47());
+    let mut files: Vec<String> = CatalogAssets::iter()
+        .filter(|path| path.starts_with(&prefix) && path.ends_with(".ftl"))
+        .map(|path| path.into_owned())
+        .collect();
+    files.sort();
+    files
+}
+
+fn load_bundle(locale: LocaleId) -> (Bundle, Vec<String>) {
     let mut bundle = FluentBundle::new_concurrent(vec![locale.language_id()]);
     // Desktop UI: avoid bidi isolation marks around interpolations.
     bundle.set_use_isolating(false);
-    let prefix = format!("{}/", locale.bcp47());
-    let mut files: Vec<_> = CatalogAssets::iter()
-        .filter(|path| path.starts_with(&prefix) && path.ends_with(".ftl"))
-        .collect();
-    files.sort();
-    for path in files {
-        let Some(file) = CatalogAssets::get(path.as_ref()) else {
+    let mut diagnostics = Vec::new();
+    for path in locale_ftl_files(locale) {
+        let Some(file) = CatalogAssets::get(&path) else {
             continue;
         };
         let Ok(source) = std::str::from_utf8(file.data.as_ref()) else {
+            diagnostics.push(format!("{path}: invalid UTF-8"));
             continue;
         };
         let resource = match FluentResource::try_new(source.to_owned()) {
             Ok(resource) => resource,
             Err((resource, errors)) => {
                 for error in errors {
-                    eprintln!("ariadeck-i18n: parse error in {}: {error:?}", path.as_ref());
+                    diagnostics.push(format!("{path}: parse error: {error:?}"));
                 }
                 resource
             }
         };
         if let Err(errors) = bundle.add_resource(resource) {
             for error in errors {
-                eprintln!(
-                    "ariadeck-i18n: add_resource error in {}: {error:?}",
-                    path.as_ref()
-                );
+                diagnostics.push(format!("{path}: add_resource error: {error:?}"));
             }
         }
     }
-    bundle
+    (bundle, diagnostics)
 }
 
-/// Message ids present in a locale's FTL files (for catalog parity tests).
+/// Message ids present in a locale's FTL files (parsed via `fluent-syntax` AST).
 #[must_use]
 pub fn message_ids_for(locale: LocaleId) -> BTreeSet<String> {
-    let prefix = format!("{}/", locale.bcp47());
-    let mut ids = BTreeSet::new();
-    for path in
-        CatalogAssets::iter().filter(|path| path.starts_with(&prefix) && path.ends_with(".ftl"))
-    {
-        let Some(file) = CatalogAssets::get(path.as_ref()) else {
+    message_variables_for(locale).into_keys().collect()
+}
+
+/// Map of every message id in `locale` to the set of `$variable` names it references.
+#[must_use]
+pub fn message_variables_for(locale: LocaleId) -> BTreeMap<String, BTreeSet<String>> {
+    let mut map = BTreeMap::new();
+    for path in locale_ftl_files(locale) {
+        let Some(file) = CatalogAssets::get(&path) else {
             continue;
         };
         let Ok(source) = std::str::from_utf8(file.data.as_ref()) else {
             continue;
         };
-        // Line-oriented scan: Fluent message ids are `name =` at line start.
-        for line in source.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') || line.starts_with('-') {
-                continue;
-            }
-            if let Some((name, rest)) = line.split_once('=') {
-                let name = name.trim();
-                let rest = rest.trim_start();
-                if name.is_empty() || name.starts_with('.') {
-                    continue;
+        let resource = match FluentResource::try_new(source.to_owned()) {
+            Ok(resource) | Err((resource, _)) => resource,
+        };
+        for entry in resource.entries() {
+            if let ast::Entry::Message(message) = entry {
+                let mut vars = BTreeSet::new();
+                if let Some(pattern) = &message.value {
+                    collect_pattern_vars(pattern, &mut vars);
                 }
-                if name
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-                    && !rest.is_empty()
-                {
-                    ids.insert(name.to_owned());
+                for attr in &message.attributes {
+                    collect_pattern_vars(&attr.value, &mut vars);
                 }
+                map.insert(message.id.name.to_owned(), vars);
             }
         }
     }
-    ids
+    map
+}
+
+fn collect_pattern_vars(pattern: &ast::Pattern<&str>, vars: &mut BTreeSet<String>) {
+    for element in &pattern.elements {
+        if let ast::PatternElement::Placeable { expression } = element {
+            collect_expression_vars(expression, vars);
+        }
+    }
+}
+
+fn collect_expression_vars(expression: &ast::Expression<&str>, vars: &mut BTreeSet<String>) {
+    match expression {
+        ast::Expression::Select { selector, variants } => {
+            collect_inline_vars(selector, vars);
+            for variant in variants {
+                collect_pattern_vars(&variant.value, vars);
+            }
+        }
+        ast::Expression::Inline(inline) => collect_inline_vars(inline, vars),
+    }
+}
+
+fn collect_inline_vars(inline: &ast::InlineExpression<&str>, vars: &mut BTreeSet<String>) {
+    match inline {
+        ast::InlineExpression::VariableReference { id } => {
+            vars.insert(id.name.to_owned());
+        }
+        ast::InlineExpression::FunctionReference { arguments, .. }
+        | ast::InlineExpression::TermReference {
+            arguments: Some(arguments),
+            ..
+        } => {
+            for arg in &arguments.positional {
+                collect_inline_vars(arg, vars);
+            }
+            for named in &arguments.named {
+                collect_inline_vars(&named.value, vars);
+            }
+        }
+        ast::InlineExpression::Placeable { expression } => {
+            collect_expression_vars(expression, vars);
+        }
+        ast::InlineExpression::StringLiteral { .. }
+        | ast::InlineExpression::NumberLiteral { .. }
+        | ast::InlineExpression::MessageReference { .. }
+        | ast::InlineExpression::TermReference {
+            arguments: None, ..
+        } => {}
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_embedded_ftl_files_parse_and_load_without_errors() {
+        for locale in LocaleId::all() {
+            let (_, diagnostics) = load_bundle(locale);
+            assert!(
+                diagnostics.is_empty(),
+                "FTL errors in {locale:?}: {diagnostics:#?}"
+            );
+        }
+    }
 
     #[test]
     fn english_and_chinese_catalogs_share_the_same_keys() {
@@ -329,11 +404,41 @@ mod tests {
     }
 
     #[test]
+    fn english_and_chinese_catalogs_share_identical_variables() {
+        let en = message_variables_for(LocaleId::En);
+        let zh = message_variables_for(LocaleId::ZhCn);
+        let mut mismatches = Vec::new();
+        for (key, en_vars) in &en {
+            if let Some(zh_vars) = zh.get(key)
+                && en_vars != zh_vars
+            {
+                mismatches.push(format!("{key}: en={en_vars:?} vs zh-CN={zh_vars:?}"));
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "variable mismatches across locales:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
+    fn translator_reuses_cached_bundles() {
+        let first = Translator::new(LocaleId::ZhCn);
+        let second = Translator::new(LocaleId::ZhCn);
+        assert!(Arc::ptr_eq(&first.primary, &second.primary));
+        assert!(Arc::ptr_eq(&first.fallback, &second.fallback));
+    }
+
+    #[test]
     fn translator_returns_chinese_for_core_labels() {
         let t = Translator::new(LocaleId::ZhCn);
         assert_eq!(t.t("filter-active"), "下载中");
         assert_eq!(t.t("settings-nav-general"), "通用");
         assert_eq!(t.t("settings-language"), "语言");
+        assert_eq!(t.t("task-overview-progress"), "进度");
+        assert_eq!(t.t("task-overview-share-ratio"), "分享率");
+        assert_eq!(t.t("notice-core-verified"), "aria2 内核校验通过。");
     }
 
     #[test]
@@ -350,10 +455,30 @@ mod tests {
             t.t_count("dialog-details-files-aria", 5),
             "Task files, 5 items"
         );
+        assert_eq!(
+            t.t_count("notice-engine-recovered", 1),
+            "Local aria2 recovered after 1 restart attempt."
+        );
+        assert_eq!(
+            t.t_count("notice-engine-recovered", 3),
+            "Local aria2 recovered after 3 restart attempts."
+        );
+        assert_eq!(
+            t.t_count("notice-add-accepted", 1),
+            "1 download accepted by aria2."
+        );
         let zh = Translator::new(LocaleId::ZhCn);
         assert_eq!(
             zh.t_count("dialog-details-files-aria", 5),
             "任务文件，共 5 项"
+        );
+        assert_eq!(
+            zh.t_count("notice-engine-recovered", 1),
+            "本地 aria2 已在 1 次重启尝试后恢复。"
+        );
+        assert_eq!(
+            zh.t_count("notice-add-accepted", 2),
+            "aria2 已接受 2 个下载任务。"
         );
     }
 

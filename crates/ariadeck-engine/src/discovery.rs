@@ -113,35 +113,34 @@ pub fn candidate_paths(
 
     // Package managers keep stable, well-known layouts; check them before PATH so
     // the UI can name the manager instead of showing a bare shim.
-    let home = env_var("USERPROFILE").or_else(|| env_var("HOME"));
-    if let Some(home) = home.as_ref().map(PathBuf::from) {
-        candidates.push((
-            home.join("scoop")
-                .join("apps")
-                .join("aria2")
-                .join("current")
-                .join(name),
-            CoreDiscoveryOrigin::Scoop,
-        ));
-    }
-    if let Some(local_app_data) = env_var("LOCALAPPDATA").map(PathBuf::from) {
-        candidates.push((
-            local_app_data
-                .join("Microsoft")
-                .join("WinGet")
-                .join("Links")
-                .join(name),
-            CoreDiscoveryOrigin::WinGet,
-        ));
-    }
-    if let Some(choco) = env_var("ChocolateyInstall").map(PathBuf::from) {
-        candidates.push((
-            choco.join("bin").join(name),
-            CoreDiscoveryOrigin::Chocolatey,
-        ));
-    }
-
     if cfg!(windows) {
+        let home = env_var("USERPROFILE").or_else(|| env_var("HOME"));
+        if let Some(home) = home.as_ref().map(PathBuf::from) {
+            candidates.push((
+                home.join("scoop")
+                    .join("apps")
+                    .join("aria2")
+                    .join("current")
+                    .join(name),
+                CoreDiscoveryOrigin::Scoop,
+            ));
+        }
+        if let Some(local_app_data) = env_var("LOCALAPPDATA").map(PathBuf::from) {
+            candidates.push((
+                local_app_data
+                    .join("Microsoft")
+                    .join("WinGet")
+                    .join("Links")
+                    .join(name),
+                CoreDiscoveryOrigin::WinGet,
+            ));
+        }
+        if let Some(choco) = env_var("ChocolateyInstall").map(PathBuf::from) {
+            candidates.push((
+                choco.join("bin").join(name),
+                CoreDiscoveryOrigin::Chocolatey,
+            ));
+        }
         for key in ["ProgramFiles", "ProgramFiles(x86)"] {
             if let Some(root) = env_var(key).map(PathBuf::from) {
                 candidates.push((
@@ -256,22 +255,49 @@ mod tests {
     fn portable_layout_precedes_package_managers() {
         let executable_dir = PathBuf::from("/apps/ariadeck");
         let candidates = candidate_paths(
-            env_from(&[("HOME", "/home/user"), ("USERPROFILE", "/home/user")]),
+            env_from(&[
+                ("HOME", "/home/user"),
+                ("USERPROFILE", "/home/user"),
+                ("LOCALAPPDATA", "/home/user/AppData/Local"),
+                ("ChocolateyInstall", "/ProgramData/chocolatey"),
+            ]),
             Some(&executable_dir),
         );
         let portable = candidates
             .iter()
             .position(|(_, origin)| *origin == CoreDiscoveryOrigin::Portable)
             .expect("portable candidate");
-        let scoop = candidates
-            .iter()
-            .position(|(_, origin)| *origin == CoreDiscoveryOrigin::Scoop)
-            .expect("scoop candidate");
-        assert!(portable < scoop);
         assert_eq!(
             candidates[portable].0,
             executable_dir.join(aria2_executable_name())
         );
+        if cfg!(windows) {
+            let scoop = candidates
+                .iter()
+                .position(|(_, origin)| *origin == CoreDiscoveryOrigin::Scoop)
+                .expect("scoop candidate on Windows");
+            assert!(portable < scoop);
+        } else {
+            assert!(
+                !candidates.iter().any(|(_, origin)| matches!(
+                    origin,
+                    CoreDiscoveryOrigin::Scoop
+                        | CoreDiscoveryOrigin::WinGet
+                        | CoreDiscoveryOrigin::Chocolatey
+                )),
+                "non-Windows hosts must not probe Windows package manager paths"
+            );
+            let system = candidates
+                .iter()
+                .position(|(_, origin)| {
+                    matches!(
+                        origin,
+                        CoreDiscoveryOrigin::Homebrew | CoreDiscoveryOrigin::SystemInstall
+                    )
+                })
+                .expect("system/homebrew candidate");
+            assert!(portable < system);
+        }
     }
 
     #[test]

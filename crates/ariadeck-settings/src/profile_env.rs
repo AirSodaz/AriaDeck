@@ -17,17 +17,16 @@
 //! Schema policy matches settings / profiles catalog: only the current version
 //! is accepted in-tree; add a previous-tag migrator only when a release needs it.
 
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
     AppSettings, DownloadCategory, DownloadProxySettings, SettingsError, SpeedLimitSettings,
-    TrackerListSettings, TransferPolicySettings, default_download_categories, validate_categories,
+    TrackerListSettings, TransferPolicySettings, default_download_categories,
+    environment::{sync_fallback_directory, validate_engine_environment},
+    error::io_error,
 };
 
 /// On-disk schema for `profiles/<id>/environment.json`.
@@ -58,7 +57,7 @@ impl ProfileEnvironment {
             categories: settings.categories.clone(),
             tracker_list: settings.tracker_list.clone(),
         };
-        sync_env_download_directory(&mut env);
+        sync_fallback_directory(&mut env.download_directory, &env.categories);
         env
     }
 
@@ -83,14 +82,13 @@ impl ProfileEnvironment {
                 supported: PROFILE_ENVIRONMENT_SCHEMA_VERSION,
             });
         }
-        if self.download_directory.as_os_str().is_empty() {
-            return Err(SettingsError::EmptyDownloadDirectory);
-        }
-        self.download_proxy.validate()?;
-        self.transfer_policy.validate()?;
-        validate_categories(&self.categories)?;
-        self.tracker_list.validate()?;
-        Ok(())
+        validate_engine_environment(
+            &self.download_directory,
+            &self.download_proxy,
+            &self.transfer_policy,
+            &self.categories,
+            &self.tracker_list,
+        )
     }
 
     /// Overlay engine-env fields onto a full `AppSettings` (preserves UI prefs).
@@ -172,7 +170,7 @@ impl ProfileEnvironmentStore {
                 message: source.to_string(),
             })?;
         env.schema_version = PROFILE_ENVIRONMENT_SCHEMA_VERSION;
-        sync_env_download_directory(&mut env);
+        sync_fallback_directory(&mut env.download_directory, &env.categories);
         env.validate()?;
         Ok(env)
     }
@@ -180,7 +178,7 @@ impl ProfileEnvironmentStore {
     pub fn save(&self, profile_id: Uuid, env: &ProfileEnvironment) -> Result<(), SettingsError> {
         let mut env = env.clone();
         env.schema_version = PROFILE_ENVIRONMENT_SCHEMA_VERSION;
-        sync_env_download_directory(&mut env);
+        sync_fallback_directory(&mut env.download_directory, &env.categories);
         env.validate()?;
         let path = self.path_for(profile_id);
         let payload = serde_json::to_vec_pretty(&env).map_err(SettingsError::Serialize)?;
@@ -199,22 +197,6 @@ impl ProfileEnvironmentStore {
     pub fn remove(&self, profile_id: Uuid) {
         let dir = self.root.join(profile_id.to_string());
         let _ = fs::remove_dir_all(dir);
-    }
-}
-
-fn sync_env_download_directory(env: &mut ProfileEnvironment) {
-    if let Some(fallback) = env.categories.iter().find(|c| c.is_fallback) {
-        env.download_directory = fallback.directory.clone();
-    } else if let Some(first) = env.categories.first() {
-        env.download_directory = first.directory.clone();
-    }
-}
-
-fn io_error(operation: &'static str, path: &Path, source: io::Error) -> SettingsError {
-    SettingsError::Io {
-        operation,
-        path: path.to_path_buf(),
-        source,
     }
 }
 

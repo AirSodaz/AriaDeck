@@ -42,6 +42,19 @@ pub(crate) fn speed_chart_legend(
         .child(div().text_color(colors.text_muted).child(label.into()))
 }
 
+/// Produce a deterministic, collision-resistant GPUI element ID from a domain key.
+pub(crate) fn stable_id(prefix: &str, key: &str) -> SharedString {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in key.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    SharedString::from(format!("{prefix}-{hash:016x}"))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn toolbar_icon_button(
     id: impl Into<ElementId>,
     icon: IconName,
@@ -50,19 +63,23 @@ pub(crate) fn toolbar_icon_button(
     danger: bool,
     action: Option<&dyn gpui::Action>,
     _colors: crate::ThemeColors,
+    translator: &Translator,
 ) -> KitButton {
     let label = label.into();
     let enabled = state == ToolbarButtonState::Enabled;
     let loading = state == ToolbarButtonState::Loading;
+    let aria_label = if enabled || loading {
+        label.to_string()
+    } else {
+        let mut args = FluentArgs::new();
+        args.set("label", FluentValue::from(label.as_ref()));
+        translator.t_args("toolbar-action-unavailable", Some(&args))
+    };
     let mut button = KitButton::new(id)
         .icon(gpui_kit::component::Icon::new(icon))
         .small()
         .compact()
-        .accessibility_label(if enabled || loading {
-            label.to_string()
-        } else {
-            format!("{label} unavailable")
-        })
+        .accessibility_label(aria_label)
         .disabled(!enabled && !loading)
         .loading(loading);
     button = if danger {
@@ -87,6 +104,7 @@ pub(crate) fn queue_move_button(
     pending_command: Option<&TaskCommandView>,
     action: Option<&dyn gpui::Action>,
     colors: crate::ThemeColors,
+    translator: &Translator,
     cx: &mut Context<AppShell>,
 ) -> KitButton {
     let loading = pending_command == Some(&command);
@@ -98,6 +116,7 @@ pub(crate) fn queue_move_button(
         false,
         action,
         colors,
+        translator,
     )
     .when(enabled, move |button| {
         button.on_click(cx.listener(move |this, _, _window, cx| {
@@ -171,6 +190,21 @@ impl ToolbarButtonState {
     }
 }
 
+pub(crate) fn make_input<V: 'static>(
+    placeholder: SharedString,
+    masked: bool,
+    window: &mut Window,
+    cx: &mut Context<V>,
+) -> Entity<InputState> {
+    cx.new(|cx| {
+        let mut state = InputState::new(window, cx).placeholder(placeholder);
+        if masked {
+            state = state.masked(true);
+        }
+        state
+    })
+}
+
 pub(crate) fn settings_labeled_input(
     label: impl Into<SharedString>,
     input: &Entity<InputState>,
@@ -183,33 +217,6 @@ pub(crate) fn settings_labeled_input(
         .gap_1()
         .child(div().text_xs().text_color(colors.text_muted).child(label))
         .child(Input::new(input))
-}
-
-pub(crate) fn settings_path_field_row(
-    input: &Entity<InputState>,
-    browse_id: impl Into<ElementId>,
-    browse_label: impl Into<SharedString>,
-    browse_aria: impl Into<SharedString>,
-    target: PathPickTarget,
-    _colors: crate::ThemeColors,
-    cx: &mut Context<AppShell>,
-) -> Div {
-    let browse_label = browse_label.into();
-    let browse_aria = browse_aria.into();
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .child(div().flex_1().min_w_0().child(Input::new(input)))
-        .child(
-            KitButton::new(browse_id)
-                .icon(gpui_kit::component::Icon::new(IconName::FolderDown))
-                .label(browse_label)
-                .accessibility_label(browse_aria)
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.pick_path_for_field(target, window, cx);
-                })),
-        )
 }
 
 /// A titled card used as the visual container for one settings group.
@@ -239,9 +246,9 @@ pub(crate) fn task_status_icon(status: TaskStatusView) -> IconName {
     }
 }
 
-pub(crate) fn task_display_name(task: &DownloadRowView) -> String {
+pub(crate) fn task_display_name(task: &DownloadRowView, translator: &Translator) -> String {
     if task.name_state.is_resolving() {
-        "Resolving filename...".into()
+        translator.t("task-name-resolving")
     } else {
         task.display_name.clone()
     }
@@ -336,10 +343,15 @@ pub(crate) fn successor_task(
         .cloned()
 }
 
-pub(crate) fn task_overview_summary(task: &DownloadRowView, colors: crate::ThemeColors) -> Div {
+pub(crate) fn task_overview_summary(
+    task: &DownloadRowView,
+    translator: &Translator,
+    colors: crate::ThemeColors,
+) -> Div {
     let basis_points = task.progress_basis_points();
     let progress = f32::from(basis_points.unwrap_or(0)) / 10_000.0;
     let seeding = task.status == TaskStatusView::Seeding;
+    let status_label = translator.t(task.status.message_key());
     let size_label = if task.total_bytes == 0 {
         format_bytes(task.completed_bytes)
     } else {
@@ -350,20 +362,31 @@ pub(crate) fn task_overview_summary(task: &DownloadRowView, colors: crate::Theme
         )
     };
     let eta_label = if seeding {
-        format!(
-            "{} observed this session",
-            format_eta(task.observed_seeding_seconds)
-        )
+        let mut args = FluentArgs::new();
+        args.set(
+            "duration",
+            FluentValue::from(format_eta(task.observed_seeding_seconds)),
+        );
+        translator.t_args("task-overview-observed-session", Some(&args))
     } else {
         task.eta_seconds.filter(|seconds| *seconds > 0).map_or_else(
-            || task.status.label().to_owned(),
-            |seconds| format!("{} remaining", format_eta(Some(seconds))),
+            || status_label.clone(),
+            |seconds| {
+                let mut args = FluentArgs::new();
+                args.set("duration", FluentValue::from(format_eta(Some(seconds))));
+                translator.t_args("task-overview-remaining", Some(&args))
+            },
         )
     };
     let error_label = task.error.as_ref().map(|error| {
         error.code.map_or_else(
             || error.summary.clone(),
-            |code| format!("Error {code}: {}", error.summary),
+            |code| {
+                let mut args = FluentArgs::new();
+                args.set("code", FluentValue::from(i64::from(code)));
+                args.set("summary", FluentValue::from(error.summary.as_str()));
+                translator.t_args("task-overview-error-code", Some(&args))
+            },
         )
     });
     let error_id = SharedString::from(format!("task-error-{}", task.identity.gid));
@@ -387,9 +410,13 @@ pub(crate) fn task_overview_summary(task: &DownloadRowView, colors: crate::Theme
                         .text_xs()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_secondary)
-                        .child(if seeding { "Share ratio" } else { "Progress" }),
+                        .child(if seeding {
+                            translator.t("task-overview-share-ratio")
+                        } else {
+                            translator.t("task-overview-progress")
+                        }),
                 )
-                .child(task_status_badge(task.status, task.status.label(), colors)),
+                .child(task_status_badge(task.status, status_label, colors)),
         )
         .child(
             div()
@@ -432,12 +459,19 @@ pub(crate) fn task_overview_summary(task: &DownloadRowView, colors: crate::Theme
                 .text_xs()
                 .text_color(colors.text_muted)
                 .child(if seeding {
-                    format!("Uploaded {}", format_bytes(task.uploaded_bytes))
+                    let mut args = FluentArgs::new();
+                    args.set(
+                        "bytes",
+                        FluentValue::from(format_bytes(task.uploaded_bytes)),
+                    );
+                    translator.t_args("task-overview-uploaded", Some(&args))
                 } else {
                     size_label
                 })
                 .child(if seeding {
-                    format!("Up {}", format_rate(task.upload_rate))
+                    let mut args = FluentArgs::new();
+                    args.set("rate", FluentValue::from(format_rate(task.upload_rate)));
+                    translator.t_args("task-overview-upload-rate", Some(&args))
                 } else {
                     format_rate(task.download_rate)
                 }),
@@ -735,7 +769,9 @@ pub(crate) fn stale_session_error() -> OperationErrorView {
 }
 
 pub(crate) fn tabular_numbers() -> FontFeatures {
-    FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
+    static TNUM: std::sync::OnceLock<FontFeatures> = std::sync::OnceLock::new();
+    TNUM.get_or_init(|| FontFeatures(Arc::new(vec![("tnum".into(), 1)])))
+        .clone()
 }
 
 pub(crate) fn connection_color(connection: &ConnectionView, colors: crate::ThemeColors) -> Hsla {
@@ -988,15 +1024,15 @@ pub(crate) fn file_type_icon(filename: &str) -> IconName {
     }
 }
 
-pub(crate) fn category_display_name(name: &str, shell: &AppShell) -> String {
+pub(crate) fn category_display_name(name: &str, translator: &Translator) -> String {
     match name.to_ascii_lowercase().as_str() {
-        "general" => shell.t("category-general"),
-        "compressed" => shell.t("category-compressed"),
-        "documents" => shell.t("category-documents"),
-        "music" => shell.t("category-music"),
-        "video" => shell.t("category-video"),
-        "programs" => shell.t("category-programs"),
-        "images" => shell.t("category-images"),
+        "general" => translator.t("category-general"),
+        "compressed" => translator.t("category-compressed"),
+        "documents" => translator.t("category-documents"),
+        "music" => translator.t("category-music"),
+        "video" => translator.t("category-video"),
+        "programs" => translator.t("category-programs"),
+        "images" => translator.t("category-images"),
         _ => name.to_owned(),
     }
 }

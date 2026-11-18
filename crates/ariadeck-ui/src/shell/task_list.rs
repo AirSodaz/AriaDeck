@@ -251,16 +251,17 @@ impl AppShell {
                         .clamp(DETAILS_DRAWER_MIN_WIDTH, DETAILS_DRAWER_MAX_WIDTH);
                     if (width - this.details_drawer_width).abs() > 0.5 {
                         this.details_drawer_width = width;
+                        this.sync_details_panel_context(cx);
                         cx.notify();
                     }
                 },
             ))
             .child(center);
 
-        match (self.details_drawer.is_some(), details_presentation) {
-            (true, DetailsPresentation::Inline) => pane.child(self.render_task_details_drawer(cx)),
+        match (self.details_panel.as_ref(), details_presentation) {
+            (Some(panel), DetailsPresentation::Inline) => pane.child(panel.clone()),
             // Narrow Overlay presentation is rendered via `WindowExt::open_sheet` in Root.
-            (true, DetailsPresentation::Overlay) | (false, _) => pane,
+            (Some(_), DetailsPresentation::Overlay) | (None, _) => pane,
         }
     }
 
@@ -280,10 +281,7 @@ impl AppShell {
         };
         let idle = self.pending_task_command.is_none()
             && self.pending_batch_command.is_none()
-            && self.remove_confirmation.is_none()
-            && self.output_name_dialog.is_none()
-            && self.task_speed_limit_dialog.is_none()
-            && self.task_options_dialog.is_none();
+            && self.active_modal.is_none();
         let commands_available = self.snapshot.commands_available() && idle;
         let path_actions = commands_available && self.snapshot.local_path_actions_available;
         let can_pause = commands_available && task.status.can_pause();
@@ -478,11 +476,11 @@ impl AppShell {
     ) {
         // Capture the right-clicked task before closing so multi-select still
         // has a single authoritative target for details/copy/open.
-        let menu_task = self.context_menu_task_view();
+        let menu_task = self.context_menu_task_view(cx);
         self.close_task_context_menu(cx);
         match action {
             ContextMenuAction::Details => {
-                if let Some(task) = menu_task.or_else(|| self.selected_task_view()) {
+                if let Some(task) = menu_task.or_else(|| self.selected_task_view(cx)) {
                     self.open_details_for(task, cx);
                 }
             }
@@ -493,12 +491,12 @@ impl AppShell {
                 self.request_task_open_for_selection(TaskOpenTargetView::Folder, cx);
             }
             ContextMenuAction::CopySource => {
-                if let Some(task) = menu_task.or_else(|| self.selected_task_view()) {
+                if let Some(task) = menu_task.or_else(|| self.selected_task_view(cx)) {
                     self.copy_task_source(&task, cx);
                 }
             }
             ContextMenuAction::CopyGid => {
-                if let Some(task) = menu_task.or_else(|| self.selected_task_view()) {
+                if let Some(task) = menu_task.or_else(|| self.selected_task_view(cx)) {
                     self.copy_task_gid(&task, cx);
                 }
             }
@@ -538,7 +536,7 @@ impl AppShell {
         let idle = self.pending_task_command.is_none()
             && self.pending_global_task_command.is_none()
             && self.pending_batch_command.is_none()
-            && self.remove_confirmation.is_none();
+            && !matches!(self.active_modal, Some(ActiveModal::RemoveConfirmation(_)));
         let commands_available = self.snapshot.commands_available() && idle;
         let pending_global = self
             .pending_global_task_command
@@ -579,10 +577,7 @@ impl AppShell {
                     .tooltip(if self.snapshot.capabilities.force_pause_all {
                         self.t("action-force-pause-all")
                     } else {
-                        self.snapshot
-                            .capabilities
-                            .unsupported_force_pause_all_message()
-                            .to_owned()
+                        self.t("notice-capability-force-pause-all-unsupported")
                     })
                     .when(
                         commands_available && self.snapshot.capabilities.force_pause_all,
@@ -682,13 +677,15 @@ impl AppShell {
             return self.render_hidden_selection_toolbar(cx);
         }
         let colors = self.theme.colors;
-        let Some(task) = self.selected_task_view() else {
+        let Some(task) = self.selected_task_view(cx) else {
             return div();
         };
         let idle = self.pending_task_command.is_none()
             && self.pending_batch_command.is_none()
-            && self.remove_confirmation.is_none()
-            && self.output_name_dialog.is_none();
+            && !matches!(
+                self.active_modal,
+                Some(ActiveModal::RemoveConfirmation(_) | ActiveModal::OutputName { .. })
+            );
         let pending_command = self
             .pending_task_command
             .as_ref()
@@ -714,10 +711,11 @@ impl AppShell {
                     false,
                     Some(&OpenTaskDetails),
                     colors,
+                    &self.translator,
                 )
                 .when(details_enabled, |button| {
                     button.on_click(cx.listener(|this, _, _window, cx| {
-                        if let Some(task) = this.selected_task_view() {
+                        if let Some(task) = this.selected_task_view(cx) {
                             this.open_details_for(task, cx);
                         }
                     }))
@@ -737,6 +735,7 @@ impl AppShell {
                             false,
                             Some(&PauseSelectedTask),
                             colors,
+                            &self.translator,
                         )
                         .when(pause_enabled, |button| {
                             button.on_click(cx.listener(|this, _, _window, cx| {
@@ -751,10 +750,7 @@ impl AppShell {
                             if self.snapshot.capabilities.force_pause {
                                 self.t("action-force-pause")
                             } else {
-                                self.snapshot
-                                    .capabilities
-                                    .unsupported_force_pause_message()
-                                    .to_owned()
+                                self.t("notice-force-pause-unsupported")
                             },
                             ToolbarButtonState::from_flags(
                                 force_pause_enabled,
@@ -763,6 +759,7 @@ impl AppShell {
                             false,
                             None,
                             colors,
+                            &self.translator,
                         )
                         .when(force_pause_enabled, |button| {
                             button.on_click(cx.listener(|this, _, _window, cx| {
@@ -784,6 +781,7 @@ impl AppShell {
                         false,
                         Some(&ResumeSelectedTask),
                         colors,
+                        &self.translator,
                     )
                     .when(resume_enabled, |button| {
                         button.on_click(cx.listener(|this, _, _window, cx| {
@@ -806,6 +804,7 @@ impl AppShell {
                             pending_command.as_ref(),
                             Some(&MoveTaskToQueueTop),
                             colors,
+                            &self.translator,
                             cx,
                         ),
                         queue_move_button(
@@ -817,6 +816,7 @@ impl AppShell {
                             pending_command.as_ref(),
                             Some(&MoveTaskUpInQueue),
                             colors,
+                            &self.translator,
                             cx,
                         ),
                         queue_move_button(
@@ -828,6 +828,7 @@ impl AppShell {
                             pending_command.as_ref(),
                             Some(&MoveTaskDownInQueue),
                             colors,
+                            &self.translator,
                             cx,
                         ),
                         queue_move_button(
@@ -839,6 +840,7 @@ impl AppShell {
                             pending_command.as_ref(),
                             Some(&MoveTaskToQueueBottom),
                             colors,
+                            &self.translator,
                             cx,
                         ),
                     ])
@@ -857,6 +859,7 @@ impl AppShell {
                         false,
                         Some(&RetrySelectedTask),
                         colors,
+                        &self.translator,
                     )
                     .when(retry_enabled, |button| {
                         button.on_click(cx.listener(|this, _, _window, cx| {
@@ -875,6 +878,7 @@ impl AppShell {
                         false,
                         Some(&OpenTaskOutputName),
                         colors,
+                        &self.translator,
                     )
                     .when(commands_available, |button| {
                         button.on_click(cx.listener(|this, _, window, cx| {
@@ -894,6 +898,7 @@ impl AppShell {
                             false,
                             None,
                             colors,
+                            &self.translator,
                         )
                         .when(commands_available, |button| {
                             button.on_click(cx.listener(|this, _, window, cx| {
@@ -910,6 +915,7 @@ impl AppShell {
                             false,
                             None,
                             colors,
+                            &self.translator,
                         )
                         .when(commands_available, |button| {
                             button.on_click(cx.listener(|this, _, window, cx| {
@@ -937,6 +943,7 @@ impl AppShell {
                     true,
                     Some(&RemoveSelectedTask),
                     colors,
+                    &self.translator,
                 )
                 .when(remove_enabled, |button| {
                     button.on_click(cx.listener(|this, _, window, cx| {
@@ -956,7 +963,7 @@ impl AppShell {
             .collect::<Vec<_>>();
         let idle = self.pending_task_command.is_none()
             && self.pending_batch_command.is_none()
-            && self.remove_confirmation.is_none();
+            && !matches!(self.active_modal, Some(ActiveModal::RemoveConfirmation(_)));
         let commands_available = self.snapshot.commands_available() && idle;
         let can_pause = selected.iter().any(|task| task.status.can_pause());
         let can_force_pause = can_pause && self.snapshot.capabilities.force_pause;
@@ -995,6 +1002,7 @@ impl AppShell {
                     false,
                     Some(&PauseSelectedTask),
                     colors,
+                    &self.translator,
                 )
                 .when(commands_available && can_pause, |button| {
                     button.on_click(cx.listener(|this, _, _, cx| {
@@ -1009,10 +1017,7 @@ impl AppShell {
                     if self.snapshot.capabilities.force_pause {
                         self.t("action-force-pause-selected")
                     } else {
-                        self.snapshot
-                            .capabilities
-                            .unsupported_force_pause_message()
-                            .to_owned()
+                        self.t("notice-force-pause-unsupported")
                     },
                     ToolbarButtonState::from_flags(
                         commands_available && can_force_pause,
@@ -1021,6 +1026,7 @@ impl AppShell {
                     false,
                     None,
                     colors,
+                    &self.translator,
                 )
                 .when(commands_available && can_force_pause, |button| {
                     button.on_click(cx.listener(|this, _, _, cx| {
@@ -1040,6 +1046,7 @@ impl AppShell {
                     false,
                     Some(&ResumeSelectedTask),
                     colors,
+                    &self.translator,
                 )
                 .when(commands_available && can_resume, |button| {
                     button.on_click(cx.listener(|this, _, _, cx| {
@@ -1059,6 +1066,7 @@ impl AppShell {
                     false,
                     Some(&RetrySelectedTask),
                     colors,
+                    &self.translator,
                 )
                 .when(commands_available && can_retry, |button| {
                     button.on_click(cx.listener(|this, _, _, cx| {
@@ -1085,6 +1093,7 @@ impl AppShell {
                     true,
                     Some(&RemoveSelectedTask),
                     colors,
+                    &self.translator,
                 )
                 .when(commands_available && can_remove, |button| {
                     button.on_click(cx.listener(|this, _, window, cx| {
@@ -1101,6 +1110,7 @@ impl AppShell {
                     false,
                     Some(&ClearSearch),
                     colors,
+                    &self.translator,
                 )
                 .when(idle, |button| {
                     button.on_click(cx.listener(|this, _, _, cx| {
@@ -1147,6 +1157,7 @@ impl AppShell {
                     false,
                     Some(&ClearSearch),
                     colors,
+                    &self.translator,
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.clear_task_selection();
@@ -1172,7 +1183,7 @@ impl AppShell {
         let share_ratio = format_share_ratio(task.share_ratio_milli());
         let observed_seeding = format_eta(task.observed_seeding_seconds);
         let status_color = task_status_color(task.status, colors);
-        let display_name = task_display_name(task);
+        let display_name = task_display_name(task, &self.translator);
         let size_label = if task.total_bytes == 0 {
             format_bytes(task.completed_bytes)
         } else {

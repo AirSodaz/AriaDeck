@@ -77,8 +77,7 @@ fn batch_partial_result_retains_only_failed_source_tasks(cx: &mut TestAppContext
         assert_eq!(shell.selected_tasks, HashSet::from([task(1).identity]));
         assert_eq!(
             shell
-                .batch_failure_details
-                .as_ref()
+                .batch_failure_details_modal()
                 .map(|details| details.failures.len()),
             Some(1)
         );
@@ -96,25 +95,28 @@ fn add_download_submission_is_single_flight(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut shell = AppShell::new(Theme::dark(), window, cx);
         shell.snapshot = snapshot(1);
-        shell.add_dialog.open = true;
+        shell.open_add_download(&OpenAddDownload, window, cx);
         shell
     });
 
     view.update_in(cx, |shell, window, cx| {
-        shell.add_input.update(cx, |input, cx| {
-            input.set_value("https://example.com/archive.bin", window, cx);
+        let dialog = shell.add_dialog_entity().expect("dialog open").clone();
+        dialog.update(cx, |dialog, cx| {
+            dialog.add_input.update(cx, |input, cx| {
+                input.set_value("https://example.com/archive.bin", window, cx);
+            });
         });
         shell.submit_add_download(cx);
-        let first = shell
-            .add_dialog
+        let first = dialog
+            .read(cx)
             .pending
             .as_ref()
             .expect("first submit must become pending")
             .request_id;
         shell.submit_add_download(cx);
         assert_eq!(
-            shell
-                .add_dialog
+            dialog
+                .read(cx)
                 .pending
                 .as_ref()
                 .expect("second submit must retain pending request")
@@ -329,31 +331,27 @@ fn metadata_paths_are_classified_deduplicated_switchable_and_removable(cx: &mut 
             window,
             cx,
         ));
-        assert!(shell.add_dialog.open);
-        assert_eq!(
-            shell.add_dialog.input_mode,
-            AddDownloadInputModeView::MetadataFiles
-        );
-        assert_eq!(shell.add_dialog.mode, AddDownloadModeView::SeparateTasks);
-        assert_eq!(
-            shell.add_dialog.file_conflict,
-            FileConflictPolicyView::Reject
-        );
-        assert!(shell.add_dialog.metadata_files.is_empty());
-        let pending = shell
-            .add_dialog
-            .preview_pending
-            .as_ref()
-            .expect("metadata preview must be pending");
-        assert_eq!(
-            pending.paths,
-            vec![
-                PathBuf::from("sample.TORRENT"),
-                PathBuf::from("bundle.meta4")
-            ]
-        );
-        let request_id = pending.request_id;
-        assert!(shell.add_dialog.error.is_some());
+        let dialog_entity = shell.add_dialog_entity().expect("dialog open").clone();
+        let request_id = {
+            let dialog = dialog_entity.read(cx);
+            assert_eq!(dialog.input_mode, AddDownloadInputModeView::MetadataFiles);
+            assert_eq!(dialog.mode, AddDownloadModeView::SeparateTasks);
+            assert_eq!(dialog.file_conflict, FileConflictPolicyView::Reject);
+            assert!(dialog.metadata_files.is_empty());
+            let pending = dialog
+                .preview_pending
+                .as_ref()
+                .expect("metadata preview must be pending");
+            assert_eq!(
+                pending.paths,
+                vec![
+                    PathBuf::from("sample.TORRENT"),
+                    PathBuf::from("bundle.meta4")
+                ]
+            );
+            assert!(dialog.error.is_some());
+            pending.request_id
+        };
 
         shell.set_add_download_metadata_preview_result(
             AddDownloadMetadataPreviewResultView {
@@ -379,26 +377,29 @@ fn metadata_paths_are_classified_deduplicated_switchable_and_removable(cx: &mut 
             },
             cx,
         );
-        assert_eq!(shell.add_dialog.metadata_files.len(), 2);
+        assert_eq!(dialog_entity.read(cx).metadata_files.len(), 2);
         assert_eq!(
-            shell.add_dialog.metadata_files[0].selected_file_indices,
+            dialog_entity.read(cx).metadata_files[0].selected_file_indices,
             vec![1, 2]
         );
         shell.toggle_metadata_file_entry(0, 2, cx);
         assert_eq!(
-            shell.add_dialog.metadata_files[0].selected_file_indices,
+            dialog_entity.read(cx).metadata_files[0].selected_file_indices,
             vec![1]
         );
         shell.toggle_all_metadata_file_entries(0, cx);
         assert_eq!(
-            shell.add_dialog.metadata_files[0].selected_file_indices,
+            dialog_entity.read(cx).metadata_files[0].selected_file_indices,
             vec![1, 2]
         );
 
         shell.set_add_input_mode(AddDownloadInputModeView::Links, cx);
-        assert_eq!(shell.add_dialog.input_mode, AddDownloadInputModeView::Links);
+        assert_eq!(
+            dialog_entity.read(cx).input_mode,
+            AddDownloadInputModeView::Links
+        );
         shell.remove_metadata_file(0, cx);
-        assert_eq!(shell.add_dialog.metadata_files.len(), 1);
+        assert_eq!(dialog_entity.read(cx).metadata_files.len(), 1);
     });
 }
 
@@ -409,13 +410,13 @@ fn metadata_paths_wait_until_commands_are_available(cx: &mut TestAppContext) {
     view.update_in(cx, |shell, window, cx| {
         assert!(!shell.can_open_metadata_paths());
         assert!(!shell.open_metadata_paths(vec![PathBuf::from("queued.torrent")], window, cx,));
-        assert!(!shell.add_dialog.open);
+        assert!(shell.add_dialog_entity().is_none());
 
         shell.snapshot = snapshot(1);
         assert!(shell.can_open_metadata_paths());
         assert!(shell.open_metadata_paths(vec![PathBuf::from("queued.torrent")], window, cx,));
-        assert!(shell.add_dialog.open);
-        assert!(shell.add_dialog.preview_pending.is_some());
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
+        assert!(dialog.preview_pending.is_some());
     });
 }
 
@@ -434,12 +435,12 @@ fn magnet_launch_opens_links_without_submitting_and_does_not_clobber_open_dialog
     view.update_in(cx, |shell, window, cx| {
         assert!(shell.can_open_magnet_uris());
         assert!(shell.open_magnet_uris(vec![magnet.clone(), magnet.clone()], window, cx));
-        assert!(shell.add_dialog.open);
-        assert!(shell.add_dialog.pending.is_none());
-        assert_eq!(shell.add_input.read(cx).value().as_ref(), magnet);
+        let dialog = shell.add_dialog_entity().expect("dialog open").clone();
+        assert!(dialog.read(cx).pending.is_none());
+        assert_eq!(dialog.read(cx).add_input.read(cx).value().as_ref(), magnet);
         assert!(!shell.can_open_magnet_uris());
         assert!(!shell.open_magnet_uris(vec!["magnet:?xt=urn:btih:bad".into()], window, cx));
-        assert_eq!(shell.add_input.read(cx).value().as_ref(), magnet);
+        assert_eq!(dialog.read(cx).add_input.read(cx).value().as_ref(), magnet);
     });
 }
 
@@ -459,7 +460,9 @@ fn metadata_preview_keeps_successes_reports_failures_and_ignores_stale_results(
             cx,
         ));
         shell
-            .add_dialog
+            .add_dialog_entity()
+            .expect("dialog open")
+            .read(cx)
             .preview_pending
             .as_ref()
             .expect("metadata preview must be pending")
@@ -494,11 +497,11 @@ fn metadata_preview_keeps_successes_reports_failures_and_ignores_stale_results(
             cx,
         );
     });
-    view.read_with(cx, |shell, _| {
-        assert!(shell.add_dialog.metadata_files.is_empty());
+    view.read_with(cx, |shell, cx| {
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
+        assert!(dialog.metadata_files.is_empty());
         assert_eq!(
-            shell
-                .add_dialog
+            dialog
                 .preview_pending
                 .as_ref()
                 .map(|pending| pending.request_id),
@@ -534,16 +537,13 @@ fn metadata_preview_keeps_successes_reports_failures_and_ignores_stale_results(
             cx,
         );
     });
-    view.read_with(cx, |shell, _| {
-        assert!(shell.add_dialog.preview_pending.is_none());
-        assert_eq!(shell.add_dialog.metadata_files.len(), 1);
-        assert_eq!(
-            shell.add_dialog.metadata_files[0].selected_file_indices,
-            vec![1, 2]
-        );
+    view.read_with(cx, |shell, cx| {
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
+        assert!(dialog.preview_pending.is_none());
+        assert_eq!(dialog.metadata_files.len(), 1);
+        assert_eq!(dialog.metadata_files[0].selected_file_indices, vec![1, 2]);
         assert!(
-            shell
-                .add_dialog
+            dialog
                 .error
                 .as_ref()
                 .is_some_and(|error| error.summary.contains("bad metadata"))
@@ -556,30 +556,35 @@ fn metadata_submit_rejects_zero_selection_and_sums_selected_known_sizes(cx: &mut
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut shell = AppShell::new(Theme::dark(), window, cx);
         shell.snapshot = snapshot(1);
-        shell.add_dialog.open = true;
-        shell.add_dialog.input_mode = AddDownloadInputModeView::MetadataFiles;
-        shell.add_dialog.metadata_files = vec![metadata_preview(
-            "one.torrent",
-            AddDownloadMetadataKindView::Torrent,
-            3,
-        )];
-        shell.add_dialog.metadata_files[0].files[2].length = None;
+        shell.open_add_download(&OpenAddDownload, window, cx);
+        if let Some(dialog) = shell.add_dialog_entity().cloned() {
+            dialog.update(cx, |dialog, _| {
+                dialog.input_mode = AddDownloadInputModeView::MetadataFiles;
+                dialog.metadata_files = vec![metadata_preview(
+                    "one.torrent",
+                    AddDownloadMetadataKindView::Torrent,
+                    3,
+                )];
+                dialog.metadata_files[0].files[2].length = None;
+            });
+        }
         shell
     });
 
     view.update(cx, |shell, cx| {
+        let dialog = shell.add_dialog_entity().expect("dialog open").clone();
         assert_eq!(
-            selected_metadata_known_bytes(&shell.add_dialog.metadata_files),
+            selected_metadata_known_bytes(&dialog.read(cx).metadata_files),
             Some(300)
         );
         shell.toggle_all_metadata_file_entries(0, cx);
         shell.submit_add_download(cx);
     });
-    view.read_with(cx, |shell, _| {
-        assert!(shell.add_dialog.pending.is_none());
+    view.read_with(cx, |shell, cx| {
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
+        assert!(dialog.pending.is_none());
         assert!(
-            shell
-                .add_dialog
+            dialog
                 .error
                 .as_ref()
                 .is_some_and(|error| error.summary.contains("Select at least one file"))
@@ -605,34 +610,38 @@ fn add_download_advanced_options_toggle_and_collect_secrets(cx: &mut TestAppCont
 
     view.update_in(cx, |shell, window, cx| {
         shell.open_add_download(&OpenAddDownload, window, cx);
-        assert!(!shell.add_dialog.advanced_open);
+        let dialog = shell.add_dialog_entity().expect("dialog open").clone();
+        assert!(!dialog.read(cx).advanced_open);
         shell.toggle_add_advanced(cx);
-        assert!(shell.add_dialog.advanced_open);
-        shell.add_inputs.referer.update(cx, |input, cx| {
-            input.set_value("https://example.test/ref", window, cx);
-        });
-        shell.add_inputs.user_agent.update(cx, |input, cx| {
-            input.set_value("AriaDeck-Test/1.0", window, cx);
-        });
-        shell.add_inputs.headers.update(cx, |input, cx| {
-            input.set_value("X-Token: one\nAccept: */*", window, cx);
-        });
-        shell.add_inputs.cookie.update(cx, |input, cx| {
-            input.set_value("session=secret-cookie", window, cx);
-        });
-        shell.add_inputs.http_user.update(cx, |input, cx| {
-            input.set_value("alice", window, cx);
-        });
-        shell.add_inputs.http_passwd.update(cx, |input, cx| {
-            input.set_value("s3cret", window, cx);
-        });
-        shell.add_inputs.checksum.update(cx, |input, cx| {
-            input.set_value(format!("sha-256={}", "ab".repeat(32)), window, cx);
+        assert!(dialog.read(cx).advanced_open);
+        dialog.update(cx, |dialog, cx| {
+            dialog.add_inputs.referer.update(cx, |input, cx| {
+                input.set_value("https://example.test/ref", window, cx);
+            });
+            dialog.add_inputs.user_agent.update(cx, |input, cx| {
+                input.set_value("AriaDeck-Test/1.0", window, cx);
+            });
+            dialog.add_inputs.headers.update(cx, |input, cx| {
+                input.set_value("X-Token: one\nAccept: */*", window, cx);
+            });
+            dialog.add_inputs.cookie.update(cx, |input, cx| {
+                input.set_value("session=secret-cookie", window, cx);
+            });
+            dialog.add_inputs.http_user.update(cx, |input, cx| {
+                input.set_value("alice", window, cx);
+            });
+            dialog.add_inputs.http_passwd.update(cx, |input, cx| {
+                input.set_value("s3cret", window, cx);
+            });
+            dialog.add_inputs.checksum.update(cx, |input, cx| {
+                input.set_value(format!("sha-256={}", "ab".repeat(32)), window, cx);
+            });
         });
     });
 
     view.read_with(cx, |shell, cx| {
-        let advanced = shell.collect_add_advanced_options(cx);
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
+        let advanced = dialog.collect_advanced_options(cx);
         assert_eq!(advanced.referer, "https://example.test/ref");
         assert_eq!(advanced.user_agent, "AriaDeck-Test/1.0");
         assert!(advanced.headers.contains("X-Token: one"));
@@ -655,9 +664,9 @@ fn add_download_advanced_options_toggle_and_collect_secrets(cx: &mut TestAppCont
         let debug = format!("{advanced:?}");
         assert!(!debug.contains("s3cret"));
         assert!(!debug.contains("secret-cookie"));
-        assert!(shell.add_inputs.cookie.read(cx).presentation().is_masked());
+        assert!(dialog.add_inputs.cookie.read(cx).presentation().is_masked());
         assert!(
-            shell
+            dialog
                 .add_inputs
                 .http_passwd
                 .read(cx)
@@ -683,7 +692,8 @@ fn add_download_dialog_accepts_keyboard_input(cx: &mut TestAppContext) {
     cx.simulate_input("https://example.com/file");
 
     view.read_with(&cx, |shell, cx| {
-        assert_eq!(shell.add_input.read(cx).text(), "https://example.com/file");
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
+        assert_eq!(dialog.add_input.read(cx).text(), "https://example.com/file");
     });
 }
 
@@ -702,6 +712,9 @@ fn add_download_dialog_input_can_be_clicked_before_typing(cx: &mut TestAppContex
     let _ = cx.update(|window, cx| window.draw(cx));
     let input_bounds = view.read_with(&cx, |shell, cx| {
         shell
+            .add_dialog_entity()
+            .expect("dialog open")
+            .read(cx)
             .add_input
             .read(cx)
             .text_bounds()
@@ -714,7 +727,11 @@ fn add_download_dialog_input_can_be_clicked_before_typing(cx: &mut TestAppContex
     cx.simulate_input("https://example.com/file");
 
     view.read_with(&cx, |shell, cx| {
-        assert_eq!(shell.add_input.read(cx).value(), "https://example.com/file");
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
+        assert_eq!(
+            dialog.add_input.read(cx).value(),
+            "https://example.com/file"
+        );
     });
 }
 
@@ -728,9 +745,13 @@ fn add_download_dialog_supports_standard_clipboard_shortcuts(cx: &mut TestAppCon
 
     view.update_in(&mut cx, |shell, window, cx| {
         shell.open_add_download(&OpenAddDownload, window, cx);
-        shell.add_input.update(cx, |input, cx| {
-            input.set_value("https://example.com/file", window, cx);
-        });
+        if let Some(dialog) = shell.add_dialog_entity().cloned() {
+            dialog.update(cx, |dialog, cx| {
+                dialog.add_input.update(cx, |input, cx| {
+                    input.set_value("https://example.com/file", window, cx);
+                });
+            });
+        }
     });
     cx.run_until_parked();
     let _ = cx.update(|window, cx| window.draw(cx));
@@ -749,7 +770,11 @@ fn add_download_dialog_supports_standard_clipboard_shortcuts(cx: &mut TestAppCon
     ));
     cx.simulate_keystrokes(&format!("{}-v", secondary_modifier()));
     view.read_with(&cx, |shell, cx| {
-        assert_eq!(shell.add_input.read(cx).value(), "magnet:?xt=urn:btih:test");
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
+        assert_eq!(
+            dialog.add_input.read(cx).value(),
+            "magnet:?xt=urn:btih:test"
+        );
     });
 
     cx.simulate_keystrokes(&format!(
@@ -758,7 +783,8 @@ fn add_download_dialog_supports_standard_clipboard_shortcuts(cx: &mut TestAppCon
         secondary_modifier()
     ));
     view.read_with(&cx, |shell, cx| {
-        assert!(shell.add_input.read(cx).value().is_empty());
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
+        assert!(dialog.add_input.read(cx).value().is_empty());
     });
     assert_eq!(
         cx.read_from_clipboard().and_then(|item| item.text()),
@@ -786,12 +812,13 @@ fn add_download_input_preserves_pasted_lines_and_shift_enter(cx: &mut TestAppCon
     cx.simulate_input("magnet:?xt=urn:btih:abc");
 
     view.read_with(&cx, |shell, cx| {
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
         assert_eq!(
-            shell.add_input.read(cx).value().replace("\r\n", "\n"),
+            dialog.add_input.read(cx).value().replace("\r\n", "\n"),
             "https://example.test/one\nhttps://example.test/two\nmagnet:?xt=urn:btih:abc"
         );
         assert_eq!(
-            parse_add_download_sources(shell.add_input.read(cx).value().as_ref()).len(),
+            parse_add_download_sources(dialog.add_input.read(cx).value().as_ref()).len(),
             3
         );
     });
@@ -804,19 +831,24 @@ fn partial_add_result_keeps_only_sources_that_are_safe_to_retry(cx: &mut TestApp
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut shell = AppShell::new(Theme::dark(), window, cx);
         shell.snapshot = snapshot(1);
-        shell.add_dialog.open = true;
-        shell.add_input.update(cx, |input, cx| {
-            input.set_value(
-                "https://example.test/accepted\nhttps://example.test/retry\nhttps://example.test/unknown",
-                window,
-                cx,
-            );
-        });
+        shell.open_add_download(&OpenAddDownload, window, cx);
+        if let Some(dialog) = shell.add_dialog_entity().cloned() {
+            dialog.update(cx, |dialog, cx| {
+                dialog.add_input.update(cx, |input, cx| {
+                    input.set_value(
+                        "https://example.test/accepted\nhttps://example.test/retry\nhttps://example.test/unknown",
+                        window,
+                        cx,
+                    );
+                });
+            });
+        }
         shell.submit_add_download(cx);
         shell
     });
-    let (request_id, session) = view.read_with(cx, |shell, _| {
-        let pending = shell.add_dialog.pending.as_ref().expect("add pending");
+    let (request_id, session) = view.read_with(cx, |shell, cx| {
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
+        let pending = dialog.pending.as_ref().expect("add pending");
         (pending.request_id, pending.session.clone())
     });
 
@@ -867,10 +899,10 @@ fn partial_add_result_keeps_only_sources_that_are_safe_to_retry(cx: &mut TestApp
         );
     });
     view.read_with(cx, |shell, cx| {
-        assert!(shell.add_dialog.open);
-        assert_eq!(shell.add_dialog.results.len(), 3);
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
+        assert_eq!(dialog.results.len(), 3);
         assert_eq!(
-            shell.add_input.read(cx).text(),
+            dialog.add_input.read(cx).text(),
             "https://example.test/retry"
         );
         assert_eq!(
@@ -887,15 +919,20 @@ fn duplicate_add_result_focuses_the_existing_task_and_closes_the_dialog(cx: &mut
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut shell = AppShell::new(Theme::dark(), window, cx);
         shell.snapshot = snapshot(1);
-        shell.add_dialog.open = true;
-        shell.add_input.update(cx, |input, cx| {
-            input.set_value("https://example.test/existing", window, cx);
-        });
+        shell.open_add_download(&OpenAddDownload, window, cx);
+        if let Some(dialog) = shell.add_dialog_entity().cloned() {
+            dialog.update(cx, |dialog, cx| {
+                dialog.add_input.update(cx, |input, cx| {
+                    input.set_value("https://example.test/existing", window, cx);
+                });
+            });
+        }
         shell.submit_add_download(cx);
         shell
     });
-    let (request_id, session) = view.read_with(cx, |shell, _| {
-        let pending = shell.add_dialog.pending.as_ref().expect("add pending");
+    let (request_id, session) = view.read_with(cx, |shell, cx| {
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
+        let pending = dialog.pending.as_ref().expect("add pending");
         (pending.request_id, pending.session.clone())
     });
 
@@ -922,7 +959,7 @@ fn duplicate_add_result_focuses_the_existing_task_and_closes_the_dialog(cx: &mut
         );
     });
     view.read_with(cx, |shell, _| {
-        assert!(!shell.add_dialog.open);
+        assert!(shell.add_dialog_entity().is_none());
         assert_eq!(shell.selected.as_ref(), Some(&existing));
         assert_eq!(shell.selected_tasks, HashSet::from([existing.clone()]));
     });
@@ -967,15 +1004,18 @@ fn add_download_dialog_renders_scrollable_and_preserves_height_across_open_close
 
     view.update_in(cx, |shell, window, cx| {
         shell.open_add_download(&OpenAddDownload, window, cx);
-        assert!(shell.add_dialog.open);
-        // User adjusts height
-        shell.links_input_height = 200.0;
+        let dialog = shell.add_dialog_entity().expect("dialog open").clone();
+        // User adjusts height inside dialog
+        dialog.update(cx, |dialog, cx| {
+            dialog.links_input_height = 200.0;
+            cx.notify();
+        });
         // Expand advanced options
         shell.toggle_add_advanced(cx);
-        assert!(shell.add_dialog.advanced_open);
-        // Close dialog
+        assert!(dialog.read(cx).advanced_open);
+        // Close dialog (destroys child entity)
         shell.close_add_download(window, cx);
-        assert!(!shell.add_dialog.open);
+        assert!(shell.add_dialog_entity().is_none());
     });
 
     // Verify session persistence of adjusted height
@@ -983,11 +1023,12 @@ fn add_download_dialog_renders_scrollable_and_preserves_height_across_open_close
         assert_eq!(shell.links_input_height, 200.0);
     });
 
-    // Reopen dialog: height must be preserved
+    // Reopen dialog: height must be preserved on newly created child entity
     view.update_in(cx, |shell, window, cx| {
         shell.open_add_download(&OpenAddDownload, window, cx);
-        assert!(shell.add_dialog.open);
+        let dialog = shell.add_dialog_entity().expect("dialog reopened").read(cx);
         assert_eq!(shell.links_input_height, 200.0);
+        assert_eq!(dialog.links_input_height, 200.0);
     });
 }
 
@@ -1035,7 +1076,7 @@ fn successful_retry_selects_the_new_task_identity(cx: &mut TestAppContext) {
     view.read_with(cx, |shell, _| {
         assert_eq!(shell.selected.as_ref(), Some(&new_identity));
         assert!(shell.pending_task_command.is_none());
-        assert!(shell.details_drawer.is_none());
+        assert!(shell.details_panel().is_none());
     });
 }
 
@@ -1052,7 +1093,7 @@ fn output_name_dialog_accepts_only_non_terminal_direct_uri_tasks(cx: &mut TestAp
         shell.open_task_output_name(window, cx);
     });
     view.read_with(cx, |shell, _| {
-        assert!(shell.output_name_dialog.is_none());
+        assert!(shell.output_name_modal().is_none());
     });
 
     view.update_in(cx, |shell, window, cx| {
@@ -1061,7 +1102,7 @@ fn output_name_dialog_accepts_only_non_terminal_direct_uri_tasks(cx: &mut TestAp
         shell.open_task_output_name(window, cx);
     });
     view.read_with(cx, |shell, _| {
-        assert!(shell.output_name_dialog.is_none());
+        assert!(shell.output_name_modal().is_none());
     });
 
     view.update_in(cx, |shell, window, cx| {
@@ -1069,7 +1110,7 @@ fn output_name_dialog_accepts_only_non_terminal_direct_uri_tasks(cx: &mut TestAp
         shell.open_task_output_name(window, cx);
     });
     view.read_with(cx, |shell, _| {
-        assert!(shell.output_name_dialog.is_some());
+        assert!(shell.output_name_modal().is_some());
     });
 }
 
@@ -1085,7 +1126,8 @@ fn output_name_dialog_validates_and_submits_the_exact_filename(cx: &mut TestAppC
     });
 
     view.update_in(cx, |shell, window, cx| {
-        shell.output_name_input.update(cx, |input, cx| {
+        let input = shell.output_name_modal().expect("dialog open").1.clone();
+        input.update(cx, |input, cx| {
             input.set_value("folder/archive.iso", window, cx);
         });
     });
@@ -1096,15 +1138,15 @@ fn output_name_dialog_validates_and_submits_the_exact_filename(cx: &mut TestAppC
         assert!(shell.pending_task_command.is_none());
         assert!(
             shell
-                .output_name_dialog
-                .as_ref()
-                .and_then(|dialog| dialog.error.as_ref())
+                .output_name_modal()
+                .and_then(|(dialog, _)| dialog.error.as_ref())
                 .is_some()
         );
     });
 
     view.update_in(cx, |shell, window, cx| {
-        shell.output_name_input.update(cx, |input, cx| {
+        let input = shell.output_name_modal().expect("dialog open").1.clone();
+        input.update(cx, |input, cx| {
             input.set_value("  archive-renamed.iso  ", window, cx);
         });
     });
@@ -1135,7 +1177,8 @@ fn output_name_result_closes_on_success_and_stays_open_on_failure(cx: &mut TestA
     });
 
     view.update_in(cx, |shell, window, cx| {
-        shell.output_name_input.update(cx, |input, cx| {
+        let input = shell.output_name_modal().expect("dialog open").1.clone();
+        input.update(cx, |input, cx| {
             input.set_value("first.iso", window, cx);
         });
     });
@@ -1164,15 +1207,15 @@ fn output_name_result_closes_on_success_and_stays_open_on_failure(cx: &mut TestA
         assert!(shell.pending_task_command.is_none());
         assert!(
             shell
-                .output_name_dialog
-                .as_ref()
-                .and_then(|dialog| dialog.error.as_ref())
+                .output_name_modal()
+                .and_then(|(dialog, _)| dialog.error.as_ref())
                 .is_some()
         );
     });
 
     view.update_in(cx, |shell, window, cx| {
-        shell.output_name_input.update(cx, |input, cx| {
+        let input = shell.output_name_modal().expect("dialog open").1.clone();
+        input.update(cx, |input, cx| {
             input.set_value("second.iso", window, cx);
         });
     });
@@ -1195,7 +1238,7 @@ fn output_name_result_closes_on_success_and_stays_open_on_failure(cx: &mut TestA
     });
     view.read_with(cx, |shell, _| {
         assert!(shell.pending_task_command.is_none());
-        assert!(shell.output_name_dialog.is_none());
+        assert!(shell.output_name_modal().is_none());
     });
 }
 
@@ -1220,15 +1263,21 @@ fn global_speed_limit_save_emits_parsed_request_and_normalizes_on_success(cx: &m
     });
     view.update_in(cx, |shell, window, cx| {
         // "2M" and blank (unlimited) both go through the K/M parser.
-        shell
-            .settings_inputs
-            .download_limit
-            .update(cx, |input, cx| {
-                input.set_value("2M", window, cx);
-            });
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| {
+            panel
+                .settings_inputs
+                .download_limit
+                .update(cx, |input, cx| {
+                    input.set_value("2M", window, cx);
+                });
+        });
     });
-    let request_id = view.update(cx, |shell, cx| {
-        shell.submit_transfers(cx);
+    view.update(cx, |shell, cx| {
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| panel.submit_transfers(cx));
+    });
+    let request_id = view.read_with(cx, |shell, _| {
         shell
             .pending_settings_save
             .as_ref()
@@ -1265,9 +1314,10 @@ fn global_speed_limit_save_emits_parsed_request_and_normalizes_on_success(cx: &m
     view.read_with(cx, |shell, cx| {
         assert!(shell.pending_settings_save.is_none());
         assert_eq!(shell.settings.speed_limits.download_limit, "2M");
-        assert_eq!(shell.settings_inputs.download_limit.read(cx).value(), "2M");
+        let panel = shell.settings_panel().expect("settings open").read(cx);
+        assert_eq!(panel.settings_inputs.download_limit.read(cx).value(), "2M");
         assert!(
-            shell
+            panel
                 .settings_inputs
                 .upload_limit
                 .read(cx)
@@ -1287,19 +1337,24 @@ fn invalid_global_speed_limit_is_rejected_before_a_save_request(cx: &mut TestApp
         shell.open_settings(&OpenSettings, window, cx);
     });
     view.update_in(cx, |shell, window, cx| {
-        shell
-            .settings_inputs
-            .download_limit
-            .update(cx, |input, cx| {
-                input.set_value("5MB", window, cx);
-            });
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| {
+            panel
+                .settings_inputs
+                .download_limit
+                .update(cx, |input, cx| {
+                    input.set_value("5MB", window, cx);
+                });
+        });
     });
     view.update(cx, |shell, cx| {
-        shell.submit_transfers(cx);
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| panel.submit_transfers(cx));
     });
-    view.read_with(cx, |shell, _cx| {
+    view.read_with(cx, |shell, cx| {
         assert!(shell.pending_settings_save.is_none());
-        let error = shell
+        let panel = shell.settings_panel().expect("settings open").read(cx);
+        let error = panel
             .settings_page
             .error
             .as_ref()

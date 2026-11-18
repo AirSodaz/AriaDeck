@@ -1,5 +1,6 @@
-//! Settings page coordination, navigation, persistence triggers, and shared helpers.
+//! Settings page child entity, navigation, persistence triggers, and shared helpers.
 
+use super::core_setup::CoreSetupPanelEvent;
 use super::*;
 
 mod about;
@@ -12,8 +13,1102 @@ mod system;
 mod transfers;
 mod updates;
 
+pub(super) enum SettingsPanelEvent {
+    SelectColorScheme(ColorSchemeView),
+    SelectLanguage(LanguagePreferenceView),
+    SaveSettings {
+        settings: Box<SettingsView>,
+        proxy_password: ProxyPasswordUpdateView,
+        source: SettingsSaveSource,
+    },
+    ExportSettings,
+    ImportSettings,
+    ExportDiagnostics,
+    RefreshTrackerList {
+        draft: TrackerListSettingsView,
+    },
+    SwitchProfile(String),
+    SaveProfileCatalog {
+        catalog: ProfileCatalogView,
+        secret_updates: HashMap<String, ProfileRpcSecretUpdateView>,
+    },
+    ProfileCatalogChanged(ProfileCatalogView),
+    CoreCommand(CoreCommandView),
+    CoreDiscovery,
+    CoreDownload,
+    CheckForUpdates,
+    DownloadUpdate,
+    InstallUpdate,
+    Notice {
+        message: String,
+        is_error: bool,
+    },
+}
+
+pub(crate) struct SettingsPanelView {
+    pub(crate) theme: Theme,
+    pub(crate) translator: Translator,
+    pub(crate) settings: SettingsView,
+    pub(crate) profiles: ProfileCatalogView,
+    pub(crate) cores: CoreRegistryView,
+    pub(crate) aria2_version: String,
+    pub(crate) update_enabled: bool,
+    pub(crate) update_portable: bool,
+    pub(crate) update_status: crate::UpdateStatusView,
+    pub(crate) pending_settings_save_source: Option<SettingsSaveSource>,
+    pub(crate) pending_tracker_refresh: bool,
+    pub(crate) settings_page: SettingsPage,
+    pub(crate) settings_inputs: SettingsInputs,
+    pub(crate) settings_scroll: ScrollHandle,
+    pub(crate) core_setup_panel: Entity<CoreSetupPanelView>,
+    next_draft_profile_seq: u64,
+    _core_setup_sub: Subscription,
+    _input_subs: Vec<Subscription>,
+}
+
+impl gpui::EventEmitter<SettingsPanelEvent> for SettingsPanelView {}
+
+impl SettingsPanelView {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new(
+        category: SettingsCategory,
+        previous_focus: Option<WeakFocusHandle>,
+        theme: Theme,
+        translator: Translator,
+        settings: SettingsView,
+        profiles: ProfileCatalogView,
+        cores: CoreRegistryView,
+        core_setup: &CoreSetupState,
+        aria2_version: String,
+        update_enabled: bool,
+        update_portable: bool,
+        update_status: crate::UpdateStatusView,
+        pending_settings_save_source: Option<SettingsSaveSource>,
+        pending_tracker_refresh: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let directory = make_input("D:\\Downloads".into(), false, window, cx);
+        let profile_name = make_input(
+            translator.t("settings-profile-name-placeholder").into(),
+            false,
+            window,
+            cx,
+        );
+        let profile_executable = make_input(
+            translator
+                .t("settings-profile-executable-placeholder")
+                .into(),
+            false,
+            window,
+            cx,
+        );
+        let profile_endpoint = make_input("wss://host:6800/jsonrpc".into(), false, window, cx);
+        let profile_secret = make_input(
+            translator.t("settings-profile-secret-placeholder").into(),
+            true,
+            window,
+            cx,
+        );
+        let all_proxy = make_input("http://proxy.example:8080".into(), false, window, cx);
+        let http_proxy = make_input("http://proxy.example:8080".into(), false, window, cx);
+        let https_proxy = make_input("http://proxy.example:8080".into(), false, window, cx);
+        let ftp_proxy = make_input("http://proxy.example:8080".into(), false, window, cx);
+        let no_proxy = make_input("localhost, 127.0.0.1, 10.0.0.0/8".into(), false, window, cx);
+        let proxy_username = make_input(
+            translator.t("settings-proxy-username-placeholder").into(),
+            false,
+            window,
+            cx,
+        );
+        let proxy_password = make_input(
+            translator.t("settings-proxy-password-placeholder").into(),
+            true,
+            window,
+            cx,
+        );
+        let download_limit = make_input(
+            translator.t("input-download-limit-placeholder").into(),
+            false,
+            window,
+            cx,
+        );
+        let upload_limit = make_input(
+            translator.t("input-upload-limit-placeholder").into(),
+            false,
+            window,
+            cx,
+        );
+        let max_concurrent = make_input("5".into(), false, window, cx);
+        let max_connection = make_input("1-16".into(), false, window, cx);
+        let split = make_input("5".into(), false, window, cx);
+        let min_split_size = make_input("20M".into(), false, window, cx);
+        let tracker_custom_url =
+            make_input("https://example.com/trackers.txt".into(), false, window, cx);
+        let tracker_list_text =
+            make_input("https://tracker.example/announce".into(), false, window, cx);
+        let category_name = make_input(
+            translator.t("settings-category-name-placeholder").into(),
+            false,
+            window,
+            cx,
+        );
+        let category_extensions = make_input("mp4, mkv, zip".into(), false, window, cx);
+
+        let mut input_subs = [
+            &directory,
+            &profile_name,
+            &profile_executable,
+            &profile_endpoint,
+            &profile_secret,
+            &all_proxy,
+            &http_proxy,
+            &https_proxy,
+            &ftp_proxy,
+            &no_proxy,
+            &proxy_username,
+            &download_limit,
+            &upload_limit,
+            &max_concurrent,
+            &max_connection,
+            &split,
+            &min_split_size,
+            &tracker_custom_url,
+            &tracker_list_text,
+            &category_name,
+            &category_extensions,
+        ]
+        .into_iter()
+        .map(|input| {
+            cx.subscribe(input, |this: &mut Self, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change)
+                    && this.pending_settings_save_source.is_none()
+                    && this.settings_page.error.take().is_some()
+                {
+                    cx.notify();
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+        input_subs.push(cx.subscribe(
+            &proxy_password,
+            |this: &mut Self, _input, event: &InputEvent, cx| {
+                if let InputEvent::Change = event {
+                    let changed = this.settings_page.clear_proxy_password
+                        || (this.pending_settings_save_source.is_none()
+                            && this.settings_page.error.is_some());
+                    this.settings_page.clear_proxy_password = false;
+                    this.settings_page.error = None;
+                    if changed {
+                        cx.notify();
+                    }
+                }
+            },
+        ));
+
+        let core_setup_panel = cx.new(|cx| {
+            CoreSetupPanelView::new(
+                "settings",
+                theme,
+                translator.clone(),
+                core_setup,
+                window,
+                cx,
+            )
+        });
+        let core_setup_sub = cx.subscribe(
+            &core_setup_panel,
+            |_this, _panel, event: &CoreSetupPanelEvent, cx| match event {
+                CoreSetupPanelEvent::Discover => {
+                    cx.emit(SettingsPanelEvent::CoreDiscovery);
+                }
+                CoreSetupPanelEvent::Download => {
+                    cx.emit(SettingsPanelEvent::CoreDownload);
+                }
+                CoreSetupPanelEvent::Import(path) => {
+                    cx.emit(SettingsPanelEvent::CoreCommand(CoreCommandView::Import {
+                        path: path.clone(),
+                    }));
+                }
+                CoreSetupPanelEvent::Link(path) => {
+                    cx.emit(SettingsPanelEvent::CoreCommand(CoreCommandView::Link {
+                        path: path.clone(),
+                    }));
+                }
+                CoreSetupPanelEvent::Notice { message, is_error } => {
+                    cx.emit(SettingsPanelEvent::Notice {
+                        message: message.clone(),
+                        is_error: *is_error,
+                    });
+                }
+            },
+        );
+
+        let settings_page = SettingsPage {
+            previous_focus,
+            active_category: category,
+            draft_color_scheme: settings.color_scheme,
+            draft_language: settings.language,
+            draft_proxy_mode: settings.download_proxy.mode,
+            draft_check_certificate: settings.download_proxy.check_certificate,
+            draft_file_allocation: settings.transfer_policy.file_allocation,
+            draft_check_integrity: settings.transfer_policy.check_integrity,
+            draft_notification_volume: settings.notifications.volume,
+            draft_notify_on_completion: settings.notifications.notify_on_completion,
+            draft_notify_on_error: settings.notifications.notify_on_error,
+            draft_notify_on_engine_events: settings.notifications.notify_on_engine_events,
+            draft_os_notifications: settings.notifications.os_notifications,
+            draft_notify_on_low_disk: settings.notifications.notify_on_low_disk,
+            draft_close_behavior: settings.platform.close_behavior,
+            draft_show_tray_icon: settings.platform.show_tray_icon,
+            draft_start_minimized_to_tray: settings.platform.start_minimized_to_tray,
+            draft_keep_awake_while_active: settings.platform.keep_awake_while_active,
+            draft_action_after_done: settings.platform.action_after_done,
+            draft_bridge_allow_cookies: settings.browser_bridge.allow_cookies,
+            draft_bridge_auto_submit: settings.browser_bridge.auto_submit,
+            draft_categories: settings.categories.clone(),
+            draft_category_edit_index: None,
+            draft_tracker_enabled: settings.tracker_list.enabled,
+            draft_tracker_source: settings.tracker_list.source,
+            draft_tracker_auto_refresh: settings.tracker_list.auto_refresh,
+            clear_proxy_password: false,
+            editing_profile_id: None,
+            draft_profile_kind: ProfileKindView::LocalManaged,
+            profile_secret_updates: HashMap::new(),
+            pending_profile_delete: None,
+            clear_profile_rpc_secret: false,
+            error: None,
+        };
+
+        let mut view = Self {
+            theme,
+            translator,
+            settings,
+            profiles,
+            cores,
+            aria2_version,
+            update_enabled,
+            update_portable,
+            update_status,
+            pending_settings_save_source,
+            pending_tracker_refresh,
+            settings_page,
+            settings_inputs: SettingsInputs {
+                directory,
+                profile_name,
+                profile_executable,
+                profile_endpoint,
+                profile_secret,
+                all_proxy,
+                http_proxy,
+                https_proxy,
+                ftp_proxy,
+                no_proxy,
+                proxy_username,
+                proxy_password,
+                download_limit,
+                upload_limit,
+                max_concurrent,
+                max_connection,
+                split,
+                min_split_size,
+                tracker_custom_url,
+                tracker_list_text,
+                category_name,
+                category_extensions,
+            },
+            settings_scroll: ScrollHandle::new(),
+            core_setup_panel,
+            next_draft_profile_seq: 1,
+            _core_setup_sub: core_setup_sub,
+            _input_subs: input_subs,
+        };
+        view.sync_inputs_from_settings(window, cx);
+        view
+    }
+
+    pub(crate) fn t(&self, id: &str) -> String {
+        self.translator.t(id)
+    }
+
+    pub(super) fn t_args(&self, id: &str, pairs: &[(&str, FluentValue<'_>)]) -> String {
+        let mut args = FluentArgs::new();
+        for (key, value) in pairs {
+            args.set(*key, value.clone());
+        }
+        self.translator.t_args(id, Some(&args))
+    }
+
+    pub(super) fn te(&self, error: &OperationErrorView) -> String {
+        error.localized_summary(&self.translator)
+    }
+
+    pub(super) fn is_pending(&self) -> bool {
+        self.pending_settings_save_source.is_some()
+    }
+
+    pub(super) fn allocate_draft_profile_seq(&mut self) -> u64 {
+        let seq = self.next_draft_profile_seq;
+        self.next_draft_profile_seq = self.next_draft_profile_seq.saturating_add(1);
+        seq
+    }
+
+    pub(super) fn sync_inputs_from_settings(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let download_directory = self.settings.download_directory.clone();
+        self.settings_inputs.directory.update(cx, |input, cx| {
+            input.set_value(download_directory, window, cx);
+        });
+        let proxy = self.settings.download_proxy.clone();
+        self.settings_inputs.all_proxy.update(cx, |input, cx| {
+            input.set_value(proxy.all_proxy.clone(), window, cx);
+        });
+        self.settings_inputs.http_proxy.update(cx, |input, cx| {
+            input.set_value(proxy.http_proxy.clone(), window, cx);
+        });
+        self.settings_inputs.https_proxy.update(cx, |input, cx| {
+            input.set_value(proxy.https_proxy.clone(), window, cx);
+        });
+        self.settings_inputs.ftp_proxy.update(cx, |input, cx| {
+            input.set_value(proxy.ftp_proxy.clone(), window, cx);
+        });
+        self.settings_inputs.no_proxy.update(cx, |input, cx| {
+            input.set_value(proxy.no_proxy.join(", "), window, cx);
+        });
+        self.settings_inputs.proxy_username.update(cx, |input, cx| {
+            input.set_value(proxy.username.clone(), window, cx);
+        });
+        self.settings_inputs
+            .proxy_password
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.sync_speed_limit_fields_from_settings(Some(window), cx);
+        self.sync_transfer_policy_fields_from_settings(Some(window), cx);
+        self.sync_tracker_list_fields_from_settings(Some(window), cx);
+    }
+
+    pub(super) fn refresh_placeholders(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let localized_inputs: [(&Entity<InputState>, &'static str); 8] = [
+            (
+                &self.settings_inputs.profile_name,
+                "settings-profile-name-placeholder",
+            ),
+            (
+                &self.settings_inputs.profile_executable,
+                "settings-profile-executable-placeholder",
+            ),
+            (
+                &self.settings_inputs.profile_secret,
+                "settings-profile-secret-placeholder",
+            ),
+            (
+                &self.settings_inputs.proxy_username,
+                "settings-proxy-username-placeholder",
+            ),
+            (
+                &self.settings_inputs.proxy_password,
+                "settings-proxy-password-placeholder",
+            ),
+            (
+                &self.settings_inputs.download_limit,
+                "input-download-limit-placeholder",
+            ),
+            (
+                &self.settings_inputs.upload_limit,
+                "input-upload-limit-placeholder",
+            ),
+            (
+                &self.settings_inputs.category_name,
+                "settings-category-name-placeholder",
+            ),
+        ];
+        for (entity, key) in localized_inputs {
+            let placeholder = self.t(key);
+            entity.update(cx, |input, cx| {
+                input.set_placeholder(placeholder, window, cx);
+            });
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn sync_context(
+        &mut self,
+        theme: Theme,
+        translator: Translator,
+        profiles: ProfileCatalogView,
+        cores: CoreRegistryView,
+        core_setup: &CoreSetupState,
+        aria2_version: String,
+        update_enabled: bool,
+        update_portable: bool,
+        update_status: crate::UpdateStatusView,
+        pending_settings_save_source: Option<SettingsSaveSource>,
+        pending_tracker_refresh: bool,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        self.theme = theme;
+        self.translator = translator.clone();
+        self.profiles = profiles;
+        self.cores = cores;
+        self.aria2_version = aria2_version;
+        self.update_enabled = update_enabled;
+        self.update_portable = update_portable;
+        self.update_status = update_status;
+        self.pending_settings_save_source = pending_settings_save_source;
+        self.pending_tracker_refresh = pending_tracker_refresh;
+        self.core_setup_panel.update(cx, |panel, cx| {
+            panel.sync(theme, translator, core_setup, cx);
+        });
+        if let Some(window) = window {
+            self.refresh_placeholders(window, cx);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn sync_core_setup(
+        &mut self,
+        theme: Theme,
+        translator: Translator,
+        core_setup: &CoreSetupState,
+        cx: &mut Context<Self>,
+    ) {
+        self.theme = theme;
+        self.translator = translator.clone();
+        self.core_setup_panel.update(cx, |panel, cx| {
+            panel.sync(theme, translator, core_setup, cx);
+        });
+        cx.notify();
+    }
+
+    pub(super) fn sync_power_draft(
+        &mut self,
+        action_after_done: CompletionPowerActionView,
+        keep_awake_while_active: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.platform.action_after_done = action_after_done;
+        self.settings.platform.keep_awake_while_active = keep_awake_while_active;
+        self.settings_page.draft_action_after_done = action_after_done;
+        self.settings_page.draft_keep_awake_while_active = keep_awake_while_active;
+        cx.notify();
+    }
+
+    pub(super) fn apply_settings(
+        &mut self,
+        settings: SettingsView,
+        theme: Theme,
+        translator: Translator,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        self.theme = theme;
+        self.translator = translator;
+        self.settings = settings.clone();
+        self.settings_page.draft_color_scheme = settings.color_scheme;
+        self.settings_page.draft_categories = settings.categories.clone();
+        self.settings_page.draft_category_edit_index = None;
+        self.settings_page.draft_language = settings.language;
+        self.settings_page.draft_proxy_mode = settings.download_proxy.mode;
+        self.settings_page.draft_file_allocation = settings.transfer_policy.file_allocation;
+        self.settings_page.draft_check_certificate = settings.download_proxy.check_certificate;
+        self.settings_page.draft_check_integrity = settings.transfer_policy.check_integrity;
+        self.settings_page.draft_notification_volume = settings.notifications.volume;
+        self.settings_page.draft_notify_on_completion = settings.notifications.notify_on_completion;
+        self.settings_page.draft_notify_on_error = settings.notifications.notify_on_error;
+        self.settings_page.draft_notify_on_engine_events =
+            settings.notifications.notify_on_engine_events;
+        self.settings_page.draft_os_notifications = settings.notifications.os_notifications;
+        self.settings_page.draft_notify_on_low_disk = settings.notifications.notify_on_low_disk;
+        self.settings_page.draft_close_behavior = settings.platform.close_behavior;
+        self.settings_page.draft_show_tray_icon = settings.platform.show_tray_icon;
+        self.settings_page.draft_start_minimized_to_tray =
+            settings.platform.start_minimized_to_tray;
+        self.settings_page.draft_keep_awake_while_active =
+            settings.platform.keep_awake_while_active;
+        self.settings_page.draft_action_after_done = settings.platform.action_after_done;
+        self.settings_page.draft_bridge_allow_cookies = settings.browser_bridge.allow_cookies;
+        self.settings_page.draft_bridge_auto_submit = settings.browser_bridge.auto_submit;
+        self.settings_page.draft_tracker_enabled = settings.tracker_list.enabled;
+        self.settings_page.draft_tracker_source = settings.tracker_list.source;
+        self.settings_page.draft_tracker_auto_refresh = settings.tracker_list.auto_refresh;
+        if let Some(window) = window {
+            self.refresh_placeholders(window, cx);
+            self.sync_inputs_from_settings(window, cx);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn request_settings_save(
+        &mut self,
+        settings: SettingsView,
+        proxy_password: ProxyPasswordUpdateView,
+        source: SettingsSaveSource,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_pending() {
+            return;
+        }
+        self.settings_page.error = None;
+        self.pending_settings_save_source = Some(source);
+        cx.emit(SettingsPanelEvent::SaveSettings {
+            settings: Box::new(settings),
+            proxy_password,
+            source,
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn select_settings_category(
+        &mut self,
+        category: SettingsCategory,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings_page.active_category = category;
+        cx.notify();
+    }
+
+    pub(crate) fn submit_active_settings_category(&mut self, cx: &mut Context<Self>) {
+        if self.is_pending() {
+            return;
+        }
+        match self.settings_page.active_category {
+            SettingsCategory::General => self.submit_settings(cx),
+            SettingsCategory::Network => self.submit_proxy_settings(cx),
+            SettingsCategory::Transfers => self.submit_transfers(cx),
+            SettingsCategory::Notifications => self.submit_notifications(cx),
+            SettingsCategory::System => self.submit_platform(cx),
+            SettingsCategory::Profiles | SettingsCategory::Engine | SettingsCategory::About => {}
+        }
+    }
+
+    pub(crate) fn submit_settings(&mut self, cx: &mut Context<Self>) {
+        if self.is_pending() {
+            return;
+        }
+        self.flush_category_editor(cx);
+        let mut categories = self.settings_page.draft_categories.clone();
+        if categories.is_empty() {
+            self.settings_page.error = Some(OperationErrorView {
+                code: "settings.empty_categories".into(),
+                summary: self.t("error-settings-empty-categories"),
+                retryable: false,
+            });
+            cx.notify();
+            return;
+        }
+        // General is the fixed fallback category (no UI toggle).
+        for category in &mut categories {
+            category.is_fallback = category.name.eq_ignore_ascii_case("General");
+        }
+        if !categories.iter().any(|c| c.is_fallback)
+            && let Some(first) = categories.first_mut()
+        {
+            first.is_fallback = true;
+        } else {
+            // Exactly one fallback if multiple "General" names somehow exist.
+            let mut seen = false;
+            for category in &mut categories {
+                if category.is_fallback {
+                    if seen {
+                        category.is_fallback = false;
+                    } else {
+                        seen = true;
+                    }
+                }
+            }
+        }
+        let download_directory = categories
+            .iter()
+            .find(|c| c.is_fallback)
+            .map(|c| c.directory.clone())
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| self.settings.download_directory.clone());
+        if download_directory.is_empty() {
+            self.settings_page.error = Some(OperationErrorView {
+                code: "settings.invalid_download_directory".into(),
+                summary: self.t("error-settings-invalid-download-directory"),
+                retryable: false,
+            });
+            cx.notify();
+            return;
+        }
+        let mut settings = self.settings.clone();
+        settings.download_directory = download_directory;
+        settings.categories = categories;
+        self.request_settings_save(
+            settings,
+            ProxyPasswordUpdateView::Unchanged,
+            SettingsSaveSource::Categories,
+            cx,
+        );
+    }
+
+    pub(crate) fn pick_path_for_field(
+        &mut self,
+        target: PathPickTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (files, directories, prompt) = match target {
+            PathPickTarget::CategoryDirectory { .. } => {
+                (false, true, self.t("settings-pick-download-directory"))
+            }
+            PathPickTarget::ProfileExecutable => (
+                true,
+                false,
+                if cfg!(windows) {
+                    self.t("settings-pick-aria2c-windows")
+                } else {
+                    self.t("settings-pick-aria2c")
+                },
+            ),
+        };
+        let selected = cx.prompt_for_paths(PathPromptOptions {
+            files,
+            directories,
+            multiple: false,
+            prompt: Some(prompt.into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let selected = selected.await;
+            let _ = this.update_in(cx, |this, window, cx| match selected {
+                Ok(Ok(Some(paths))) => {
+                    if let Some(path) = paths.into_iter().next() {
+                        this.apply_picked_path(target, path, window, cx);
+                    }
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(_)) => {
+                    this.settings_page.error = Some(OperationErrorView {
+                        code: "settings.path_picker_failed".into(),
+                        summary: this.t("error-settings-path-picker-failed"),
+                        retryable: true,
+                    });
+                    cx.notify();
+                }
+                Err(_) => {
+                    this.settings_page.error = Some(OperationErrorView {
+                        code: "settings.path_picker_closed".into(),
+                        summary: this.t("error-settings-path-picker-closed"),
+                        retryable: true,
+                    });
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn apply_picked_path(
+        &mut self,
+        target: PathPickTarget,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let display = path.to_string_lossy().into_owned();
+        if let PathPickTarget::CategoryDirectory { index } = target {
+            if let Some(category) = self.settings_page.draft_categories.get_mut(index) {
+                category.directory = display.clone();
+            }
+            if self.settings_page.draft_category_edit_index == Some(index) {
+                self.settings_inputs.directory.update(cx, |input, cx| {
+                    input.set_value(display, window, cx);
+                });
+            }
+            self.settings_page.error = None;
+            cx.notify();
+            return;
+        }
+        let field = match target {
+            PathPickTarget::ProfileExecutable => self.settings_inputs.profile_executable.clone(),
+            PathPickTarget::CategoryDirectory { .. } => unreachable!(),
+        };
+        field.update(cx, |input, cx| input.set_value(display, window, cx));
+        window.focus(&field.focus_handle(cx), cx);
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
+    pub(super) fn settings_path_field_row(
+        input: &Entity<InputState>,
+        browse_id: impl Into<ElementId>,
+        browse_label: impl Into<SharedString>,
+        browse_aria: impl Into<SharedString>,
+        target: PathPickTarget,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let browse_label = browse_label.into();
+        let browse_aria = browse_aria.into();
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(div().flex_1().min_w_0().child(Input::new(input)))
+            .child(
+                KitButton::new(browse_id)
+                    .icon(gpui_kit::component::Icon::new(IconName::FolderDown))
+                    .label(browse_label)
+                    .accessibility_label(browse_aria)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.pick_path_for_field(target, window, cx);
+                    })),
+            )
+    }
+
+    fn render_settings_nav(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let colors = self.theme.colors;
+        let active = self.settings_page.active_category;
+        let mut nav = div()
+            .id("settings-category-list")
+            .w(px(168.0))
+            .flex_none()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .border_r_1()
+            .border_color(colors.border)
+            .bg(colors.background)
+            .py_4()
+            .role(Role::TabList)
+            .aria_label(self.t("settings-nav-aria"));
+        for category in SettingsCategory::ALL {
+            let is_active = category == active;
+            let item = div()
+                .id(SharedString::from(format!("nav-{}", category.label())))
+                .role(Role::Tab)
+                .aria_label(self.t(category.message_key()))
+                .aria_selected(is_active)
+                .focusable()
+                .tab_stop(true)
+                .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
+                .flex()
+                .items_center()
+                .gap_3()
+                .px_4()
+                .py_2()
+                .text_sm()
+                .cursor_pointer()
+                .text_color(if is_active {
+                    colors.text_primary
+                } else {
+                    colors.text_secondary
+                })
+                .when(is_active, |el| {
+                    el.bg(with_alpha(colors.accent, 0.08))
+                        .border_l_2()
+                        .border_color(colors.accent)
+                })
+                .child(
+                    Icon::new(category.icon())
+                        .size(IconSize::Small)
+                        .color(if is_active {
+                            colors.accent
+                        } else {
+                            colors.text_secondary
+                        }),
+                )
+                .child(div().child(self.t(category.message_key())))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.select_settings_category(category, cx);
+                }));
+            nav = nav.child(item);
+        }
+        nav
+    }
+
+    pub(crate) fn render_settings_footer(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = self.theme.colors;
+        let pending = self.is_pending();
+        let active_category = self.settings_page.active_category;
+        let error = self.settings_page.error.clone();
+
+        if matches!(
+            active_category,
+            SettingsCategory::Profiles | SettingsCategory::Engine | SettingsCategory::About
+        ) {
+            return div().into_any_element();
+        }
+
+        let (dirty, saving) = match active_category {
+            SettingsCategory::General => {
+                let dirty = self.preview_draft_categories(cx) != self.settings.categories;
+                let saving =
+                    self.pending_settings_save_source == Some(SettingsSaveSource::Categories);
+                (dirty, saving)
+            }
+            SettingsCategory::Network => {
+                let (proxy_draft, password_update) = self.read_proxy_draft(cx);
+                let dirty = proxy_draft != self.settings.download_proxy
+                    || !matches!(password_update, ProxyPasswordUpdateView::Unchanged);
+                let saving = self.pending_settings_save_source == Some(SettingsSaveSource::Proxy);
+                (dirty, saving)
+            }
+            SettingsCategory::Transfers => {
+                let speed_limit_draft = self.read_speed_limit_draft(cx);
+                let transfer_policy_draft = self.read_transfer_policy_draft(cx);
+                let tracker_list_draft = self.read_tracker_list_draft(cx);
+                let dirty = speed_limit_draft != self.settings.speed_limits
+                    || transfer_policy_draft != self.settings.transfer_policy
+                    || tracker_list_draft != self.settings.tracker_list;
+                let saving = matches!(
+                    self.pending_settings_save_source,
+                    Some(
+                        SettingsSaveSource::SpeedLimit
+                            | SettingsSaveSource::TransferPolicy
+                            | SettingsSaveSource::Transfers
+                    )
+                ) || self.pending_tracker_refresh;
+                (dirty, saving)
+            }
+            SettingsCategory::Notifications => {
+                let notifications_draft = NotificationSettingsView {
+                    volume: self.settings_page.draft_notification_volume,
+                    notify_on_completion: self.settings_page.draft_notify_on_completion,
+                    notify_on_error: self.settings_page.draft_notify_on_error,
+                    notify_on_engine_events: self.settings_page.draft_notify_on_engine_events,
+                    os_notifications: self.settings_page.draft_os_notifications,
+                    notify_on_low_disk: self.settings_page.draft_notify_on_low_disk,
+                    low_disk_threshold_bytes: self.settings.notifications.low_disk_threshold_bytes,
+                };
+                let dirty = notifications_draft != self.settings.notifications;
+                let saving =
+                    self.pending_settings_save_source == Some(SettingsSaveSource::Notifications);
+                (dirty, saving)
+            }
+            SettingsCategory::System => {
+                let platform_draft = PlatformSettingsView {
+                    close_behavior: self.settings_page.draft_close_behavior,
+                    show_tray_icon: self.settings_page.draft_show_tray_icon,
+                    start_minimized_to_tray: self.settings_page.draft_start_minimized_to_tray,
+                    keep_awake_while_active: self.settings_page.draft_keep_awake_while_active,
+                    action_after_done: self.settings_page.draft_action_after_done,
+                };
+                let dirty = platform_draft != self.settings.platform
+                    || self.browser_bridge_draft() != self.settings.browser_bridge;
+                let saving =
+                    self.pending_settings_save_source == Some(SettingsSaveSource::Platform);
+                (dirty, saving)
+            }
+            SettingsCategory::Profiles | SettingsCategory::Engine | SettingsCategory::About => {
+                unreachable!()
+            }
+        };
+
+        if !dirty && !saving && error.is_none() {
+            return div().into_any_element();
+        }
+
+        div()
+            .flex_none()
+            .border_t_1()
+            .border_color(colors.border)
+            .bg(colors.toolbar_surface)
+            .h(px(48.0))
+            .flex()
+            .items_center()
+            .px_6()
+            .gap_3()
+            .child(
+                KitButton::new("footer-save")
+                    .primary()
+                    .label(self.t("button-save"))
+                    .accessibility_label(if saving {
+                        self.t("settings-save-saving")
+                    } else {
+                        self.t("settings-save")
+                    })
+                    .disabled(pending || !dirty)
+                    .loading(saving)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.submit_active_settings_category(cx);
+                    })),
+            )
+            .when_some(error, |footer, error| {
+                let message = self.te(&error);
+                footer.child(
+                    div()
+                        .id("settings-error")
+                        .role(Role::Alert)
+                        .aria_label(message.clone())
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .text_xs()
+                        .text_color(colors.danger)
+                        .child(
+                            Icon::new(IconName::CircleAlert)
+                                .size(IconSize::XSmall)
+                                .color(colors.danger),
+                        )
+                        .child(message),
+                )
+            })
+            .into_any_element()
+    }
+}
+
+impl Render for SettingsPanelView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = self.theme.colors;
+        let active_category = self.settings_page.active_category;
+        div()
+            .id("settings-page")
+            .key_context("SettingsPage")
+            .role(Role::Main)
+            .aria_label(self.t("settings-title"))
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .h_full()
+            .flex()
+            .flex_col()
+            .bg(colors.background)
+            .child(
+                div()
+                    .h(px(48.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .px_6()
+                    .border_b_1()
+                    .border_color(colors.border)
+                    .bg(colors.toolbar_surface)
+                    .child(
+                        div()
+                            .text_base()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(self.t("ui-settings-title")),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .flex()
+                    .child(self.render_settings_nav(cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .id("settings-scroll-shell")
+                                    .relative()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .min_h_0()
+                                    .overflow_hidden()
+                                    .child(
+                                        div()
+                                            .id("settings-scroll")
+                                            .size_full()
+                                            .min_w_0()
+                                            .min_h_0()
+                                            .px_6()
+                                            .py_6()
+                                            .overflow_y_scroll()
+                                            .track_scroll(&self.settings_scroll)
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .max_w(px(760.0))
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap_6()
+                                                    .child(match active_category {
+                                                        SettingsCategory::General => self
+                                                            .render_settings_general(cx)
+                                                            .into_any_element(),
+                                                        SettingsCategory::Profiles => self
+                                                            .render_settings_profiles(cx)
+                                                            .into_any_element(),
+                                                        SettingsCategory::Engine => self
+                                                            .render_settings_engine(cx)
+                                                            .into_any_element(),
+                                                        SettingsCategory::Network => self
+                                                            .render_settings_network(cx)
+                                                            .into_any_element(),
+                                                        SettingsCategory::Transfers => self
+                                                            .render_settings_transfers(cx)
+                                                            .into_any_element(),
+                                                        SettingsCategory::Notifications => self
+                                                            .render_settings_notifications(cx)
+                                                            .into_any_element(),
+                                                        SettingsCategory::System => self
+                                                            .render_settings_system(cx)
+                                                            .into_any_element(),
+                                                        SettingsCategory::About => self
+                                                            .render_settings_about(cx)
+                                                            .into_any_element(),
+                                                    }),
+                                            ),
+                                    )
+                                    .vertical_scrollbar(&self.settings_scroll),
+                            )
+                            .child(self.render_settings_footer(cx)),
+                    ),
+            )
+    }
+}
+
 impl AppShell {
-    // --- set_settings_save_result..set_settings_save_result ---
+    pub(super) fn settings_panel_entity(&self) -> Option<Entity<SettingsPanelView>> {
+        self.settings_panel.as_ref().map(|(panel, _)| panel.clone())
+    }
+
+    #[cfg(test)]
+    pub(super) fn settings_panel(&self) -> Option<&Entity<SettingsPanelView>> {
+        self.settings_panel.as_ref().map(|(panel, _)| panel)
+    }
+
+    pub(super) fn leave_settings_page(&mut self) {
+        self.page = AppPage::Downloads;
+        self.settings_panel = None;
+    }
+
+    pub(super) fn sync_settings_panel(&self, window: Option<&mut Window>, cx: &mut Context<Self>) {
+        let Some((panel, _)) = &self.settings_panel else {
+            return;
+        };
+        let theme = self.theme;
+        let translator = self.translator.clone();
+        let profiles = self.profiles.clone();
+        let cores = self.cores.clone();
+        let core_setup = self.core_setup.clone();
+        let aria2_version = self.snapshot.capabilities.version.clone();
+        let update_enabled = self.update_enabled;
+        let update_portable = self.update_portable;
+        let update_status = self.update_status.clone();
+        let pending_settings_save_source = self.pending_settings_save.as_ref().map(|p| p.source);
+        let pending_tracker_refresh = self.pending_tracker_refresh.is_some();
+        panel.update(cx, |panel, cx| {
+            panel.sync_context(
+                theme,
+                translator,
+                profiles,
+                cores,
+                &core_setup,
+                aria2_version,
+                update_enabled,
+                update_portable,
+                update_status,
+                pending_settings_save_source,
+                pending_tracker_refresh,
+                window,
+                cx,
+            );
+        });
+    }
+
     pub fn set_settings_save_result(
         &mut self,
         result: SettingsSaveResultView,
@@ -32,32 +1127,28 @@ impl AppShell {
         match result.outcome {
             SettingsSaveOutcomeView::Success => {
                 self.apply_settings(result.settings, Some(window), cx);
-                self.settings_page.error = None;
+                if let Some(panel) = self.settings_panel_entity() {
+                    panel.update(cx, |panel, cx| {
+                        panel.settings_page.error = None;
+                        panel.pending_settings_save_source = None;
+                        if source == SettingsSaveSource::Proxy {
+                            panel
+                                .settings_inputs
+                                .proxy_password
+                                .update(cx, |input, cx| input.set_value("", window, cx));
+                            panel.settings_page.clear_proxy_password = false;
+                        }
+                        cx.notify();
+                    });
+                }
                 let message = match source {
                     SettingsSaveSource::Theme => self.t("notice-settings-appearance"),
                     SettingsSaveSource::Language => self.t("settings-language-saved"),
                     SettingsSaveSource::Categories => self.t("notice-settings-categories"),
-                    SettingsSaveSource::Proxy => {
-                        self.settings_inputs
-                            .proxy_password
-                            .update(cx, |input, cx| input.set_value("", window, cx));
-                        self.settings_page.clear_proxy_password = false;
-                        self.t("notice-settings-proxy")
-                    }
-                    SettingsSaveSource::SpeedLimit => {
-                        self.sync_speed_limit_fields_from_settings(Some(window), cx);
-                        self.t("notice-settings-speed")
-                    }
-                    SettingsSaveSource::TransferPolicy => {
-                        self.sync_transfer_policy_fields_from_settings(Some(window), cx);
-                        self.t("notice-settings-transfer-policy")
-                    }
-                    SettingsSaveSource::Transfers => {
-                        self.sync_speed_limit_fields_from_settings(Some(window), cx);
-                        self.sync_transfer_policy_fields_from_settings(Some(window), cx);
-                        self.sync_tracker_list_fields_from_settings(Some(window), cx);
-                        self.t("notice-settings-transfers")
-                    }
+                    SettingsSaveSource::Proxy => self.t("notice-settings-proxy"),
+                    SettingsSaveSource::SpeedLimit => self.t("notice-settings-speed"),
+                    SettingsSaveSource::TransferPolicy => self.t("notice-settings-transfer-policy"),
+                    SettingsSaveSource::Transfers => self.t("notice-settings-transfers"),
                     SettingsSaveSource::Notifications => self.t("notice-settings-notifications"),
                     SettingsSaveSource::Platform => self.t("notice-settings-platform"),
                     SettingsSaveSource::Import => self.t("notice-settings-imported"),
@@ -66,14 +1157,25 @@ impl AppShell {
             }
             SettingsSaveOutcomeView::Failure(error) => {
                 if source == SettingsSaveSource::Import {
+                    if let Some(panel) = self.settings_panel_entity() {
+                        panel.update(cx, |panel, cx| {
+                            panel.pending_settings_save_source = None;
+                            cx.notify();
+                        });
+                    }
                     self.show_notice(self.te(&error), true, cx);
                 } else {
-                    self.settings_page.error = Some(error);
+                    if let Some(panel) = self.settings_panel_entity() {
+                        panel.update(cx, |panel, cx| {
+                            panel.pending_settings_save_source = None;
+                            panel.settings_page.error = Some(error);
+                            cx.notify();
+                        });
+                    }
                     cx.notify();
                 }
             }
         }
-        let _ = window;
     }
 
     pub fn set_settings_export_result(
@@ -142,7 +1244,6 @@ impl AppShell {
         }
     }
 
-    // --- apply_settings..apply_settings ---
     pub fn apply_settings(
         &mut self,
         settings: SettingsView,
@@ -156,104 +1257,23 @@ impl AppShell {
         }
         self.theme.sync_to_kit(window.as_deref_mut(), cx);
         self.settings = settings.clone();
-        self.settings_page.draft_color_scheme = settings.color_scheme;
-        self.settings_page.draft_categories = settings.categories.clone();
-        self.settings_page.draft_category_edit_index = None;
-        self.settings_page.draft_language = settings.language;
         self.set_language_runtime(settings.language);
         if let Some(window) = window.as_deref_mut() {
             self.refresh_input_placeholders(window, cx);
         }
-        self.settings_page.draft_file_allocation = settings.transfer_policy.file_allocation;
-        self.settings_page.draft_check_certificate = settings.download_proxy.check_certificate;
-        self.settings_page.draft_check_integrity = settings.transfer_policy.check_integrity;
-        self.settings_page.draft_notification_volume = settings.notifications.volume;
-        self.settings_page.draft_notify_on_completion = settings.notifications.notify_on_completion;
-        self.settings_page.draft_notify_on_error = settings.notifications.notify_on_error;
-        self.settings_page.draft_notify_on_engine_events =
-            settings.notifications.notify_on_engine_events;
-        self.settings_page.draft_os_notifications = settings.notifications.os_notifications;
-        self.settings_page.draft_notify_on_low_disk = settings.notifications.notify_on_low_disk;
-        self.settings_page.draft_close_behavior = settings.platform.close_behavior;
-        self.settings_page.draft_show_tray_icon = settings.platform.show_tray_icon;
-        self.settings_page.draft_start_minimized_to_tray =
-            settings.platform.start_minimized_to_tray;
-        self.settings_page.draft_keep_awake_while_active =
-            settings.platform.keep_awake_while_active;
-        self.settings_page.draft_action_after_done = settings.platform.action_after_done;
-        self.settings_page.draft_bridge_allow_cookies = settings.browser_bridge.allow_cookies;
-        self.settings_page.draft_bridge_auto_submit = settings.browser_bridge.auto_submit;
-        self.settings_page.draft_tracker_enabled = settings.tracker_list.enabled;
-        self.settings_page.draft_tracker_source = settings.tracker_list.source;
-        self.settings_page.draft_tracker_auto_refresh = settings.tracker_list.auto_refresh;
-        if let Some(window) = window {
-            let download_directory = settings.download_directory.clone();
-            self.settings_inputs.directory.update(cx, |input, cx| {
-                input.set_value(download_directory, window, cx)
+        self.sync_active_modal_context(window.as_deref_mut(), cx);
+        if let Some(panel) = self.settings_panel_entity() {
+            let theme = self.theme;
+            let translator = self.translator.clone();
+            panel.update(cx, |panel, cx| {
+                panel.apply_settings(settings, theme, translator, window, cx);
             });
-            let proxy = settings.download_proxy.clone();
-            self.settings_inputs.all_proxy.update(cx, |input, cx| {
-                input.set_value(proxy.all_proxy.clone(), window, cx);
-            });
-            self.settings_inputs.http_proxy.update(cx, |input, cx| {
-                input.set_value(proxy.http_proxy.clone(), window, cx);
-            });
-            self.settings_inputs.https_proxy.update(cx, |input, cx| {
-                input.set_value(proxy.https_proxy.clone(), window, cx);
-            });
-            self.settings_inputs.ftp_proxy.update(cx, |input, cx| {
-                input.set_value(proxy.ftp_proxy.clone(), window, cx);
-            });
-            self.settings_inputs.no_proxy.update(cx, |input, cx| {
-                input.set_value(proxy.no_proxy.join(", "), window, cx);
-            });
-            self.settings_inputs.proxy_username.update(cx, |input, cx| {
-                input.set_value(proxy.username.clone(), window, cx);
-            });
-            self.settings_inputs
-                .proxy_password
-                .update(cx, |input, cx| input.set_value("", window, cx));
-            let speed_limits = settings.speed_limits.clone();
-            self.settings_inputs.download_limit.update(cx, |input, cx| {
-                input.set_value(speed_limits.download_limit.clone(), window, cx);
-            });
-            self.settings_inputs.upload_limit.update(cx, |input, cx| {
-                input.set_value(speed_limits.upload_limit.clone(), window, cx);
-            });
-            let transfer_policy = settings.transfer_policy.clone();
-            self.settings_inputs.max_concurrent.update(cx, |input, cx| {
-                input.set_value(transfer_policy.max_concurrent_downloads.clone(), window, cx);
-            });
-            self.settings_inputs.max_connection.update(cx, |input, cx| {
-                input.set_value(
-                    transfer_policy.max_connection_per_server.clone(),
-                    window,
-                    cx,
-                );
-            });
-            self.settings_inputs.split.update(cx, |input, cx| {
-                input.set_value(transfer_policy.split.clone(), window, cx);
-            });
-            self.settings_inputs.min_split_size.update(cx, |input, cx| {
-                input.set_value(transfer_policy.min_split_size.clone(), window, cx);
-            });
-            let tracker = settings.tracker_list.clone();
-            self.settings_inputs
-                .tracker_custom_url
-                .update(cx, |input, cx| {
-                    input.set_value(tracker.custom_url.clone(), window, cx);
-                });
-            self.settings_inputs
-                .tracker_list_text
-                .update(cx, |input, cx| {
-                    input.set_value(tracker.list_text.clone(), window, cx);
-                });
         }
+        self.sync_details_panel_context(cx);
+        self.sync_core_setup_panels(cx);
         cx.notify();
     }
 
-    /// Push the current shell theme into every TextField so light/dark chrome stays in sync.
-    // --- open_settings..toggle_start_minimized_to_tray ---
     pub(crate) fn open_settings(
         &mut self,
         _: &OpenSettings,
@@ -274,125 +1294,115 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         if self.page == AppPage::Settings {
-            // Already here: honour the requested category rather than no-op, so a
-            // hand-off from elsewhere still lands on the right section.
-            self.settings_page.active_category = category;
+            if let Some(panel) = self.settings_panel_entity() {
+                panel.update(cx, |panel, cx| {
+                    panel.select_settings_category(category, cx);
+                });
+            }
             window.focus(&self.focus_handle, cx);
             cx.notify();
             return;
         }
-        if self.add_dialog.open
-            || self.output_name_dialog.is_some()
-            || self.remove_confirmation.is_some()
-            || self.batch_failure_details.is_some()
-            // The core-setup guide and Settings > Engine render the same shared
-            // panel — including the same path input entity — so exactly one of
-            // them may be mounted at a time. The guide's own button routes here
-            // via `open_engine_settings_from_onboarding`, which dismisses first.
-            || self.core_setup.onboarding_open
-        {
+        if self.active_modal.is_some() {
             return;
         }
-        let download_directory = self.settings.download_directory.clone();
-        self.settings_inputs.directory.update(cx, |input, cx| {
-            input.set_value(download_directory, window, cx)
-        });
-        let proxy = self.settings.download_proxy.clone();
-        self.settings_inputs.all_proxy.update(cx, |input, cx| {
-            input.set_value(proxy.all_proxy.clone(), window, cx);
-        });
-        self.settings_inputs.http_proxy.update(cx, |input, cx| {
-            input.set_value(proxy.http_proxy.clone(), window, cx);
-        });
-        self.settings_inputs.https_proxy.update(cx, |input, cx| {
-            input.set_value(proxy.https_proxy.clone(), window, cx);
-        });
-        self.settings_inputs.ftp_proxy.update(cx, |input, cx| {
-            input.set_value(proxy.ftp_proxy.clone(), window, cx);
-        });
-        self.settings_inputs.no_proxy.update(cx, |input, cx| {
-            input.set_value(proxy.no_proxy.join(", "), window, cx);
-        });
-        self.settings_inputs.proxy_username.update(cx, |input, cx| {
-            input.set_value(proxy.username.clone(), window, cx);
-        });
-        self.settings_inputs
-            .proxy_password
-            .update(cx, |input, cx| input.set_value("", window, cx));
-        let speed_limits = self.settings.speed_limits.clone();
-        self.settings_inputs.download_limit.update(cx, |input, cx| {
-            input.set_value(speed_limits.download_limit.clone(), window, cx);
-        });
-        self.settings_inputs.upload_limit.update(cx, |input, cx| {
-            input.set_value(speed_limits.upload_limit.clone(), window, cx);
-        });
-        let transfer_policy = self.settings.transfer_policy.clone();
-        self.settings_inputs.max_concurrent.update(cx, |input, cx| {
-            input.set_value(transfer_policy.max_concurrent_downloads.clone(), window, cx);
-        });
-        self.settings_inputs.max_connection.update(cx, |input, cx| {
-            input.set_value(
-                transfer_policy.max_connection_per_server.clone(),
+        let previous_focus = window.focused(cx).map(|focus| focus.downgrade());
+        let theme = self.theme;
+        let translator = self.translator.clone();
+        let settings = self.settings.clone();
+        let profiles = self.profiles.clone();
+        let cores = self.cores.clone();
+        let core_setup = self.core_setup.clone();
+        let aria2_version = self.snapshot.capabilities.version.clone();
+        let update_enabled = self.update_enabled;
+        let update_portable = self.update_portable;
+        let update_status = self.update_status.clone();
+        let pending_settings_save_source = self.pending_settings_save.as_ref().map(|p| p.source);
+        let pending_tracker_refresh = self.pending_tracker_refresh.is_some();
+
+        let panel = cx.new(|cx| {
+            SettingsPanelView::new(
+                category,
+                previous_focus,
+                theme,
+                translator,
+                settings,
+                profiles,
+                cores,
+                &core_setup,
+                aria2_version,
+                update_enabled,
+                update_portable,
+                update_status,
+                pending_settings_save_source,
+                pending_tracker_refresh,
                 window,
                 cx,
-            );
+            )
         });
-        self.settings_inputs.split.update(cx, |input, cx| {
-            input.set_value(transfer_policy.split.clone(), window, cx);
-        });
-        self.settings_inputs.min_split_size.update(cx, |input, cx| {
-            input.set_value(transfer_policy.min_split_size.clone(), window, cx);
-        });
-        let tracker_list = self.settings.tracker_list.clone();
-        self.settings_inputs
-            .tracker_custom_url
-            .update(cx, |input, cx| {
-                input.set_value(tracker_list.custom_url.clone(), window, cx);
-            });
-        self.settings_inputs
-            .tracker_list_text
-            .update(cx, |input, cx| {
-                input.set_value(tracker_list.list_text.clone(), window, cx);
-            });
+        let sub = cx.subscribe_in(
+            &panel,
+            window,
+            |this, _panel, event: &SettingsPanelEvent, window, cx| match event {
+                SettingsPanelEvent::SelectColorScheme(scheme) => {
+                    this.select_color_scheme(*scheme, window, cx);
+                }
+                SettingsPanelEvent::SelectLanguage(language) => {
+                    this.select_language(*language, window, cx);
+                }
+                SettingsPanelEvent::SaveSettings {
+                    settings,
+                    proxy_password,
+                    source,
+                } => {
+                    this.request_settings_save(
+                        (**settings).clone(),
+                        proxy_password.clone(),
+                        *source,
+                        cx,
+                    );
+                }
+                SettingsPanelEvent::ExportSettings => this.export_settings_file(window, cx),
+                SettingsPanelEvent::ImportSettings => this.import_settings_file(window, cx),
+                SettingsPanelEvent::ExportDiagnostics => this.export_diagnostics(window, cx),
+                SettingsPanelEvent::RefreshTrackerList { draft } => {
+                    this.request_tracker_list_refresh_with_draft(draft.clone(), cx);
+                }
+                SettingsPanelEvent::SwitchProfile(profile_id) => {
+                    this.request_switch_profile(profile_id.clone(), cx);
+                }
+                SettingsPanelEvent::SaveProfileCatalog {
+                    catalog,
+                    secret_updates,
+                } => {
+                    this.request_save_profile_catalog_with_secrets(
+                        catalog.clone(),
+                        secret_updates.clone(),
+                        cx,
+                    );
+                }
+                SettingsPanelEvent::ProfileCatalogChanged(catalog) => {
+                    this.profiles = catalog.clone();
+                    cx.notify();
+                }
+                SettingsPanelEvent::CoreCommand(command) => {
+                    this.request_core_command(command.clone(), cx);
+                }
+                SettingsPanelEvent::CoreDiscovery => this.request_core_discovery(cx),
+                SettingsPanelEvent::CoreDownload => this.request_core_download(cx),
+                SettingsPanelEvent::CheckForUpdates => this.request_update_check(cx),
+                SettingsPanelEvent::DownloadUpdate => this.request_update_download(cx),
+                SettingsPanelEvent::InstallUpdate => this.request_update_install(cx),
+                SettingsPanelEvent::Notice { message, is_error } => {
+                    this.show_notice(message.clone(), *is_error, cx);
+                }
+            },
+        );
         self.page = AppPage::Settings;
-        self.details_drawer = None;
+        self.settings_panel = Some((panel, sub));
+        self.clear_details_panel();
+        self.sync_details_sheet(window, cx);
         self.active_status_popover = None;
-        self.settings_page = SettingsPage {
-            previous_focus: window.focused(cx).map(|focus| focus.downgrade()),
-            active_category: category,
-            draft_color_scheme: self.settings.color_scheme,
-            draft_language: self.settings.language,
-            draft_proxy_mode: proxy.mode,
-            draft_check_certificate: proxy.check_certificate,
-            draft_file_allocation: transfer_policy.file_allocation,
-            draft_check_integrity: transfer_policy.check_integrity,
-            draft_notification_volume: self.settings.notifications.volume,
-            draft_notify_on_completion: self.settings.notifications.notify_on_completion,
-            draft_notify_on_error: self.settings.notifications.notify_on_error,
-            draft_notify_on_engine_events: self.settings.notifications.notify_on_engine_events,
-            draft_os_notifications: self.settings.notifications.os_notifications,
-            draft_notify_on_low_disk: self.settings.notifications.notify_on_low_disk,
-            draft_close_behavior: self.settings.platform.close_behavior,
-            draft_show_tray_icon: self.settings.platform.show_tray_icon,
-            draft_start_minimized_to_tray: self.settings.platform.start_minimized_to_tray,
-            draft_keep_awake_while_active: self.settings.platform.keep_awake_while_active,
-            draft_action_after_done: self.settings.platform.action_after_done,
-            draft_bridge_allow_cookies: self.settings.browser_bridge.allow_cookies,
-            draft_bridge_auto_submit: self.settings.browser_bridge.auto_submit,
-            draft_categories: self.settings.categories.clone(),
-            draft_category_edit_index: None,
-            draft_tracker_enabled: self.settings.tracker_list.enabled,
-            draft_tracker_source: self.settings.tracker_list.source,
-            draft_tracker_auto_refresh: self.settings.tracker_list.auto_refresh,
-            pending_tracker_refresh: None,
-            clear_proxy_password: false,
-            editing_profile_id: None,
-            draft_profile_kind: ProfileKindView::LocalManaged,
-            profile_secret_updates: std::collections::HashMap::new(),
-            pending_profile_delete: None,
-            clear_profile_rpc_secret: false,
-            error: None,
-        };
         cx.notify();
     }
 
@@ -409,8 +1419,10 @@ impl AppShell {
         if self.page != AppPage::Settings {
             return;
         }
-        let previous_focus = self.settings_page.previous_focus.take();
-        self.page = AppPage::Downloads;
+        let previous_focus = self.settings_panel.as_ref().and_then(|(panel, _)| {
+            panel.update(cx, |panel, _| panel.settings_page.previous_focus.take())
+        });
+        self.leave_settings_page();
         if let Some(focus) = previous_focus.and_then(|focus| focus.upgrade()) {
             window.focus(&focus, cx);
         } else {
@@ -425,82 +1437,16 @@ impl AppShell {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.submit_settings(cx);
-    }
-
-    pub(crate) fn submit_settings(&mut self, cx: &mut Context<Self>) {
         if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
             return;
         }
-        self.flush_category_editor(cx);
-        let mut categories = self.settings_page.draft_categories.clone();
-        if categories.is_empty() {
-            self.settings_page.error = Some(OperationErrorView {
-                code: "settings.empty_categories".into(),
-                summary: self.t("error-settings-empty-categories"),
-                retryable: false,
+        if let Some(panel) = self.settings_panel_entity() {
+            panel.update(cx, |panel, cx| {
+                panel.submit_active_settings_category(cx);
             });
-            cx.notify();
-            return;
         }
-        // General is the fixed fallback category (no UI toggle).
-        for category in &mut categories {
-            category.is_fallback = category.name.eq_ignore_ascii_case("General");
-        }
-        if !categories.iter().any(|c| c.is_fallback)
-            && let Some(first) = categories.first_mut()
-        {
-            first.is_fallback = true;
-        } else {
-            // Exactly one fallback if multiple "General" names somehow exist.
-            let mut seen = false;
-            for category in &mut categories {
-                if category.is_fallback {
-                    if seen {
-                        category.is_fallback = false;
-                    } else {
-                        seen = true;
-                    }
-                }
-            }
-        }
-        let download_directory = categories
-            .iter()
-            .find(|c| c.is_fallback)
-            .map(|c| c.directory.clone())
-            .filter(|d| !d.is_empty())
-            .unwrap_or_else(|| self.settings.download_directory.clone());
-        if download_directory.is_empty() {
-            self.settings_page.error = Some(OperationErrorView {
-                code: "settings.invalid_download_directory".into(),
-                summary: self.t("error-settings-invalid-download-directory"),
-                retryable: false,
-            });
-            cx.notify();
-            return;
-        }
-        let mut settings = self.settings.clone();
-        settings.download_directory = download_directory;
-        settings.categories = categories;
-        self.request_settings_save(
-            settings,
-            ProxyPasswordUpdateView::Unchanged,
-            SettingsSaveSource::Categories,
-            cx,
-        );
     }
 
-    pub(crate) fn select_settings_category(
-        &mut self,
-        category: SettingsCategory,
-        cx: &mut Context<Self>,
-    ) {
-        self.settings_page.active_category = category;
-        cx.notify();
-    }
-
-    /// Intercept the window close control: hide to tray when configured, else quit.
-    // --- request_settings_save..request_settings_save ---
     pub(crate) fn request_settings_save(
         &mut self,
         settings: SettingsView,
@@ -517,7 +1463,13 @@ impl AppShell {
             settings: settings.clone(),
             source,
         });
-        self.settings_page.error = None;
+        if let Some(panel) = self.settings_panel_entity() {
+            panel.update(cx, |panel, cx| {
+                panel.pending_settings_save_source = Some(source);
+                panel.settings_page.error = None;
+                cx.notify();
+            });
+        }
         cx.emit(AppShellEvent::SettingsSaveRequested(
             SettingsSaveRequestView {
                 request_id,
@@ -647,481 +1599,6 @@ impl AppShell {
             });
         })
         .detach();
-    }
-
-    // --- pick_path_for_field..apply_picked_path ---
-    pub(crate) fn pick_path_for_field(
-        &mut self,
-        target: PathPickTarget,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let (files, directories, prompt) = match target {
-            PathPickTarget::CategoryDirectory { .. } => {
-                (false, true, self.t("settings-pick-download-directory"))
-            }
-            PathPickTarget::CoreExecutable | PathPickTarget::ProfileExecutable => (
-                true,
-                false,
-                if cfg!(windows) {
-                    self.t("settings-pick-aria2c-windows")
-                } else {
-                    self.t("settings-pick-aria2c")
-                },
-            ),
-        };
-        let selected = cx.prompt_for_paths(PathPromptOptions {
-            files,
-            directories,
-            multiple: false,
-            prompt: Some(prompt.into()),
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let selected = selected.await;
-            let _ = this.update_in(cx, |this, window, cx| match selected {
-                Ok(Ok(Some(paths))) => {
-                    if let Some(path) = paths.into_iter().next() {
-                        this.apply_picked_path(target, path, window, cx);
-                    }
-                }
-                Ok(Ok(None)) => {}
-                Ok(Err(_)) => {
-                    this.settings_page.error = Some(OperationErrorView {
-                        code: "settings.path_picker_failed".into(),
-                        summary: this.t("error-settings-path-picker-failed"),
-                        retryable: true,
-                    });
-                    cx.notify();
-                }
-                Err(_) => {
-                    this.settings_page.error = Some(OperationErrorView {
-                        code: "settings.path_picker_closed".into(),
-                        summary: this.t("error-settings-path-picker-closed"),
-                        retryable: true,
-                    });
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-    }
-
-    pub(crate) fn apply_picked_path(
-        &mut self,
-        target: PathPickTarget,
-        path: PathBuf,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let display = path.to_string_lossy().into_owned();
-        if let PathPickTarget::CategoryDirectory { index } = target {
-            if let Some(category) = self.settings_page.draft_categories.get_mut(index) {
-                category.directory = display.clone();
-            }
-            // Keep the edit-panel path field in sync when browsing while editing.
-            if self.settings_page.draft_category_edit_index == Some(index) {
-                self.settings_inputs.directory.update(cx, |input, cx| {
-                    input.set_value(display, window, cx);
-                });
-            }
-            if self.page == AppPage::Settings {
-                self.settings_page.error = None;
-            }
-            cx.notify();
-            return;
-        }
-        let field = match target {
-            PathPickTarget::CoreExecutable => self.settings_inputs.core_path.clone(),
-            PathPickTarget::ProfileExecutable => self.settings_inputs.profile_executable.clone(),
-            PathPickTarget::CategoryDirectory { .. } => unreachable!(),
-        };
-        field.update(cx, |input, cx| input.set_value(display, window, cx));
-        window.focus(&field.focus_handle(cx), cx);
-        // Clear stale settings form error once the user picks a path.
-        if self.page == AppPage::Settings {
-            self.settings_page.error = None;
-        }
-        cx.notify();
-    }
-
-    // --- render_settings_page..render_settings_system ---
-    pub(crate) fn render_settings_page(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let colors = self.theme.colors;
-        let active_category = self.settings_page.active_category;
-        div()
-            .id("settings-page")
-            .key_context("SettingsPage")
-            .role(Role::Main)
-            .aria_label(self.t("settings-title"))
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .h_full()
-            .flex()
-            .flex_col()
-            .bg(colors.background)
-            .child(
-                div()
-                    .h(px(48.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .px_6()
-                    .border_b_1()
-                    .border_color(colors.border)
-                    .bg(colors.toolbar_surface)
-                    .child(
-                        div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(self.t("ui-settings-title")),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .flex()
-                    .child(self.render_settings_nav(cx))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .min_h_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .id("settings-scroll-shell")
-                                    .relative()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .min_h_0()
-                                    .overflow_hidden()
-                                    .child(
-                                        div()
-                                            .id("settings-scroll")
-                                            .size_full()
-                                            .min_w_0()
-                                            .min_h_0()
-                                            .px_6()
-                                            .py_6()
-                                            .overflow_y_scroll()
-                                            .track_scroll(&self.settings_scroll)
-                                            .child(
-                                                div()
-                                                    .w_full()
-                                                    .max_w(px(760.0))
-                                                    .flex()
-                                                    .flex_col()
-                                                    .gap_6()
-                                                    .child(match active_category {
-                                                        SettingsCategory::General => self
-                                                            .render_settings_general(cx)
-                                                            .into_any_element(),
-                                                        SettingsCategory::Profiles => self
-                                                            .render_settings_profiles(cx)
-                                                            .into_any_element(),
-                                                        SettingsCategory::Engine => self
-                                                            .render_settings_engine(cx)
-                                                            .into_any_element(),
-                                                        SettingsCategory::Network => self
-                                                            .render_settings_network(cx)
-                                                            .into_any_element(),
-                                                        SettingsCategory::Transfers => self
-                                                            .render_settings_transfers(cx)
-                                                            .into_any_element(),
-                                                        SettingsCategory::Notifications => self
-                                                            .render_settings_notifications(cx)
-                                                            .into_any_element(),
-                                                        SettingsCategory::System => self
-                                                            .render_settings_system(cx)
-                                                            .into_any_element(),
-                                                        SettingsCategory::About => self
-                                                            .render_settings_about(cx)
-                                                            .into_any_element(),
-                                                    }),
-                                            ),
-                                    )
-                                    .vertical_scrollbar(&self.settings_scroll),
-                            )
-                            .child(self.render_settings_footer(cx)),
-                    ),
-            )
-    }
-
-    pub(crate) fn render_settings_nav(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let colors = self.theme.colors;
-        let active = self.settings_page.active_category;
-        let mut nav = div()
-            .id("settings-category-list")
-            .w(px(168.0))
-            .flex_none()
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .border_r_1()
-            .border_color(colors.border)
-            .bg(colors.background)
-            .py_4()
-            .role(Role::TabList)
-            .aria_label(self.t("settings-nav-aria"));
-        for category in SettingsCategory::ALL {
-            let is_active = category == active;
-            let item = div()
-                .id(SharedString::from(format!("nav-{}", category.label())))
-                .role(Role::Tab)
-                .aria_label(self.t(category.message_key()))
-                .aria_selected(is_active)
-                .focusable()
-                .tab_stop(true)
-                .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
-                .flex()
-                .items_center()
-                .gap_3()
-                .px_4()
-                .py_2()
-                .text_sm()
-                .cursor_pointer()
-                .text_color(if is_active {
-                    colors.text_primary
-                } else {
-                    colors.text_secondary
-                })
-                .when(is_active, |el| {
-                    el.bg(with_alpha(colors.accent, 0.08))
-                        .border_l_2()
-                        .border_color(colors.accent)
-                })
-                .child(
-                    Icon::new(category.icon())
-                        .size(IconSize::Small)
-                        .color(if is_active {
-                            colors.accent
-                        } else {
-                            colors.text_secondary
-                        }),
-                )
-                .child(div().child(self.t(category.message_key())))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.select_settings_category(category, cx);
-                }));
-            nav = nav.child(item);
-        }
-        nav
-    }
-
-    pub(crate) fn render_settings_footer(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = self.theme.colors;
-        let pending = self.pending_settings_save.is_some();
-        let active_category = self.settings_page.active_category;
-        let error = self.settings_page.error.clone();
-
-        if matches!(
-            active_category,
-            SettingsCategory::Profiles | SettingsCategory::Engine | SettingsCategory::About
-        ) {
-            return div().into_any_element();
-        }
-
-        let (dirty, saving) = match active_category {
-            SettingsCategory::General => {
-                let dirty = self.settings_page.draft_categories != self.settings.categories;
-                let saving = self
-                    .pending_settings_save
-                    .as_ref()
-                    .is_some_and(|p| p.source == SettingsSaveSource::Categories);
-                (dirty, saving)
-            }
-            SettingsCategory::Network => {
-                let password_changed = !self
-                    .settings_inputs
-                    .proxy_password
-                    .read(cx)
-                    .value()
-                    .is_empty();
-                let password_cleared = self.settings_page.clear_proxy_password;
-                let proxy_has_password = if password_changed {
-                    true
-                } else if password_cleared {
-                    false
-                } else {
-                    self.settings.download_proxy.has_password
-                };
-                let proxy_draft = DownloadProxySettingsView {
-                    mode: self.settings_page.draft_proxy_mode,
-                    all_proxy: self
-                        .settings_inputs
-                        .all_proxy
-                        .read(cx)
-                        .value()
-                        .trim()
-                        .into(),
-                    http_proxy: self
-                        .settings_inputs
-                        .http_proxy
-                        .read(cx)
-                        .value()
-                        .trim()
-                        .into(),
-                    https_proxy: self
-                        .settings_inputs
-                        .https_proxy
-                        .read(cx)
-                        .value()
-                        .trim()
-                        .into(),
-                    ftp_proxy: self
-                        .settings_inputs
-                        .ftp_proxy
-                        .read(cx)
-                        .value()
-                        .trim()
-                        .into(),
-                    no_proxy: self
-                        .settings_inputs
-                        .no_proxy
-                        .read(cx)
-                        .value()
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|e| !e.is_empty())
-                        .map(ToOwned::to_owned)
-                        .collect(),
-                    username: self
-                        .settings_inputs
-                        .proxy_username
-                        .read(cx)
-                        .value()
-                        .trim()
-                        .into(),
-                    has_password: proxy_has_password,
-                    check_certificate: self.settings_page.draft_check_certificate,
-                };
-                let dirty = proxy_draft != self.settings.download_proxy
-                    || password_changed
-                    || password_cleared;
-                let saving = self
-                    .pending_settings_save
-                    .as_ref()
-                    .is_some_and(|p| p.source == SettingsSaveSource::Proxy);
-                (dirty, saving)
-            }
-            SettingsCategory::Transfers => {
-                let speed_limit_draft = self.read_speed_limit_draft(cx);
-                let transfer_policy_draft = self.read_transfer_policy_draft(cx);
-                let tracker_list_draft = self.read_tracker_list_draft(cx);
-                // Dirty is independent of validity so invalid edits still show the
-                // footer; submit_transfers reports validation errors on click.
-                let dirty = speed_limit_draft != self.settings.speed_limits
-                    || transfer_policy_draft != self.settings.transfer_policy
-                    || tracker_list_draft != self.settings.tracker_list;
-                let saving = self.pending_settings_save.as_ref().is_some_and(|p| {
-                    matches!(
-                        p.source,
-                        SettingsSaveSource::SpeedLimit
-                            | SettingsSaveSource::TransferPolicy
-                            | SettingsSaveSource::Transfers
-                    )
-                }) || self.settings_page.pending_tracker_refresh.is_some();
-                (dirty, saving)
-            }
-            SettingsCategory::Notifications => {
-                let notifications_draft = NotificationSettingsView {
-                    volume: self.settings_page.draft_notification_volume,
-                    notify_on_completion: self.settings_page.draft_notify_on_completion,
-                    notify_on_error: self.settings_page.draft_notify_on_error,
-                    notify_on_engine_events: self.settings_page.draft_notify_on_engine_events,
-                    os_notifications: self.settings_page.draft_os_notifications,
-                    notify_on_low_disk: self.settings_page.draft_notify_on_low_disk,
-                    low_disk_threshold_bytes: self.settings.notifications.low_disk_threshold_bytes,
-                };
-                let dirty = notifications_draft != self.settings.notifications;
-                let saving = self
-                    .pending_settings_save
-                    .as_ref()
-                    .is_some_and(|p| p.source == SettingsSaveSource::Notifications);
-                (dirty, saving)
-            }
-            SettingsCategory::System => {
-                let platform_draft = PlatformSettingsView {
-                    close_behavior: self.settings_page.draft_close_behavior,
-                    show_tray_icon: self.settings_page.draft_show_tray_icon,
-                    start_minimized_to_tray: self.settings_page.draft_start_minimized_to_tray,
-                    keep_awake_while_active: self.settings_page.draft_keep_awake_while_active,
-                    action_after_done: self.settings_page.draft_action_after_done,
-                };
-                let dirty = platform_draft != self.settings.platform
-                    || self.browser_bridge_draft() != self.settings.browser_bridge;
-                let saving = self
-                    .pending_settings_save
-                    .as_ref()
-                    .is_some_and(|p| p.source == SettingsSaveSource::Platform);
-                (dirty, saving)
-            }
-            SettingsCategory::Profiles | SettingsCategory::Engine | SettingsCategory::About => {
-                unreachable!()
-            }
-        };
-
-        // Keep the footer out of the way until there is something to save or report.
-        if !dirty && !saving && error.is_none() {
-            return div().into_any_element();
-        }
-
-        div()
-            .flex_none()
-            .border_t_1()
-            .border_color(colors.border)
-            .bg(colors.toolbar_surface)
-            .h(px(48.0))
-            .flex()
-            .items_center()
-            .px_6()
-            .gap_3()
-            .child(
-                KitButton::new("footer-save")
-                    .primary()
-                    .label(self.t("button-save"))
-                    .accessibility_label(if saving {
-                        self.t("settings-save-saving")
-                    } else {
-                        self.t("settings-save")
-                    })
-                    .disabled(pending || !dirty)
-                    .loading(saving)
-                    .on_click(cx.listener(move |this, _, _, cx| match active_category {
-                        SettingsCategory::General => this.submit_settings(cx),
-                        SettingsCategory::Network => this.submit_proxy_settings(cx),
-                        SettingsCategory::Transfers => this.submit_transfers(cx),
-                        SettingsCategory::Notifications => this.submit_notifications(cx),
-                        SettingsCategory::System => this.submit_platform(cx),
-                        _ => {}
-                    })),
-            )
-            .when_some(error, |footer, error| {
-                let message = self.te(&error);
-                footer.child(
-                    div()
-                        .id("settings-error")
-                        .role(Role::Alert)
-                        .aria_label(message.clone())
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .text_xs()
-                        .text_color(colors.danger)
-                        .child(
-                            Icon::new(IconName::CircleAlert)
-                                .size(IconSize::XSmall)
-                                .color(colors.danger),
-                        )
-                        .child(message),
-                )
-            })
-            .into_any_element()
     }
 }
 

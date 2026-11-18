@@ -73,3 +73,14 @@ language-chinese-simplified = 简体中文
 
 os-notification-title = AriaDeck
 os-notification-title-error = AriaDeck — 错误
+
+# 工具栏与任务概览
+toolbar-action-unavailable = { $label }（不可用）
+task-overview-share-ratio = 分享率
+task-overview-progress = 进度
+task-overview-observed-session = 本次会话已做种 { $duration }
+task-overview-remaining = 剩余 { $duration }
+task-overview-error-code = 错误 { $code }：{ $summary }
+task-overview-uploaded = 已上传 { $bytes }
+task-overview-upload-rate = 上传 { $rate }
+loading-label = 加载中

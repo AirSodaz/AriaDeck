@@ -7,6 +7,7 @@ mod category_route;
 mod engine;
 mod ids;
 mod privacy;
+mod rpc_endpoint;
 mod task;
 mod tracker_list;
 mod transfer;
@@ -24,6 +25,10 @@ pub use ids::{
 pub use privacy::{
     DiagnosticSnapshot, REDACTED_SOURCE_PLACEHOLDER, magnet_info_hash, redact_endpoint_url,
     redact_source_uri, redact_tracker_uri, task_option_key_is_sensitive,
+};
+pub use rpc_endpoint::{
+    RpcEndpointValidationError, is_loopback_endpoint, validate_rpc_endpoint,
+    validate_rpc_endpoint_shape,
 };
 pub use task::{
     DownloadFilter, DownloadSort, DownloadStatus, DownloadTask, EnginePath, SortDirection, SortKey,

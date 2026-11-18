@@ -187,9 +187,13 @@ fn extract_notification_gid(params: Option<Value>) -> Result<Option<Gid>, RpcErr
     else {
         return Ok(None);
     };
-    gid.parse::<Gid>()
-        .map(Some)
-        .map_err(|error| RpcError::Protocol(format!("notification contains invalid GID: {error}")))
+    match gid.parse::<Gid>() {
+        Ok(gid) => Ok(Some(gid)),
+        Err(error) => {
+            tracing::warn!(%error, "ignoring invalid GID in aria2 notification hint");
+            Ok(None)
+        }
+    }
 }
 
 #[cfg(test)]

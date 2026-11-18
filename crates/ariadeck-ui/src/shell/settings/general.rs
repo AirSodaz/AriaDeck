@@ -1,4 +1,4 @@
-//! Settings `general` section logic and rendering for `AppShell`.
+//! Settings `general` section logic and rendering for `SettingsPanelView` and `AppShell`.
 
 use super::*;
 
@@ -12,10 +12,20 @@ impl AppShell {
         if self.pending_settings_save.is_some() || scheme == self.settings.color_scheme {
             return;
         }
-        self.settings_page.draft_color_scheme = scheme;
         // Apply chrome immediately so TextFields switch light/dark before save returns.
         self.theme = resolve_theme(scheme, window);
         self.theme.sync_to_kit(Some(window), cx);
+        if let Some(panel) = self.settings_panel_entity() {
+            let theme = self.theme;
+            panel.update(cx, |panel, cx| {
+                panel.settings_page.draft_color_scheme = scheme;
+                panel.theme = theme;
+                cx.notify();
+            });
+        }
+        self.sync_active_modal_context(Some(window), cx);
+        self.sync_details_panel_context(cx);
+        self.sync_core_setup_panels(cx);
         let mut settings = self.settings.clone();
         settings.color_scheme = scheme;
         self.request_settings_save(
@@ -35,10 +45,21 @@ impl AppShell {
         if self.pending_settings_save.is_some() || language == self.settings.language {
             return;
         }
-        self.settings_page.draft_language = language;
         // Apply immediately so chrome switches language before save returns.
         self.set_language_runtime(language);
         self.refresh_input_placeholders(window, cx);
+        if let Some(panel) = self.settings_panel_entity() {
+            let translator = self.translator.clone();
+            panel.update(cx, |panel, cx| {
+                panel.settings_page.draft_language = language;
+                panel.translator = translator;
+                panel.refresh_placeholders(window, cx);
+                cx.notify();
+            });
+        }
+        self.sync_active_modal_context(Some(window), cx);
+        self.sync_details_panel_context(cx);
+        self.sync_core_setup_panels(cx);
         let mut settings = self.settings.clone();
         settings.language = language;
         self.request_settings_save(
@@ -48,16 +69,18 @@ impl AppShell {
             cx,
         );
     }
+}
 
-    pub(crate) fn render_settings_general(&mut self, cx: &mut Context<Self>) -> Div {
+impl SettingsPanelView {
+    pub(super) fn render_settings_general(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
-        let pending = self.pending_settings_save.is_some();
+        let pending = self.is_pending();
         let draft_scheme = self.settings_page.draft_color_scheme;
         let selected_scheme = ColorSchemeView::ALL
             .iter()
             .position(|scheme| *scheme == draft_scheme)
             .unwrap_or(0);
-        let shell = cx.entity().downgrade();
+        let panel = cx.entity().downgrade();
         let scheme_control = SegmentedControl::new(
             "settings-theme",
             [
@@ -70,14 +93,14 @@ impl AppShell {
         )
         .aria_label(self.t("settings-theme-aria"))
         .disabled(pending)
-        .on_select(move |index, window, cx| {
+        .on_select(move |index, _window, cx| {
             let scheme = ColorSchemeView::ALL
                 .get(index)
                 .copied()
                 .unwrap_or(ColorSchemeView::System);
-            shell
-                .update(cx, |shell, cx| {
-                    shell.select_color_scheme(scheme, window, cx)
+            panel
+                .update(cx, |_, cx| {
+                    cx.emit(SettingsPanelEvent::SelectColorScheme(scheme));
                 })
                 .ok();
         });
@@ -86,7 +109,7 @@ impl AppShell {
             .iter()
             .position(|language| *language == draft_language)
             .unwrap_or(0);
-        let language_shell = cx.entity().downgrade();
+        let language_panel = cx.entity().downgrade();
         let language_control = SegmentedControl::new(
             "settings-language",
             LanguagePreferenceView::ALL
@@ -96,13 +119,15 @@ impl AppShell {
         )
         .aria_label(self.t("settings-language-aria"))
         .disabled(pending)
-        .on_select(move |index, window, cx| {
+        .on_select(move |index, _window, cx| {
             let language = LanguagePreferenceView::ALL
                 .get(index)
                 .copied()
                 .unwrap_or_default();
-            language_shell
-                .update(cx, |shell, cx| shell.select_language(language, window, cx))
+            language_panel
+                .update(cx, |_, cx| {
+                    cx.emit(SettingsPanelEvent::SelectLanguage(language));
+                })
                 .ok();
         });
         let appearance_title = self.t("settings-appearance");

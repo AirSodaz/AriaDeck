@@ -218,7 +218,13 @@ impl TaskWire {
                 message: error.to_string(),
             })?;
         let mut status = parse_status(&self.status);
-        if status == DownloadStatus::Active && self.verify_integrity_pending == "true" {
+        if status == DownloadStatus::Active
+            && parse_bool(
+                method,
+                "verifyIntegrityPending",
+                &self.verify_integrity_pending,
+            )?
+        {
             status = DownloadStatus::Verifying;
         } else if status == DownloadStatus::Active && parse_bool(method, "seeder", &self.seeder)? {
             status = DownloadStatus::Seeding;
@@ -360,9 +366,9 @@ impl FileWire {
 }
 
 #[derive(Deserialize)]
-struct UriWire {
+pub(crate) struct UriWire {
     #[serde(default)]
-    uri: String,
+    pub(crate) uri: String,
 }
 
 #[derive(Deserialize)]

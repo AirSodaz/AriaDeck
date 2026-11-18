@@ -279,3 +279,99 @@ fn handles_several_messages_on_one_port_and_exits_on_close() {
         );
     }
 }
+
+/// Cross-crate contract test: verify `ariadeck-bridge` honors `browser_bridge.allow_cookies`
+/// persisted by the real `ariadeck_settings::JsonSettingsStore`.
+#[test]
+fn settings_json_allow_cookies_contract_matches_ariadeck_settings() {
+    use ariadeck_settings::{AppSettings, JsonSettingsStore};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = runtime();
+    let receiver = primary(&runtime, dir.path());
+    let store = JsonSettingsStore::new(dir.path().join("settings.json"));
+    let mut settings = AppSettings::new(dir.path().join("downloads"));
+    settings.browser_bridge.allow_cookies = false;
+    store
+        .save(&settings)
+        .expect("save settings with cookies off");
+
+    let message = r#"{"version":1,"items":[
+        {"url":"https://example.test/contract.bin","cookie":"session=contract-secret"}]}"#;
+
+    assert_eq!(exchange(dir.path(), message), r#"{"ok":true,"accepted":1}"#);
+    let denied = receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("primary receives request");
+    assert!(
+        denied.downloads[0].cookie.is_none(),
+        "bridge must drop cookie when real settings.json has allow_cookies=false"
+    );
+
+    settings.browser_bridge.allow_cookies = true;
+    store
+        .save(&settings)
+        .expect("save settings with cookies on");
+
+    assert_eq!(exchange(dir.path(), message), r#"{"ok":true,"accepted":1}"#);
+    let allowed = receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("primary receives request");
+    assert_eq!(
+        allowed.downloads[0]
+            .cookie
+            .as_ref()
+            .map(|cookie| cookie.expose_secret().as_str()),
+        Some("session=contract-secret"),
+        "bridge must forward cookie when real settings.json has allow_cookies=true"
+    );
+}
+
+/// Cross-language contract test: verify the MV3 extension's `bridge.js` constants
+/// stay in lockstep with Rust `ariadeck-ipc` and `ariadeck-bridge`.
+#[test]
+fn extension_bridge_js_constants_match_rust_contract() {
+    let bridge_js_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../ariadeck-extension/bridge.js");
+    let source = std::fs::read_to_string(&bridge_js_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", bridge_js_path.display()));
+
+    let extract = |name: &str| -> String {
+        source
+            .lines()
+            .find_map(|line| {
+                let trimmed = line.trim();
+                let rest = trimmed
+                    .strip_prefix("export const ")
+                    .or_else(|| trimmed.strip_prefix("const "))?;
+                let (ident, rhs) = rest.split_once('=')?;
+                (ident.trim() == name).then(|| rhs.trim().trim_end_matches(';').trim().to_owned())
+            })
+            .unwrap_or_else(|| panic!("missing constant `{name}` in bridge.js"))
+    };
+    let eval_usize = |expr: &str| -> usize {
+        expr.split('*')
+            .map(|part| {
+                part.trim()
+                    .parse::<usize>()
+                    .unwrap_or_else(|_| panic!("expected integer product in `{expr}`"))
+            })
+            .product()
+    };
+
+    assert_eq!(extract("HOST_NAME"), "\"com.ariadeck.bridge\"");
+    assert_eq!(eval_usize(&extract("MESSAGE_VERSION")), 1);
+    assert_eq!(eval_usize(&extract("MAX_MESSAGE_BYTES")), 64 * 1024);
+    assert_eq!(
+        eval_usize(&extract("MAX_ITEMS")),
+        ariadeck_ipc::MAX_LAUNCH_ITEMS
+    );
+    assert_eq!(
+        eval_usize(&extract("MAX_FILENAME_BYTES")),
+        ariadeck_ipc::MAX_FILENAME_BYTES
+    );
+    assert_eq!(
+        eval_usize(&extract("MAX_COOKIE_BYTES")),
+        ariadeck_ipc::MAX_COOKIE_BYTES
+    );
+}

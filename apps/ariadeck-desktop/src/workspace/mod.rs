@@ -1,120 +1,97 @@
 use std::{
-    collections::{HashMap, HashSet},
-    env, fs,
-    io::Read,
-    path::{Path, PathBuf},
+    env,
+    path::PathBuf,
     sync::{Arc, mpsc::Receiver},
     time::{Duration, Instant},
 };
 
 use ariadeck_application::{
-    ActivityMode, AddDownloadAdvancedOptions, AddDownloadRequest, AddDownloadSource, AppCommand,
-    ApplicationError, ApplicationErrorCode, CommandItem, CommandOutcome, CoordinatorConfig,
-    DownloadDestinationFile, DownloadDestinationGateway, DownloadDestinationRequest,
-    DownloadProxyConfig, DownloadProxyMode as ApplicationProxyMode, EngineCapabilities,
-    FileConflictPolicy, ItemFailure, MoveTaskInQueueRequest, QueueMove, ReconnectPolicy,
-    RemoveTasksRequest, SetTaskConnectionPolicyRequest, SetTaskOptionsRequest,
-    SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, StoreSnapshot, SyncHandle, TaskFileGateway,
-    TaskFileRemovalRequest, TaskListQuery, TaskOpenRequest, TaskOpenTarget, TaskRemovalScope,
-    spawn_sync_coordinator,
+    ActivityMode, DownloadDestinationGateway, SyncHandle, TaskFileGateway, TaskListQuery,
 };
-use ariadeck_domain::{
-    ByteRate, ConnectionState, DownloadFilter, DownloadSort, DownloadStatus, DownloadTask,
-    EnginePath, EngineSession, EngineSessionId, Gid, ProfileId, SessionGeneration, SortDirection,
-    SortKey, SpeedLimitConfig, TaskConnectionDetails, TaskConnectionPolicy, TaskDetails,
-    TaskIdentity as DomainTaskIdentity, TaskProgress, TaskUriStatus, TransferPolicyConfig,
-};
+use ariadeck_domain::ProfileId;
 use ariadeck_engine::{
-    CoreDiscoveryOrigin, CoreInstallStatus, CoreSource, CoreStore, DiscoveredCore,
-    ExternalEngineProfile, JsonProfileStore, LocalDownloadDestinationGateway,
-    LocalDownloadRootRegistry, LocalEngineHealth, LocalEngineHealthHandle, LocalEngineSupervisor,
-    LocalTaskFileGateway, ProfileCatalog, ProfileEntry, ProfileKind,
+    CoreStore, ExternalEngineProfile, JsonProfileStore, LocalDownloadDestinationGateway,
+    LocalDownloadRootRegistry, LocalEngineHealthHandle, LocalEngineSupervisor,
+    LocalTaskFileGateway, ProfileCatalog, ProfileKind,
 };
-use ariadeck_i18n::{LocaleId, Translator};
-use ariadeck_rpc::{
-    Aria2Client, AuthenticatedTransport, RpcSecret, RpcSyncConnector, WebSocketConfig,
-    WebSocketTransport,
-};
+use ariadeck_ipc::LaunchRequest;
 use ariadeck_settings::{
-    AppSettings, CloseBehavior, ColorScheme, CompletionPowerAction, DownloadProxyMode,
-    DownloadProxySettings, FileAllocationSetting, JsonSettingsStore, JsonWindowGeometryStore,
-    LanguagePreference, ListFilterPreference, ListSortDirectionPreference, ListSortKeyPreference,
-    NotificationSettings, NotificationVolume, PlatformSettings, ProfileEnvironmentStore,
-    ProxyCredentialRef, ProxyCredentialStore, SpeedLimitSettings, SystemProxyCredentialStore,
-    TransferPolicySettings, UiPreferences, WindowGeometry, resolve_system_proxy,
+    AppSettings, JsonSettingsStore, JsonWindowGeometryStore, ListFilterPreference,
+    ListSortDirectionPreference, ListSortKeyPreference, ProfileEnvironmentStore,
+    ProxyCredentialStore, SystemProxyCredentialStore, UiPreferences, WindowGeometry,
 };
 use ariadeck_ui::{
-    AddDownloadAdvancedOptionsView, AddDownloadItemResultView, AddDownloadMetadataFileView,
-    AddDownloadMetadataKindView, AddDownloadMetadataPreviewItemView,
-    AddDownloadMetadataPreviewOutcomeView, AddDownloadMetadataPreviewRequestView,
-    AddDownloadMetadataPreviewResultView, AddDownloadMetadataPreviewView, AddDownloadModeView,
-    AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView, AppShell, AppShellEvent,
+    AddDownloadMetadataPreviewRequestView, AddDownloadRequestView, AppShell, AppShellEvent,
     BatchCommandOutcomeView, BatchTaskCommandRequestView, BatchTaskCommandResultView,
-    BatchTaskCommandView, BatchTaskFailureView, BridgeDownloadView, BrowserBridgeSettingsView,
-    CloseBehaviorView, ColorSchemeView, CommandOutcomeView, CompletionPowerActionView,
-    ConnectionView, CoreCommandOutcomeView, CoreCommandRequestView, CoreCommandResultView,
-    CoreCommandView, CoreDiscoveryOriginView, CoreDiscoveryResultView, CoreDownloadOfferView,
-    CoreDownloadResultView, CoreInstallStatusView, CoreInstallationView, CoreRegistryView,
-    CoreSourceView, DiagnosticExportOutcomeView, DiagnosticExportRequestView,
-    DiagnosticExportResultView, DiscoveredCoreView, DownloadCategoryView,
-    DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView, EngineHealthView,
-    EngineSessionView, FileAllocationView, FileConflictPolicyView, GlobalTaskCommandRequestView,
-    GlobalTaskCommandResultView, GlobalTaskCommandView, LanguagePreferenceView,
-    NotificationSettingsView, NotificationVolumeView, OperationErrorView, PlatformSettingsView,
-    ProfileCatalogView, ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView,
-    ProxyModeView, ProxyPasswordUpdateView, SaveProfileCatalogOutcomeView,
-    SaveProfileCatalogRequestView, SaveProfileCatalogResultView, SecretStringView,
+    CommandOutcomeView, CompletionPowerActionView, ConnectionView, CoreCommandOutcomeView,
+    CoreCommandRequestView, CoreCommandResultView, CoreDiscoveryResultView, CoreDownloadResultView,
+    CoreRegistryView, DiagnosticExportOutcomeView, DiagnosticExportRequestView,
+    DiagnosticExportResultView, EngineHealthView, GlobalTaskCommandRequestView, OperationErrorView,
+    SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView, SaveProfileCatalogResultView,
     SettingsExportOutcomeView, SettingsExportRequestView, SettingsExportResultView,
     SettingsImportOutcomeView, SettingsImportRequestView, SettingsImportResultView,
-    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView, SettingsView,
-    SpeedLimitSettingsView, SpeedSampleView, StoppedHistoryView, SwitchProfileOutcomeView,
-    SwitchProfileRequestView, SwitchProfileResultView, TaskCommandRequestView,
-    TaskCommandResultView, TaskCommandView, TaskCountsView, TaskDetailsOutcomeView,
-    TaskDetailsRequestView, TaskDetailsResultView, TaskDetailsView, TaskErrorView, TaskFileView,
-    TaskIdentity, TaskNameStateView, TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView,
-    TaskOpenTargetView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
-    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
-    TrackerListSettingsView, TrackerListSourceView, TransferPolicySettingsView, WorkspaceFilter,
-    WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
-    format_speed_limit_field,
+    SettingsSaveOutcomeView, SettingsSaveRequestView, SettingsSaveResultView,
+    SwitchProfileOutcomeView, SwitchProfileRequestView, SwitchProfileResultView,
+    TaskCommandRequestView, TaskCommandResultView, TaskDetailsRequestView, TaskOpenRequestView,
+    TrackerListSourceView, WorkspaceFilter, WorkspaceSnapshot, WorkspaceSortDirection,
+    WorkspaceSortKey,
 };
 use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
-#[cfg(target_os = "windows")]
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use secrecy::{ExposeSecret, SecretString};
-
-use ariadeck_ipc::{BridgeDownload, LaunchRequest, MAX_LAUNCH_ITEMS};
-
-use crate::platform::{self, SystemTray, TrayAction};
+use secrecy::SecretString;
 use tokio::{
     runtime::Runtime,
     sync::{mpsc, watch},
     task::JoinHandle,
 };
-use url::Url;
 
-use crate::metadata::parse_metadata;
+use crate::platform::{self, TrayAction};
 
 mod core_fetch;
 mod diagnostics;
 mod engine_setup;
 mod http;
+mod launch_queue;
 mod mapping;
 mod ops;
 mod persistence;
+mod platform_controller;
 mod settings_bridge;
+#[cfg(test)]
+mod test_support;
 mod tracker_list;
 mod updates;
 
-// Re-export so DesktopRoot methods and tests keep short names.
-pub(crate) use core_fetch::*;
-pub(crate) use engine_setup::*;
-pub(crate) use mapping::*;
-pub(crate) use ops::*;
-pub(crate) use persistence::*;
-pub(crate) use settings_bridge::*;
-pub(crate) use tracker_list::*;
-pub(crate) use updates::*;
+use core_fetch::{CoreDownloadRequest, CoreDownloadResult, spawn_core_download_bridge};
+use engine_setup::{
+    create_sync_handle, default_download_dir, discover_aria2_executable,
+    local_engine_executable_missing, request_local_engine_shutdown,
+};
+use launch_queue::LaunchQueue;
+use mapping::{
+    map_core_download_offer, map_core_registry, map_discovered_cores, map_local_engine_health,
+    map_profile_catalog, map_profile_catalog_request, map_query, map_settings,
+    map_settings_request, map_ui_preferences_to_query, trimmed_value,
+};
+use ops::{
+    execute_add_download, execute_batch_task_command, execute_core_command_on_store,
+    execute_global_task_command, execute_task_command, execute_task_details, execute_task_open,
+    metadata_preview_worker_failure, preview_metadata_files,
+};
+use persistence::{
+    PersistenceCommand, PersistenceWorkerDeps, ProfileCatalogSaveJob, ProfileSwitchRequest,
+    spawn_persistence_worker,
+};
+use platform_controller::{PlatformController, show_native_window};
+use settings_bridge::{
+    spawn_core_download_result_bridge, spawn_local_engine_health_bridge,
+    spawn_persistence_event_bridge, spawn_proxy_reapply_bridge, spawn_snapshot_bridge,
+    spawn_tracker_list_result_bridge,
+};
+use tracker_list::{
+    TrackerListRefreshRequest, TrackerListRefreshResult, spawn_tracker_list_auto_refresh,
+    spawn_tracker_list_refresh_bridge,
+};
+use updates::{UpdateController, is_read_only_update_install, updates_supported};
 
 /// Process-wide flag: true while AriaDeck is intentionally hidden to tray with
 /// no open window. Prevents `on_window_closed` from quitting the app.
@@ -127,7 +104,9 @@ pub struct DesktopRoot {
     download_destination_gateway: Option<Arc<dyn DownloadDestinationGateway>>,
     task_file_gateway: Option<Arc<dyn TaskFileGateway>>,
     local_engine: Option<LocalEngineSupervisor>,
+    _child_process_job: Option<Arc<platform::ChildProcessJob>>,
     runtime: Arc<Runtime>,
+    shutdown_slot: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
     query_sender: watch::Sender<TaskListQuery>,
     persistence_sender: Option<mpsc::UnboundedSender<PersistenceCommand>>,
     persistence_task: Option<JoinHandle<()>>,
@@ -139,18 +118,9 @@ pub struct DesktopRoot {
     data_dir: PathBuf,
     profile_catalog: ProfileCatalog,
     core_store: CoreStore,
-    update_offer: Option<UpdateOffer>,
-    verified_update_installer: Option<PathBuf>,
-    tray: Option<SystemTray>,
-    window_hidden_to_tray: bool,
-    is_keep_awake: bool,
-    last_saved_geometry: Option<WindowGeometry>,
-    pending_geometry: Option<WindowGeometry>,
-    pending_metadata_paths: Vec<PathBuf>,
-    pending_magnet_uris: Vec<String>,
-    pending_downloads: Vec<BridgeDownload>,
-    instance_requests: Option<Receiver<LaunchRequest>>,
-    geometry_save_generation: u64,
+    updates: UpdateController,
+    platform: PlatformController,
+    launch_queue: LaunchQueue,
     _workspace_subscription: Subscription,
 }
 
@@ -191,19 +161,20 @@ impl DesktopRoot {
     /// Application data directory used for settings, profiles, and window geometry.
     #[must_use]
     pub fn default_data_dir() -> PathBuf {
-        default_data_dir()
+        ariadeck_ipc::default_data_dir()
     }
 
     #[must_use]
     pub fn new(
         runtime: Arc<Runtime>,
+        shutdown_slot: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
         initial_request: LaunchRequest,
         instance_requests: Option<Receiver<LaunchRequest>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let startup_started = Instant::now();
-        let data_dir = default_data_dir();
+        let data_dir = ariadeck_ipc::default_data_dir();
         let defaults = AppSettings::new(default_download_dir());
         let settings_store = JsonSettingsStore::new(data_dir.join("settings.json"));
         let (mut settings, settings_store, startup_notice) =
@@ -337,8 +308,27 @@ impl DesktopRoot {
             let _ = profile_store.save_catalog(&profile_catalog);
         }
 
+        let child_process_job = match platform::ChildProcessJob::try_new() {
+            Ok(job) => Some(Arc::new(job)),
+            Err(error) => {
+                tracing::warn!(%error, "could not initialize Windows child-process job object");
+                None
+            }
+        };
+        let child_spawn_hook: Option<ariadeck_engine::ChildSpawnHook> =
+            child_process_job.as_ref().map(|job| {
+                let job = Arc::clone(job);
+                Arc::new(move |pid| job.assign_pid(pid)) as ariadeck_engine::ChildSpawnHook
+            });
+
         let (sync, local_engine, mut initial_snapshot, engine_startup_notice) =
-            match create_sync_handle(&runtime, &data_dir, &settings, &profile_catalog) {
+            match create_sync_handle(
+                &runtime,
+                &data_dir,
+                &settings,
+                &profile_catalog,
+                child_spawn_hook,
+            ) {
                 Ok((handle, local_engine, engine_notice)) => {
                     let snapshot = WorkspaceSnapshot {
                         connection: ConnectionView::Connecting,
@@ -514,7 +504,11 @@ impl DesktopRoot {
                     this.quit_application(cx);
                 }
                 AppShellEvent::OsNotificationRequested { title, body, .. } => {
-                    platform::show_os_notification(title, body);
+                    let title = title.clone();
+                    let body = body.clone();
+                    this.runtime.handle().spawn_blocking(move || {
+                        platform::show_os_notification(&title, &body);
+                    });
                 }
                 AppShellEvent::UiPreferencesChanged {
                     filter,
@@ -542,18 +536,31 @@ impl DesktopRoot {
                     );
                 }
                 AppShellEvent::CompletionPowerActionRequested(action) => {
-                    let app_action = mapping::map_view_completion_power_action_to_app(*action);
+                    let action = *action;
+                    let app_action = mapping::map_view_completion_power_action_to_app(action);
+                    let runtime = this.runtime.handle().clone();
                     tracing::info!(?app_action, "executing completion power action");
-                    match platform::execute_power_action(app_action) {
-                        Ok(()) => {
-                            if *action == CompletionPowerActionView::Shutdown {
-                                this.quit_application(cx);
+                    cx.spawn_in(window, async move |this, cx| {
+                        let result = runtime
+                            .spawn_blocking(move || platform::execute_power_action(app_action))
+                            .await
+                            .map_err(|error| format!("power action worker failed: {error}"))
+                            .and_then(|res| res);
+                        match result {
+                            Ok(()) => {
+                                if action == CompletionPowerActionView::Shutdown {
+                                    this.update(cx, |this, cx| {
+                                        this.quit_application(cx);
+                                    })
+                                    .ok();
+                                }
+                            }
+                            Err(error) => {
+                                tracing::error!(%error, "failed to execute completion power action");
                             }
                         }
-                        Err(error) => {
-                            tracing::error!(%error, "failed to execute completion power action");
-                        }
-                    }
+                    })
+                    .detach();
                 }
             },
         );
@@ -585,7 +592,6 @@ impl DesktopRoot {
             spawn_tracker_list_refresh_bridge(
                 runtime.handle().clone(),
                 store,
-                credential_store.clone(),
                 persistence_sender.clone(),
                 req_rx,
                 res_tx,
@@ -612,17 +618,8 @@ impl DesktopRoot {
             spawn_local_engine_health_bridge(health, cx);
         }
 
-        let tray = if settings.platform.show_tray_icon {
-            match tray_from_settings(&settings) {
-                Ok(tray) => Some(tray),
-                Err(error) => {
-                    tracing::warn!(%error, "system tray icon could not be created");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let platform = PlatformController::new(&settings, last_saved_geometry);
+        let launch_queue = LaunchQueue::new(initial_request, instance_requests);
 
         let root = Self {
             workspace,
@@ -630,7 +627,9 @@ impl DesktopRoot {
             download_destination_gateway,
             task_file_gateway,
             local_engine,
+            _child_process_job: child_process_job,
             runtime,
+            shutdown_slot,
             query_sender,
             persistence_sender: Some(persistence_sender),
             persistence_task: Some(persistence_task),
@@ -641,18 +640,9 @@ impl DesktopRoot {
             data_dir: data_dir.clone(),
             profile_catalog,
             core_store,
-            update_offer: None,
-            verified_update_installer: None,
-            tray,
-            window_hidden_to_tray: false,
-            is_keep_awake: false,
-            last_saved_geometry,
-            pending_geometry: None,
-            pending_metadata_paths: initial_request.metadata_paths,
-            pending_magnet_uris: initial_request.magnet_uris,
-            pending_downloads: initial_request.downloads,
-            instance_requests,
-            geometry_save_generation: 0,
+            updates: UpdateController::default(),
+            platform,
+            launch_queue,
             _workspace_subscription: workspace_subscription,
         };
         tracing::info!(
@@ -669,7 +659,7 @@ impl DesktopRoot {
             }
         });
 
-        // Poll tray interactions and free-space checks on a short UI timer.
+        // Poll tray interactions and single-instance requests on a short UI timer.
         cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -687,6 +677,42 @@ impl DesktopRoot {
             }
         })
         .detach();
+
+        // Probe available disk space on a background blocking thread every 15s
+        // so slow SMB/sleeping drives never stall the GPUI render loop.
+        {
+            let runtime = root.runtime.handle().clone();
+            cx.spawn_in(window, async move |this, cx| {
+                loop {
+                    let dir = match this
+                        .read_with(cx, |this, _| this.settings.download_directory.clone())
+                    {
+                        Ok(dir) => dir,
+                        Err(_) => break,
+                    };
+                    let free = runtime
+                        .spawn_blocking(move || platform::available_disk_space(&dir))
+                        .await
+                        .ok()
+                        .flatten();
+                    let cont = this
+                        .update_in(cx, |this, _window, cx| {
+                            this.workspace.update(cx, |shell, cx| {
+                                shell.report_disk_space(free, cx);
+                            });
+                            true
+                        })
+                        .unwrap_or(false);
+                    if !cont {
+                        break;
+                    }
+                    cx.background_executor()
+                        .timer(Duration::from_secs(15))
+                        .await;
+                }
+            })
+            .detach();
+        }
 
         // B4 first run: offer core setup only when this install has no aria2 it
         // could start, the active profile actually wants a local one, and the
@@ -718,7 +744,7 @@ impl DesktopRoot {
                 this.update_in(cx, |this, window, cx| {
                     // Same reasoning as D-037/D-038: something that stops to ask
                     // the user overrides start-minimized-to-tray.
-                    if this.window_hidden_to_tray {
+                    if this.platform.is_hidden_to_tray() {
                         this.show_from_tray(window, cx);
                     }
                     this.workspace.update(cx, |shell, cx| {
@@ -732,13 +758,12 @@ impl DesktopRoot {
 
         // Launch items that will ask the user something override start-minimized;
         // ones that will auto-submit do not (D-045 §6).
-        let launch_needs_the_window = !root.pending_metadata_paths.is_empty()
-            || !root.pending_magnet_uris.is_empty()
-            || (!root.pending_downloads.is_empty()
-                && root.workspace.read(cx).bridge_requires_confirmation());
+        let launch_needs_the_window = root
+            .launch_queue
+            .needs_window_for_confirmation(root.workspace.read(cx).bridge_requires_confirmation());
         if !launch_needs_the_window
             && root.settings.platform.start_minimized_to_tray
-            && root.tray.is_some()
+            && root.platform.has_tray()
         {
             // Defer hide so the first frame can finish constructing the window.
             cx.spawn_in(window, async move |this, cx| {
@@ -760,12 +785,7 @@ impl DesktopRoot {
 
     fn poll_platform_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.poll_instance_requests(window, cx);
-        let tray_actions = self
-            .tray
-            .as_ref()
-            .map(|tray| tray.poll_actions())
-            .unwrap_or_default();
-        for action in tray_actions {
+        for action in self.platform.poll_tray_actions() {
             match action {
                 TrayAction::Show => self.show_from_tray(window, cx),
                 TrayAction::PauseAll => {
@@ -781,123 +801,42 @@ impl DesktopRoot {
                 TrayAction::Quit => self.quit_application(cx),
             }
         }
-        if let Some(tray) = self.tray.as_ref() {
+        if self.platform.has_tray() {
             let tooltip = self.workspace.read(cx).tray_tooltip();
-            tray.set_tooltip(&tooltip);
+            self.platform.sync_tray_tooltip(tooltip);
         }
-
-        // Low-disk check against the configured download directory.
-        let free = platform::available_disk_space(&self.settings.download_directory);
-        self.workspace.update(cx, |shell, cx| {
-            shell.report_disk_space(free, cx);
-        });
 
         // Keep-awake management based on active downloads and user preference (D5).
         let has_active_downloads = self.workspace.read(cx).has_active_downloads();
-        let should_keep_awake =
-            self.settings.platform.keep_awake_while_active && has_active_downloads;
-        if should_keep_awake != self.is_keep_awake {
-            platform::set_keep_awake(should_keep_awake);
-            self.is_keep_awake = should_keep_awake;
-        }
-    }
-
-    /// Remaining slots before the shared launch-item flood cap is reached.
-    fn launch_budget(&self) -> usize {
-        MAX_LAUNCH_ITEMS.saturating_sub(
-            self.pending_metadata_paths.len()
-                + self.pending_magnet_uris.len()
-                + self.pending_downloads.len(),
-        )
+        self.platform.sync_keep_awake(
+            self.settings.platform.keep_awake_while_active,
+            has_active_downloads,
+        );
     }
 
     fn poll_instance_requests(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // D-037/D-038 raise the window because those paths always ask the user to
-        // confirm. A browser hand-off only earns that when it will actually stop
-        // for confirmation; under auto-submit the window stays where it is and the
-        // add reports itself through the usual notice/activity trail (D-045 §6).
-        let mut activate = false;
-        if let Some(receiver) = self.instance_requests.as_ref() {
-            while let Ok(request) = receiver.try_recv() {
-                activate |= !request.metadata_paths.is_empty()
-                    || !request.magnet_uris.is_empty()
-                    || (!request.downloads.is_empty()
-                        && self.workspace.read(cx).bridge_requires_confirmation());
-                let remaining = self.launch_budget();
-                self.pending_metadata_paths
-                    .extend(request.metadata_paths.into_iter().take(remaining));
-                let remaining = self.launch_budget();
-                self.pending_magnet_uris
-                    .extend(request.magnet_uris.into_iter().take(remaining));
-                let remaining = self.launch_budget();
-                self.pending_downloads
-                    .extend(request.downloads.into_iter().take(remaining));
-            }
-        }
-        if activate {
+        let requires_confirmation = self.workspace.read(cx).bridge_requires_confirmation();
+        if self.launch_queue.drain_incoming(requires_confirmation) {
             self.show_from_tray(window, cx);
         }
-        if !self.pending_metadata_paths.is_empty()
-            && self.workspace.read(cx).can_open_metadata_paths()
-        {
-            let paths = std::mem::take(&mut self.pending_metadata_paths);
-            let opened = self.workspace.update(cx, |workspace, cx| {
-                workspace.open_metadata_paths(paths.clone(), window, cx)
-            });
-            if !opened {
-                self.pending_metadata_paths = paths;
-            }
-        }
-
-        if !self.pending_magnet_uris.is_empty() && self.workspace.read(cx).can_open_magnet_uris() {
-            let uris = std::mem::take(&mut self.pending_magnet_uris);
-            let opened = self.workspace.update(cx, |workspace, cx| {
-                workspace.open_magnet_uris(uris.clone(), window, cx)
-            });
-            if !opened {
-                self.pending_magnet_uris = uris;
-            }
-        }
-
-        // D-045: bridge downloads carry per-item headers, but the add dialog holds a
-        // single shared advanced-options block, so only the leading run of items that
-        // agree on headers is consumed per dialog. The rest stays queued.
-        if !self.pending_downloads.is_empty() && self.workspace.read(cx).can_open_bridge_downloads()
-        {
-            let views: Vec<BridgeDownloadView> =
-                self.pending_downloads.iter().map(bridge_view).collect();
-            let consumed = self.workspace.update(cx, |workspace, cx| {
-                workspace.accept_bridge_downloads(&views, window, cx)
-            });
-            if consumed > 0 {
-                self.pending_downloads.drain(..consumed);
-            }
-        }
+        self.launch_queue
+            .dispatch_ready(&self.workspace, window, cx);
     }
 
     fn hide_to_tray(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tray.is_none() {
+        if !self.platform.has_tray() {
             // No tray: fall back to quit so the user is not stuck without UI.
             self.quit_application(cx);
             return;
         }
-        if hide_native_window(window) {
-            self.window_hidden_to_tray = true;
-            TRAY_SESSION_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
-            if let Some(tray) = self.tray.as_ref() {
-                tray.set_visible(true);
-            }
+        if self.platform.hide_to_tray(window) {
             // PERF-001: slow live/global/stopped polls while the window is hidden.
             self.set_sync_activity(ActivityMode::Background, cx);
         }
     }
 
     fn show_from_tray(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if show_native_window(window) {
-            self.window_hidden_to_tray = false;
-            TRAY_SESSION_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
-            window.activate_window();
-            cx.activate(true);
+        if self.platform.show_from_tray(window, cx) {
             self.set_sync_activity(ActivityMode::Foreground, cx);
         }
     }
@@ -912,11 +851,8 @@ impl DesktopRoot {
         let _ = cx;
     }
 
-    fn quit_application(&mut self, cx: &mut Context<Self>) {
-        TRAY_SESSION_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
-        self.window_hidden_to_tray = false;
-        // Drop tray first so Windows removes the icon immediately.
-        self.tray.take();
+    pub(super) fn quit_application(&mut self, cx: &mut Context<Self>) {
+        self.platform.cleanup_on_quit();
         cx.quit();
     }
 
@@ -983,28 +919,17 @@ impl DesktopRoot {
     }
 
     fn schedule_geometry_save(&mut self, geometry: WindowGeometry, cx: &mut Context<Self>) {
-        let geometry = geometry.sanitized();
-        if self.last_saved_geometry == Some(geometry) {
-            self.pending_geometry = None;
+        let Some(generation) = self.platform.prepare_geometry_save(geometry) else {
             return;
-        }
-        self.pending_geometry = Some(geometry);
-        self.geometry_save_generation = self.geometry_save_generation.wrapping_add(1);
-        let generation = self.geometry_save_generation;
+        };
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(400))
                 .await;
             this.update(cx, |this, _cx| {
-                if this.geometry_save_generation != generation {
-                    return;
-                }
-                let Some(geometry) = this.pending_geometry.take() else {
+                let Some(geometry) = this.platform.take_ready_geometry(generation) else {
                     return;
                 };
-                if this.last_saved_geometry == Some(geometry) {
-                    return;
-                }
                 if let Some(sender) = this.persistence_sender.as_ref() {
                     let _ = sender.send(PersistenceCommand::SaveWindowGeometry(geometry));
                 }
@@ -1014,29 +939,8 @@ impl DesktopRoot {
         .detach();
     }
 
-    fn sync_tray_with_settings(&mut self, cx: &mut Context<Self>) {
-        let want_tray = self.settings.platform.show_tray_icon;
-        match (want_tray, self.tray.is_some()) {
-            (true, false) => match tray_from_settings(&self.settings) {
-                Ok(tray) => self.tray = Some(tray),
-                Err(error) => tracing::warn!(%error, "system tray icon could not be created"),
-            },
-            (false, true) => {
-                self.tray.take();
-                if self.window_hidden_to_tray {
-                    // Cannot stay hidden without a tray affordance.
-                    TRAY_SESSION_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
-                    self.window_hidden_to_tray = false;
-                }
-            }
-            (true, true) => {
-                if let Some(tray) = self.tray.as_ref() {
-                    tray.set_visible(true);
-                }
-            }
-            (false, false) => {}
-        }
-        let _ = cx;
+    pub(super) fn sync_tray_with_settings(&mut self, _cx: &mut Context<Self>) {
+        self.platform.sync_tray_with_settings(&self.settings);
     }
 
     fn spawn_diagnostic_export(
@@ -1373,8 +1277,29 @@ impl DesktopRoot {
     ) {
         let sync = self.sync.clone();
         let task_file_gateway = self.task_file_gateway.clone();
+        let runtime = self.runtime.handle().clone();
         cx.spawn_in(window, async move |this, cx| {
-            let result = execute_task_command(sync, task_file_gateway, request).await;
+            let result = match runtime
+                .spawn(execute_task_command(
+                    sync,
+                    task_file_gateway,
+                    request.clone(),
+                ))
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => TaskCommandResultView {
+                    request_id: request.request_id,
+                    session: request.session,
+                    identity: request.identity,
+                    command: request.command,
+                    outcome: CommandOutcomeView::Failure(OperationErrorView {
+                        code: "application.internal".into(),
+                        summary: format!("Task command worker failed: {error}"),
+                        retryable: true,
+                    }),
+                },
+            };
             this.update_in(cx, |this, window, cx| {
                 this.workspace.update(cx, |workspace, cx| {
                     workspace.set_task_command_result(result, window, cx);
@@ -1393,8 +1318,34 @@ impl DesktopRoot {
     ) {
         let sync = self.sync.clone();
         let task_file_gateway = self.task_file_gateway.clone();
+        let runtime = self.runtime.handle().clone();
         cx.spawn_in(window, async move |this, cx| {
-            let result = execute_batch_task_command(sync, task_file_gateway, request).await;
+            let result = match runtime
+                .spawn(execute_batch_task_command(
+                    sync,
+                    task_file_gateway,
+                    request.clone(),
+                ))
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => BatchTaskCommandResultView {
+                    request_id: request.request_id,
+                    session: request.session,
+                    identities: request.identities,
+                    command: request.command,
+                    outcome: BatchCommandOutcomeView::Failure {
+                        failed: vec![ariadeck_ui::BatchTaskFailureView {
+                            identity: None,
+                            error: OperationErrorView {
+                                code: "application.internal".into(),
+                                summary: format!("Batch command worker failed: {error}"),
+                                retryable: true,
+                            },
+                        }],
+                    },
+                },
+            };
             this.update_in(cx, |this, window, cx| {
                 this.workspace.update(cx, |workspace, cx| {
                     workspace.set_batch_task_command_result(result, window, cx);
@@ -1596,7 +1547,7 @@ impl DesktopRoot {
             &self.data_dir,
             &self.settings,
         ) {
-            Ok(catalog) => {
+            Ok(mapped) => {
                 let Some(sender) = self.persistence_sender.as_ref() else {
                     self.deliver_save_profile_error(
                         &request,
@@ -1611,8 +1562,8 @@ impl DesktopRoot {
                         ProfileCatalogSaveJob {
                             request_id: request.request_id,
                             request_catalog: request.catalog.clone(),
-                            next_catalog: catalog,
-                            secret_updates: request.secret_updates.clone(),
+                            next_catalog: mapped.catalog,
+                            secret_updates: mapped.secret_updates,
                             previous_catalog: self.profile_catalog.clone(),
                             current_settings: self.settings.clone(),
                         },
@@ -1662,44 +1613,52 @@ impl DesktopRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let result = self.execute_core_command(&request.command);
-        match result {
-            Ok(()) => {
-                let registry = map_core_registry(&self.core_store);
-                // Profiles that opt into the managed core keep an empty executable
-                // path so Activate-core does not rewrite them to a pinned binary.
-                self.workspace.update(cx, |shell, cx| {
+        let core_store = self.core_store.clone();
+        let runtime = self.runtime.handle().clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let command_for_worker = request.command.clone();
+            let (outcome, registry) = match runtime
+                .spawn_blocking(move || {
+                    let result = execute_core_command_on_store(&core_store, &command_for_worker);
+                    let registry = map_core_registry(&core_store);
+                    (result, registry)
+                })
+                .await
+            {
+                Ok((Ok(()), registry)) => (CoreCommandOutcomeView::Success, registry),
+                Ok((Err(summary), registry)) => (
+                    CoreCommandOutcomeView::Failure(OperationErrorView {
+                        code: "core.command_failed".into(),
+                        summary,
+                        retryable: true,
+                    }),
+                    registry,
+                ),
+                Err(error) => (
+                    CoreCommandOutcomeView::Failure(OperationErrorView {
+                        code: "core.command_failed".into(),
+                        summary: format!("Core command worker failed: {error}"),
+                        retryable: true,
+                    }),
+                    CoreRegistryView::default(),
+                ),
+            };
+            this.update_in(cx, |this, _window, cx| {
+                this.workspace.update(cx, |shell, cx| {
                     shell.set_core_command_result(
                         CoreCommandResultView {
                             request_id: request.request_id,
-                            command: request.command.clone(),
+                            command: request.command,
                             registry,
-                            outcome: CoreCommandOutcomeView::Success,
+                            outcome,
                         },
                         cx,
                     );
                 });
-            }
-            Err(summary) => {
-                let registry = map_core_registry(&self.core_store);
-                self.workspace.update(cx, |shell, cx| {
-                    shell.set_core_command_result(
-                        CoreCommandResultView {
-                            request_id: request.request_id,
-                            command: request.command.clone(),
-                            registry,
-                            outcome: CoreCommandOutcomeView::Failure(OperationErrorView {
-                                code: "core.command_failed".into(),
-                                summary,
-                                retryable: true,
-                            }),
-                        },
-                        cx,
-                    );
-                });
-            }
-        }
-        let _ = window;
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// B4: scan the local filesystem for aria2 binaries. No network access.
@@ -1716,14 +1675,16 @@ impl DesktopRoot {
         let core_store = self.core_store.clone();
         cx.spawn_in(window, async move |this, cx| {
             let discovered = runtime
-                .spawn_blocking(ariadeck_engine::discover_cores)
+                .spawn_blocking(move || {
+                    let discovered = ariadeck_engine::discover_cores();
+                    let registry = map_core_registry(&core_store);
+                    map_discovered_cores(discovered, &registry)
+                })
                 .await
                 .unwrap_or_else(|error| {
                     tracing::warn!(%error, "aria2 discovery worker failed");
                     Vec::new()
                 });
-            let registry = map_core_registry(&core_store);
-            let discovered = map_discovered_cores(discovered, &registry);
             this.update_in(cx, |this, _window, cx| {
                 this.workspace.update(cx, |workspace, cx| {
                     workspace.set_core_discovery_result(
@@ -1746,19 +1707,20 @@ impl DesktopRoot {
         request_id: ariadeck_ui::RequestId,
         cx: &mut Context<Self>,
     ) {
+        let unavailable = |summary: &str| CoreDownloadResultView {
+            request_id,
+            registry: CoreRegistryView::default(),
+            installed_version: None,
+            outcome: CoreCommandOutcomeView::Failure(OperationErrorView {
+                code: "core.download_unavailable".into(),
+                summary: summary.into(),
+                retryable: false,
+            }),
+        };
         let Some(sender) = self.core_download_sender.as_ref() else {
             self.workspace.update(cx, |workspace, cx| {
                 workspace.set_core_download_result(
-                    CoreDownloadResultView {
-                        request_id,
-                        registry: CoreRegistryView::default(),
-                        installed_version: None,
-                        outcome: CoreCommandOutcomeView::Failure(OperationErrorView {
-                            code: "core.download_unavailable".into(),
-                            summary: "The aria2 download worker is not running.".into(),
-                            retryable: false,
-                        }),
-                    },
+                    unavailable("The aria2 download worker is not running."),
                     cx,
                 );
             });
@@ -1766,6 +1728,12 @@ impl DesktopRoot {
         };
         if sender.send(CoreDownloadRequest { request_id }).is_err() {
             tracing::warn!("aria2 download worker is no longer accepting requests");
+            self.workspace.update(cx, |workspace, cx| {
+                workspace.set_core_download_result(
+                    unavailable("The aria2 download worker is no longer accepting requests."),
+                    cx,
+                );
+            });
         }
     }
 
@@ -1804,80 +1772,25 @@ impl DesktopRoot {
         }
         let _ = cx;
     }
-
-    fn execute_core_command(&self, command: &CoreCommandView) -> Result<(), String> {
-        match command {
-            CoreCommandView::Import { path } => self
-                .core_store
-                .import_executable(PathBuf::from(path))
-                .map(|_| ())
-                .map_err(|error| error.to_string()),
-            CoreCommandView::Link { path } => self
-                .core_store
-                .link_executable(PathBuf::from(path))
-                .map(|_| ())
-                .map_err(|error| error.to_string()),
-            CoreCommandView::Verify { core_id } => {
-                let id = core_id
-                    .parse()
-                    .map_err(|error| format!("Invalid core id: {error}"))?;
-                self.core_store
-                    .verify(id)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            }
-            CoreCommandView::Activate { core_id } => {
-                let id = core_id
-                    .parse()
-                    .map_err(|error| format!("Invalid core id: {error}"))?;
-                self.core_store
-                    .activate(id)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            }
-            CoreCommandView::Rollback => self
-                .core_store
-                .rollback_to_last_working()
-                .map(|_| ())
-                .map_err(|error| error.to_string()),
-            CoreCommandView::Remove { core_id } => {
-                let id = core_id
-                    .parse()
-                    .map_err(|error| format!("Invalid core id: {error}"))?;
-                self.core_store
-                    .remove(id)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            }
-        }
-    }
 }
 
 impl Drop for DesktopRoot {
     fn drop(&mut self) {
-        TRAY_SESSION_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
-        self.window_hidden_to_tray = false;
-        if self.is_keep_awake {
-            platform::set_keep_awake(false);
-            self.is_keep_awake = false;
-        }
-        self.tray.take();
+        let pending_geometry = self.platform.cleanup_on_drop();
         self.tracker_list_sender.take();
         self.core_download_sender.take();
         let persistence_sender = self.persistence_sender.take();
-        if let (Some(sender), Some(geometry)) =
-            (persistence_sender.as_ref(), self.pending_geometry.take())
-        {
+        if let (Some(sender), Some(geometry)) = (persistence_sender.as_ref(), pending_geometry) {
             let _ = sender.send(PersistenceCommand::SaveWindowGeometry(geometry));
         }
         let persistence_task = self.persistence_task.take();
         let sync = self.sync.take();
         let local_engine = self.local_engine.take();
-        let runtime = self.runtime.clone();
-        let runtime_keepalive = runtime.clone();
         let cleanup_started = Instant::now();
-        runtime.spawn(async move {
-            let _runtime = runtime_keepalive;
+        // Never capture `Arc<Runtime>` inside a task spawned onto that same
+        // runtime (dropping `Runtime` on a Tokio worker thread panics). Instead
+        // return the `JoinHandle` to `main()`, which awaits it on the main OS thread.
+        let handle = self.runtime.handle().spawn(async move {
             drop(persistence_sender);
             if let Some(task) = persistence_task
                 && let Err(error) = task.await
@@ -1898,7 +1811,7 @@ impl Drop for DesktopRoot {
                 )
                 .await
                 {
-                    Ok(Ok(())) => {}
+                    Ok(Ok(())) => process.mark_graceful_shutdown_requested(),
                     Ok(Err(error)) => {
                         tracing::debug!(%error, "local aria2 graceful shutdown request failed")
                     }
@@ -1922,6 +1835,10 @@ impl Drop for DesktopRoot {
                 "background shutdown cleanup complete"
             );
         });
+        *self
+            .shutdown_slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(handle);
     }
 }
 
@@ -1931,550 +1848,5 @@ impl Render for DesktopRoot {
     }
 }
 
-async fn execute_add_download(
-    runtime: tokio::runtime::Handle,
-    sync: Option<SyncHandle>,
-    destination_gateway: Option<Arc<dyn DownloadDestinationGateway>>,
-    request: AddDownloadRequestView,
-) -> AddDownloadResultView {
-    let AddDownloadRequestView {
-        request_id,
-        session,
-        sources,
-        mode,
-        destination,
-        category_id,
-        required_bytes,
-        file_conflict,
-        advanced,
-    } = request;
-    let mapped_session = map_engine_session(&session);
-    let destination_error = match (destination_gateway.clone(), destination.as_deref()) {
-        (Some(gateway), Some(directory)) => {
-            let request = DownloadDestinationRequest {
-                directory: EnginePath::new(directory),
-                required_bytes,
-                files: Vec::new(),
-            };
-            match runtime
-                .spawn_blocking(move || gateway.preflight(&request))
-                .await
-            {
-                Ok(Ok(_)) => None,
-                Ok(Err(error)) => Some(map_application_error(error.into())),
-                Err(error) => Some(map_application_error(ApplicationError::new(
-                    ApplicationErrorCode::Internal,
-                    format!("Download destination preflight worker stopped: {error}"),
-                    true,
-                ))),
-            }
-        }
-        _ => None,
-    };
-    let known_tasks = match (&sync, &mapped_session) {
-        (Some(handle), Ok(_)) => handle
-            .snapshot(ariadeck_application::TaskListQuery::default())
-            .await
-            .filter(|snapshot| {
-                !snapshot.stale && matches!(snapshot.connection_state, ConnectionState::Connected)
-            })
-            .map(|snapshot| snapshot.tasks),
-        _ => None,
-    };
-    let mut known_gids = known_tasks
-        .as_ref()
-        .map(|tasks| tasks.iter().map(|task| task.gid).collect::<HashSet<_>>());
-    let groups = match mode {
-        AddDownloadModeView::SeparateTasks => {
-            sources.into_iter().map(|source| vec![source]).collect()
-        }
-        AddDownloadModeView::Mirrors => vec![sources],
-    };
-    let mut seen = HashSet::new();
-    let mut items = Vec::with_capacity(groups.len());
-    let mut has_successes = false;
-
-    for group in groups {
-        let duplicate_in_submission = mode == AddDownloadModeView::SeparateTasks
-            && group
-                .first()
-                .is_some_and(|source| !seen.insert(add_source_submission_key(source)));
-        let existing_task = (!duplicate_in_submission)
-            .then(|| {
-                known_tasks
-                    .as_deref()
-                    .and_then(|tasks| find_matching_add_task(tasks, &group))
-                    .map(|task| TaskIdentity {
-                        profile_id: session.profile_id.clone(),
-                        gid: task.gid.to_string(),
-                    })
-            })
-            .flatten();
-        let outcome = if duplicate_in_submission {
-            CommandOutcomeView::Failure(OperationErrorView {
-                code: ApplicationErrorCode::Validation.as_str().into(),
-                summary: "Duplicate source in this submission; the first occurrence was used."
-                    .into(),
-                retryable: false,
-            })
-        } else if existing_task.is_some() {
-            CommandOutcomeView::Failure(OperationErrorView {
-                code: ApplicationErrorCode::Duplicate.as_str().into(),
-                summary: "This download is already present in the transfer list.".into(),
-                retryable: false,
-            })
-        } else if let Some(error) = &destination_error {
-            CommandOutcomeView::Failure(error.clone())
-        } else {
-            match (&sync, &mapped_session) {
-                (Some(handle), Ok(engine_session)) => {
-                    let request = prepare_add_download_request(
-                        &runtime,
-                        &group,
-                        destination.clone(),
-                        file_conflict,
-                        advanced.clone(),
-                    )
-                    .await;
-                    match request {
-                        Ok(prepared) => {
-                            let PreparedAddDownloadRequest {
-                                request,
-                                destination_files,
-                                required_bytes,
-                            } = prepared;
-                            let metadata_destination_error = match (
-                                destination_gateway.clone(),
-                                destination.as_deref(),
-                                destination_files.is_empty(),
-                            ) {
-                                (Some(gateway), Some(directory), false) => {
-                                    let request = DownloadDestinationRequest {
-                                        directory: EnginePath::new(directory),
-                                        required_bytes,
-                                        files: destination_files,
-                                    };
-                                    match runtime
-                                        .spawn_blocking(move || gateway.preflight(&request))
-                                        .await
-                                    {
-                                        Ok(Ok(_)) => None,
-                                        Ok(Err(error)) => Some(map_application_error(error.into())),
-                                        Err(error) => {
-                                            Some(map_application_error(ApplicationError::new(
-                                                ApplicationErrorCode::Internal,
-                                                format!(
-                                                    "Metadata destination preflight worker stopped: {error}"
-                                                ),
-                                                true,
-                                            )))
-                                        }
-                                    }
-                                }
-                                _ => None,
-                            };
-                            if let Some(error) = metadata_destination_error {
-                                CommandOutcomeView::Failure(error)
-                            } else {
-                                let outcome = handle
-                                    .execute(*engine_session, AppCommand::AddDownload(request))
-                                    .await;
-                                if command_outcome_is_unknown(&outcome)
-                                    && add_sources_are_uris(&group)
-                                {
-                                    reconcile_unknown_add(
-                                        handle,
-                                        &group,
-                                        &mut known_gids,
-                                        map_command_outcome(outcome),
-                                    )
-                                    .await
-                                } else {
-                                    let mapped = map_command_outcome(outcome);
-                                    if let CommandOutcomeView::Success { tasks } = &mapped
-                                        && let Some(known) = &mut known_gids
-                                    {
-                                        for task in tasks {
-                                            if let Ok(identity) = map_task_identity(task) {
-                                                known.insert(identity.gid);
-                                            }
-                                        }
-                                    }
-                                    mapped
-                                }
-                            }
-                        }
-                        Err(error) => CommandOutcomeView::Failure(map_application_error(error)),
-                    }
-                }
-                (None, _) => CommandOutcomeView::Failure(unavailable_operation_error()),
-                (Some(_), Err(error)) => {
-                    CommandOutcomeView::Failure(map_application_error(error.clone()))
-                }
-            }
-        };
-        has_successes |= matches!(outcome, CommandOutcomeView::Success { .. });
-        items.push(AddDownloadItemResultView {
-            sources: group,
-            existing_task,
-            outcome,
-        });
-    }
-    if has_successes && let Some(handle) = sync {
-        handle.force_refresh().await;
-        if let Some(category_id) = category_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-        {
-            for item in &items {
-                if let CommandOutcomeView::Success { tasks } = &item.outcome {
-                    for task in tasks {
-                        if let Ok(identity) = map_task_identity(task) {
-                            handle
-                                .set_task_category(identity.gid, Some(category_id.to_owned()))
-                                .await;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    AddDownloadResultView {
-        request_id,
-        session,
-        items,
-    }
-}
-
-/// Map a validated bridge payload onto the add-dialog view model (D-045).
-///
-/// `filename` stays a display hint only and is never mapped onto `out` (D-001).
-fn bridge_view(download: &BridgeDownload) -> BridgeDownloadView {
-    BridgeDownloadView {
-        url: download.url.clone(),
-        referer: download.referer.clone().unwrap_or_default(),
-        user_agent: download.user_agent.clone().unwrap_or_default(),
-        cookie: download
-            .cookie
-            .as_ref()
-            .map(|cookie| SecretStringView::new(cookie.expose_secret())),
-        filename: download.filename.clone(),
-        file_size: download.file_size,
-    }
-}
-
-impl DesktopRoot {
-    fn spawn_update_check(
-        &mut self,
-        request_id: ariadeck_ui::RequestId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let version = env!("CARGO_PKG_VERSION").to_owned();
-        let os = std::env::consts::OS;
-        let arch = std::env::consts::ARCH;
-        cx.spawn_in(window, async move |this, cx| {
-            let result = check_latest_release(&version, os, arch).await;
-            this.update_in(cx, |this, _window, cx| {
-                let view_result = match result {
-                    Ok(offer) => {
-                        this.update_offer = offer.clone();
-                        Ok(offer.map(|offer| ariadeck_ui::UpdateOfferView {
-                            version: offer.version,
-                            title: offer.title,
-                            notes: offer.notes,
-                            release_url: offer.release_url,
-                            installer_available: offer.package_url.is_some()
-                                && (offer.signature_data.is_some()
-                                    || offer.signature_url.is_some()),
-                        }))
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "update check failed");
-                        this.update_offer = None;
-                        Err(error)
-                    }
-                };
-                this.workspace.update(cx, |shell, cx| {
-                    shell.set_update_check_result(request_id, view_result, cx);
-                });
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    fn spawn_update_download(
-        &mut self,
-        request_id: ariadeck_ui::RequestId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if is_read_only_update_install() {
-            return;
-        }
-        let Some(offer) = self.update_offer.clone() else {
-            self.workspace.update(cx, |shell, cx| {
-                shell.set_update_download_result(
-                    request_id,
-                    Err("Update metadata is no longer available. Check again.".into()),
-                    cx,
-                );
-            });
-            return;
-        };
-        let version = offer.version.clone();
-        let os = std::env::consts::OS;
-        let arch = std::env::consts::ARCH;
-        cx.spawn_in(window, async move |this, cx| {
-            let (progress_tx, mut progress_rx) =
-                tokio::sync::mpsc::unbounded_channel::<(u64, Option<u64>)>();
-            let offer_clone = offer.clone();
-            let download_task = tokio::spawn(async move {
-                download_verified_package(&offer_clone, move |downloaded, total| {
-                    let _ = progress_tx.send((downloaded, total));
-                })
-                .await
-            });
-
-            while let Some((downloaded, total)) = progress_rx.recv().await {
-                this.update_in(cx, |this, _window, cx| {
-                    this.workspace.update(cx, |shell, cx| {
-                        shell.set_update_download_progress(request_id, downloaded, total, cx);
-                    });
-                })
-                .ok();
-            }
-
-            let result = match download_task.await {
-                Ok(Ok(bytes)) => {
-                    let version_for_file = version.clone();
-                    tokio::task::spawn_blocking(move || {
-                        save_package(
-                            &bytes,
-                            &std::env::temp_dir().join("AriaDeck-updates"),
-                            &version_for_file,
-                            os,
-                            arch,
-                        )
-                    })
-                    .await
-                    .map_err(|error| format!("Package save task failed: {error}"))
-                    .and_then(|result| result)
-                }
-                Ok(Err(error)) => Err(error),
-                Err(panic_err) => Err(format!("Download task panicked: {panic_err}")),
-            };
-
-            this.update_in(cx, |this, _window, cx| {
-                let view_result = match result {
-                    Ok(path) => {
-                        this.verified_update_installer = Some(path);
-                        Ok(version)
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "update package download failed");
-                        Err(error)
-                    }
-                };
-                this.workspace.update(cx, |shell, cx| {
-                    shell.set_update_download_result(request_id, view_result, cx);
-                });
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    fn install_verified_update(&mut self, cx: &mut Context<Self>) {
-        let Some(installer) = self.verified_update_installer.take() else {
-            return;
-        };
-        let executable = match env::current_exe() {
-            Ok(path) => path,
-            Err(error) => {
-                tracing::error!(%error, "cannot locate the running executable for update restart");
-                self.workspace.update(cx, |shell, cx| {
-                    shell.set_update_install_error(error.to_string(), cx);
-                });
-                return;
-            }
-        };
-        match launch_verified_update(installer, executable) {
-            Ok(()) => self.quit_application(cx),
-            Err(error) => {
-                tracing::error!(%error, "could not start the verified update installer");
-                self.workspace.update(cx, |shell, cx| {
-                    shell.set_update_install_error(error, cx);
-                });
-            }
-        }
-    }
-}
-
-fn updates_supported() -> bool {
-    supports_updates(
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        option_env!("ARIADECK_BUILD_CHANNEL"),
-    )
-}
-
-fn is_portable_install() -> bool {
-    env::current_exe()
-        .ok()
-        .and_then(|executable| executable.parent().map(Path::to_path_buf))
-        .is_some_and(|directory| directory.join(ariadeck_ipc::PORTABLE_MARKER_FILE).is_file())
-}
-
-fn is_read_only_update_install() -> bool {
-    if is_portable_install() {
-        return true;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if std::env::var_os("APPIMAGE").is_none() {
-            return true;
-        }
-    }
-    false
-}
-
-#[cfg(target_os = "windows")]
-pub(crate) fn build_windows_update_command(
-    package: &Path,
-    executable: &Path,
-) -> std::process::Command {
-    // Pass paths strictly via environment variables and `-LiteralPath` /
-    // `-FilePath` so characters like `&`, `%`, `^`, `;`, or quotes in user
-    // directories can never break quoting or inject shell commands.
-    let mut command = ariadeck_engine::console_free_command("powershell");
-    command
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            "Start-Sleep -Seconds 2; \
-             $pkg = $env:ARIADECK_UPDATE_PACKAGE; \
-             $exe = $env:ARIADECK_UPDATE_EXECUTABLE; \
-             if ($pkg -and (Test-Path -LiteralPath $pkg)) { \
-                 Start-Process -FilePath $pkg -ArgumentList '/SILENT','/CLOSEAPPLICATIONS' -Wait; \
-                 Remove-Item -LiteralPath $pkg -Force -ErrorAction SilentlyContinue; \
-             }; \
-             if ($exe -and (Test-Path -LiteralPath $exe)) { \
-                 Start-Process -FilePath $exe; \
-             }",
-        ])
-        .env("ARIADECK_UPDATE_PACKAGE", package)
-        .env("ARIADECK_UPDATE_EXECUTABLE", executable);
-    command
-}
-
-fn launch_verified_update(package: PathBuf, executable: PathBuf) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        build_windows_update_command(&package, &executable)
-            .spawn()
-            .map_err(|error| format!("Could not start the update installer: {error}"))?;
-        Ok(())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let bundle_path = executable
-            .parent()
-            .and_then(Path::parent)
-            .and_then(Path::parent);
-        let Some(bundle_path) =
-            bundle_path.filter(|p| p.extension().is_some_and(|ext| ext == "app"))
-        else {
-            return Err("In-app update on macOS requires running from an .app bundle.".into());
-        };
-        let staging_temp = tempfile::Builder::new()
-            .prefix("AriaDeck-update-stage-")
-            .tempdir()
-            .map_err(|e| format!("Could not create macOS update staging directory: {e}"))?;
-        let staging_dir = staging_temp.path().to_path_buf();
-
-        let tar_status = std::process::Command::new("/usr/bin/tar")
-            .args(["-xzf"])
-            .arg(&package)
-            .args(["-C"])
-            .arg(&staging_dir)
-            .status()
-            .map_err(|e| format!("Could not unpack update package: {e}"))?;
-        if !tar_status.success() {
-            return Err("Unpacking update package failed.".into());
-        }
-
-        let staged_app = staging_dir.join("AriaDeck.app");
-        if !staged_app.is_dir() {
-            return Err("Unpacked update does not contain AriaDeck.app.".into());
-        }
-
-        let staging_dir = staging_temp.keep();
-        std::process::Command::new("sh")
-            .args([
-                "-c",
-                r#"sleep 1; rm -rf "$1" && mv "$2" "$1" && xattr -dr com.apple.quarantine "$1" 2>/dev/null; open -n "$1"; rm -rf "$3" "$4""#,
-                "updater",
-            ])
-            .arg(bundle_path)
-            .arg(&staged_app)
-            .arg(&staging_dir)
-            .arg(&package)
-            .spawn()
-            .map_err(|e| format!("Could not spawn update helper: {e}"))?;
-        Ok(())
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = executable;
-        use std::os::unix::fs::PermissionsExt;
-        let appimage_target = std::env::var_os("APPIMAGE").map(PathBuf::from);
-        let Some(target) = appimage_target else {
-            return Err(
-                "In-app update on Linux is supported only for AppImage installations.".into(),
-            );
-        };
-        std::fs::set_permissions(&package, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("Could not set executable permissions: {e}"))?;
-        std::process::Command::new("sh")
-            .args([
-                "-c",
-                r#"sleep 1; mv -f "$1" "$2" && chmod +x "$2" && "$2" &"#,
-                "updater",
-            ])
-            .arg(&package)
-            .arg(&target)
-            .spawn()
-            .map_err(|e| format!("Could not spawn update helper: {e}"))?;
-        Ok(())
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    {
-        let _ = (package, executable);
-        Err("Application updates are not supported on this platform.".into())
-    }
-}
-
 #[cfg(test)]
 mod tests;
-
-fn tray_from_settings(settings: &AppSettings) -> Result<SystemTray, String> {
-    let locale = match settings.language {
-        LanguagePreference::System => LocaleId::from_system_env(),
-        LanguagePreference::En => LocaleId::En,
-        LanguagePreference::ZhCn => LocaleId::ZhCn,
-    };
-    let translator = Translator::new(locale);
-    SystemTray::try_new_with_labels(
-        &translator.t("tray-show"),
-        &translator.t("tray-pause-all"),
-        &translator.t("tray-resume-all"),
-        &translator.t("tray-quit"),
-        &translator.t("app-name"),
-    )
-}

@@ -49,6 +49,8 @@ pub enum EngineError {
     },
     #[error("malformed profile JSON at {path}: {message}")]
     MalformedProfile { path: PathBuf, message: String },
+    #[error("malformed managed core manifest at {path}: {message}")]
+    MalformedCoreManifest { path: PathBuf, message: String },
     /// Another AriaDeck instance still owns this profile directory.
     #[error(
         "profile {profile_id} is already owned by process {owner_pid}; close that AriaDeck instance or stop its managed aria2 before starting again"

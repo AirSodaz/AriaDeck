@@ -1,5 +1,6 @@
 //! Modal dialogs rendered via `gpui_kit::component::WindowExt::open_dialog`
-//! and `open_alert_dialog`.
+//! and `open_alert_dialog`, backed by the single mutually exclusive
+//! [`ActiveModal`] state slot on [`AppShell`].
 //!
 //! `WindowExt::open_dialog` builds the dialog inside `Root`'s overlay layer,
 //! which does not observe `AppShell`. Each open modal therefore mounts a pair of
@@ -29,6 +30,57 @@ pub(crate) enum ModalKind {
     PowerCountdown,
     BatchFailureDetails,
     CoreSetupOnboarding,
+}
+
+/// Single mutually exclusive modal slot owned by [`AppShell`].
+///
+/// Dialog-specific `InputState` / child-view entities and their subscriptions
+/// are created lazily when a modal opens and dropped when it closes.
+pub(super) enum ActiveModal {
+    AddDownload {
+        view: Entity<AddDownloadDialogView>,
+        busy: bool,
+        _sub: Subscription,
+    },
+    OutputName {
+        dialog: TaskOutputNameDialog,
+        input: Entity<InputState>,
+        _sub: Subscription,
+    },
+    TaskSpeedLimit {
+        dialog: TaskSpeedLimitDialog,
+        download_input: Entity<InputState>,
+        upload_input: Entity<InputState>,
+        _subs: [Subscription; 2],
+    },
+    TaskOptions {
+        dialog: TaskOptionsDialog,
+        seed_ratio_input: Entity<InputState>,
+        seed_time_input: Entity<InputState>,
+        _subs: [Subscription; 2],
+    },
+    RemoveConfirmation(RemoveConfirmation),
+    BatchFailureDetails(BatchFailureDetails),
+    PowerCountdown(PowerCountdownState),
+    CoreSetupOnboarding {
+        panel: Entity<CoreSetupPanelView>,
+        _sub: Subscription,
+    },
+}
+
+impl ActiveModal {
+    pub(super) const fn kind(&self) -> ModalKind {
+        match self {
+            Self::AddDownload { .. } => ModalKind::AddDownload,
+            Self::OutputName { .. } => ModalKind::TaskOutputName,
+            Self::TaskSpeedLimit { .. } => ModalKind::TaskSpeedLimit,
+            Self::TaskOptions { .. } => ModalKind::TaskOptions,
+            Self::RemoveConfirmation(_) => ModalKind::RemoveConfirmation,
+            Self::BatchFailureDetails(_) => ModalKind::BatchFailureDetails,
+            Self::PowerCountdown(_) => ModalKind::PowerCountdown,
+            Self::CoreSetupOnboarding { .. } => ModalKind::CoreSetupOnboarding,
+        }
+    }
 }
 
 struct ShellModalBody {
@@ -180,25 +232,135 @@ impl Render for ShellModalFooter {
 }
 
 impl AppShell {
+    #[cfg(test)]
+    pub(super) fn add_dialog_entity(&self) -> Option<&Entity<AddDownloadDialogView>> {
+        self.add_dialog_view()
+    }
+
+    #[cfg(test)]
+    pub(super) fn output_name_modal(&self) -> Option<(&TaskOutputNameDialog, &Entity<InputState>)> {
+        match &self.active_modal {
+            Some(ActiveModal::OutputName { dialog, input, .. }) => Some((dialog, input)),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn task_speed_limit_modal(
+        &self,
+    ) -> Option<(
+        &TaskSpeedLimitDialog,
+        &Entity<InputState>,
+        &Entity<InputState>,
+    )> {
+        match &self.active_modal {
+            Some(ActiveModal::TaskSpeedLimit {
+                dialog,
+                download_input,
+                upload_input,
+                ..
+            }) => Some((dialog, download_input, upload_input)),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn task_options_modal(
+        &self,
+    ) -> Option<(&TaskOptionsDialog, &Entity<InputState>, &Entity<InputState>)> {
+        match &self.active_modal {
+            Some(ActiveModal::TaskOptions {
+                dialog,
+                seed_ratio_input,
+                seed_time_input,
+                ..
+            }) => Some((dialog, seed_ratio_input, seed_time_input)),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn remove_confirmation_modal(&self) -> Option<&RemoveConfirmation> {
+        match &self.active_modal {
+            Some(ActiveModal::RemoveConfirmation(c)) => Some(c),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn batch_failure_details_modal(&self) -> Option<&BatchFailureDetails> {
+        match &self.active_modal {
+            Some(ActiveModal::BatchFailureDetails(d)) => Some(d),
+            _ => None,
+        }
+    }
+
     pub(crate) fn desired_kit_modal(&self) -> Option<ModalKind> {
-        if self.core_setup.onboarding_open {
-            Some(ModalKind::CoreSetupOnboarding)
-        } else if self.batch_failure_details.is_some() {
-            Some(ModalKind::BatchFailureDetails)
-        } else if self.power_countdown.is_some() {
-            Some(ModalKind::PowerCountdown)
-        } else if self.remove_confirmation.is_some() {
-            Some(ModalKind::RemoveConfirmation)
-        } else if self.task_options_dialog.is_some() {
-            Some(ModalKind::TaskOptions)
-        } else if self.task_speed_limit_dialog.is_some() {
-            Some(ModalKind::TaskSpeedLimit)
-        } else if self.output_name_dialog.is_some() {
-            Some(ModalKind::TaskOutputName)
-        } else if self.add_dialog.open {
-            Some(ModalKind::AddDownload)
-        } else {
-            None
+        self.active_modal.as_ref().map(ActiveModal::kind)
+    }
+
+    pub(crate) fn sync_active_modal_context(
+        &self,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        match &self.active_modal {
+            Some(ActiveModal::AddDownload { view, .. }) => {
+                let theme = self.theme;
+                let translator = self.translator.clone();
+                let categories = self.settings.categories.clone();
+                let download_directory = self.settings.download_directory.clone();
+                view.update(cx, |dialog, cx| {
+                    dialog.sync_context(
+                        theme,
+                        translator,
+                        categories,
+                        download_directory,
+                        window,
+                        cx,
+                    );
+                });
+            }
+            Some(ActiveModal::CoreSetupOnboarding { panel, .. }) => {
+                let theme = self.theme;
+                let translator = self.translator.clone();
+                let state = self.core_setup.clone();
+                panel.update(cx, |panel, cx| {
+                    panel.sync(theme, translator, &state, cx);
+                });
+            }
+            Some(ActiveModal::TaskSpeedLimit {
+                download_input,
+                upload_input,
+                ..
+            }) => {
+                if let Some(window) = window {
+                    let dl = self.t("input-download-limit-placeholder");
+                    let ul = self.t("input-upload-limit-placeholder");
+                    download_input.update(cx, |input, cx| input.set_placeholder(dl, window, cx));
+                    upload_input.update(cx, |input, cx| input.set_placeholder(ul, window, cx));
+                }
+            }
+            Some(ActiveModal::TaskOptions {
+                seed_ratio_input,
+                seed_time_input,
+                ..
+            }) => {
+                if let Some(window) = window {
+                    let ratio = self.t("dialog-task-options-seed-ratio-placeholder");
+                    let time = self.t("dialog-task-options-seed-time-placeholder");
+                    seed_ratio_input
+                        .update(cx, |input, cx| input.set_placeholder(ratio, window, cx));
+                    seed_time_input.update(cx, |input, cx| input.set_placeholder(time, window, cx));
+                }
+            }
+            Some(
+                ActiveModal::OutputName { .. }
+                | ActiveModal::RemoveConfirmation(_)
+                | ActiveModal::BatchFailureDetails(_)
+                | ActiveModal::PowerCountdown(_),
+            )
+            | None => {}
         }
     }
 
@@ -242,7 +404,7 @@ impl AppShell {
         match kind {
             ModalKind::AddDownload => {
                 let title = self.t("dialog-add-download");
-                let width = self.add_dialog_width();
+                let width = self.add_dialog_width(cx);
                 let initial_focus = Cell::new(true);
                 let shell_focus = shell.downgrade();
                 let shell_cancel = shell.downgrade();
@@ -251,8 +413,11 @@ impl AppShell {
                     if initial_focus.replace(false)
                         && let Some(focus) = shell_focus
                             .read_with(cx, |this, cx| {
-                                (this.add_dialog.input_mode == AddDownloadInputModeView::Links)
-                                    .then(|| this.add_input.focus_handle(cx))
+                                this.add_dialog_view().and_then(|view| {
+                                    let dialog = view.read(cx);
+                                    (dialog.input_mode == AddDownloadInputModeView::Links)
+                                        .then(|| dialog.add_input.focus_handle(cx))
+                                })
                             })
                             .ok()
                             .flatten()
@@ -294,8 +459,15 @@ impl AppShell {
                 let shell_close = shell.downgrade();
                 window.open_dialog(cx, move |dialog, window, cx| {
                     if initial_focus.replace(false)
-                        && let Ok(focus) = shell_focus
-                            .read_with(cx, |this, cx| this.output_name_input.focus_handle(cx))
+                        && let Some(focus) = shell_focus
+                            .read_with(cx, |this, cx| match &this.active_modal {
+                                Some(ActiveModal::OutputName { input, .. }) => {
+                                    Some(input.focus_handle(cx))
+                                }
+                                _ => None,
+                            })
+                            .ok()
+                            .flatten()
                     {
                         focus.focus(window, cx);
                     }
@@ -340,9 +512,15 @@ impl AppShell {
                 let shell_close = shell.downgrade();
                 window.open_dialog(cx, move |dialog, window, cx| {
                     if initial_focus.replace(false)
-                        && let Ok(focus) = shell_focus.read_with(cx, |this, cx| {
-                            this.task_inputs.download_limit.focus_handle(cx)
-                        })
+                        && let Some(focus) = shell_focus
+                            .read_with(cx, |this, cx| match &this.active_modal {
+                                Some(ActiveModal::TaskSpeedLimit { download_input, .. }) => {
+                                    Some(download_input.focus_handle(cx))
+                                }
+                                _ => None,
+                            })
+                            .ok()
+                            .flatten()
                     {
                         focus.focus(window, cx);
                     }
@@ -388,11 +566,15 @@ impl AppShell {
                 window.open_dialog(cx, move |dialog, window, cx| {
                     if initial_focus.replace(false)
                         && let Some(focus) = shell_focus
-                            .read_with(cx, |this, cx| {
-                                this.task_options_dialog
-                                    .as_ref()
-                                    .is_some_and(|d| d.supports_seed_rules)
-                                    .then(|| this.task_inputs.seed_ratio.focus_handle(cx))
+                            .read_with(cx, |this, cx| match &this.active_modal {
+                                Some(ActiveModal::TaskOptions {
+                                    dialog,
+                                    seed_ratio_input,
+                                    ..
+                                }) if dialog.supports_seed_rules => {
+                                    Some(seed_ratio_input.focus_handle(cx))
+                                }
+                                _ => None,
                             })
                             .ok()
                             .flatten()
@@ -610,14 +792,9 @@ impl AppShell {
         }
     }
 
-    fn add_dialog_width(&self) -> f32 {
-        if self.add_dialog.input_mode == AddDownloadInputModeView::MetadataFiles {
-            720.0
-        } else if self.add_dialog.advanced_open {
-            640.0
-        } else {
-            560.0
-        }
+    fn add_dialog_width(&self, cx: &App) -> f32 {
+        self.add_dialog_view()
+            .map_or(560.0, |view| view.read(cx).dialog_width())
     }
 
     fn try_cancel_kit_modal(
@@ -626,13 +803,21 @@ impl AppShell {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.active_modal.as_ref().map(ActiveModal::kind) != Some(kind) {
+            if self.active_kit_modal == Some(kind) {
+                self.active_kit_modal = None;
+            }
+            return true;
+        }
         match kind {
             ModalKind::AddDownload => {
-                if self.add_dialog.pending.is_some() || self.add_dialog.preview_pending.is_some() {
-                    return false;
+                if let Some(view) = self.add_dialog_view() {
+                    if view.read(cx).is_busy() {
+                        return false;
+                    }
+                    self.links_input_height = view.read(cx).links_input_height;
                 }
-                self.links_input_drag_origin = None;
-                self.add_dialog = AddDownloadDialog::default();
+                self.active_modal = None;
             }
             ModalKind::TaskOutputName => {
                 if self.pending_task_command.as_ref().is_some_and(|pending| {
@@ -640,7 +825,7 @@ impl AppShell {
                 }) {
                     return false;
                 }
-                self.output_name_dialog = None;
+                self.active_modal = None;
             }
             ModalKind::TaskSpeedLimit => {
                 if self.pending_task_command.as_ref().is_some_and(|pending| {
@@ -648,7 +833,7 @@ impl AppShell {
                 }) {
                     return false;
                 }
-                self.task_speed_limit_dialog = None;
+                self.active_modal = None;
             }
             ModalKind::TaskOptions => {
                 if self.pending_task_command.as_ref().is_some_and(|pending| {
@@ -656,26 +841,19 @@ impl AppShell {
                 }) {
                     return false;
                 }
-                self.task_options_dialog = None;
+                self.active_modal = None;
             }
-            ModalKind::RemoveConfirmation => {
-                self.remove_confirmation = None;
+            ModalKind::RemoveConfirmation | ModalKind::BatchFailureDetails => {
+                self.active_modal = None;
             }
             ModalKind::PowerCountdown => {
-                if self.power_countdown.is_some() {
-                    self.active_kit_modal = None;
-                    self.cancel_power_countdown(cx);
-                    return true;
-                }
-            }
-            ModalKind::BatchFailureDetails => {
-                self.batch_failure_details = None;
+                self.active_kit_modal = None;
+                self.cancel_power_countdown(cx);
+                return true;
             }
             ModalKind::CoreSetupOnboarding => {
-                if self.core_setup.onboarding_open {
-                    self.core_setup.onboarding_open = false;
-                    cx.emit(AppShellEvent::CoreSetupOnboardingDismissed);
-                }
+                self.active_modal = None;
+                cx.emit(AppShellEvent::CoreSetupOnboardingDismissed);
             }
         }
         if self.active_kit_modal == Some(kind) {
@@ -689,65 +867,44 @@ impl AppShell {
         if self.active_kit_modal == Some(kind) {
             self.active_kit_modal = None;
         }
+        if self.active_modal.as_ref().map(ActiveModal::kind) != Some(kind) {
+            return;
+        }
         match kind {
             ModalKind::AddDownload => {
-                if self.add_dialog.open
-                    && self.add_dialog.pending.is_none()
-                    && self.add_dialog.preview_pending.is_none()
+                if let Some(view) = self.add_dialog_view()
+                    && !view.read(cx).is_busy()
                 {
-                    self.links_input_drag_origin = None;
-                    self.add_dialog = AddDownloadDialog::default();
+                    self.links_input_height = view.read(cx).links_input_height;
+                    self.active_modal = None;
                     cx.notify();
                 }
             }
-            ModalKind::TaskOutputName => {
-                if self.output_name_dialog.is_some() {
-                    self.output_name_dialog = None;
-                    cx.notify();
-                }
-            }
-            ModalKind::TaskSpeedLimit => {
-                if self.task_speed_limit_dialog.is_some() {
-                    self.task_speed_limit_dialog = None;
-                    cx.notify();
-                }
-            }
-            ModalKind::TaskOptions => {
-                if self.task_options_dialog.is_some() {
-                    self.task_options_dialog = None;
-                    cx.notify();
-                }
-            }
-            ModalKind::RemoveConfirmation => {
-                if self.remove_confirmation.is_some() {
-                    self.remove_confirmation = None;
-                    cx.notify();
-                }
+            ModalKind::TaskOutputName
+            | ModalKind::TaskSpeedLimit
+            | ModalKind::TaskOptions
+            | ModalKind::RemoveConfirmation
+            | ModalKind::BatchFailureDetails => {
+                self.active_modal = None;
+                cx.notify();
             }
             ModalKind::PowerCountdown => {
-                if self.power_countdown.is_some() {
-                    self.cancel_power_countdown(cx);
-                }
-            }
-            ModalKind::BatchFailureDetails => {
-                if self.batch_failure_details.is_some() {
-                    self.batch_failure_details = None;
-                    cx.notify();
-                }
+                self.cancel_power_countdown(cx);
             }
             ModalKind::CoreSetupOnboarding => {
-                if self.core_setup.onboarding_open {
-                    self.core_setup.onboarding_open = false;
-                    cx.emit(AppShellEvent::CoreSetupOnboardingDismissed);
-                    cx.notify();
-                }
+                self.active_modal = None;
+                cx.emit(AppShellEvent::CoreSetupOnboardingDismissed);
+                cx.notify();
             }
         }
     }
 
     fn render_modal_body(&mut self, kind: ModalKind, cx: &mut Context<Self>) -> AnyElement {
         match kind {
-            ModalKind::AddDownload => self.render_add_download_body(cx),
+            ModalKind::AddDownload => self
+                .add_dialog_view()
+                .cloned()
+                .map_or_else(|| div().into_any_element(), IntoElement::into_any_element),
             ModalKind::TaskOutputName => self.render_task_output_name_body(cx),
             ModalKind::TaskSpeedLimit => self.render_task_speed_limit_body(cx),
             ModalKind::TaskOptions => self.render_task_options_body(cx),
@@ -772,8 +929,11 @@ impl AppShell {
     }
 
     fn render_add_download_footer(&mut self, cx: &mut Context<Self>) -> DialogFooter {
-        let add_pending = self.add_dialog.pending.is_some();
-        let preview_pending = self.add_dialog.preview_pending.is_some();
+        let (add_pending, preview_pending) =
+            self.add_dialog_view().map_or((false, false), |view| {
+                let dialog = view.read(cx);
+                (dialog.pending.is_some(), dialog.preview_pending.is_some())
+            });
         let pending = add_pending || preview_pending;
         DialogFooter::new()
             .child(
@@ -803,12 +963,15 @@ impl AppShell {
     }
 
     fn render_task_output_name_footer(&mut self, cx: &mut Context<Self>) -> DialogFooter {
-        let pending = self.output_name_dialog.as_ref().is_some_and(|dialog| {
-            self.pending_task_command.as_ref().is_some_and(|pending| {
-                pending.identity == dialog.identity
-                    && matches!(&pending.command, TaskCommandView::SetOutputName { .. })
-            })
-        });
+        let pending = match &self.active_modal {
+            Some(ActiveModal::OutputName { dialog, .. }) => {
+                self.pending_task_command.as_ref().is_some_and(|pending| {
+                    pending.identity == dialog.identity
+                        && matches!(&pending.command, TaskCommandView::SetOutputName { .. })
+                })
+            }
+            _ => false,
+        };
         DialogFooter::new()
             .child(
                 KitButton::new("cancel-task-output-name")
@@ -840,12 +1003,15 @@ impl AppShell {
     }
 
     fn render_task_speed_limit_footer(&mut self, cx: &mut Context<Self>) -> DialogFooter {
-        let pending = self.task_speed_limit_dialog.as_ref().is_some_and(|dialog| {
-            self.pending_task_command.as_ref().is_some_and(|pending| {
-                pending.identity == dialog.identity
-                    && matches!(&pending.command, TaskCommandView::SetSpeedLimit { .. })
-            })
-        });
+        let pending = match &self.active_modal {
+            Some(ActiveModal::TaskSpeedLimit { dialog, .. }) => {
+                self.pending_task_command.as_ref().is_some_and(|pending| {
+                    pending.identity == dialog.identity
+                        && matches!(&pending.command, TaskCommandView::SetSpeedLimit { .. })
+                })
+            }
+            _ => false,
+        };
         DialogFooter::new()
             .child(
                 KitButton::new("cancel-task-speed-limit")
@@ -877,16 +1043,16 @@ impl AppShell {
     }
 
     fn render_task_options_footer(&mut self, cx: &mut Context<Self>) -> DialogFooter {
-        let supports_seed_rules = self
-            .task_options_dialog
-            .as_ref()
-            .is_some_and(|d| d.supports_seed_rules);
-        let pending = self.task_options_dialog.as_ref().is_some_and(|dialog| {
-            self.pending_task_command.as_ref().is_some_and(|pending| {
-                pending.identity == dialog.identity
-                    && matches!(&pending.command, TaskCommandView::SetOptions { .. })
-            })
-        });
+        let (supports_seed_rules, pending) = match &self.active_modal {
+            Some(ActiveModal::TaskOptions { dialog, .. }) => (
+                dialog.supports_seed_rules,
+                self.pending_task_command.as_ref().is_some_and(|pending| {
+                    pending.identity == dialog.identity
+                        && matches!(&pending.command, TaskCommandView::SetOptions { .. })
+                }),
+            ),
+            _ => (false, false),
+        };
         DialogFooter::new()
             .child(
                 KitButton::new("cancel-task-options")
@@ -919,10 +1085,10 @@ impl AppShell {
     }
 
     fn render_remove_confirmation_footer(&mut self, cx: &mut Context<Self>) -> DialogFooter {
-        let delete_files = self
-            .remove_confirmation
-            .as_ref()
-            .is_some_and(|c| c.delete_files);
+        let delete_files = matches!(
+            &self.active_modal,
+            Some(ActiveModal::RemoveConfirmation(confirmation)) if confirmation.delete_files
+        );
         DialogFooter::new()
             .child(
                 KitButton::new("cancel-remove-task")
@@ -954,7 +1120,7 @@ impl AppShell {
 
     fn render_power_countdown_footer(&mut self, cx: &mut Context<Self>) -> DialogFooter {
         let action = self
-            .power_countdown
+            .power_countdown()
             .map(|c| c.action)
             .unwrap_or(CompletionPowerActionView::None);
         let action_btn = self.action_btn_label(action);
@@ -1015,7 +1181,7 @@ impl AppShell {
     fn render_power_countdown_body(&mut self, _cx: &mut Context<Self>) -> AnyElement {
         let colors = self.theme.colors;
         let (action, seconds) = self
-            .power_countdown
+            .power_countdown()
             .map(|c| (c.action, c.remaining_seconds))
             .unwrap_or((CompletionPowerActionView::None, 0));
         let action_verb = self.action_verb_label(action);
@@ -1053,9 +1219,13 @@ impl AppShell {
             .into_any_element()
     }
 
-    fn render_core_setup_onboarding_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_core_setup_onboarding_body(&mut self, _cx: &mut Context<Self>) -> AnyElement {
         let colors = self.theme.colors;
         let has_core = !self.cores.installations.is_empty();
+        let panel = match &self.active_modal {
+            Some(ActiveModal::CoreSetupOnboarding { panel, .. }) => Some(panel.clone()),
+            _ => None,
+        };
         div()
             .flex()
             .flex_col()
@@ -1076,7 +1246,7 @@ impl AppShell {
                     .child(Icon::new(IconName::Info).size(IconSize::Small))
                     .child(self.t("dialog-core-setup-remote-hint")),
             )
-            .child(self.render_core_setup_panel("onboarding", cx))
+            .when_some(panel, |body, panel| body.child(panel))
             .when(has_core, |body| {
                 body.child(
                     div()
@@ -1098,18 +1268,16 @@ impl AppShell {
 
     fn render_remove_confirmation_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = self.theme.colors;
-        let (display_name, has_live_tasks, has_terminal_tasks, delete_files) = self
-            .remove_confirmation
-            .as_ref()
-            .map(|confirmation| {
-                (
+        let (display_name, has_live_tasks, has_terminal_tasks, delete_files) =
+            match &self.active_modal {
+                Some(ActiveModal::RemoveConfirmation(confirmation)) => (
                     confirmation.display_name.clone(),
                     confirmation.has_live_tasks,
                     confirmation.has_terminal_tasks,
                     confirmation.delete_files,
-                )
-            })
-            .unwrap_or_default();
+                ),
+                _ => Default::default(),
+            };
         let local_files_available = !matches!(self.engine_health, EngineHealthView::External);
         let removal_description_key = match (has_live_tasks, has_terminal_tasks) {
             (true, true) => "dialog-remove-description-mixed",
@@ -1189,7 +1357,7 @@ impl AppShell {
 
     fn render_batch_failure_details_body(&mut self, _cx: &mut Context<Self>) -> AnyElement {
         let colors = self.theme.colors;
-        let Some(details) = self.batch_failure_details.as_ref() else {
+        let Some(ActiveModal::BatchFailureDetails(details)) = &self.active_modal else {
             return div().into_any_element();
         };
         let command = self.t(super::commands::batch_task_command_label_key(
@@ -1211,7 +1379,7 @@ impl AppShell {
                             .tasks
                             .iter()
                             .find(|task| task.identity == *identity)
-                            .map(task_display_name)
+                            .map(|task| task_display_name(task, &self.translator))
                             .unwrap_or_else(|| {
                                 self.t_args(
                                     "dialog-batch-task-name",
@@ -1220,8 +1388,17 @@ impl AppShell {
                             })
                     },
                 );
+                let row_id = failure.identity.as_ref().map_or_else(
+                    || SharedString::from(format!("batch-failure-request-{index}")),
+                    |identity| {
+                        SharedString::from(format!(
+                            "batch-failure:{}:{}",
+                            identity.profile_id, identity.gid
+                        ))
+                    },
+                );
                 div()
-                    .id(SharedString::from(format!("batch-failure-{index}")))
+                    .id(row_id)
                     .role(Role::ListItem)
                     .flex()
                     .items_start()
@@ -1281,12 +1458,13 @@ impl AppShell {
 
     fn render_task_output_name_body(&mut self, _cx: &mut Context<Self>) -> AnyElement {
         let colors = self.theme.colors;
-        let Some(dialog) = self.output_name_dialog.as_ref() else {
+        let Some(ActiveModal::OutputName { dialog, input, .. }) = &self.active_modal else {
             return div().into_any_element();
         };
         let display_name = dialog.display_name.clone();
         let active = dialog.active;
         let error = dialog.error.clone();
+        let input = input.clone();
         div()
             .flex()
             .flex_col()
@@ -1312,7 +1490,7 @@ impl AppShell {
                             .text_color(colors.text_secondary)
                             .child(self.t("dialog-output-name-filename")),
                     )
-                    .child(Input::new(&self.output_name_input))
+                    .child(Input::new(&input))
                     .when(active, |element| {
                         element.child(
                             div()
@@ -1348,11 +1526,19 @@ impl AppShell {
 
     fn render_task_speed_limit_body(&mut self, _cx: &mut Context<Self>) -> AnyElement {
         let colors = self.theme.colors;
-        let Some(dialog) = self.task_speed_limit_dialog.as_ref() else {
+        let Some(ActiveModal::TaskSpeedLimit {
+            dialog,
+            download_input,
+            upload_input,
+            ..
+        }) = &self.active_modal
+        else {
             return div().into_any_element();
         };
         let display_name = dialog.display_name.clone();
         let error = dialog.error.clone();
+        let download_input = download_input.clone();
+        let upload_input = upload_input.clone();
         div()
             .flex()
             .flex_col()
@@ -1373,7 +1559,7 @@ impl AppShell {
                     .child(
                         settings_labeled_input(
                             self.t("dialog-speed-limit-download"),
-                            &self.task_inputs.download_limit,
+                            &download_input,
                             colors,
                         )
                         .flex_1()
@@ -1382,7 +1568,7 @@ impl AppShell {
                     .child(
                         settings_labeled_input(
                             self.t("dialog-speed-limit-upload"),
-                            &self.task_inputs.upload_limit,
+                            &upload_input,
                             colors,
                         )
                         .flex_1()
@@ -1411,12 +1597,20 @@ impl AppShell {
 
     fn render_task_options_body(&mut self, _cx: &mut Context<Self>) -> AnyElement {
         let colors = self.theme.colors;
-        let Some(dialog) = self.task_options_dialog.as_ref() else {
+        let Some(ActiveModal::TaskOptions {
+            dialog,
+            seed_ratio_input,
+            seed_time_input,
+            ..
+        }) = &self.active_modal
+        else {
             return div().into_any_element();
         };
         let display_name = dialog.display_name.clone();
         let supports_seed_rules = dialog.supports_seed_rules;
         let error = dialog.error.clone();
+        let seed_ratio_input = seed_ratio_input.clone();
+        let seed_time_input = seed_time_input.clone();
         div()
             .flex()
             .flex_col()
@@ -1448,7 +1642,7 @@ impl AppShell {
                         .child(
                             settings_labeled_input(
                                 self.t("dialog-task-options-seed-ratio"),
-                                &self.task_inputs.seed_ratio,
+                                &seed_ratio_input,
                                 colors,
                             )
                             .flex_1()
@@ -1457,7 +1651,7 @@ impl AppShell {
                         .child(
                             settings_labeled_input(
                                 self.t("dialog-task-options-seed-time"),
-                                &self.task_inputs.seed_time,
+                                &seed_time_input,
                                 colors,
                             )
                             .flex_1()

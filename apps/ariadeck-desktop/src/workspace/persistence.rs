@@ -23,7 +23,7 @@ use secrecy::SecretString;
 use tokio::{runtime::Runtime, sync::mpsc, task::JoinHandle};
 
 use super::{
-    SettingsPersistenceRequest, SettingsPersistenceResult, TrackerListRefreshResult,
+    SettingsPersistenceRequest, SettingsPersistenceResult,
     engine_setup::{
         apply_profile_secret_updates, cleanup_removed_profile_environments,
         cleanup_removed_profile_secrets,
@@ -33,6 +33,7 @@ use super::{
         map_download_proxy_config, map_download_proxy_config_or_clear, map_speed_limit_config,
         map_transfer_policy_config, preflight_settings, rollback_credential_async,
     },
+    tracker_list::TrackerListRefreshResult,
 };
 
 /// Serialized persistence commands handled off the GPUI UI thread.
@@ -72,7 +73,7 @@ pub(crate) struct ProfileCatalogSaveJob {
     pub(crate) request_id: RequestId,
     pub(crate) request_catalog: ProfileCatalogView,
     pub(crate) next_catalog: ProfileCatalog,
-    pub(crate) secret_updates: HashMap<String, ProfileRpcSecretUpdateView>,
+    pub(crate) secret_updates: HashMap<ProfileId, ProfileRpcSecretUpdateView>,
     pub(crate) previous_catalog: ProfileCatalog,
     pub(crate) current_settings: AppSettings,
 }
@@ -253,8 +254,12 @@ async fn rollback_applied(
             ));
         }
         if applied.proxy {
-            let rollback_proxy =
-                map_download_proxy_config_or_clear(previous_settings, previous_password);
+            let prev_settings = previous_settings.clone();
+            let rollback_proxy = tokio::task::spawn_blocking(move || {
+                map_download_proxy_config_or_clear(&prev_settings, previous_password)
+            })
+            .await
+            .unwrap_or_default();
             if let Err(error) = sync.apply_download_proxy(session, rollback_proxy).await {
                 summary.push_str(&format!(" Proxy rollback also failed: {}", error.summary));
             }
@@ -361,7 +366,14 @@ pub(crate) async fn persist_settings_request(
     let session = snapshot.session;
 
     if request.apply_proxy {
-        let next_proxy = match map_download_proxy_config(&request.settings, next_password) {
+        let proxy_settings = request.settings.clone();
+        let next_proxy_res = tokio::task::spawn_blocking(move || {
+            map_download_proxy_config(&proxy_settings, next_password)
+        })
+        .await
+        .map_err(|error| format!("proxy resolution task failed: {error}"))
+        .and_then(|res| res);
+        let next_proxy = match next_proxy_res {
             Ok(proxy) => proxy,
             Err(error) => {
                 return Err(rollback_applied(
@@ -729,7 +741,6 @@ async fn execute_profile_catalog_save(
     let outcome = tokio::task::spawn_blocking(move || {
         if let Err(error) = apply_profile_secret_updates(
             &job.next_catalog,
-            &job.request_catalog,
             &job.secret_updates,
             &job.previous_catalog,
         ) {
@@ -782,262 +793,18 @@ async fn execute_profile_catalog_save(
 mod tests {
     use std::sync::Mutex;
 
-    use ariadeck_application::{
-        AddDownloadRequest, CoordinatorConfig, DownloadEngineGateway, DownloadProxyConfig,
-        DownloadSyncConnector, DownloadSyncSession, EngineCapabilities, GatewayError,
-        GatewayErrorKind, InitialSyncSnapshot, LiveSyncSnapshot, RefreshHint, StoppedPage,
-        SyncError, TaskConnectionDetailsGateway, TaskDetailsGateway, TaskRemovalTarget,
-        spawn_sync_coordinator,
-    };
-    use ariadeck_domain::{
-        Gid, GlobalStat, SpeedLimitConfig, TaskConnectionDetails, TaskDetails, TaskSnapshot,
-        TransferPolicyConfig,
-    };
     use ariadeck_engine::{PROFILE_CATALOG_SCHEMA_VERSION, ProfileEntry};
     use ariadeck_settings::{
-        ColorScheme, DownloadProxyMode, ProxyCredentialError, ProxyCredentialRef, TrackerListSource,
+        ColorScheme, DownloadProxyMode, ProxyCredentialRef, TrackerListSource,
     };
-    use async_trait::async_trait;
 
     use super::*;
-    use crate::workspace::ProxyPasswordUpdate;
-
-    #[derive(Default)]
-    struct RecordingGateway {
-        fail_on: Mutex<Option<&'static str>>,
-        calls: Mutex<Vec<String>>,
-    }
-
-    #[async_trait]
-    impl DownloadEngineGateway for RecordingGateway {
-        async fn add_download(&self, _: &AddDownloadRequest) -> Result<Vec<Gid>, GatewayError> {
-            unimplemented!()
-        }
-        async fn retry_download(
-            &self,
-            _: Gid,
-            _: &AddDownloadRequest,
-        ) -> Result<Gid, GatewayError> {
-            unimplemented!()
-        }
-        async fn pause(&self, _: Gid) -> Result<(), GatewayError> {
-            unimplemented!()
-        }
-        async fn resume(&self, _: Gid) -> Result<(), GatewayError> {
-            unimplemented!()
-        }
-        async fn change_options(&self, _: Gid, _: &[(String, String)]) -> Result<(), GatewayError> {
-            unimplemented!()
-        }
-        async fn remove(&self, _: Gid, _: TaskRemovalTarget) -> Result<(), GatewayError> {
-            unimplemented!()
-        }
-        async fn apply_download_proxy(
-            &self,
-            cfg: &DownloadProxyConfig,
-        ) -> Result<(), GatewayError> {
-            self.calls
-                .lock()
-                .expect("lock")
-                .push(format!("proxy:{:?}", cfg.mode));
-            if *self.fail_on.lock().expect("lock") == Some("proxy") {
-                return Err(GatewayError::new(
-                    GatewayErrorKind::Rejected,
-                    "proxy boom",
-                    false,
-                ));
-            }
-            Ok(())
-        }
-        async fn apply_speed_limit(&self, cfg: &SpeedLimitConfig) -> Result<(), GatewayError> {
-            self.calls
-                .lock()
-                .expect("lock")
-                .push(format!("speed:{}", cfg.download_limit.get()));
-            if *self.fail_on.lock().expect("lock") == Some("speed") {
-                return Err(GatewayError::new(
-                    GatewayErrorKind::Rejected,
-                    "speed boom",
-                    false,
-                ));
-            }
-            Ok(())
-        }
-        async fn apply_transfer_policy(
-            &self,
-            cfg: &TransferPolicyConfig,
-        ) -> Result<(), GatewayError> {
-            self.calls
-                .lock()
-                .expect("lock")
-                .push(format!("policy:{}", cfg.max_concurrent_downloads));
-            if *self.fail_on.lock().expect("lock") == Some("policy") {
-                return Err(GatewayError::new(
-                    GatewayErrorKind::Rejected,
-                    "policy boom",
-                    false,
-                ));
-            }
-            Ok(())
-        }
-        async fn apply_bt_tracker(&self, trackers: &[String]) -> Result<(), GatewayError> {
-            self.calls
-                .lock()
-                .expect("lock")
-                .push(format!("tracker:{}", trackers.len()));
-            if *self.fail_on.lock().expect("lock") == Some("tracker") {
-                return Err(GatewayError::new(
-                    GatewayErrorKind::Rejected,
-                    "tracker boom",
-                    false,
-                ));
-            }
-            Ok(())
-        }
-    }
-
-    struct StubSession;
-
-    #[async_trait]
-    impl TaskDetailsGateway for RecordingGateway {
-        async fn task_details(&self, _: Gid) -> Result<TaskDetails, GatewayError> {
-            unimplemented!()
-        }
-    }
-
-    #[async_trait]
-    impl TaskConnectionDetailsGateway for RecordingGateway {
-        async fn connection_details(
-            &self,
-            _: Gid,
-            _: bool,
-            _: bool,
-        ) -> Result<TaskConnectionDetails, GatewayError> {
-            unimplemented!()
-        }
-    }
-
-    #[async_trait]
-    impl DownloadSyncSession for StubSession {
-        async fn initial_snapshot(&self, _: u32) -> Result<InitialSyncSnapshot, SyncError> {
-            Ok(InitialSyncSnapshot {
-                capabilities: EngineCapabilities {
-                    version: "1.37.0".into(),
-                    ..EngineCapabilities::default()
-                },
-                global_stat: GlobalStat::default(),
-                live: LiveSyncSnapshot {
-                    active: Vec::new(),
-                    waiting: Vec::new(),
-                },
-                stopped: StoppedPage {
-                    offset: 0,
-                    total: 0,
-                    tasks: Vec::new(),
-                },
-            })
-        }
-        async fn refresh_global_stat(&self) -> Result<GlobalStat, SyncError> {
-            Ok(GlobalStat::default())
-        }
-        async fn refresh_live(&self) -> Result<LiveSyncSnapshot, SyncError> {
-            Ok(LiveSyncSnapshot {
-                active: Vec::new(),
-                waiting: Vec::new(),
-            })
-        }
-        async fn refresh_stopped_page(&self, _: usize, _: u32) -> Result<StoppedPage, SyncError> {
-            Ok(StoppedPage {
-                offset: 0,
-                total: 0,
-                tasks: Vec::new(),
-            })
-        }
-        async fn refresh_tasks(
-            &self,
-            _: &[Gid],
-        ) -> Result<Vec<(Gid, Option<TaskSnapshot>)>, SyncError> {
-            Ok(Vec::new())
-        }
-        async fn close(&self) {}
-    }
-
-    struct StubConnector {
-        gateway: Arc<RecordingGateway>,
-        keepalive_tx: Mutex<Vec<mpsc::Sender<RefreshHint>>>,
-    }
-
-    #[async_trait]
-    impl DownloadSyncConnector for StubConnector {
-        async fn connect(&self) -> Result<ariadeck_application::ConnectedSyncSession, SyncError> {
-            let (tx, rx) = mpsc::channel::<RefreshHint>(4);
-            self.keepalive_tx.lock().expect("lock").push(tx);
-            Ok(
-                ariadeck_application::ConnectedSyncSession::new_with_gateways(
-                    Box::new(StubSession),
-                    self.gateway.clone(),
-                    self.gateway.clone(),
-                    self.gateway.clone(),
-                    rx,
-                ),
-            )
-        }
-    }
-
-    #[derive(Default)]
-    struct MemoryCredentialStore {
-        entries: Mutex<HashMap<ProxyCredentialRef, String>>,
-    }
-
-    impl ProxyCredentialStore for MemoryCredentialStore {
-        fn load(
-            &self,
-            credential: ProxyCredentialRef,
-        ) -> Result<Option<SecretString>, ProxyCredentialError> {
-            Ok(self
-                .entries
-                .lock()
-                .expect("lock")
-                .get(&credential)
-                .cloned()
-                .map(SecretString::new))
-        }
-        fn save(
-            &self,
-            credential: ProxyCredentialRef,
-            password: &SecretString,
-        ) -> Result<(), ProxyCredentialError> {
-            use secrecy::ExposeSecret as _;
-            self.entries
-                .lock()
-                .expect("lock")
-                .insert(credential, password.expose_secret().to_owned());
-            Ok(())
-        }
-        fn delete(&self, credential: ProxyCredentialRef) -> Result<(), ProxyCredentialError> {
-            self.entries.lock().expect("lock").remove(&credential);
-            Ok(())
-        }
-    }
-
-    async fn connected_sync(gateway: Arc<RecordingGateway>, profile_id: ProfileId) -> SyncHandle {
-        let handle = spawn_sync_coordinator(
-            Arc::new(StubConnector {
-                gateway,
-                keepalive_tx: Mutex::new(Vec::new()),
-            }),
-            CoordinatorConfig::new(profile_id),
-        );
-        for _ in 0..40 {
-            if let Some(snap) = handle.snapshot(TaskListQuery::default()).await
-                && matches!(snap.connection_state, ConnectionState::Connected)
-            {
-                return handle;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        panic!("stub sync coordinator did not connect");
-    }
+    use crate::workspace::{
+        ProxyPasswordUpdate,
+        test_support::{
+            MemoryProxyCredentialStore as MemoryCredentialStore, RecordingGateway, connected_sync,
+        },
+    };
 
     #[tokio::test]
     async fn saga_rolls_back_all_previous_engine_steps_and_credential_on_tracker_failure() {
@@ -1195,15 +962,12 @@ mod tests {
             )
             .expect("save env a");
 
-        // Pre-seed profile B's env so load succeeds, then make its directory read-only?
-        // Instead, block environment.json replacement by placing a directory at settings or
-        // testing a corrupt/invalid target env: here seed B's env with valid data, then test
-        // normal switch succeeds and verify both stores stay consistent.
-        let mut env_b = ProfileEnvironment::defaults_for_root(root.path().join("dl-b"));
-        env_b.speed_limits.download_limit = 9_999;
-        env_store
-            .save(profile_b.profile_id.as_uuid(), &env_b)
-            .expect("save env b");
+        // Inject a real failure when persisting target profile B's environment:
+        // place a directory at `profiles/<b_id>/environment.json` so atomic
+        // replace fails after `profiles.json` and `settings.json` were updated,
+        // then verify both stores roll back to profile A.
+        let target_env_path = env_store.path_for(profile_b.profile_id.as_uuid());
+        std::fs::create_dir_all(&target_env_path).expect("block target env path with directory");
 
         let switched = switch_profile_blocking(
             Some(&store),
@@ -1218,18 +982,29 @@ mod tests {
             },
         );
         assert!(
-            switched.result.is_ok(),
-            "switch failed: {:?}",
-            switched.result
+            switched.result.is_err(),
+            "switch must fail when target environment cannot be persisted"
         );
-        assert_eq!(switched.catalog.active_profile_id, profile_b.profile_id);
+        assert_eq!(
+            switched.catalog.active_profile_id, profile_a.profile_id,
+            "returned catalog must remain on profile A"
+        );
+        let reloaded_catalog: ProfileCatalog = serde_json::from_slice(
+            &std::fs::read(root.path().join("profiles.json")).expect("read profiles.json"),
+        )
+        .expect("parse reloaded catalog");
+        assert_eq!(
+            reloaded_catalog.active_profile_id, profile_a.profile_id,
+            "persisted profiles.json must roll back to profile A"
+        );
         assert_eq!(
             store
                 .load()
                 .expect("reloaded settings")
                 .speed_limits
                 .download_limit,
-            9_999
+            1_111,
+            "persisted settings.json must roll back to profile A"
         );
     }
 }

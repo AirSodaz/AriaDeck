@@ -91,7 +91,7 @@ impl AppShell {
     }
 
     pub(crate) fn render_add_button(&self, cx: &mut Context<Self>) -> KitButton {
-        let enabled = self.snapshot.commands_available() && !self.add_dialog.open;
+        let enabled = self.snapshot.commands_available() && self.add_dialog_view().is_none();
         KitButton::new("open-add-download")
             .primary()
             .small()
@@ -296,7 +296,7 @@ impl AppShell {
             let id = category.id.clone();
             let is_selected = selected.as_deref() == Some(id.as_str());
             let name = category.name.clone();
-            let display_name = category_display_name(&name, self);
+            let display_name = category_display_name(&name, &self.translator);
             let icon = category_icon(&name);
             items.push(
                 SidebarMenuItem::new(display_name.clone())
@@ -933,7 +933,7 @@ impl AppShell {
         let show_add = self.query.filter == WorkspaceFilter::All
             && self.query.search.trim().is_empty()
             && self.snapshot.commands_available()
-            && !self.add_dialog.open;
+            && self.add_dialog_view().is_none();
 
         let mut header = EmptyHeader::new()
             .media(

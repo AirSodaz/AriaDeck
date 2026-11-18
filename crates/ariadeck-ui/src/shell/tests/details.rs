@@ -46,7 +46,7 @@ fn magnet_successor_migrates_nonfocused_selection_anchor_and_details(cx: &mut Te
         next.tasks[0].belongs_to = Some(format!("{:016x}", 0));
         shell.set_snapshot(next, cx);
     });
-    view.read_with(cx, |shell, _| {
+    view.read_with(cx, |shell, cx| {
         let parent = task(0).identity;
         let successor = task(3).identity;
         assert_eq!(shell.selected, Some(task(1).identity));
@@ -56,9 +56,8 @@ fn magnet_successor_migrates_nonfocused_selection_anchor_and_details(cx: &mut Te
         assert_eq!(shell.range_anchor, Some(successor.clone()));
         assert_eq!(
             shell
-                .details_drawer
-                .as_ref()
-                .map(|drawer| drawer.identity.clone()),
+                .details_panel()
+                .map(|panel| panel.read(cx).identity.clone()),
             Some(successor)
         );
     });
@@ -73,8 +72,8 @@ fn stale_details_result_cannot_replace_the_active_request(cx: &mut TestAppContex
         shell.open_details_for(task(0), cx);
         shell
     });
-    let (request_id, session, identity) = view.read_with(cx, |shell, _| {
-        let drawer = shell.details_drawer.as_ref().expect("drawer must exist");
+    let (request_id, session, identity) = view.read_with(cx, |shell, cx| {
+        let drawer = shell.details_panel().expect("drawer must exist").read(cx);
         assert!(matches!(drawer.state, TaskDetailsLoadState::Loading));
         (
             drawer
@@ -98,8 +97,8 @@ fn stale_details_result_cannot_replace_the_active_request(cx: &mut TestAppContex
             cx,
         );
     });
-    view.read_with(cx, |shell, _| {
-        let drawer = shell.details_drawer.as_ref().expect("drawer must exist");
+    view.read_with(cx, |shell, cx| {
+        let drawer = shell.details_panel().expect("drawer must exist").read(cx);
         assert!(matches!(drawer.state, TaskDetailsLoadState::Loading));
         assert_eq!(
             drawer.pending.as_ref().map(|pending| pending.request_id),
@@ -118,8 +117,8 @@ fn stale_details_result_cannot_replace_the_active_request(cx: &mut TestAppContex
             cx,
         );
     });
-    view.read_with(cx, |shell, _| {
-        let drawer = shell.details_drawer.as_ref().expect("drawer must exist");
+    view.read_with(cx, |shell, cx| {
+        let drawer = shell.details_panel().expect("drawer must exist").read(cx);
         assert!(matches!(drawer.state, TaskDetailsLoadState::Ready { .. }));
         assert!(drawer.pending.is_none());
     });
@@ -133,8 +132,8 @@ fn task_revision_refreshes_visible_file_details_without_loading_flicker(cx: &mut
         shell.open_details_for(task(0), cx);
         shell
     });
-    let (initial_request, session, identity) = view.read_with(cx, |shell, _| {
-        let drawer = shell.details_drawer.as_ref().expect("drawer must exist");
+    let (initial_request, session, identity) = view.read_with(cx, |shell, cx| {
+        let drawer = shell.details_panel().expect("drawer must exist").read(cx);
         (
             drawer.pending.as_ref().expect("initial request").request_id,
             drawer.session.clone(),
@@ -161,8 +160,8 @@ fn task_revision_refreshes_visible_file_details_without_loading_flicker(cx: &mut
         revision_two.tasks[0].revision = 2;
         shell.set_snapshot(revision_two, cx);
     });
-    let refresh_request = view.read_with(cx, |shell, _| {
-        let drawer = shell.details_drawer.as_ref().expect("drawer must exist");
+    let refresh_request = view.read_with(cx, |shell, cx| {
+        let drawer = shell.details_panel().expect("drawer must exist").read(cx);
         let TaskDetailsLoadState::Ready { details } = &drawer.state else {
             panic!("existing details must remain visible while refreshing")
         };
@@ -178,12 +177,11 @@ fn task_revision_refreshes_visible_file_details_without_loading_flicker(cx: &mut
         revision_three.tasks[0].revision = 3;
         shell.set_snapshot(revision_three, cx);
     });
-    view.read_with(cx, |shell, _| {
+    view.read_with(cx, |shell, cx| {
         assert_eq!(
             shell
-                .details_drawer
-                .as_ref()
-                .and_then(|drawer| drawer.pending.as_ref())
+                .details_panel()
+                .and_then(|panel| panel.read(cx).pending.as_ref())
                 .map(|pending| pending.request_id),
             Some(refresh_request),
             "a second refresh must not be started while one is pending"
@@ -203,8 +201,8 @@ fn task_revision_refreshes_visible_file_details_without_loading_flicker(cx: &mut
             cx,
         );
     });
-    let catch_up_request = view.read_with(cx, |shell, _| {
-        let drawer = shell.details_drawer.as_ref().expect("drawer must exist");
+    let catch_up_request = view.read_with(cx, |shell, cx| {
+        let drawer = shell.details_panel().expect("drawer must exist").read(cx);
         let TaskDetailsLoadState::Ready { details } = &drawer.state else {
             panic!("refreshed details must stay visible")
         };
@@ -228,8 +226,8 @@ fn task_revision_refreshes_visible_file_details_without_loading_flicker(cx: &mut
             cx,
         );
     });
-    view.read_with(cx, |shell, _| {
-        let drawer = shell.details_drawer.as_ref().expect("drawer must exist");
+    view.read_with(cx, |shell, cx| {
+        let drawer = shell.details_panel().expect("drawer must exist").read(cx);
         let TaskDetailsLoadState::Ready { details } = &drawer.state else {
             panic!("details must remain ready")
         };
@@ -306,8 +304,8 @@ fn detail_requests_are_task_scoped_and_clear_active_only_network_data(cx: &mut T
         completed.tasks[0].revision = 2;
         shell.set_snapshot(completed, cx);
     });
-    view.read_with(cx, |shell, _| {
-        let drawer = shell.details_drawer.as_ref().expect("drawer remains open");
+    view.read_with(cx, |shell, cx| {
+        let drawer = shell.details_panel().expect("drawer remains open").read(cx);
         let TaskDetailsLoadState::Ready { details } = &drawer.state else {
             panic!("background refresh must keep details visible")
         };
@@ -338,11 +336,13 @@ fn details_drawer_survives_filtering_that_hides_its_task(cx: &mut TestAppContext
         filtered.tasks[0] = task(2);
         shell.set_snapshot(filtered, cx);
     });
-    view.read_with(cx, |shell, _| {
+    view.read_with(cx, |shell, cx| {
         assert_eq!(shell.selected, selected);
         assert_eq!(
-            shell.details_drawer.as_ref().map(|drawer| &drawer.identity),
-            selected.as_ref()
+            shell
+                .details_panel()
+                .map(|panel| panel.read(cx).identity.clone()),
+            selected
         );
     });
 }
@@ -354,29 +354,22 @@ fn ten_thousand_detail_files_render_only_a_viewport_window(cx: &mut TestAppConte
         shell.snapshot = snapshot(1);
         let overview = task(0);
         shell.selected = Some(overview.identity.clone());
-        shell.details_drawer = Some(TaskDetailsDrawer {
-            identity: overview.identity.clone(),
-            overview,
-            session: shell.snapshot.engine_session().expect("test session"),
-            state: TaskDetailsLoadState::Ready {
-                details: Box::new(details(10_000)),
-            },
-            pending: None,
-            open_pending: None,
-            tab: TaskDetailsTab::Files,
-            file_scroll: UniformListScrollHandle::new(),
-            info_scroll: ScrollHandle::new(),
-            network_scroll: ScrollHandle::new(),
-            options_scroll: ScrollHandle::new(),
-            rendered_file_range: 0..0,
-            last_ready_refresh_at: None,
-            refresh_coalesced: false,
-        });
+        shell.open_details_for(overview, cx);
+        if let Some(panel) = shell.details_panel().cloned() {
+            panel.update(cx, |drawer, cx| {
+                drawer.pending = None;
+                drawer.state = TaskDetailsLoadState::Ready {
+                    details: Arc::new(details(10_000)),
+                };
+                drawer.tab = TaskDetailsTab::Files;
+                cx.notify();
+            });
+        }
         shell
     });
 
-    view.read_with(cx, |shell, _| {
-        let drawer = shell.details_drawer.as_ref().expect("drawer must exist");
+    view.read_with(cx, |shell, cx| {
+        let drawer = shell.details_panel().expect("drawer must exist").read(cx);
         assert!(!drawer.rendered_file_range.is_empty());
         assert!(
             drawer.rendered_file_range.len() < 64,
@@ -427,7 +420,7 @@ fn details_drawer_tabs_render_with_scrollbars_inside_viewport(cx: &mut TestAppCo
 
     let (request_id, session, identity) = shell.update_in(&mut visual_cx, |shell, window, cx| {
         shell.open_task_details_action(&OpenTaskDetails, window, cx);
-        let drawer = shell.details_drawer.as_ref().expect("drawer opened");
+        let drawer = shell.details_panel().expect("drawer opened").read(cx);
         let pending = drawer.pending.as_ref().expect("details request pending");
         (
             pending.request_id,
@@ -462,16 +455,19 @@ fn details_drawer_tabs_render_with_scrollbars_inside_viewport(cx: &mut TestAppCo
         TaskDetailsTab::Options,
     ] {
         shell.update(&mut visual_cx, |shell, cx| {
-            if let Some(drawer) = &mut shell.details_drawer {
-                drawer.tab = tab;
+            if let Some(panel) = shell.details_panel().cloned() {
+                panel.update(cx, |drawer, cx| {
+                    drawer.tab = tab;
+                    cx.notify();
+                });
             }
             cx.notify();
         });
         visual_cx.run_until_parked();
         let _ = visual_cx.update(|window, cx| window.draw(cx));
 
-        shell.read_with(&visual_cx, |shell, _| {
-            let drawer = shell.details_drawer.as_ref().expect("drawer present");
+        shell.read_with(&visual_cx, |shell, cx| {
+            let drawer = shell.details_panel().expect("drawer present").read(cx);
             let bounds = match tab {
                 TaskDetailsTab::Info => drawer.info_scroll.bounds(),
                 TaskDetailsTab::Files => drawer.file_scroll.0.borrow().base_handle.bounds(),
@@ -518,7 +514,7 @@ fn details_drawer_transitions_between_sheet_and_inline_across_breakpoint(cx: &mu
     visual_cx.run_until_parked();
     assert!(!visual_cx.update(|window, cx| window.has_active_sheet(cx)));
     shell.read_with(&visual_cx, |shell, _| {
-        assert!(shell.details_drawer.is_some());
+        assert!(shell.details_panel().is_some());
     });
 
     // Shrink back below 1280px: Sheet re-opens automatically.

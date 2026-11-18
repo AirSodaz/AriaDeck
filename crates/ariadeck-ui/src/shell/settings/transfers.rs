@@ -1,12 +1,88 @@
-//! Settings `transfers` section logic and rendering for `AppShell`.
+//! Settings `transfers` section logic and rendering for `SettingsPanelView` and `AppShell`.
 
 use super::*;
 
 impl AppShell {
+    pub(super) fn request_tracker_list_refresh_with_draft(
+        &mut self,
+        draft: TrackerListSettingsView,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_settings_save.is_some() || self.pending_tracker_refresh.is_some() {
+            return;
+        }
+        // Mirror the form draft into settings so desktop can read URL/source for this fetch.
+        self.settings.tracker_list = draft;
+        let request_id = self.allocate_request_id();
+        self.pending_tracker_refresh = Some(request_id);
+        if let Some(panel) = self.settings_panel_entity() {
+            panel.update(cx, |panel, cx| {
+                panel.pending_tracker_refresh = true;
+                panel.settings_page.error = None;
+                cx.notify();
+            });
+        }
+        cx.emit(AppShellEvent::TrackerListRefreshRequested { request_id });
+        cx.notify();
+    }
+
+    pub fn set_tracker_list_refresh_result(
+        &mut self,
+        request_id: RequestId,
+        settings: Option<SettingsView>,
+        tracker_count: usize,
+        result: Result<(), OperationErrorView>,
+        auto: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_tracker_refresh != Some(request_id) && !auto {
+            return;
+        }
+        if self.pending_tracker_refresh == Some(request_id) {
+            self.pending_tracker_refresh = None;
+            if let Some(panel) = self.settings_panel_entity() {
+                panel.update(cx, |panel, cx| {
+                    panel.pending_tracker_refresh = false;
+                    cx.notify();
+                });
+            }
+        }
+        match result {
+            Ok(()) => {
+                if let Some(settings) = settings {
+                    self.apply_settings(settings, None, cx);
+                }
+                if !auto {
+                    self.show_notice(
+                        self.t_args(
+                            "notice-settings-tracker-refreshed",
+                            &[("count", FluentValue::from(tracker_count as i64))],
+                        ),
+                        false,
+                        cx,
+                    );
+                }
+            }
+            Err(error) => {
+                if !auto {
+                    if let Some(panel) = self.settings_panel_entity() {
+                        panel.update(cx, |panel, cx| {
+                            panel.settings_page.error = Some(error);
+                            cx.notify();
+                        });
+                    }
+                    cx.notify();
+                }
+            }
+        }
+    }
+}
+
+impl SettingsPanelView {
     /// Save dirty speed-limit, transfer-policy, and/or tracker-list fields.
     /// Used by the Transfers category footer so groups persist together.
     pub(crate) fn submit_transfers(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         let speed_limit_draft = self.read_speed_limit_draft(cx);
@@ -58,7 +134,7 @@ impl AppShell {
         self.request_settings_save(settings, ProxyPasswordUpdateView::Unchanged, source, cx);
     }
 
-    pub(crate) fn read_speed_limit_draft(&self, cx: &Context<Self>) -> SpeedLimitSettingsView {
+    pub(super) fn read_speed_limit_draft(&self, cx: &Context<Self>) -> SpeedLimitSettingsView {
         SpeedLimitSettingsView {
             download_limit: self
                 .settings_inputs
@@ -77,7 +153,7 @@ impl AppShell {
         }
     }
 
-    pub(crate) fn read_transfer_policy_draft(
+    pub(super) fn read_transfer_policy_draft(
         &self,
         cx: &Context<Self>,
     ) -> TransferPolicySettingsView {
@@ -109,7 +185,7 @@ impl AppShell {
         }
     }
 
-    pub(crate) fn read_tracker_list_draft(&self, cx: &Context<Self>) -> TrackerListSettingsView {
+    pub(super) fn read_tracker_list_draft(&self, cx: &Context<Self>) -> TrackerListSettingsView {
         TrackerListSettingsView {
             enabled: self.settings_page.draft_tracker_enabled,
             source: self.settings_page.draft_tracker_source,
@@ -132,7 +208,7 @@ impl AppShell {
         }
     }
 
-    pub(crate) fn sync_tracker_list_fields_from_settings(
+    pub(super) fn sync_tracker_list_fields_from_settings(
         &mut self,
         window: Option<&mut Window>,
         cx: &mut Context<Self>,
@@ -156,7 +232,7 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_tracker_list_enabled(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         self.settings_page.draft_tracker_enabled = !self.settings_page.draft_tracker_enabled;
@@ -169,7 +245,7 @@ impl AppShell {
         source: TrackerListSourceView,
         cx: &mut Context<Self>,
     ) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         if self.settings_page.draft_tracker_source == source {
@@ -181,7 +257,7 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_tracker_list_auto_refresh(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         self.settings_page.draft_tracker_auto_refresh =
@@ -191,69 +267,18 @@ impl AppShell {
     }
 
     pub(crate) fn request_tracker_list_refresh(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings
-            || self.pending_settings_save.is_some()
-            || self.settings_page.pending_tracker_refresh.is_some()
-        {
+        if self.is_pending() || self.pending_tracker_refresh {
             return;
         }
-        // Mirror the form draft into settings so desktop can read URL/source for this fetch.
         let draft = self.read_tracker_list_draft(cx);
-        self.settings.tracker_list = draft;
-        let request_id = self.allocate_request_id();
-        self.settings_page.pending_tracker_refresh = Some(request_id);
+        self.settings.tracker_list = draft.clone();
+        self.pending_tracker_refresh = true;
         self.settings_page.error = None;
-        cx.emit(AppShellEvent::TrackerListRefreshRequested { request_id });
+        cx.emit(SettingsPanelEvent::RefreshTrackerList { draft });
         cx.notify();
     }
 
-    pub fn set_tracker_list_refresh_result(
-        &mut self,
-        request_id: RequestId,
-        settings: Option<SettingsView>,
-        tracker_count: usize,
-        result: Result<(), OperationErrorView>,
-        auto: bool,
-        cx: &mut Context<Self>,
-    ) {
-        if self.settings_page.pending_tracker_refresh != Some(request_id) && !auto {
-            // Stale manual request or auto tick without a pending marker.
-            if !auto {
-                return;
-            }
-        }
-        if self.settings_page.pending_tracker_refresh == Some(request_id) {
-            self.settings_page.pending_tracker_refresh = None;
-        }
-        match result {
-            Ok(()) => {
-                if let Some(settings) = settings {
-                    self.apply_settings(settings, None, cx);
-                    self.sync_tracker_list_fields_from_settings(None, cx);
-                }
-                if !auto {
-                    self.show_notice(
-                        self.t_args(
-                            "notice-settings-tracker-refreshed",
-                            &[("count", FluentValue::from(tracker_count as i64))],
-                        ),
-                        false,
-                        cx,
-                    );
-                }
-            }
-            Err(error) => {
-                if !auto {
-                    self.settings_page.error = Some(error);
-                    cx.notify();
-                }
-            }
-        }
-    }
-
-    /// Reflect the normalized (compact) speed-limit form back into the fields
-    /// so a saved "2097152" re-renders as "2M".
-    pub(crate) fn sync_speed_limit_fields_from_settings(
+    pub(super) fn sync_speed_limit_fields_from_settings(
         &mut self,
         window: Option<&mut Window>,
         cx: &mut Context<Self>,
@@ -269,7 +294,7 @@ impl AppShell {
         }
     }
 
-    pub(crate) fn sync_transfer_policy_fields_from_settings(
+    pub(super) fn sync_transfer_policy_fields_from_settings(
         &mut self,
         window: Option<&mut Window>,
         cx: &mut Context<Self>,
@@ -296,7 +321,7 @@ impl AppShell {
         method: FileAllocationView,
         cx: &mut Context<Self>,
     ) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         if self.settings_page.draft_file_allocation == method {
@@ -308,7 +333,7 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_check_integrity(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         self.settings_page.draft_check_integrity = !self.settings_page.draft_check_integrity;
@@ -316,14 +341,14 @@ impl AppShell {
         cx.notify();
     }
 
-    pub(crate) fn render_settings_transfers(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn render_settings_transfers(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
-        let pending = self.pending_settings_save.is_some();
+        let pending = self.is_pending();
         let allocation_selected = FileAllocationView::all()
             .iter()
             .position(|method| *method == self.settings_page.draft_file_allocation)
             .unwrap_or(1);
-        let allocation_shell = cx.entity().downgrade();
+        let allocation_panel = cx.entity().downgrade();
         let allocation_control = SegmentedControl::new(
             "settings-file-allocation",
             FileAllocationView::all().map(|method| {
@@ -344,12 +369,12 @@ impl AppShell {
                 .get(index)
                 .copied()
                 .unwrap_or_default();
-            allocation_shell
-                .update(cx, |shell, cx| shell.select_file_allocation(method, cx))
+            allocation_panel
+                .update(cx, |panel, cx| panel.select_file_allocation(method, cx))
                 .ok();
         });
         let draft_check_integrity = self.settings_page.draft_check_integrity;
-        let integrity_shell = cx.entity().downgrade();
+        let integrity_panel = cx.entity().downgrade();
         div()
             .flex()
             .flex_col()
@@ -453,9 +478,9 @@ impl AppShell {
                                 })
                                 .disabled(pending)
                                 .on_change(move |_, _, cx| {
-                                    integrity_shell
-                                        .update(cx, |shell, cx| {
-                                            shell.toggle_check_integrity(cx);
+                                    integrity_panel
+                                        .update(cx, |panel, cx| {
+                                            panel.toggle_check_integrity(cx);
                                         })
                                         .ok();
                                 }),
@@ -472,10 +497,9 @@ impl AppShell {
             .child(self.render_settings_tracker_list(cx))
     }
 
-    pub(crate) fn render_settings_tracker_list(&mut self, cx: &mut Context<Self>) -> Div {
+    fn render_settings_tracker_list(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
-        let pending = self.pending_settings_save.is_some()
-            || self.settings_page.pending_tracker_refresh.is_some();
+        let pending = self.is_pending() || self.pending_tracker_refresh;
         let enabled = self.settings_page.draft_tracker_enabled;
         let auto_refresh = self.settings_page.draft_tracker_auto_refresh;
         let source = self.settings_page.draft_tracker_source;
@@ -491,7 +515,7 @@ impl AppShell {
             .count();
         let last_refreshed = self.settings.tracker_list.last_refreshed_at;
         let source_selected = source.index();
-        let source_shell = cx.entity().downgrade();
+        let source_panel = cx.entity().downgrade();
         let source_control = SegmentedControl::new(
             "settings-tracker-source",
             TrackerListSourceView::all().map(|item| Segment::new(self.t(item.message_key()))),
@@ -505,13 +529,12 @@ impl AppShell {
                 1 => TrackerListSourceView::Custom,
                 _ => TrackerListSourceView::Curated,
             };
-            source_shell
-                .update(cx, |shell, cx| shell.select_tracker_list_source(source, cx))
+            source_panel
+                .update(cx, |panel, cx| panel.select_tracker_list_source(source, cx))
                 .ok();
         });
-        let enable_shell = cx.entity().downgrade();
-        let auto_shell = cx.entity().downgrade();
-        let refresh_shell = cx.entity().downgrade();
+        let enable_panel = cx.entity().downgrade();
+        let auto_panel = cx.entity().downgrade();
         settings_section_owned(self.t("settings-tracker-list"), colors).child(
             div()
                 .pt_4()
@@ -533,8 +556,8 @@ impl AppShell {
                         .accessibility_label(self.t("settings-tracker-enabled-aria"))
                         .disabled(pending)
                         .on_change(move |_, _, cx| {
-                            enable_shell
-                                .update(cx, |shell, cx| shell.toggle_tracker_list_enabled(cx))
+                            enable_panel
+                                .update(cx, |panel, cx| panel.toggle_tracker_list_enabled(cx))
                                 .ok();
                         }),
                     colors,
@@ -560,8 +583,8 @@ impl AppShell {
                         .accessibility_label(self.t("settings-tracker-auto-refresh-aria"))
                         .disabled(pending)
                         .on_change(move |_, _, cx| {
-                            auto_shell
-                                .update(cx, |shell, cx| shell.toggle_tracker_list_auto_refresh(cx))
+                            auto_panel
+                                .update(cx, |panel, cx| panel.toggle_tracker_list_auto_refresh(cx))
                                 .ok();
                         }),
                     colors,
@@ -576,14 +599,10 @@ impl AppShell {
                                 .label(self.t("settings-tracker-refresh"))
                                 .accessibility_label(self.t("settings-tracker-refresh-aria"))
                                 .disabled(pending)
-                                .loading(self.settings_page.pending_tracker_refresh.is_some())
-                                .on_click(move |_, _, cx| {
-                                    refresh_shell
-                                        .update(cx, |shell, cx| {
-                                            shell.request_tracker_list_refresh(cx)
-                                        })
-                                        .ok();
-                                }),
+                                .loading(self.pending_tracker_refresh)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.request_tracker_list_refresh(cx);
+                                })),
                         )
                         .child(div().text_xs().text_color(colors.text_muted).child(
                             match last_refreshed {

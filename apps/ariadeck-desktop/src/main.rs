@@ -9,7 +9,13 @@ mod metadata;
 mod platform;
 mod workspace;
 
-use std::{env, ffi::OsString, path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    env,
+    ffi::OsString,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use gpui::{App, AppContext as _, Bounds, Point, WindowBounds, px, size};
 use gpui_kit::{application, component::TitleBar};
@@ -62,6 +68,10 @@ fn main() {
         "instance coordination complete"
     );
 
+    let shutdown_slot: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::new(Mutex::new(None));
+    let app_runtime = runtime.clone();
+    let app_shutdown_slot = shutdown_slot.clone();
+
     application()
         .with_assets(ariadeck_ui::Assets)
         .run(move |cx: &mut App| {
@@ -101,13 +111,15 @@ fn main() {
                 window_options.icon = window_icon();
             }
             let open_result = gpui_kit::open_window(window_options, cx, {
-                let runtime = runtime.clone();
+                let runtime = app_runtime.clone();
+                let shutdown_slot = app_shutdown_slot.clone();
                 let initial_request = initial_request.clone();
                 let instance_requests = instance_requests;
                 move |window, cx| {
                     cx.new(|cx| {
                         DesktopRoot::new(
                             runtime.clone(),
+                            shutdown_slot.clone(),
                             initial_request.clone(),
                             instance_requests,
                             window,
@@ -125,6 +137,20 @@ fn main() {
 
             cx.activate(true);
         });
+
+    // Wait on the main thread for persistence flush, sync stop, and managed
+    // aria2 graceful shutdown before the process exits, and ensure the Tokio
+    // runtime is never dropped from inside a worker thread.
+    let pending_shutdown = shutdown_slot
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some(handle) = pending_shutdown {
+        let _ = runtime.block_on(tokio::time::timeout(Duration::from_secs(5), handle));
+    }
+    if let Ok(runtime) = Arc::try_unwrap(runtime) {
+        runtime.shutdown_timeout(Duration::from_secs(1));
+    }
 }
 
 fn launch_request_from_args(

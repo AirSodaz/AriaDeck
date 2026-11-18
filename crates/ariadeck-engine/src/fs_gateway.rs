@@ -721,3 +721,518 @@ fn filesystem_error(
         retryable,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::console_free_command;
+    use ariadeck_application::{
+        DownloadDestinationFile, DownloadDestinationGateway, DownloadDestinationRequest,
+        GatewayErrorKind, TaskFileGateway, TaskFileRemovalRequest,
+    };
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+    use uuid::Uuid;
+
+    fn temporary_directory() -> PathBuf {
+        let path = std::env::temp_dir().join(format!("ariadeck-engine-{}", Uuid::new_v4()));
+        fs::create_dir_all(&path).expect("create test dir");
+        path
+    }
+
+    #[test]
+    fn local_path_opening_passes_the_path_as_one_process_argument() {
+        let path = Path::new(r"C:\Downloads\name & more.bin");
+        let file = open_command_spec(path, true);
+        let folder = open_command_spec(path, false);
+
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(file.program, "rundll32.exe");
+            assert_eq!(file.arguments[0], "url.dll,FileProtocolHandler");
+            assert_eq!(file.arguments[1], path.to_string_lossy());
+            assert_eq!(folder.program, "explorer.exe");
+            assert_eq!(folder.arguments, vec![path.to_string_lossy()]);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(file.arguments, vec![path.to_string_lossy()]);
+            assert_eq!(folder.arguments, vec![path.to_string_lossy()]);
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingTrash {
+        paths: Mutex<Vec<PathBuf>>,
+    }
+
+    impl TrashBackend for RecordingTrash {
+        fn move_to_trash(&self, path: &Path) -> Result<(), String> {
+            self.paths
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(path.to_path_buf());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn local_download_destination_preflight_checks_writability_and_free_space() {
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        fs::create_dir_all(&downloads).expect("create download directory");
+        let gateway = LocalDownloadDestinationGateway::new();
+        let request = DownloadDestinationRequest {
+            directory: ariadeck_domain::EnginePath::new(downloads.to_string_lossy()),
+            required_bytes: None,
+            files: Vec::new(),
+        };
+
+        let report = gateway.preflight(&request).expect("destination preflight");
+
+        assert!(report.available_bytes > 0);
+        assert!(
+            fs::read_dir(&downloads)
+                .expect("list download directory")
+                .next()
+                .is_none(),
+            "the writability probe must be removed"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// On Windows, FILE_ATTRIBUTE_READONLY on a directory does not mean the
+    /// folder is non-writable; only a real write probe is authoritative.
+    #[cfg(windows)]
+    #[test]
+    // Clearing the fixture attribute is intentional Windows test cleanup (not Unix mode bits).
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn local_download_destination_ignores_directory_readonly_attribute() {
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        fs::create_dir_all(&downloads).expect("create download directory");
+        let mut permissions = fs::metadata(&downloads).expect("metadata").permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&downloads, permissions).expect("mark directory readonly attr");
+        assert!(
+            fs::metadata(&downloads)
+                .expect("metadata after attr")
+                .permissions()
+                .readonly(),
+            "fixture must expose the readonly attribute"
+        );
+
+        let gateway = LocalDownloadDestinationGateway::new();
+        let report = gateway
+            .preflight(&DownloadDestinationRequest {
+                directory: ariadeck_domain::EnginePath::new(downloads.to_string_lossy()),
+                required_bytes: None,
+                files: Vec::new(),
+            })
+            .expect("writable directory with readonly attr must pass");
+        assert!(report.available_bytes > 0);
+
+        let mut permissions = fs::metadata(&downloads).expect("metadata").permissions();
+        permissions.set_readonly(false);
+        let _ = fs::set_permissions(&downloads, permissions);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_download_destination_rejects_relative_paths_and_insufficient_space() {
+        let gateway = LocalDownloadDestinationGateway::new();
+        let relative = gateway
+            .preflight(&DownloadDestinationRequest {
+                directory: ariadeck_domain::EnginePath::new("downloads"),
+                required_bytes: None,
+                files: Vec::new(),
+            })
+            .expect_err("relative local path must fail");
+        assert_eq!(relative.kind, GatewayErrorKind::UnsafePath);
+
+        let root = temporary_directory();
+        let insufficient = gateway
+            .preflight(&DownloadDestinationRequest {
+                directory: ariadeck_domain::EnginePath::new(root.to_string_lossy()),
+                required_bytes: Some(u64::MAX),
+                files: Vec::new(),
+            })
+            .expect_err("oversized download must fail");
+        assert_eq!(insufficient.kind, GatewayErrorKind::Filesystem);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_download_destination_validates_metadata_paths_and_reject_conflicts() {
+        let root = temporary_directory();
+        let gateway = LocalDownloadDestinationGateway::new();
+        let request = |relative_path: ariadeck_domain::EnginePath| DownloadDestinationRequest {
+            directory: ariadeck_domain::EnginePath::new(root.to_string_lossy()),
+            required_bytes: Some(30),
+            files: vec![DownloadDestinationFile {
+                relative_path,
+                reject_existing: true,
+            }],
+        };
+
+        gateway
+            .preflight(&request(ariadeck_domain::EnginePath::new("nested/new.bin")))
+            .expect("safe relative metadata path");
+
+        let existing = root.join("existing.bin");
+        fs::write(&existing, b"content").expect("create conflicting destination");
+        let conflict = gateway
+            .preflight(&request(ariadeck_domain::EnginePath::new("existing.bin")))
+            .expect_err("Reject policy must catch an existing destination");
+        assert_eq!(conflict.kind, GatewayErrorKind::Rejected);
+
+        for unsafe_path in [
+            ariadeck_domain::EnginePath::new("../escape.bin"),
+            ariadeck_domain::EnginePath::new(existing.to_string_lossy()),
+        ] {
+            let error = gateway
+                .preflight(&request(unsafe_path))
+                .expect_err("unsafe metadata path must fail");
+            assert_eq!(error.kind, GatewayErrorKind::UnsafePath);
+        }
+
+        let parent_file = root.join("not-a-directory");
+        fs::write(&parent_file, b"content").expect("create non-directory parent");
+        let error = gateway
+            .preflight(&request(ariadeck_domain::EnginePath::new(
+                "not-a-directory/child.bin",
+            )))
+            .expect_err("file parent must fail containment validation");
+        assert_eq!(error.kind, GatewayErrorKind::UnsafePath);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn local_download_destination_rejects_symlink_components() {
+        use std::os::unix::fs::symlink;
+
+        let root = temporary_directory();
+        let outside = temporary_directory();
+        let nested = root.join("nested");
+        fs::create_dir_all(&nested).expect("create nested");
+        let link = nested.join("escape");
+        symlink(&outside, &link).expect("create symlink escape");
+
+        let gateway = LocalDownloadDestinationGateway::new();
+        let error = gateway
+            .preflight(&DownloadDestinationRequest {
+                directory: ariadeck_domain::EnginePath::new(root.to_string_lossy()),
+                required_bytes: Some(1),
+                files: vec![DownloadDestinationFile {
+                    relative_path: ariadeck_domain::EnginePath::new("nested/escape/secret.bin"),
+                    reject_existing: false,
+                }],
+            })
+            .expect_err("symlink path components must be rejected");
+        assert_eq!(error.kind, GatewayErrorKind::UnsafePath);
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[cfg(windows)]
+    fn create_directory_junction(link: &Path, target: &Path) {
+        let output = console_free_command("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .expect("run mklink for junction fixture");
+        assert!(
+            output.status.success(),
+            "mklink failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_reparse_points_are_rejected_by_destination_preflight() {
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        let actual = downloads.join("actual");
+        let junction = downloads.join("junction");
+        fs::create_dir_all(&actual).expect("create junction target");
+        create_directory_junction(&junction, &actual);
+
+        let gateway = LocalDownloadDestinationGateway::new();
+        let error = gateway
+            .preflight(&DownloadDestinationRequest {
+                directory: ariadeck_domain::EnginePath::new(downloads.to_string_lossy()),
+                required_bytes: Some(1),
+                files: vec![DownloadDestinationFile {
+                    relative_path: ariadeck_domain::EnginePath::new("junction/new.bin"),
+                    reject_existing: false,
+                }],
+            })
+            .expect_err("junction components must be rejected even within the download root");
+        assert_eq!(error.kind, GatewayErrorKind::UnsafePath);
+
+        fs::remove_dir(&junction).expect("remove junction fixture");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_reparse_points_are_rejected_by_file_gateway() {
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        let actual = downloads.join("actual");
+        let junction = downloads.join("task");
+        let content = actual.join("item.bin");
+        fs::create_dir_all(&actual).expect("create junction target");
+        fs::write(&content, b"content").expect("create content file");
+        create_directory_junction(&junction, &actual);
+
+        let gateway = LocalTaskFileGateway::new(&downloads);
+        let error = gateway
+            .preflight(&TaskFileRemovalRequest {
+                directory: ariadeck_domain::EnginePath::new(junction.to_string_lossy()),
+                files: vec![ariadeck_domain::EnginePath::new(
+                    junction.join("item.bin").to_string_lossy(),
+                )],
+                include_control_files: false,
+            })
+            .expect_err("junction task directories must never reach Trash");
+        assert_eq!(error.kind, GatewayErrorKind::UnsafePath);
+
+        fs::remove_dir(&junction).expect("remove junction fixture");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn successful_destination_preflight_accumulates_authorized_removal_roots() {
+        let root = temporary_directory();
+        let first = root.join("first");
+        let second = root.join("second");
+        let unconfigured = root.join("unconfigured");
+        for directory in [&first, &second, &unconfigured] {
+            fs::create_dir_all(directory).expect("create download root");
+            fs::write(directory.join("item.bin"), b"content").expect("create task file");
+        }
+        let roots = LocalDownloadRootRegistry::new(&first);
+        let destination = LocalDownloadDestinationGateway::with_roots(roots.clone());
+        let files = LocalTaskFileGateway::with_roots(roots);
+        destination
+            .preflight(&DownloadDestinationRequest {
+                directory: ariadeck_domain::EnginePath::new(second.to_string_lossy()),
+                required_bytes: None,
+                files: Vec::new(),
+            })
+            .expect("authorize second root");
+        let removal = |directory: &Path| TaskFileRemovalRequest {
+            directory: ariadeck_domain::EnginePath::new(directory.to_string_lossy()),
+            files: vec![ariadeck_domain::EnginePath::new(
+                directory.join("item.bin").to_string_lossy(),
+            )],
+            include_control_files: false,
+        };
+
+        assert_eq!(
+            files
+                .preflight(&removal(&first))
+                .expect("first root")
+                .content_files,
+            1
+        );
+        assert_eq!(
+            files
+                .preflight(&removal(&second))
+                .expect("second root")
+                .content_files,
+            1
+        );
+        let outside = files
+            .preflight(&removal(&unconfigured))
+            .expect_err("unconfigured root must remain forbidden");
+        assert_eq!(outside.kind, GatewayErrorKind::UnsafePath);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_file_gateway_move_to_trash_works_without_current_tokio_runtime() {
+        // Mirrors GPUI task threads: no entered Tokio runtime must not panic.
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        let content = downloads.join("item.bin");
+        fs::create_dir_all(&downloads).expect("create download directory");
+        fs::write(&content, b"content").expect("create content file");
+        let trash = Arc::new(RecordingTrash::default());
+        let gateway = LocalTaskFileGateway::with_trash(&downloads, trash.clone());
+        let request = TaskFileRemovalRequest {
+            directory: ariadeck_domain::EnginePath::new(downloads.to_string_lossy()),
+            files: vec![ariadeck_domain::EnginePath::new(content.to_string_lossy())],
+            include_control_files: false,
+        };
+
+        let report = std::thread::spawn(move || {
+            // Dedicated single-thread runtime only to drive the Future; the
+            // worker path must not require Handle::current() at the call site.
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            // Drop any ambient handle by not calling enter() before the future
+            // body checks try_current — instead drive via block_on which does
+            // enter, so also exercise the spawn_blocking branch. A true
+            // no-runtime drive uses a raw poll below via oneshot join.
+            runtime.block_on(gateway.move_to_trash(&request))
+        })
+        .join()
+        .expect("worker thread")
+        .expect("move without ambient panic");
+        assert_eq!(report.moved_to_trash, 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_blocking_falls_back_when_no_tokio_handle_is_available() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // Poll the future with a noop waker so try_current() is Err.
+            let future = run_blocking(|| Ok::<_, GatewayError>(42_u32));
+            futures_executor_block_on(future, &sender);
+        });
+        let value = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("run_blocking completed");
+        assert_eq!(value.expect("fallback work"), 42);
+    }
+
+    fn futures_executor_block_on<T>(
+        future: impl std::future::Future<Output = T>,
+        sender: &std::sync::mpsc::Sender<T>,
+    ) {
+        use std::{
+            pin::pin,
+            sync::Arc,
+            task::{Context, Poll, Wake, Waker},
+            thread,
+        };
+        struct ThreadWaker(thread::Thread);
+        impl Wake for ThreadWaker {
+            fn wake(self: Arc<Self>) {
+                self.0.unpark();
+            }
+        }
+        let waker = Waker::from(Arc::new(ThreadWaker(thread::current())));
+        let mut context = Context::from_waker(&waker);
+        let mut future = pin!(future);
+        loop {
+            match future.as_mut().poll(&mut context) {
+                Poll::Ready(value) => {
+                    let _ = sender.send(value);
+                    return;
+                }
+                Poll::Pending => thread::park(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn local_file_gateway_moves_only_exact_files_and_control_files() {
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        let task_dir = downloads.join("task");
+        fs::create_dir_all(&task_dir).expect("create task directory");
+        let content = task_dir.join("item.bin");
+        let direct_control = task_dir.join("item.bin.aria2");
+        let task_control = downloads.join("task.aria2");
+        let unrelated = task_dir.join("unrelated.txt");
+        for path in [&content, &direct_control, &task_control, &unrelated] {
+            fs::write(path, b"test").expect("create task fixture");
+        }
+        let trash = Arc::new(RecordingTrash::default());
+        let gateway = LocalTaskFileGateway::with_trash(&downloads, trash.clone());
+        let request = TaskFileRemovalRequest {
+            directory: ariadeck_domain::EnginePath::new(downloads.to_string_lossy()),
+            files: vec![ariadeck_domain::EnginePath::new(content.to_string_lossy())],
+            include_control_files: true,
+        };
+
+        let preview = gateway.preflight(&request).expect("safe preflight");
+        assert_eq!(preview.content_files, 1);
+        assert_eq!(preview.control_files, 2);
+        let report = gateway
+            .move_to_trash(&request)
+            .await
+            .expect("move exact files to trash");
+        assert_eq!(report.moved_to_trash, 3);
+        let moved = trash
+            .paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(moved.contains(&fs::canonicalize(content).expect("content path")));
+        assert!(moved.contains(&fs::canonicalize(direct_control).expect("control path")));
+        assert!(moved.contains(&fs::canonicalize(task_control).expect("task control path")));
+        assert!(!moved.contains(&fs::canonicalize(unrelated).expect("unrelated path")));
+        drop(moved);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_file_gateway_rejects_outside_traversal_and_directories() {
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        let task_dir = downloads.join("task");
+        let outside = root.join("outside.bin");
+        fs::create_dir_all(&task_dir).expect("create task directory");
+        fs::write(&outside, b"outside").expect("create outside file");
+        let gateway = LocalTaskFileGateway::new(&downloads);
+        let request = |file: ariadeck_domain::EnginePath| TaskFileRemovalRequest {
+            directory: ariadeck_domain::EnginePath::new(downloads.to_string_lossy()),
+            files: vec![file],
+            include_control_files: false,
+        };
+
+        for file in [
+            ariadeck_domain::EnginePath::new(outside.to_string_lossy()),
+            ariadeck_domain::EnginePath::new("../outside.bin"),
+            ariadeck_domain::EnginePath::new(task_dir.to_string_lossy()),
+        ] {
+            let error = gateway
+                .preflight(&request(file))
+                .expect_err("unsafe path must be rejected");
+            assert_eq!(error.kind, GatewayErrorKind::UnsafePath);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_file_gateway_accepts_windows_paths_with_different_casing() {
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        let task_dir = downloads.join("task");
+        let content = task_dir.join("item.bin");
+        fs::create_dir_all(&task_dir).expect("create task directory");
+        fs::write(&content, b"content").expect("create content file");
+        let gateway = LocalTaskFileGateway::new(&downloads);
+        let request = TaskFileRemovalRequest {
+            directory: ariadeck_domain::EnginePath::new(
+                downloads.to_string_lossy().to_ascii_uppercase(),
+            ),
+            files: vec![ariadeck_domain::EnginePath::new(
+                content.to_string_lossy().to_ascii_uppercase(),
+            )],
+            include_control_files: false,
+        };
+
+        let preview = gateway
+            .preflight(&request)
+            .expect("case-insensitive Windows path");
+
+        assert_eq!(preview.content_files, 1);
+        let _ = fs::remove_dir_all(root);
+    }
+}

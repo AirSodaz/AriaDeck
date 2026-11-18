@@ -36,7 +36,10 @@ impl DownloadStore {
     #[must_use]
     pub fn view(&self, query: &TaskListQuery) -> TaskListView {
         let search = query.search.trim().to_lowercase();
-        let mut seen = HashSet::new();
+        let search_is_hex = !search.is_empty()
+            && search.len() <= 16
+            && search.bytes().all(|byte| byte.is_ascii_hexdigit());
+        let mut seen = HashSet::with_capacity(self.tasks.len());
         let mut visible_gids = self
             .active_order
             .iter()
@@ -54,7 +57,7 @@ impl DownloadStore {
                                 .search_index
                                 .get(gid)
                                 .is_some_and(|name| name.contains(&search))
-                            || gid.to_string().contains(&search))
+                            || (search_is_hex && gid_hex_contains(*gid, &search)))
                 })
             })
             .collect::<Vec<_>>();
@@ -85,7 +88,7 @@ impl DownloadStore {
         // Scan each task once in queue order without building a full `view()`
         // (PERF-001: counts must stay O(n) without an extra allocation pass).
         let mut counts = TaskCounts::default();
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::with_capacity(self.tasks.len());
         for gid in self
             .active_order
             .iter()
@@ -177,6 +180,21 @@ const fn apply_direction(ordering: Ordering, direction: SortDirection) -> Orderi
         SortDirection::Ascending => ordering,
         SortDirection::Descending => ordering.reverse(),
     }
+}
+
+fn gid_hex_contains(gid: Gid, lowercase_hex_needle: &str) -> bool {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let raw = gid.as_u64();
+    let mut buf = [0u8; 16];
+    for (idx, slot) in buf.iter_mut().enumerate() {
+        let shift = (15 - idx) * 4;
+        *slot = HEX[((raw >> shift) & 0xf) as usize];
+    }
+    let needle = lowercase_hex_needle.as_bytes();
+    if needle.is_empty() || needle.len() > buf.len() {
+        return false;
+    }
+    buf.windows(needle.len()).any(|window| window == needle)
 }
 
 #[cfg(test)]
@@ -324,5 +342,15 @@ mod tests {
         assert_eq!(counts.all, total);
         assert_eq!(counts.completed, total - total / 5);
         assert_eq!(counts.failed, total / 5);
+    }
+
+    #[test]
+    fn gid_hex_contains_matches_substrings_without_false_positives() {
+        let gid = Gid::from_u64(0x0012_34ab_cdef_0009);
+        assert!(gid_hex_contains(gid, "34ab"));
+        assert!(gid_hex_contains(gid, "001234abcdef0009"));
+        assert!(!gid_hex_contains(gid, "zzzz"));
+        assert!(!gid_hex_contains(gid, "001234abcdef00090"));
+        assert!(!gid_hex_contains(gid, ""));
     }
 }

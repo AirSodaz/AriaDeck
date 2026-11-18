@@ -1,10 +1,10 @@
-//! Settings `system` section logic and rendering for `AppShell`.
+//! Settings `system` and `notifications` section logic and rendering for `SettingsPanelView`.
 
 use super::*;
 
-impl AppShell {
+impl SettingsPanelView {
     pub(crate) fn submit_notifications(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         let draft = NotificationSettingsView {
@@ -37,7 +37,7 @@ impl AppShell {
     }
 
     pub(crate) fn submit_platform(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         let draft = PlatformSettingsView {
@@ -67,7 +67,7 @@ impl AppShell {
         volume: NotificationVolumeView,
         cx: &mut Context<Self>,
     ) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         if self.settings_page.draft_notification_volume == volume {
@@ -79,7 +79,7 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_notify_on_completion(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         self.settings_page.draft_notify_on_completion =
@@ -89,7 +89,7 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_notify_on_error(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         self.settings_page.draft_notify_on_error = !self.settings_page.draft_notify_on_error;
@@ -98,7 +98,7 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_notify_on_engine_events(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         self.settings_page.draft_notify_on_engine_events =
@@ -108,7 +108,7 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_os_notifications(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         self.settings_page.draft_os_notifications = !self.settings_page.draft_os_notifications;
@@ -117,7 +117,7 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_notify_on_low_disk(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         self.settings_page.draft_notify_on_low_disk = !self.settings_page.draft_notify_on_low_disk;
@@ -130,7 +130,7 @@ impl AppShell {
         behavior: CloseBehaviorView,
         cx: &mut Context<Self>,
     ) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         if self.settings_page.draft_close_behavior == behavior {
@@ -142,11 +142,10 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_show_tray_icon(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         self.settings_page.draft_show_tray_icon = !self.settings_page.draft_show_tray_icon;
-        // Closing to tray requires a tray icon so the user can restore the window.
         if !self.settings_page.draft_show_tray_icon
             && self.settings_page.draft_close_behavior == CloseBehaviorView::MinimizeToTray
         {
@@ -160,7 +159,7 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_start_minimized_to_tray(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         if !self.settings_page.draft_show_tray_icon {
@@ -177,7 +176,7 @@ impl AppShell {
         action: CompletionPowerActionView,
         cx: &mut Context<Self>,
     ) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         if self.settings_page.draft_action_after_done == action {
@@ -189,7 +188,7 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_draft_keep_awake(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         self.settings_page.draft_keep_awake_while_active =
@@ -199,7 +198,7 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_bridge_allow_cookies(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         self.settings_page.draft_bridge_allow_cookies =
@@ -209,7 +208,7 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_bridge_auto_submit(&mut self, cx: &mut Context<Self>) {
-        if self.page != AppPage::Settings || self.pending_settings_save.is_some() {
+        if self.is_pending() {
             return;
         }
         self.settings_page.draft_bridge_auto_submit = !self.settings_page.draft_bridge_auto_submit;
@@ -217,14 +216,14 @@ impl AppShell {
         cx.notify();
     }
 
-    pub(crate) fn render_settings_notifications(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn render_settings_notifications(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
-        let pending = self.pending_settings_save.is_some();
+        let pending = self.is_pending();
         let volume_selected = NotificationVolumeView::all()
             .iter()
             .position(|volume| *volume == self.settings_page.draft_notification_volume)
             .unwrap_or(0);
-        let volume_shell = cx.entity().downgrade();
+        let volume_panel = cx.entity().downgrade();
         let volume_control = SegmentedControl::new(
             "settings-notification-volume",
             NotificationVolumeView::all().map(|volume| {
@@ -244,8 +243,8 @@ impl AppShell {
                 .get(index)
                 .copied()
                 .unwrap_or_default();
-            volume_shell
-                .update(cx, |shell, cx| shell.select_notification_volume(volume, cx))
+            volume_panel
+                .update(cx, |panel, cx| panel.select_notification_volume(volume, cx))
                 .ok();
         });
         let draft_completion = self.settings_page.draft_notify_on_completion;
@@ -253,11 +252,11 @@ impl AppShell {
         let draft_engine = self.settings_page.draft_notify_on_engine_events;
         let draft_os = self.settings_page.draft_os_notifications;
         let draft_low_disk = self.settings_page.draft_notify_on_low_disk;
-        let s1 = cx.entity().downgrade();
-        let s2 = cx.entity().downgrade();
-        let s3 = cx.entity().downgrade();
-        let s4 = cx.entity().downgrade();
-        let s5 = cx.entity().downgrade();
+        let p1 = cx.entity().downgrade();
+        let p2 = cx.entity().downgrade();
+        let p3 = cx.entity().downgrade();
+        let p4 = cx.entity().downgrade();
+        let p5 = cx.entity().downgrade();
         settings_section_owned(self.t("settings-notifications"), colors)
             .child(settings_section_row_owned(
                 self.t("settings-volume"),
@@ -273,7 +272,7 @@ impl AppShell {
                     .accessibility_label(self.t("settings-notify-completion"))
                     .disabled(pending)
                     .on_change(move |_, _, cx| {
-                        s1.update(cx, |shell, cx| shell.toggle_notify_on_completion(cx))
+                        p1.update(cx, |panel, cx| panel.toggle_notify_on_completion(cx))
                             .ok();
                     }),
                 colors,
@@ -286,7 +285,7 @@ impl AppShell {
                     .accessibility_label(self.t("settings-notify-error"))
                     .disabled(pending)
                     .on_change(move |_, _, cx| {
-                        s2.update(cx, |shell, cx| shell.toggle_notify_on_error(cx))
+                        p2.update(cx, |panel, cx| panel.toggle_notify_on_error(cx))
                             .ok();
                     }),
                 colors,
@@ -299,7 +298,7 @@ impl AppShell {
                     .accessibility_label(self.t("settings-notify-engine"))
                     .disabled(pending)
                     .on_change(move |_, _, cx| {
-                        s3.update(cx, |shell, cx| shell.toggle_notify_on_engine_events(cx))
+                        p3.update(cx, |panel, cx| panel.toggle_notify_on_engine_events(cx))
                             .ok();
                     }),
                 colors,
@@ -312,7 +311,7 @@ impl AppShell {
                     .accessibility_label(self.t("settings-notify-os"))
                     .disabled(pending)
                     .on_change(move |_, _, cx| {
-                        s4.update(cx, |shell, cx| shell.toggle_os_notifications(cx))
+                        p4.update(cx, |panel, cx| panel.toggle_os_notifications(cx))
                             .ok();
                     }),
                 colors,
@@ -325,22 +324,22 @@ impl AppShell {
                     .accessibility_label(self.t("settings-notify-low-disk"))
                     .disabled(pending)
                     .on_change(move |_, _, cx| {
-                        s5.update(cx, |shell, cx| shell.toggle_notify_on_low_disk(cx))
+                        p5.update(cx, |panel, cx| panel.toggle_notify_on_low_disk(cx))
                             .ok();
                     }),
                 colors,
             ))
     }
 
-    pub(crate) fn render_settings_system(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn render_settings_system(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
-        let pending = self.pending_settings_save.is_some();
+        let pending = self.is_pending();
         let draft_keep_awake = self.settings_page.draft_keep_awake_while_active;
         let action_after_done_selected = CompletionPowerActionView::ALL
             .iter()
             .position(|action| *action == self.settings_page.draft_action_after_done)
             .unwrap_or(0);
-        let action_shell = cx.entity().downgrade();
+        let action_panel = cx.entity().downgrade();
         let action_control = SegmentedControl::new(
             "settings-action-after-done",
             CompletionPowerActionView::ALL.map(|action| Segment::new(self.t(action.message_key()))),
@@ -354,13 +353,13 @@ impl AppShell {
                 .get(index)
                 .copied()
                 .unwrap_or_default();
-            action_shell
-                .update(cx, |shell, cx| {
-                    shell.select_draft_completion_action(action, cx)
+            action_panel
+                .update(cx, |panel, cx| {
+                    panel.select_draft_completion_action(action, cx)
                 })
                 .ok();
         });
-        let s_power = cx.entity().downgrade();
+        let p_power = cx.entity().downgrade();
         let power_section = settings_section_owned(self.t("settings-power"), colors)
             .child(settings_section_row_owned(
                 self.t("settings-keep-awake"),
@@ -370,8 +369,8 @@ impl AppShell {
                     .accessibility_label(self.t("settings-keep-awake"))
                     .disabled(pending)
                     .on_change(move |_, _, cx| {
-                        s_power
-                            .update(cx, |shell, cx| shell.toggle_draft_keep_awake(cx))
+                        p_power
+                            .update(cx, |panel, cx| panel.toggle_draft_keep_awake(cx))
                             .ok();
                     }),
                 colors,
@@ -389,7 +388,7 @@ impl AppShell {
             .iter()
             .position(|behavior| *behavior == self.settings_page.draft_close_behavior)
             .unwrap_or(0);
-        let close_shell = cx.entity().downgrade();
+        let close_panel = cx.entity().downgrade();
         let close_control = SegmentedControl::new(
             "settings-close-behavior",
             CloseBehaviorView::all().map(|behavior| {
@@ -408,14 +407,14 @@ impl AppShell {
                 .get(index)
                 .copied()
                 .unwrap_or_default();
-            close_shell
-                .update(cx, |shell, cx| shell.select_close_behavior(behavior, cx))
+            close_panel
+                .update(cx, |panel, cx| panel.select_close_behavior(behavior, cx))
                 .ok();
         });
-        let s1 = cx.entity().downgrade();
-        let s2 = cx.entity().downgrade();
-        let s3 = cx.entity().downgrade();
-        let s4 = cx.entity().downgrade();
+        let p1 = cx.entity().downgrade();
+        let p2 = cx.entity().downgrade();
+        let p3 = cx.entity().downgrade();
+        let p4 = cx.entity().downgrade();
         let draft_allow_cookies = self.settings_page.draft_bridge_allow_cookies;
         let draft_auto_submit = self.settings_page.draft_bridge_auto_submit;
         let tray_section = settings_section_owned(self.t("settings-window-tray"), colors)
@@ -427,7 +426,7 @@ impl AppShell {
                     .accessibility_label(self.t("settings-tray-icon"))
                     .disabled(pending)
                     .on_change(move |_, _, cx| {
-                        s1.update(cx, |shell, cx| shell.toggle_show_tray_icon(cx))
+                        p1.update(cx, |panel, cx| panel.toggle_show_tray_icon(cx))
                             .ok();
                     }),
                 colors,
@@ -440,7 +439,7 @@ impl AppShell {
                     .accessibility_label(self.t("settings-start-minimized"))
                     .disabled(pending || !draft_show_tray)
                     .on_change(move |_, _, cx| {
-                        s2.update(cx, |shell, cx| shell.toggle_start_minimized_to_tray(cx))
+                        p2.update(cx, |panel, cx| panel.toggle_start_minimized_to_tray(cx))
                             .ok();
                     }),
                 colors,
@@ -458,9 +457,6 @@ impl AppShell {
                     .child(self.t("settings-tray-hint")),
             );
 
-        // D-045: cookie forwarding and auto-submit are the two decisions that
-        // widen what a browser hand-off can do, so they live together with the
-        // caveats spelled out rather than buried in a tooltip.
         let bridge_section = settings_section_owned(self.t("settings-bridge"), colors)
             .child(settings_section_row_owned(
                 self.t("settings-bridge-auto-submit"),
@@ -470,7 +466,7 @@ impl AppShell {
                     .accessibility_label(self.t("settings-bridge-auto-submit"))
                     .disabled(pending)
                     .on_change(move |_, _, cx| {
-                        s3.update(cx, |shell, cx| shell.toggle_bridge_auto_submit(cx))
+                        p3.update(cx, |panel, cx| panel.toggle_bridge_auto_submit(cx))
                             .ok();
                     }),
                 colors,
@@ -483,7 +479,7 @@ impl AppShell {
                     .accessibility_label(self.t("settings-bridge-cookies"))
                     .disabled(pending)
                     .on_change(move |_, _, cx| {
-                        s4.update(cx, |shell, cx| shell.toggle_bridge_allow_cookies(cx))
+                        p4.update(cx, |panel, cx| panel.toggle_bridge_allow_cookies(cx))
                             .ok();
                     }),
                 colors,

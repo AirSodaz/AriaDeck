@@ -111,10 +111,66 @@ cmd-force-remove-success = Task force-removed.
 cmd-remove-files-success = Task removed and local files moved to the Recycle Bin.
 
 # B4 — aria2 core download
-notice-core-downloading = Downloading and verifying aria2...
+notice-core-downloading = Downloading and verifying aria2…
 notice-core-download-installed = aria2 { $version } downloaded and verified. Activate it in Settings > Engine, then restart AriaDeck.
 notice-core-download-unavailable = No verified aria2 download is published for this platform.
 
 # D5 — completion power actions
 notice-power-action-cancelled = Scheduled power action cancelled.
 notice-power-action-armed = Will { $action } when all downloads complete.
+
+# Session, engine, task & batch notices
+notice-session-changed-command = The engine session changed before the command completed. Its outcome was not replayed.
+notice-session-changed-batch = The engine session changed before the batch command completed. Its outcome was not replayed.
+notice-engine-recovered = Local aria2 recovered after { $n } { $n ->
+    [1] restart attempt
+   *[other] restart attempts
+}.
+notice-engine-restart-failed = Local aria2 could not be restarted: { $summary }
+notice-add-accepted = { $n } { $n ->
+    [1] download
+   *[other] downloads
+} accepted by aria2.
+notice-add-duplicates = { $n } { $n ->
+    [1] download is
+   *[other] downloads are
+} already in the transfer list.
+notice-add-partial = { $accepted } accepted, { $failed } need attention.
+notice-batch-retry-succeeded = Created { $n } new retry { $n ->
+    [1] task
+   *[other] tasks
+}; failed results were kept.
+notice-batch-succeeded = { $action } completed for { $count } { $count ->
+    [1] task
+   *[other] tasks
+}.
+notice-batch-retry-partial = Retry created { $succeeded } new { $succeeded ->
+    [1] task
+   *[other] tasks
+}; { $failed } failed. Original failed results were kept and unresolved items remain selected.
+notice-batch-partial = { $action }: { $succeeded } succeeded, { $failed } failed. Failed tasks remain selected.
+notice-opened-download = Opened the downloaded item.
+notice-opened-folder = Opened the download folder.
+notice-low-disk-space = Low disk space: { $free } free (threshold { $threshold }). New downloads may fail.
+notice-task-completed-single = { $name } finished downloading.
+notice-task-completed-multiple = { $n } downloads finished.
+notice-task-failed-single = { $name } failed.
+notice-task-failed-multiple = { $n } downloads failed.
+notice-profile-missing-catalog = The selected profile is no longer in the catalog.
+notice-profile-draft-local-added = Local profile draft added (uses managed core). Edit fields, Apply, then Save profiles.
+notice-profile-draft-remote-added = Remote profile draft added. Set the endpoint, Apply, then Save profiles.
+notice-profile-draft-updated = Profile updated in the draft catalog. Click Save profiles to persist.
+notice-profile-removed-saving = Removed “{ $name }”. Saving catalog…
+notice-core-importing = Importing aria2 core…
+notice-core-linking = Linking aria2 core…
+notice-core-verifying = Verifying aria2 core…
+notice-core-activating = Activating aria2 core…
+notice-core-rolling-back = Rolling back to last working core…
+notice-core-removing = Removing aria2 core…
+notice-core-imported = aria2 core imported. Activate it, then restart AriaDeck to use it.
+notice-core-linked = aria2 core linked. Activate it, then restart AriaDeck to use it.
+notice-core-verified = aria2 core verified.
+notice-core-activated = Active aria2 core updated. Restart AriaDeck to start that version.
+notice-core-rolled-back = Rolled back to the last working core. Restart AriaDeck to apply.
+notice-core-removed = aria2 core removed.
+notice-capability-force-pause-all-unsupported = The connected engine does not support force pause all.

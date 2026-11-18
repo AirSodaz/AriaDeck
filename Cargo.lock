@@ -269,6 +269,7 @@ name = "ariadeck-bridge"
 version = "0.2.1"
 dependencies = [
  "ariadeck-ipc",
+ "ariadeck-settings",
  "secrecy",
  "serde",
  "serde_json",
@@ -345,6 +346,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "sysinfo",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "trash",
@@ -369,6 +371,7 @@ name = "ariadeck-i18n"
 version = "0.2.1"
 dependencies = [
  "fluent-bundle",
+ "fluent-syntax",
  "rust-embed",
  "sys-locale",
  "unic-langid",

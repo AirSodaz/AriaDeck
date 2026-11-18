@@ -1,33 +1,70 @@
 //! Shared bounded HTTP fetch helpers for desktop network actions (updates,
 //! verified core download, tracker list refresh).
 //!
-//! All helpers enforce response size limits while streaming chunks rather than
-//! relying solely on `Content-Length`, preventing unbounded memory allocation
-//! on chunked or lying responses.
+//! All helpers reuse a single [`reqwest::Client`] (preserving TLS root setup
+//! and connection pools), reject HTTPS -> HTTP redirect downgrades, and enforce
+//! response size limits while streaming chunks rather than relying solely on
+//! `Content-Length`.
 
-use std::time::Duration;
+use std::{sync::OnceLock, time::Duration};
 
 pub(crate) const USER_AGENT: &str = concat!("AriaDeck/", env!("CARGO_PKG_VERSION"));
+const MAX_REDIRECT_HOPS: usize = 5;
 
-pub(crate) fn build_http_client(timeout: Duration, label: &str) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(timeout)
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .user_agent(USER_AGENT)
-        .build()
+static SHARED_HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+
+fn is_https_to_http_downgrade(previous_schemes: &[&str], next_scheme: &str) -> bool {
+    previous_schemes.contains(&"https") && next_scheme == "http"
+}
+
+fn redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= MAX_REDIRECT_HOPS {
+            return attempt.error("too many redirects");
+        }
+        let previous_schemes: Vec<&str> = attempt
+            .previous()
+            .iter()
+            .map(reqwest::Url::scheme)
+            .collect();
+        if is_https_to_http_downgrade(&previous_schemes, attempt.url().scheme()) {
+            return attempt.error("refused HTTPS to HTTP redirect downgrade");
+        }
+        attempt.follow()
+    })
+}
+
+fn shared_http_client(label: &str) -> Result<&'static reqwest::Client, String> {
+    let client = SHARED_HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .redirect(redirect_policy())
+            .user_agent(USER_AGENT)
+            .build()
+            .map_err(|error| error.to_string())
+    });
+    client
+        .as_ref()
         .map_err(|error| format!("Could not initialize {label} download: {error}"))
 }
 
-/// Fetch `url` into memory while enforcing a hard upper bound of `max_bytes`.
-pub(crate) async fn fetch_bounded_bytes(
+enum StreamSizeRule {
+    Max(usize),
+    Exact(u64),
+}
+
+async fn fetch_stream_bytes<F>(
     url: &str,
-    max_bytes: usize,
+    size_rule: StreamSizeRule,
     timeout: Duration,
     label: &str,
     headers: &[(&str, &str)],
-) -> Result<Vec<u8>, String> {
-    let client = build_http_client(timeout, label)?;
-    let mut request = client.get(url);
+    mut on_progress: Option<F>,
+) -> Result<Vec<u8>, String>
+where
+    F: FnMut(u64, Option<u64>),
+{
+    let client = shared_http_client(label)?;
+    let mut request = client.get(url).timeout(timeout);
     for (name, value) in headers {
         request = request.header(*name, *value);
     }
@@ -41,24 +78,88 @@ pub(crate) async fn fetch_bounded_bytes(
             response.status()
         ));
     }
-    if response
-        .content_length()
-        .is_some_and(|size| size > max_bytes as u64)
-    {
-        return Err(format!("{label} download is too large."));
-    }
+
+    let total_bytes = response.content_length();
+    let max_bytes = match size_rule {
+        StreamSizeRule::Max(limit) => {
+            if total_bytes.is_some_and(|size| size > limit as u64) {
+                return Err(format!("{label} download is too large."));
+            }
+            limit
+        }
+        StreamSizeRule::Exact(expected_bytes) => {
+            if let Some(len) = total_bytes
+                && len != expected_bytes
+            {
+                return Err(format!(
+                    "{label} download has an unexpected size ({len} bytes, expected {expected_bytes})."
+                ));
+            }
+            usize::try_from(expected_bytes)
+                .map_err(|_| format!("{label} expected size exceeds addressable memory."))?
+        }
+    };
+
     let mut bytes = Vec::new();
+    let mut last_progress_report = 0u64;
+    if let Some(callback) = on_progress.as_mut() {
+        callback(0, total_bytes);
+    }
+
     while let Some(chunk) = response
         .chunk()
         .await
         .map_err(|error| format!("{label} download failed: {error}"))?
     {
         if bytes.len().saturating_add(chunk.len()) > max_bytes {
-            return Err(format!("{label} download is too large."));
+            return match size_rule {
+                StreamSizeRule::Max(_) => Err(format!("{label} download is too large.")),
+                StreamSizeRule::Exact(expected_bytes) => Err(format!(
+                    "{label} download has an unexpected size (exceeded {expected_bytes} bytes)."
+                )),
+            };
         }
         bytes.extend_from_slice(&chunk);
+        if let Some(callback) = on_progress.as_mut() {
+            let current_len = bytes.len() as u64;
+            if current_len.saturating_sub(last_progress_report) >= 256 * 1024
+                || total_bytes == Some(current_len)
+            {
+                last_progress_report = current_len;
+                callback(current_len, total_bytes);
+            }
+        }
     }
+
+    if let StreamSizeRule::Exact(expected_bytes) = size_rule
+        && bytes.len() as u64 != expected_bytes
+    {
+        return Err(format!(
+            "{label} download has an unexpected size ({} bytes, expected {expected_bytes}).",
+            bytes.len()
+        ));
+    }
+
     Ok(bytes)
+}
+
+/// Fetch `url` into memory while enforcing a hard upper bound of `max_bytes`.
+pub(crate) async fn fetch_bounded_bytes(
+    url: &str,
+    max_bytes: usize,
+    timeout: Duration,
+    label: &str,
+    headers: &[(&str, &str)],
+) -> Result<Vec<u8>, String> {
+    fetch_stream_bytes::<fn(u64, Option<u64>)>(
+        url,
+        StreamSizeRule::Max(max_bytes),
+        timeout,
+        label,
+        headers,
+        None,
+    )
+    .await
 }
 
 /// Fetch `url` into memory, rejecting early if the response exceeds or differs
@@ -69,48 +170,15 @@ pub(crate) async fn fetch_exact_bytes(
     timeout: Duration,
     label: &str,
 ) -> Result<Vec<u8>, String> {
-    let client = build_http_client(timeout, label)?;
-    let mut response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| format!("{label} download failed: {error}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "{label} download failed with HTTP {}.",
-            response.status()
-        ));
-    }
-    if let Some(len) = response.content_length()
-        && len != expected_bytes
-    {
-        return Err(format!(
-            "{label} download has an unexpected size ({len} bytes, expected {expected_bytes})."
-        ));
-    }
-    let cap = usize::try_from(expected_bytes)
-        .map_err(|_| format!("{label} expected size exceeds addressable memory."))?;
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| format!("{label} download failed: {error}"))?
-    {
-        let next_len = bytes.len().saturating_add(chunk.len());
-        if next_len > cap {
-            return Err(format!(
-                "{label} download has an unexpected size (exceeded {expected_bytes} bytes)."
-            ));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    if bytes.len() as u64 != expected_bytes {
-        return Err(format!(
-            "{label} download has an unexpected size ({} bytes, expected {expected_bytes}).",
-            bytes.len()
-        ));
-    }
-    Ok(bytes)
+    fetch_stream_bytes::<fn(u64, Option<u64>)>(
+        url,
+        StreamSizeRule::Exact(expected_bytes),
+        timeout,
+        label,
+        &[],
+        None,
+    )
+    .await
 }
 
 /// Fetch `url` with streaming size limit and throttled progress callbacks.
@@ -119,51 +187,20 @@ pub(crate) async fn fetch_bounded_with_progress<F>(
     max_bytes: usize,
     timeout: Duration,
     label: &str,
-    mut on_progress: F,
+    on_progress: F,
 ) -> Result<Vec<u8>, String>
 where
     F: FnMut(u64, Option<u64>),
 {
-    let client = build_http_client(timeout, label)?;
-    let mut response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| format!("{label} download failed: {error}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "{label} download failed with HTTP {}.",
-            response.status()
-        ));
-    }
-    let total_bytes = response.content_length();
-    if total_bytes.is_some_and(|size| size > max_bytes as u64) {
-        return Err(format!("{label} download is too large."));
-    }
-
-    let mut bytes = Vec::new();
-    let mut last_progress_report = 0u64;
-    on_progress(0, total_bytes);
-
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| format!("{label} download failed: {error}"))?
-    {
-        if bytes.len().saturating_add(chunk.len()) > max_bytes {
-            return Err(format!("{label} download is too large."));
-        }
-        bytes.extend_from_slice(&chunk);
-        let current_len = bytes.len() as u64;
-        if current_len.saturating_sub(last_progress_report) >= 256 * 1024
-            || total_bytes == Some(current_len)
-        {
-            last_progress_report = current_len;
-            on_progress(current_len, total_bytes);
-        }
-    }
-
-    Ok(bytes)
+    fetch_stream_bytes(
+        url,
+        StreamSizeRule::Max(max_bytes),
+        timeout,
+        label,
+        &[],
+        Some(on_progress),
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -204,6 +241,49 @@ mod tests {
             }
         });
         format!("http://{addr}/payload")
+    }
+
+    async fn serve_redirect_loop(hops: usize) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            for hop in 0..=hops {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut req_buf = [0u8; 1024];
+                let _ = stream.read(&mut req_buf).await;
+                let next = hop + 1;
+                let response = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://{addr}/hop-{next}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        format!("http://{addr}/hop-0")
+    }
+
+    #[test]
+    fn redirect_downgrade_check_rejects_https_to_http_and_allows_https_to_https() {
+        assert!(is_https_to_http_downgrade(&["https"], "http"));
+        assert!(is_https_to_http_downgrade(&["http", "https"], "http"));
+        assert!(!is_https_to_http_downgrade(&["https"], "https"));
+        assert!(!is_https_to_http_downgrade(&["http"], "https"));
+        assert!(!is_https_to_http_downgrade(&["http"], "http"));
+    }
+
+    #[tokio::test]
+    async fn fetch_bounded_bytes_enforces_redirect_hop_limit() {
+        let url = serve_redirect_loop(MAX_REDIRECT_HOPS + 2).await;
+        let err = fetch_bounded_bytes(&url, 1024, Duration::from_secs(5), "Redirect", &[])
+            .await
+            .expect_err("excessive redirects must fail");
+        assert!(
+            err.contains("too many redirects") || err.contains("download failed"),
+            "unexpected redirect error: {err}"
+        );
     }
 
     #[tokio::test]

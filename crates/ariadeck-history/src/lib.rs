@@ -36,6 +36,8 @@ pub enum HistoryError {
     InvalidProfileId(String),
     #[error("invalid gid in history: {0}")]
     InvalidGid(String),
+    #[error("history database schema version {found} is newer than supported version {supported}")]
+    UnsupportedSchemaVersion { found: i32, supported: i32 },
 }
 
 /// SQLite-backed task history under the application data directory.
@@ -51,7 +53,7 @@ impl SqliteHistoryStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let connection = Connection::open(&path)?;
+        let mut connection = Connection::open(&path)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.execute_batch(
             "
@@ -59,7 +61,7 @@ impl SqliteHistoryStore {
             PRAGMA foreign_keys = ON;
             ",
         )?;
-        migrate(&connection)?;
+        migrate(&mut connection)?;
         Ok(Self {
             path,
             connection: Mutex::new(connection),
@@ -126,16 +128,18 @@ impl TaskHistoryStore for SqliteHistoryStore {
         self.with_connection(|connection| {
             let tx = connection.transaction()?;
             let profile_s = profile_id.to_string();
-            for &gid in gids {
-                let gid_s = gid.to_string();
-                tx.execute(
+            {
+                let mut del_history = tx.prepare_cached(
                     "DELETE FROM task_history WHERE profile_id = ?1 AND gid = ?2",
-                    params![&profile_s, &gid_s],
                 )?;
-                tx.execute(
+                let mut del_category = tx.prepare_cached(
                     "DELETE FROM task_category WHERE profile_id = ?1 AND gid = ?2",
-                    params![&profile_s, &gid_s],
                 )?;
+                for &gid in gids {
+                    let gid_s = gid.to_string();
+                    del_history.execute(params![&profile_s, &gid_s])?;
+                    del_category.execute(params![&profile_s, &gid_s])?;
+                }
             }
             tx.commit()?;
             Ok(())
@@ -152,7 +156,7 @@ impl TaskHistoryStore for SqliteHistoryStore {
         self.with_connection(|connection| {
             match category_id.map(str::trim).filter(|id| !id.is_empty()) {
                 Some(category_id) => {
-                    connection.execute(
+                    let mut stmt = connection.prepare_cached(
                         "
                         INSERT INTO task_category (profile_id, gid, category_id, updated_at)
                         VALUES (?1, ?2, ?3, strftime('%s','now') * 1000)
@@ -160,14 +164,18 @@ impl TaskHistoryStore for SqliteHistoryStore {
                             category_id = excluded.category_id,
                             updated_at = excluded.updated_at
                         ",
-                        params![profile_id.to_string(), gid.to_string(), category_id,],
                     )?;
+                    stmt.execute(params![
+                        profile_id.to_string(),
+                        gid.to_string(),
+                        category_id
+                    ])?;
                 }
                 None => {
-                    connection.execute(
+                    let mut stmt = connection.prepare_cached(
                         "DELETE FROM task_category WHERE profile_id = ?1 AND gid = ?2",
-                        params![profile_id.to_string(), gid.to_string()],
                     )?;
+                    stmt.execute(params![profile_id.to_string(), gid.to_string()])?;
                 }
             }
             Ok(())
@@ -181,7 +189,7 @@ impl TaskHistoryStore for SqliteHistoryStore {
         gid: Gid,
     ) -> Result<Option<String>, ariadeck_application::HistoryStoreError> {
         self.with_connection(|connection| {
-            let mut statement = connection.prepare(
+            let mut statement = connection.prepare_cached(
                 "SELECT category_id FROM task_category WHERE profile_id = ?1 AND gid = ?2",
             )?;
             let value = statement
@@ -199,8 +207,9 @@ impl TaskHistoryStore for SqliteHistoryStore {
         profile_id: ProfileId,
     ) -> Result<Vec<(Gid, String)>, ariadeck_application::HistoryStoreError> {
         self.with_connection(|connection| {
-            let mut statement = connection
-                .prepare("SELECT gid, category_id FROM task_category WHERE profile_id = ?1")?;
+            let mut statement = connection.prepare_cached(
+                "SELECT gid, category_id FROM task_category WHERE profile_id = ?1",
+            )?;
             let rows = statement.query_map(params![profile_id.to_string()], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?;
@@ -238,11 +247,10 @@ impl TaskHistoryStore for SqliteHistoryStore {
         profile_id: ProfileId,
     ) -> Result<usize, ariadeck_application::HistoryStoreError> {
         self.with_connection(|connection| {
-            let count: i64 = connection.query_row(
-                "SELECT COUNT(*) FROM task_history WHERE profile_id = ?1",
-                params![profile_id.to_string()],
-                |row| row.get(0),
-            )?;
+            let mut statement = connection
+                .prepare_cached("SELECT COUNT(*) FROM task_history WHERE profile_id = ?1")?;
+            let count: i64 =
+                statement.query_row(params![profile_id.to_string()], |row| row.get(0))?;
             Ok(count.max(0) as usize)
         })
         .map_err(Into::into)
@@ -255,18 +263,17 @@ impl From<HistoryError> for ariadeck_application::HistoryStoreError {
     }
 }
 
-fn migrate(connection: &Connection) -> Result<(), HistoryError> {
-    let version: i32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+fn migrate(connection: &mut Connection) -> Result<(), HistoryError> {
+    let tx = connection.transaction()?;
+    let version: i32 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version > SCHEMA_VERSION {
-        tracing::warn!(
-            found = version,
-            supported = SCHEMA_VERSION,
-            "history database is newer than this build; leaving schema unchanged"
-        );
-        return Ok(());
+        return Err(HistoryError::UnsupportedSchemaVersion {
+            found: version,
+            supported: SCHEMA_VERSION,
+        });
     }
     if version < 1 {
-        connection.execute_batch(
+        tx.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS task_history (
                 profile_id TEXT NOT NULL,
@@ -291,10 +298,10 @@ fn migrate(connection: &Connection) -> Result<(), HistoryError> {
                 ON task_history (profile_id, status, recorded_at DESC);
             ",
         )?;
-        connection.pragma_update(None, "user_version", 1)?;
+        tx.pragma_update(None, "user_version", 1)?;
     }
     if version < 2 {
-        connection.execute_batch(
+        tx.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS task_category (
                 profile_id TEXT NOT NULL,
@@ -307,9 +314,14 @@ fn migrate(connection: &Connection) -> Result<(), HistoryError> {
                 ON task_category (profile_id, category_id);
             ",
         )?;
-        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
+    tx.commit()?;
     Ok(())
+}
+
+fn clamp_u64_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 fn upsert_record(connection: &Connection, record: &HistoryRecord) -> Result<(), HistoryError> {
@@ -333,7 +345,7 @@ fn upsert_record(connection: &Connection, record: &HistoryRecord) -> Result<(), 
         })
         .filter(|uri| !uri.is_empty());
 
-    connection.execute(
+    let mut statement = connection.prepare_cached(
         "
         INSERT INTO task_history (
             profile_id, gid, status, display_name, directory, info_hash, source_kind,
@@ -358,23 +370,23 @@ fn upsert_record(connection: &Connection, record: &HistoryRecord) -> Result<(), 
             updated_at = excluded.updated_at,
             recorded_at = MIN(task_history.recorded_at, excluded.recorded_at)
         ",
-        params![
-            record.profile_id.to_string(),
-            record.gid.to_string(),
-            status,
-            record.display_name,
-            directory,
-            record.info_hash,
-            source_kind,
-            record.total_length.get() as i64,
-            record.completed_length.get() as i64,
-            error_code,
-            error_message,
-            primary_uri,
-            record.recorded_at_ms as i64,
-            record.updated_at_ms as i64,
-        ],
     )?;
+    statement.execute(params![
+        record.profile_id.to_string(),
+        record.gid.to_string(),
+        status,
+        record.display_name,
+        directory,
+        record.info_hash,
+        source_kind,
+        clamp_u64_to_i64(record.total_length.get()),
+        clamp_u64_to_i64(record.completed_length.get()),
+        error_code,
+        error_message,
+        primary_uri,
+        clamp_u64_to_i64(record.recorded_at_ms),
+        clamp_u64_to_i64(record.updated_at_ms),
+    ])?;
     Ok(())
 }
 
@@ -383,7 +395,7 @@ fn list_records(
     profile_id: ProfileId,
     limit: usize,
 ) -> Result<Vec<HistoryRecord>, HistoryError> {
-    let mut statement = connection.prepare(
+    let mut statement = connection.prepare_cached(
         "
         SELECT profile_id, gid, status, display_name, directory, info_hash, source_kind,
                total_length, completed_length, error_code, error_message, primary_uri_redacted,
@@ -394,24 +406,27 @@ fn list_records(
         LIMIT ?2
         ",
     )?;
-    let rows = statement.query_map(params![profile_id.to_string(), limit as i64], |row| {
-        Ok(RawHistoryRow {
-            profile_id: row.get(0)?,
-            gid: row.get(1)?,
-            status: row.get(2)?,
-            display_name: row.get(3)?,
-            directory: row.get(4)?,
-            info_hash: row.get(5)?,
-            source_kind: row.get(6)?,
-            total_length: row.get(7)?,
-            completed_length: row.get(8)?,
-            error_code: row.get(9)?,
-            error_message: row.get(10)?,
-            primary_uri_redacted: row.get(11)?,
-            recorded_at: row.get(12)?,
-            updated_at: row.get(13)?,
-        })
-    })?;
+    let rows = statement.query_map(
+        params![profile_id.to_string(), clamp_u64_to_i64(limit as u64)],
+        |row| {
+            Ok(RawHistoryRow {
+                profile_id: row.get(0)?,
+                gid: row.get(1)?,
+                status: row.get(2)?,
+                display_name: row.get(3)?,
+                directory: row.get(4)?,
+                info_hash: row.get(5)?,
+                source_kind: row.get(6)?,
+                total_length: row.get(7)?,
+                completed_length: row.get(8)?,
+                error_code: row.get(9)?,
+                error_message: row.get(10)?,
+                primary_uri_redacted: row.get(11)?,
+                recorded_at: row.get(12)?,
+                updated_at: row.get(13)?,
+            })
+        },
+    )?;
 
     let mut records = Vec::new();
     for row in rows {
@@ -513,76 +528,6 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
-/// Builds a durable history record from a live/stopped domain task.
-#[must_use]
-pub fn history_record_from_task(
-    profile_id: ProfileId,
-    task: &ariadeck_domain::DownloadTask,
-    now_ms: u64,
-) -> Option<HistoryRecord> {
-    if !matches!(
-        task.status,
-        DownloadStatus::Complete | DownloadStatus::Error
-    ) {
-        return None;
-    }
-    Some(HistoryRecord {
-        profile_id,
-        gid: task.gid,
-        status: task.status,
-        display_name: task.display_name.clone(),
-        directory: task.metadata.directory.clone(),
-        info_hash: task.metadata.info_hash.clone(),
-        source_kind: task.metadata.source_kind,
-        total_length: task.total_length,
-        completed_length: task.completed_length,
-        error: task.error.clone(),
-        primary_uri_redacted: task
-            .metadata
-            .primary_uri
-            .as_deref()
-            .map(redact_source_uri)
-            .filter(|uri| !uri.is_empty()),
-        recorded_at_ms: now_ms,
-        updated_at_ms: now_ms,
-    })
-}
-
-/// Same as [`history_record_from_task`] for adapter snapshots.
-#[must_use]
-pub fn history_record_from_snapshot(
-    profile_id: ProfileId,
-    snapshot: &ariadeck_domain::TaskSnapshot,
-    now_ms: u64,
-) -> Option<HistoryRecord> {
-    if !matches!(
-        snapshot.status,
-        DownloadStatus::Complete | DownloadStatus::Error
-    ) {
-        return None;
-    }
-    Some(HistoryRecord {
-        profile_id,
-        gid: snapshot.gid,
-        status: snapshot.status,
-        display_name: snapshot.display_name.clone(),
-        directory: snapshot.metadata.directory.clone(),
-        info_hash: snapshot.metadata.info_hash.clone(),
-        source_kind: snapshot.metadata.source_kind,
-        total_length: snapshot.total_length,
-        completed_length: snapshot.completed_length,
-        error: snapshot.error.clone(),
-        primary_uri_redacted: snapshot
-            .metadata
-            .primary_uri
-            .as_deref()
-            .map(redact_source_uri)
-            .filter(|uri| !uri.is_empty()),
-        recorded_at_ms: now_ms,
-        updated_at_ms: now_ms,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,11 +559,11 @@ mod tests {
         let profile_a = ProfileId::new();
         let profile_b = ProfileId::new();
         let task = sample_task(1, DownloadStatus::Complete, "one.bin");
-        let record = history_record_from_task(profile_a, &task, 100).expect("record");
+        let record = HistoryRecord::from_task(profile_a, &task, 100).expect("record");
         store.upsert(&record).expect("upsert");
         store
             .upsert(
-                &history_record_from_task(
+                &HistoryRecord::from_task(
                     profile_b,
                     &sample_task(2, DownloadStatus::Error, "two.bin"),
                     200,
@@ -653,7 +598,7 @@ mod tests {
         let dir = TempDir::new().expect("tempdir");
         let store = SqliteHistoryStore::open(dir.path().join("history.sqlite")).expect("open");
         let profile = ProfileId::new();
-        let mut first = history_record_from_task(
+        let mut first = HistoryRecord::from_task(
             profile,
             &sample_task(9, DownloadStatus::Complete, "file.bin"),
             1000,
@@ -674,7 +619,7 @@ mod tests {
     #[test]
     fn active_tasks_are_not_recorded() {
         let task = sample_task(3, DownloadStatus::Active, "live.bin");
-        assert!(history_record_from_task(ProfileId::new(), &task, 1).is_none());
+        assert!(HistoryRecord::from_task(ProfileId::new(), &task, 1).is_none());
     }
 
     #[test]
@@ -710,13 +655,13 @@ mod tests {
         let store = SqliteHistoryStore::open(dir.path().join("history.sqlite")).expect("open");
         let profile = ProfileId::new();
         let records = vec![
-            history_record_from_task(
+            HistoryRecord::from_task(
                 profile,
                 &sample_task(10, DownloadStatus::Complete, "a.bin"),
                 100,
             )
             .expect("a"),
-            history_record_from_task(
+            HistoryRecord::from_task(
                 profile,
                 &sample_task(11, DownloadStatus::Error, "b.bin"),
                 200,
@@ -756,5 +701,43 @@ mod tests {
             matches!(err, HistoryError::Io(_)),
             "expected HistoryError::Io, got {err:?}"
         );
+    }
+
+    #[test]
+    fn open_fails_closed_on_future_schema_version() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("history.sqlite");
+        {
+            let conn = Connection::open(&path).expect("seed db");
+            conn.pragma_update(None, "user_version", SCHEMA_VERSION + 5)
+                .expect("bump version");
+        }
+        let err = SqliteHistoryStore::open(&path)
+            .err()
+            .expect("future schema must fail closed");
+        assert!(matches!(
+            err,
+            HistoryError::UnsupportedSchemaVersion { found, supported }
+                if found == SCHEMA_VERSION + 5 && supported == SCHEMA_VERSION
+        ));
+    }
+
+    #[test]
+    fn huge_u64_lengths_clamp_to_i64_max_without_wrapping_negative() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = SqliteHistoryStore::open(dir.path().join("history.sqlite")).expect("open");
+        let profile = ProfileId::new();
+        let mut record = HistoryRecord::from_task(
+            profile,
+            &sample_task(77, DownloadStatus::Complete, "giant.bin"),
+            u64::MAX,
+        )
+        .expect("record");
+        record.total_length = ByteCount::new(u64::MAX);
+        record.completed_length = ByteCount::new(u64::MAX);
+        store.upsert(&record).expect("upsert");
+        let listed = store.list(profile, 10).expect("list");
+        assert_eq!(listed[0].total_length.get(), i64::MAX as u64);
+        assert_eq!(listed[0].recorded_at_ms, i64::MAX as u64);
     }
 }

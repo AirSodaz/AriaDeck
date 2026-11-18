@@ -1,441 +1,55 @@
-//! Split from workspace.rs — mapping.
+//! Bidirectional view-model mapping between domain/application/settings types
+//! and `ariadeck-ui` presentation structs.
 
-use super::*;
-use ariadeck_history::SqliteHistoryStore;
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::{Path, PathBuf},
+};
 
-pub(crate) fn add_sources_are_uris(sources: &[AddDownloadSourceView]) -> bool {
-    !sources.is_empty()
-        && sources
-            .iter()
-            .all(|source| matches!(source, AddDownloadSourceView::Uri { .. }))
-}
+use ariadeck_application::{
+    ApplicationError, ApplicationErrorCode, CommandItem, CommandOutcome, EngineCapabilities,
+    ItemFailure, StoreSnapshot, TaskListQuery,
+};
+use ariadeck_domain::{
+    ConnectionState, DownloadFilter, DownloadSort, DownloadStatus, DownloadTask, EngineSession,
+    EngineSessionId, Gid, ProfileId, SessionGeneration, SortDirection, SortKey,
+    TaskConnectionDetails, TaskDetails, TaskIdentity as DomainTaskIdentity, TaskProgress,
+    TaskUriStatus,
+};
+use ariadeck_engine::{
+    CoreDiscoveryOrigin, CoreInstallStatus, CoreSource, CoreStore, DiscoveredCore,
+    LocalEngineHealth, ProfileCatalog, ProfileEntry, ProfileKind,
+};
+use ariadeck_settings::{
+    AppSettings, CloseBehavior, ColorScheme, CompletionPowerAction, DownloadProxyMode,
+    DownloadProxySettings, FileAllocationSetting, LanguagePreference, ListFilterPreference,
+    ListSortDirectionPreference, ListSortKeyPreference, NotificationSettings, NotificationVolume,
+    PlatformSettings, SpeedLimitSettings, TransferPolicySettings, UiPreferences,
+};
+use ariadeck_ui::{
+    BatchCommandOutcomeView, BatchTaskFailureView, BrowserBridgeSettingsView, CloseBehaviorView,
+    ColorSchemeView, CommandOutcomeView, CompletionPowerActionView, ConnectionView,
+    CoreDiscoveryOriginView, CoreDownloadOfferView, CoreInstallStatusView, CoreInstallationView,
+    CoreRegistryView, CoreSourceView, DiscoveredCoreView, DownloadCategoryView,
+    DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView, EngineHealthView,
+    EngineSessionView, FileAllocationView, LanguagePreferenceView, NotificationSettingsView,
+    NotificationVolumeView, OperationErrorView, PlatformSettingsView, ProfileCatalogView,
+    ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView,
+    ProxyPasswordUpdateView, SettingsView, SpeedLimitSettingsView, SpeedSampleView,
+    StoppedHistoryView, TaskCountsView, TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity,
+    TaskNameStateView, TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView,
+    TaskSourceKindView, TaskStatusView, TaskTrackerView, TaskUriStatusView, TaskUriView,
+    TrackerListSettingsView, TrackerListSourceView, TransferPolicySettingsView, WorkspaceFilter,
+    WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey,
+    format_speed_limit_field,
+};
+use secrecy::SecretString;
 
-pub(crate) fn add_source_submission_key(source: &AddDownloadSourceView) -> String {
-    match source {
-        AddDownloadSourceView::Uri { uri, .. } => magnet_info_hash(uri).map_or_else(
-            || format!("uri:{}", normalize_add_uri_key(uri)),
-            |info_hash| format!("info-hash:{}", info_hash.to_ascii_lowercase()),
-        ),
-        AddDownloadSourceView::MetadataFile {
-            path, info_hash, ..
-        } => {
-            if let Some(info_hash) = info_hash {
-                return format!("info-hash:{}", info_hash.to_ascii_lowercase());
-            }
-            let path = path.to_string_lossy().replace('\\', "/");
-            let path = if cfg!(windows) {
-                path.to_ascii_lowercase()
-            } else {
-                path
-            };
-            format!("metadata:{path}")
-        }
-    }
-}
-
-pub(crate) fn command_outcome_is_unknown(outcome: &CommandOutcome) -> bool {
-    match outcome {
-        CommandOutcome::PartialSuccess { failed, .. } | CommandOutcome::Failure { failed } => {
-            failed
-                .iter()
-                .any(|failure| failure.error.code == ApplicationErrorCode::OutcomeUnknown)
-        }
-        CommandOutcome::Success { .. } => false,
-    }
-}
-
-pub(crate) async fn reconcile_unknown_add(
-    handle: &SyncHandle,
-    sources: &[AddDownloadSourceView],
-    known_gids: &mut Option<HashSet<Gid>>,
-    unresolved: CommandOutcomeView,
-) -> CommandOutcomeView {
-    let Some(known) = known_gids.as_mut() else {
-        return unresolved;
-    };
-    handle.force_refresh().await;
-    let Some(snapshot) = handle
-        .snapshot(ariadeck_application::TaskListQuery::default())
-        .await
-    else {
-        return unresolved;
-    };
-    if snapshot.stale || !matches!(snapshot.connection_state, ConnectionState::Connected) {
-        return unresolved;
-    }
-    if let Some(task) = find_new_matching_add_task(&snapshot.tasks, sources, known) {
-        known.insert(task.gid);
-        return CommandOutcomeView::Success {
-            tasks: vec![TaskIdentity {
-                profile_id: snapshot.session.profile_id.to_string(),
-                gid: task.gid.to_string(),
-            }],
-        };
-    }
-    CommandOutcomeView::Failure(map_application_error(ApplicationError::new(
-        ApplicationErrorCode::NotObserved,
-        "aria2 did not report a new matching task after an authoritative refresh. This source can be submitted again safely.",
-        true,
-    )))
-}
-
-pub(crate) fn find_new_matching_add_task<'a>(
-    tasks: &'a [DownloadTask],
-    sources: &[AddDownloadSourceView],
-    known_gids: &HashSet<Gid>,
-) -> Option<&'a DownloadTask> {
-    tasks
-        .iter()
-        .find(|task| !known_gids.contains(&task.gid) && task_matches_add_sources(task, sources))
-}
-
-pub(crate) fn find_matching_add_task<'a>(
-    tasks: &'a [DownloadTask],
-    sources: &[AddDownloadSourceView],
-) -> Option<&'a DownloadTask> {
-    tasks
-        .iter()
-        .find(|task| task_matches_add_sources(task, sources))
-}
-
-pub(crate) fn task_matches_add_sources(
-    task: &DownloadTask,
-    sources: &[AddDownloadSourceView],
-) -> bool {
-    if let Some(primary_uri) = task.metadata.primary_uri.as_deref()
-        && sources
-            .iter()
-            .filter_map(|source| match source {
-                AddDownloadSourceView::Uri { uri, .. } => Some(uri.as_str()),
-                AddDownloadSourceView::MetadataFile { .. } => None,
-            })
-            .any(|uri| add_uris_equal(primary_uri, uri))
-    {
-        return true;
-    }
-    let Some(task_info_hash) = task.metadata.info_hash.as_deref() else {
-        return false;
-    };
-    sources.iter().any(|source| match source {
-        AddDownloadSourceView::Uri { uri, .. } => magnet_info_hash(uri)
-            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(task_info_hash)),
-        AddDownloadSourceView::MetadataFile { info_hash, .. } => info_hash
-            .as_deref()
-            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(task_info_hash)),
-    })
-}
-
-pub(crate) fn add_uris_equal(left: &str, right: &str) -> bool {
-    match (Url::parse(left.trim()), Url::parse(right.trim())) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => left.trim() == right.trim(),
-    }
-}
-
-pub(crate) fn normalize_add_uri_key(uri: &str) -> String {
-    Url::parse(uri.trim()).map_or_else(|_| uri.trim().to_owned(), |parsed| parsed.to_string())
-}
-
-pub(crate) use ariadeck_domain::magnet_info_hash;
-
-pub(crate) async fn execute_global_task_command(
-    sync: Option<SyncHandle>,
-    request: GlobalTaskCommandRequestView,
-) -> GlobalTaskCommandResultView {
-    let GlobalTaskCommandRequestView {
-        request_id,
-        session,
-        command,
-    } = request;
-    let app_command = match command {
-        GlobalTaskCommandView::PauseAll => AppCommand::PauseAll,
-        GlobalTaskCommandView::ForcePauseAll => AppCommand::ForcePauseAll,
-        GlobalTaskCommandView::ResumeAll => AppCommand::ResumeAll,
-    };
-    let outcome = match (sync, map_engine_session(&session)) {
-        (Some(handle), Ok(engine_session)) => {
-            let outcome = handle.execute(engine_session, app_command).await;
-            // D-014 global command rule / D-010: a success or unknown outcome
-            // forces an authoritative refresh; an unknown mutation is never
-            // replayed in the same session.
-            if outcome.has_successes() || outcome.has_unknown_outcome() {
-                handle.force_refresh().await;
-            }
-            map_command_outcome(outcome)
-        }
-        (None, _) => CommandOutcomeView::Failure(unavailable_operation_error()),
-        (Some(_), Err(error)) => CommandOutcomeView::Failure(map_application_error(error)),
-    };
-    GlobalTaskCommandResultView {
-        request_id,
-        session,
-        command,
-        outcome,
-    }
-}
-
-pub(crate) async fn execute_task_command(
-    sync: Option<SyncHandle>,
-    task_file_gateway: Option<Arc<dyn TaskFileGateway>>,
-    request: TaskCommandRequestView,
-) -> TaskCommandResultView {
-    let TaskCommandRequestView {
-        request_id,
-        session,
-        identity,
-        command,
-    } = request;
-    let mapped = map_engine_session(&session)
-        .and_then(|engine_session| map_task_identity(&identity).map(|task| (engine_session, task)));
-    let outcome = match (sync, mapped) {
-        (Some(handle), Ok((engine_session, task))) => {
-            let retry_baseline = if matches!(&command, TaskCommandView::Retry) {
-                capture_retry_baseline(&handle, std::slice::from_ref(&task)).await
-            } else {
-                None
-            };
-            let remove_baseline = if matches!(
-                &command,
-                TaskCommandView::RemoveTask
-                    | TaskCommandView::ForceRemoveTask
-                    | TaskCommandView::RemoveTaskAndFiles
-            ) {
-                capture_remove_baseline(&handle, std::slice::from_ref(&task)).await
-            } else {
-                None
-            };
-            if matches!(&command, TaskCommandView::RemoveTaskAndFiles) {
-                let outcome = execute_remove_with_files(
-                    &handle,
-                    task_file_gateway.as_deref(),
-                    engine_session,
-                    task,
-                    remove_baseline,
-                )
-                .await;
-                if outcome.has_successes() {
-                    handle.force_refresh().await;
-                }
-                return TaskCommandResultView {
-                    request_id,
-                    session,
-                    identity,
-                    command,
-                    outcome: map_command_outcome(outcome),
-                };
-            }
-            let app_command = match &command {
-                TaskCommandView::Pause => AppCommand::PauseTasks(vec![task]),
-                TaskCommandView::ForcePause => AppCommand::ForcePauseTasks(vec![task]),
-                TaskCommandView::Resume => AppCommand::ResumeTasks(vec![task]),
-                TaskCommandView::MoveToQueueTop => {
-                    AppCommand::MoveTaskInQueue(MoveTaskInQueueRequest {
-                        task,
-                        movement: QueueMove::Top,
-                    })
-                }
-                TaskCommandView::MoveUpInQueue => {
-                    AppCommand::MoveTaskInQueue(MoveTaskInQueueRequest {
-                        task,
-                        movement: QueueMove::Up,
-                    })
-                }
-                TaskCommandView::MoveDownInQueue => {
-                    AppCommand::MoveTaskInQueue(MoveTaskInQueueRequest {
-                        task,
-                        movement: QueueMove::Down,
-                    })
-                }
-                TaskCommandView::MoveToQueueBottom => {
-                    AppCommand::MoveTaskInQueue(MoveTaskInQueueRequest {
-                        task,
-                        movement: QueueMove::Bottom,
-                    })
-                }
-                TaskCommandView::Retry => AppCommand::RetryTasks(vec![task]),
-                TaskCommandView::SetOutputName { output_name } => {
-                    AppCommand::SetTaskOutputName(SetTaskOutputNameRequest {
-                        task,
-                        output_name: output_name.clone(),
-                    })
-                }
-                TaskCommandView::SetSpeedLimit {
-                    download_limit,
-                    upload_limit,
-                } => AppCommand::SetTaskSpeedLimit(SetTaskSpeedLimitRequest {
-                    task,
-                    download_limit: ByteRate::new(*download_limit),
-                    upload_limit: ByteRate::new(*upload_limit),
-                }),
-                TaskCommandView::SetConnectionPolicy {
-                    max_connection_per_server,
-                    split,
-                    min_split_size,
-                } => AppCommand::SetTaskConnectionPolicy(SetTaskConnectionPolicyRequest {
-                    task,
-                    policy: TaskConnectionPolicy {
-                        max_connection_per_server: *max_connection_per_server,
-                        split: *split,
-                        min_split_size: *min_split_size,
-                    },
-                }),
-                TaskCommandView::SetOptions {
-                    seed_ratio,
-                    seed_time_minutes,
-                    selected_file_indices,
-                } => AppCommand::SetTaskOptions(SetTaskOptionsRequest {
-                    task,
-                    seed_ratio: seed_ratio.clone(),
-                    seed_time_minutes: seed_time_minutes
-                        .as_ref()
-                        .and_then(|value| value.parse().ok()),
-                    selected_file_indices: selected_file_indices.clone(),
-                }),
-                TaskCommandView::RemoveTask => AppCommand::RemoveTasks(RemoveTasksRequest {
-                    tasks: vec![task],
-                    scope: TaskRemovalScope::TaskOnly,
-                }),
-                TaskCommandView::ForceRemoveTask => {
-                    AppCommand::ForceRemoveTasks(RemoveTasksRequest {
-                        tasks: vec![task],
-                        scope: TaskRemovalScope::TaskOnly,
-                    })
-                }
-                TaskCommandView::RemoveTaskAndFiles => unreachable!("handled above"),
-            };
-            let mut outcome = handle.execute(engine_session, app_command).await;
-            if matches!(&command, TaskCommandView::Retry) {
-                outcome = reconcile_unknown_retries(&handle, retry_baseline, outcome).await;
-            } else if matches!(
-                &command,
-                TaskCommandView::RemoveTask | TaskCommandView::ForceRemoveTask
-            ) {
-                outcome = reconcile_unknown_removals(&handle, remove_baseline, outcome).await;
-            }
-            if outcome.has_successes() {
-                handle.force_refresh().await;
-            }
-            map_command_outcome(outcome)
-        }
-        (None, _) => CommandOutcomeView::Failure(unavailable_operation_error()),
-        (Some(_), Err(error)) => CommandOutcomeView::Failure(map_application_error(error)),
-    };
-    TaskCommandResultView {
-        request_id,
-        session,
-        identity,
-        command,
-        outcome,
-    }
-}
-
-pub(crate) async fn execute_batch_task_command(
-    sync: Option<SyncHandle>,
-    task_file_gateway: Option<Arc<dyn TaskFileGateway>>,
-    request: BatchTaskCommandRequestView,
-) -> BatchTaskCommandResultView {
-    let BatchTaskCommandRequestView {
-        request_id,
-        session,
-        identities,
-        command,
-    } = request;
-    let mapped = map_engine_session(&session).and_then(|engine_session| {
-        identities
-            .iter()
-            .map(map_task_identity)
-            .collect::<Result<Vec<_>, _>>()
-            .map(|tasks| (engine_session, tasks))
-    });
-    let outcome = match (sync, mapped) {
-        (Some(handle), Ok((engine_session, tasks))) => {
-            let retry_baseline = if command == BatchTaskCommandView::Retry {
-                capture_retry_baseline(&handle, &tasks).await
-            } else {
-                None
-            };
-            let remove_baseline = if matches!(
-                command,
-                BatchTaskCommandView::RemoveTask
-                    | BatchTaskCommandView::ForceRemoveTask
-                    | BatchTaskCommandView::RemoveTaskAndFiles
-            ) {
-                capture_remove_baseline(&handle, &tasks).await
-            } else {
-                None
-            };
-            if command == BatchTaskCommandView::RemoveTaskAndFiles {
-                let outcome = execute_batch_remove_with_files(
-                    &handle,
-                    task_file_gateway.as_deref(),
-                    engine_session,
-                    &tasks,
-                    remove_baseline,
-                )
-                .await;
-                if outcome.has_successes() {
-                    handle.force_refresh().await;
-                }
-                return BatchTaskCommandResultView {
-                    request_id,
-                    session,
-                    identities,
-                    command,
-                    outcome: map_batch_command_outcome(outcome),
-                };
-            }
-            let app_command = match command {
-                BatchTaskCommandView::Pause => AppCommand::PauseTasks(tasks),
-                BatchTaskCommandView::ForcePause => AppCommand::ForcePauseTasks(tasks),
-                BatchTaskCommandView::Resume => AppCommand::ResumeTasks(tasks),
-                BatchTaskCommandView::Retry => AppCommand::RetryTasks(tasks),
-                BatchTaskCommandView::RemoveTask => AppCommand::RemoveTasks(RemoveTasksRequest {
-                    tasks,
-                    scope: TaskRemovalScope::TaskOnly,
-                }),
-                BatchTaskCommandView::ForceRemoveTask => {
-                    AppCommand::ForceRemoveTasks(RemoveTasksRequest {
-                        tasks,
-                        scope: TaskRemovalScope::TaskOnly,
-                    })
-                }
-                BatchTaskCommandView::RemoveTaskAndFiles => unreachable!("handled above"),
-            };
-            let mut outcome = handle.execute(engine_session, app_command).await;
-            if command == BatchTaskCommandView::Retry {
-                outcome = reconcile_unknown_retries(&handle, retry_baseline, outcome).await;
-            } else if matches!(
-                command,
-                BatchTaskCommandView::RemoveTask | BatchTaskCommandView::ForceRemoveTask
-            ) {
-                outcome = reconcile_unknown_removals(&handle, remove_baseline, outcome).await;
-            }
-            if outcome.has_successes() {
-                handle.force_refresh().await;
-            }
-            map_batch_command_outcome(outcome)
-        }
-        (None, _) => BatchCommandOutcomeView::Failure {
-            failed: vec![BatchTaskFailureView {
-                identity: None,
-                error: unavailable_operation_error(),
-            }],
-        },
-        (Some(_), Err(error)) => BatchCommandOutcomeView::Failure {
-            failed: vec![BatchTaskFailureView {
-                identity: None,
-                error: map_application_error(error),
-            }],
-        },
-    };
-    BatchTaskCommandResultView {
-        request_id,
-        session,
-        identities,
-        command,
-        outcome,
-    }
-}
+use super::{
+    ProxyPasswordUpdate,
+    core_fetch::{catalog_entry_for, host_target},
+};
 
 pub(crate) fn map_engine_session(
     session: &EngineSessionView,
@@ -669,117 +283,6 @@ pub(crate) fn map_task_details(
     }
 }
 
-pub(crate) fn create_sync_handle(
-    runtime: &Runtime,
-    data_dir: &Path,
-    settings: &AppSettings,
-    catalog: &ProfileCatalog,
-) -> Result<(SyncHandle, Option<LocalEngineSupervisor>, Option<String>), String> {
-    // One-shot env override for smoke tests still wins over the catalog.
-    let external_endpoint = env::var("ARIADECK_RPC_URL")
-        .ok()
-        .filter(|endpoint| !endpoint.trim().is_empty());
-    let active = catalog
-        .active()
-        .ok_or_else(|| "Profile catalog has no active profile.".to_owned())?;
-    let remote_from_catalog = active.kind == ProfileKind::RemoteRpc;
-    let is_remote = external_endpoint.is_some() || remote_from_catalog;
-    let rpc_runtime = RpcRuntimeConfig::from_values(is_remote, |name| env::var(name).ok())?;
-    let mut engine_startup_notice = None;
-    let (endpoint, secret, local_engine, profile_id) = if let Some(endpoint) = external_endpoint {
-        if endpoint.trim() != endpoint {
-            return Err("ARIADECK_RPC_URL must not contain surrounding whitespace.".into());
-        }
-        let endpoint =
-            Url::parse(&endpoint).map_err(|error| format!("Invalid ARIADECK_RPC_URL: {error}"))?;
-        let profile_id = env::var("ARIADECK_PROFILE_ID")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(active.profile_id);
-        let secret = env::var("ARIADECK_RPC_SECRET")
-            .ok()
-            .filter(|secret| !secret.is_empty())
-            .map(RpcSecret::new);
-        (endpoint, secret, None, profile_id)
-    } else if remote_from_catalog {
-        let endpoint_str = active
-            .endpoint
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "Active remote profile is missing an endpoint.".to_owned())?;
-        let endpoint = Url::parse(endpoint_str)
-            .map_err(|error| format!("Invalid remote profile endpoint: {error}"))?;
-        let secret = load_profile_rpc_secret(active)?;
-        (endpoint, secret, None, active.profile_id)
-    } else {
-        let config = active
-            .as_local_config()
-            .ok_or_else(|| "Active local profile is missing a data directory.".to_owned())?;
-        // Prefer settings download directory for the live session.
-        let mut config = config;
-        config.download_dir = settings.download_directory.clone();
-        if config.data_dir.as_os_str().is_empty() {
-            config.data_dir = data_dir.to_path_buf();
-        }
-        // Executable resolution: env override → profile pin → managed core → discovery.
-        config.executable = resolve_local_executable(data_dir, &config.executable)?;
-        let process = LocalEngineSupervisor::spawn(&config)
-            .map_err(|error| format!("Failed to start local aria2: {error}"))?;
-        // Successful start: remember the active managed core as last working when present.
-        let _ = CoreStore::new(data_dir).mark_active_as_last_working();
-        let mut notices = Vec::new();
-        if process.session_was_recovered() {
-            let notice = match process.session_recovery_backup() {
-                Some(backup) => format!(
-                    "Corrupt aria2 session data was reset so downloads could start; the original was preserved at {}.",
-                    backup.display()
-                ),
-                None => "Corrupt aria2 session data was reset so downloads could start.".to_owned(),
-            };
-            tracing::warn!(%notice, "local aria2 session file was recovered");
-            notices.push(notice);
-        }
-        engine_startup_notice = (!notices.is_empty()).then(|| notices.join(" "));
-        let endpoint = process.endpoint().clone();
-        let secret = Some(RpcSecret::new(process.secret().to_owned()));
-        (endpoint, secret, Some(process), config.profile_id)
-    };
-
-    let mut websocket = WebSocketConfig::new(endpoint.clone());
-    websocket.connect_timeout = rpc_runtime.connect_timeout;
-    websocket.request_timeout = rpc_runtime.request_timeout;
-    websocket.allow_insecure_remote = rpc_runtime.allow_insecure_remote;
-    websocket.validate().map_err(|error| error.to_string())?;
-    let connector = Arc::new(RpcSyncConnector::new(websocket, secret));
-    let mut coordinator = CoordinatorConfig::new(profile_id);
-    coordinator.reconnect = rpc_runtime.reconnect;
-    match SqliteHistoryStore::open(data_dir.join("history.sqlite")) {
-        Ok(store) => {
-            coordinator.history = std::sync::Arc::new(store);
-        }
-        Err(error) => {
-            tracing::warn!(%error, "local task history is unavailable");
-        }
-    }
-    tracing::info!(
-        scheme = endpoint.scheme(),
-        host = endpoint.host_str().unwrap_or("unknown"),
-        port = endpoint.port_or_known_default(),
-        connect_timeout_ms = rpc_runtime.connect_timeout.as_millis(),
-        request_timeout_ms = rpc_runtime.request_timeout.as_millis(),
-        reconnect_base_ms = rpc_runtime.reconnect.base_delay.as_millis(),
-        reconnect_max_ms = rpc_runtime.reconnect.max_delay.as_millis(),
-        reconnect_max_attempts = ?rpc_runtime.reconnect.max_attempts,
-        "configured external aria2 RPC profile"
-    );
-    let _runtime_guard = runtime.enter();
-    Ok((
-        spawn_sync_coordinator(connector, coordinator),
-        local_engine,
-        engine_startup_notice,
-    ))
-}
-
 pub(crate) fn map_core_registry(store: &CoreStore) -> CoreRegistryView {
     match store.list_installations() {
         Ok(installations) => {
@@ -915,17 +418,23 @@ pub(crate) fn map_profile_entry(entry: &ProfileEntry) -> ProfileEntryView {
     }
 }
 
+pub(crate) struct MappedProfileCatalog {
+    pub(crate) catalog: ProfileCatalog,
+    pub(crate) secret_updates: HashMap<ProfileId, ProfileRpcSecretUpdateView>,
+}
+
 pub(crate) fn map_profile_catalog_request(
     view: &ProfileCatalogView,
-    secret_updates: &std::collections::HashMap<String, ProfileRpcSecretUpdateView>,
+    secret_updates: &HashMap<String, ProfileRpcSecretUpdateView>,
     existing: &ProfileCatalog,
     data_dir: &Path,
     settings: &AppSettings,
-) -> Result<ProfileCatalog, String> {
+) -> Result<MappedProfileCatalog, String> {
     if view.profiles.is_empty() {
         return Err("At least one profile is required.".into());
     }
     let mut profiles = Vec::with_capacity(view.profiles.len());
+    let mut mapped_secret_updates: HashMap<ProfileId, ProfileRpcSecretUpdateView> = HashMap::new();
     let mut resolved_active: Option<ProfileId> = None;
     for entry in &view.profiles {
         // Draft rows use non-UUID ids ("draft-local-N"); mint a stable id on save.
@@ -973,6 +482,9 @@ pub(crate) fn map_profile_catalog_request(
                 }
                 profile.has_secret = false;
                 profile.secret_ref = None;
+                if previous.as_ref().and_then(|p| p.secret_ref).is_some() {
+                    mapped_secret_updates.insert(profile_id, ProfileRpcSecretUpdateView::Clear);
+                }
                 profile
             }
             ProfileKindView::RemoteRpc => {
@@ -990,9 +502,13 @@ pub(crate) fn map_profile_catalog_request(
                     .get(&entry.profile_id)
                     .cloned()
                     .unwrap_or(ProfileRpcSecretUpdateView::Unchanged);
-                let secret_ref = match secret_update {
-                    ProfileRpcSecretUpdateView::Clear => None,
+                let secret_ref = match &secret_update {
+                    ProfileRpcSecretUpdateView::Clear => {
+                        mapped_secret_updates.insert(profile_id, ProfileRpcSecretUpdateView::Clear);
+                        None
+                    }
                     ProfileRpcSecretUpdateView::Set(_) => {
+                        mapped_secret_updates.insert(profile_id, secret_update.clone());
                         // Keep previous ref if present so we overwrite the same keyring entry;
                         // otherwise mint a new ref (applied in apply_profile_secret_updates).
                         Some(
@@ -1006,12 +522,8 @@ pub(crate) fn map_profile_catalog_request(
                         previous.as_ref().and_then(|profile| profile.secret_ref)
                     }
                 };
-                let mut profile =
-                    ProfileEntry::remote_rpc(profile_id, name, endpoint, download_dir, secret_ref)
-                        .map_err(|error| error.to_string())?;
-                // has_secret is derived from secret_ref in remote_rpc ctor.
-                let _ = &mut profile;
-                profile
+                ProfileEntry::remote_rpc(profile_id, name, endpoint, download_dir, secret_ref)
+                    .map_err(|error| error.to_string())?
             }
         };
         profiles.push(mapped);
@@ -1031,7 +543,10 @@ pub(crate) fn map_profile_catalog_request(
         profiles,
     };
     catalog.validate().map_err(|error| error.to_string())?;
-    Ok(catalog)
+    Ok(MappedProfileCatalog {
+        catalog,
+        secret_updates: mapped_secret_updates,
+    })
 }
 
 pub(crate) fn map_completion_power_action_to_view(

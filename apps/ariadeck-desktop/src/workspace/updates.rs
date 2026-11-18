@@ -1,9 +1,17 @@
 //! Multi-platform update discovery and installer verification.
 
-use std::{collections::HashMap, path::Path, time::Duration};
+use std::{
+    collections::HashMap,
+    env,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
+use gpui::{Context, Window};
 use semver::Version;
 use serde::Deserialize;
+
+use super::DesktopRoot;
 
 const UPDATER_MANIFEST_URL: &str =
     "https://github.com/AirSodaz/AriaDeck/releases/latest/download/updater.json";
@@ -302,20 +310,35 @@ where
     )
     .await?;
 
-    verify_minisign(&signature_bytes, &bytes)?;
-
-    if let Some(checksums_url) = &offer.checksums_url {
+    let checksum_input = if let Some(checksums_url) = &offer.checksums_url {
         let package_name = url::Url::parse(package_url)
             .ok()
             .and_then(|url| url.path_segments()?.next_back().map(str::to_owned));
         let checksums_bytes =
             fetch_bounded(checksums_url, MAX_CHECKSUM_BYTES, "Checksum file", &[]).await;
-        if let (Some(name), Ok(checksums_bytes)) = (package_name, checksums_bytes) {
+        match (package_name, checksums_bytes) {
+            (Some(name), Ok(checksums_bytes)) => Some((checksums_bytes, name)),
+            (_, Err(error)) => {
+                tracing::warn!(%error, "optional SHA256SUMS fetch failed; relying on Minisign verification");
+                None
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    // Offload CPU-heavy signature & SHA-256 verification over up to 512 MiB
+    // so Tokio async worker threads remain responsive.
+    tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+        verify_minisign(&signature_bytes, &bytes)?;
+        if let Some((checksums_bytes, name)) = checksum_input {
             verify_sha256sum(&checksums_bytes, &name, &bytes)?;
         }
-    }
-
-    Ok(bytes)
+        Ok(bytes)
+    })
+    .await
+    .map_err(|error| format!("Update verification task failed: {error}"))?
 }
 
 fn verify_minisign(signature: &[u8], bytes: &[u8]) -> Result<(), String> {
@@ -402,6 +425,11 @@ pub(crate) fn save_package(
 ) -> Result<std::path::PathBuf, String> {
     std::fs::create_dir_all(directory)
         .map_err(|error| format!("Could not prepare the update directory: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700));
+    }
     let target = target_platform_key(os, arch).unwrap_or("unknown");
     let ext = match os {
         "windows" => "exe",
@@ -413,6 +441,342 @@ pub(crate) fn save_package(
     std::fs::write(&path, bytes)
         .map_err(|error| format!("Could not save the verified package: {error}"))?;
     Ok(path)
+}
+
+#[derive(Default)]
+pub(crate) struct UpdateController {
+    offer: Option<UpdateOffer>,
+    verified_installer: Option<PathBuf>,
+}
+
+impl UpdateController {
+    pub(crate) fn set_offer(&mut self, offer: Option<UpdateOffer>) {
+        self.offer = offer;
+    }
+
+    pub(crate) fn offer(&self) -> Option<UpdateOffer> {
+        self.offer.clone()
+    }
+
+    pub(crate) fn set_verified_installer(&mut self, path: PathBuf) {
+        self.verified_installer = Some(path);
+    }
+
+    pub(crate) fn take_verified_installer(&mut self) -> Option<PathBuf> {
+        self.verified_installer.take()
+    }
+}
+
+pub(crate) fn updates_supported() -> bool {
+    supports_updates(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        option_env!("ARIADECK_BUILD_CHANNEL"),
+    )
+}
+
+fn is_portable_install() -> bool {
+    env::current_exe()
+        .ok()
+        .and_then(|executable| executable.parent().map(Path::to_path_buf))
+        .is_some_and(|directory| directory.join(ariadeck_ipc::PORTABLE_MARKER_FILE).is_file())
+}
+
+pub(crate) fn is_read_only_update_install() -> bool {
+    if is_portable_install() {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("APPIMAGE").is_none() {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn build_windows_update_command(
+    package: &Path,
+    executable: &Path,
+) -> std::process::Command {
+    // Pass paths strictly via environment variables and `-LiteralPath` /
+    // `-FilePath` so characters like `&`, `%`, `^`, `;`, or quotes in user
+    // directories can never break quoting or inject shell commands.
+    let mut command = ariadeck_engine::console_free_command("powershell");
+    command
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "Start-Sleep -Seconds 2; \
+             $pkg = $env:ARIADECK_UPDATE_PACKAGE; \
+             $exe = $env:ARIADECK_UPDATE_EXECUTABLE; \
+             if ($pkg -and (Test-Path -LiteralPath $pkg)) { \
+                 Start-Process -FilePath $pkg -ArgumentList '/SILENT','/CLOSEAPPLICATIONS' -Wait; \
+                 Remove-Item -LiteralPath $pkg -Force -ErrorAction SilentlyContinue; \
+             }; \
+             if ($exe -and (Test-Path -LiteralPath $exe)) { \
+                 Start-Process -FilePath $exe; \
+             }",
+        ])
+        .env("ARIADECK_UPDATE_PACKAGE", package)
+        .env("ARIADECK_UPDATE_EXECUTABLE", executable);
+    command
+}
+
+fn launch_verified_update(package: PathBuf, executable: PathBuf) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        build_windows_update_command(&package, &executable)
+            .spawn()
+            .map_err(|error| format!("Could not start the update installer: {error}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let bundle_path = executable
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent);
+        let Some(bundle_path) =
+            bundle_path.filter(|p| p.extension().is_some_and(|ext| ext == "app"))
+        else {
+            return Err("In-app update on macOS requires running from an .app bundle.".into());
+        };
+        let staging_temp = tempfile::Builder::new()
+            .prefix("AriaDeck-update-stage-")
+            .tempdir()
+            .map_err(|e| format!("Could not create macOS update staging directory: {e}"))?;
+        let staging_dir = staging_temp.path().to_path_buf();
+
+        let tar_status = std::process::Command::new("/usr/bin/tar")
+            .args(["-xzf"])
+            .arg(&package)
+            .args(["-C"])
+            .arg(&staging_dir)
+            .status()
+            .map_err(|e| format!("Could not unpack update package: {e}"))?;
+        if !tar_status.success() {
+            return Err("Unpacking update package failed.".into());
+        }
+
+        let staged_app = staging_dir.join("AriaDeck.app");
+        if !staged_app.is_dir() {
+            return Err("Unpacked update does not contain AriaDeck.app.".into());
+        }
+
+        let staging_dir = staging_temp.keep();
+        std::process::Command::new("sh")
+            .args([
+                "-c",
+                r#"sleep 1; rm -rf "$1" && mv "$2" "$1" && xattr -dr com.apple.quarantine "$1" 2>/dev/null; open -n "$1"; rm -rf "$3" "$4""#,
+                "updater",
+            ])
+            .arg(bundle_path)
+            .arg(&staged_app)
+            .arg(&staging_dir)
+            .arg(&package)
+            .spawn()
+            .map_err(|e| format!("Could not spawn update helper: {e}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = executable;
+        use std::os::unix::fs::PermissionsExt;
+        let appimage_target = std::env::var_os("APPIMAGE").map(PathBuf::from);
+        let Some(target) = appimage_target else {
+            return Err(
+                "In-app update on Linux is supported only for AppImage installations.".into(),
+            );
+        };
+        std::fs::set_permissions(&package, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("Could not set executable permissions: {e}"))?;
+        std::process::Command::new("sh")
+            .args([
+                "-c",
+                r#"sleep 1; mv -f "$1" "$2" && chmod +x "$2" && "$2" &"#,
+                "updater",
+            ])
+            .arg(&package)
+            .arg(&target)
+            .spawn()
+            .map_err(|e| format!("Could not spawn update helper: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (package, executable);
+        Err("Application updates are not supported on this platform.".into())
+    }
+}
+
+impl DesktopRoot {
+    pub(super) fn spawn_update_check(
+        &mut self,
+        request_id: ariadeck_ui::RequestId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let version = env!("CARGO_PKG_VERSION").to_owned();
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+        let runtime = self.runtime.handle().clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = match runtime
+                .spawn(async move { check_latest_release(&version, os, arch).await })
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => Err(format!("Update check worker failed: {error}")),
+            };
+            this.update_in(cx, |this, _window, cx| {
+                let view_result = match result {
+                    Ok(offer) => {
+                        this.updates.set_offer(offer.clone());
+                        Ok(offer.map(|offer| ariadeck_ui::UpdateOfferView {
+                            version: offer.version,
+                            title: offer.title,
+                            notes: offer.notes,
+                            release_url: offer.release_url,
+                            installer_available: offer.package_url.is_some()
+                                && (offer.signature_data.is_some()
+                                    || offer.signature_url.is_some()),
+                        }))
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "update check failed");
+                        this.updates.set_offer(None);
+                        Err(error)
+                    }
+                };
+                this.workspace.update(cx, |shell, cx| {
+                    shell.set_update_check_result(request_id, view_result, cx);
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(super) fn spawn_update_download(
+        &mut self,
+        request_id: ariadeck_ui::RequestId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if is_read_only_update_install() {
+            return;
+        }
+        let Some(offer) = self.updates.offer() else {
+            self.workspace.update(cx, |shell, cx| {
+                shell.set_update_download_result(
+                    request_id,
+                    Err("Update metadata is no longer available. Check again.".into()),
+                    cx,
+                );
+            });
+            return;
+        };
+        let version = offer.version.clone();
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+        let runtime = self.runtime.handle().clone();
+        // Stage verified update packages inside the user-private app data
+        // directory rather than world-writable `/tmp`.
+        let update_dir = self.data_dir.join("updates");
+        cx.spawn_in(window, async move |this, cx| {
+            let (progress_tx, mut progress_rx) =
+                tokio::sync::mpsc::unbounded_channel::<(u64, Option<u64>)>();
+            let offer_clone = offer.clone();
+            let download_task = runtime.spawn(async move {
+                download_verified_package(&offer_clone, move |downloaded, total| {
+                    let _ = progress_tx.send((downloaded, total));
+                })
+                .await
+            });
+
+            while let Some((downloaded, total)) = progress_rx.recv().await {
+                this.update_in(cx, |this, _window, cx| {
+                    this.workspace.update(cx, |shell, cx| {
+                        shell.set_update_download_progress(request_id, downloaded, total, cx);
+                    });
+                })
+                .ok();
+            }
+
+            let result = match download_task.await {
+                Ok(Ok(bytes)) => {
+                    let version_for_file = version.clone();
+                    runtime
+                        .spawn_blocking(move || {
+                            save_package(&bytes, &update_dir, &version_for_file, os, arch)
+                        })
+                        .await
+                        .map_err(|error| format!("Package save task failed: {error}"))
+                        .and_then(|result| result)
+                }
+                Ok(Err(error)) => Err(error),
+                Err(panic_err) => Err(format!("Download task panicked: {panic_err}")),
+            };
+
+            this.update_in(cx, |this, _window, cx| {
+                let view_result = match result {
+                    Ok(path) => {
+                        this.updates.set_verified_installer(path);
+                        Ok(version)
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "update package download failed");
+                        Err(error)
+                    }
+                };
+                this.workspace.update(cx, |shell, cx| {
+                    shell.set_update_download_result(request_id, view_result, cx);
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(super) fn install_verified_update(&mut self, cx: &mut Context<Self>) {
+        let Some(installer) = self.updates.take_verified_installer() else {
+            return;
+        };
+        let executable = match env::current_exe() {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::error!(%error, "cannot locate the running executable for update restart");
+                self.workspace.update(cx, |shell, cx| {
+                    shell.set_update_install_error(error.to_string(), cx);
+                });
+                return;
+            }
+        };
+        let runtime = self.runtime.handle().clone();
+        cx.spawn(async move |this, cx| {
+            let result = runtime
+                .spawn_blocking(move || launch_verified_update(installer, executable))
+                .await
+                .map_err(|error| format!("Update launch worker failed: {error}"))
+                .and_then(|res| res);
+            this.update(cx, |this, cx| match result {
+                Ok(()) => this.quit_application(cx),
+                Err(error) => {
+                    tracing::error!(%error, "could not start the verified update installer");
+                    this.workspace.update(cx, |shell, cx| {
+                        shell.set_update_install_error(error, cx);
+                    });
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
 }
 
 #[cfg(test)]

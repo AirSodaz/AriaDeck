@@ -32,3 +32,13 @@ pub enum RpcError {
         data: Option<Value>,
     },
 }
+
+pub(crate) fn is_unauthorized_message(message: &str) -> bool {
+    message.to_ascii_lowercase().contains("unauthorized")
+}
+
+impl RpcError {
+    pub(crate) fn is_unauthorized(&self) -> bool {
+        matches!(self, Self::Remote { message, .. } if is_unauthorized_message(message))
+    }
+}

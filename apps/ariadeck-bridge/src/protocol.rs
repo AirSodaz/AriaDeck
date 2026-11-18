@@ -119,23 +119,38 @@ impl Reply {
 #[derive(Debug)]
 pub enum Frame {
     Message(Vec<u8>),
+    /// Zero-length frame; no body follows so the stream stays synchronized.
+    Empty,
     /// Length header exceeded [`MAX_MESSAGE_BYTES`]. The body is not consumed, so
     /// the stream is out of sync and the caller must reply and stop.
     Oversize,
-    /// Browser closed the port.
+    /// Browser closed the port cleanly at a frame boundary.
     Eof,
 }
 
 /// Read one length-prefixed native message (4-byte little-endian length).
 pub fn read_frame(reader: &mut impl Read) -> io::Result<Frame> {
     let mut header = [0_u8; 4];
-    match reader.read_exact(&mut header) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(Frame::Eof),
-        Err(error) => return Err(error),
+    let mut filled = 0;
+    while filled < header.len() {
+        match reader.read(&mut header[filled..]) {
+            Ok(0) if filled == 0 => return Ok(Frame::Eof),
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "truncated native messaging frame header",
+                ));
+            }
+            Ok(n) => filled += n,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
     }
     let length = u32::from_le_bytes(header) as usize;
-    if length == 0 || length > MAX_MESSAGE_BYTES {
+    if length == 0 {
+        return Ok(Frame::Empty);
+    }
+    if length > MAX_MESSAGE_BYTES {
         return Ok(Frame::Oversize);
     }
     let mut body = vec![0_u8; length];
@@ -261,12 +276,21 @@ mod tests {
     }
 
     #[test]
-    fn zero_length_message_is_refused() {
+    fn zero_length_message_is_classified_as_empty() {
         let mut reader = Cursor::new(0_u32.to_le_bytes().to_vec());
         assert!(matches!(
             read_frame(&mut reader).expect("frame reads"),
-            Frame::Oversize
+            Frame::Empty
         ));
+    }
+
+    #[test]
+    fn truncated_header_returns_unexpected_eof() {
+        for partial in [vec![1_u8], vec![1, 2], vec![1, 2, 3]] {
+            let mut reader = Cursor::new(partial);
+            let error = read_frame(&mut reader).expect_err("truncated header fails");
+            assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        }
     }
 
     #[test]

@@ -19,6 +19,7 @@ tokio.workspace = true
 winreg.workspace = true
 
 [dev-dependencies]
+ariadeck-settings = { path = "../../crates/ariadeck-settings" }
 tempfile.workspace = true
 
 [lints]

@@ -1,19 +1,16 @@
 //! Shared atomic JSON persistence helper for settings, window geometry, and
 //! per-profile engine environments.
 
-use std::{
-    fs::{self, OpenOptions},
-    io::{self, Write},
-    path::Path,
-};
+use std::{fs, io::Write, path::Path};
 
-use uuid::Uuid;
+use tempfile::Builder;
 
-use crate::SettingsError;
+use crate::{SettingsError, error::io_error};
 
 /// Atomically write `payload` (plus trailing newline) to `path` using a unique
-/// temporary file in the same directory, fsyncing and closing the handle before
-/// replacing the target.
+/// temporary file in the same directory, fsyncing before atomically replacing
+/// the target via `NamedTempFile::persist` (which uses `MoveFileExW` with
+/// `MOVEFILE_REPLACE_EXISTING` on Windows without pre-deleting the target).
 pub(crate) fn write_atomic_json(
     path: &Path,
     payload: &[u8],
@@ -34,56 +31,27 @@ pub(crate) fn write_atomic_json(
         .unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|source| io_error(create_dir_op, parent, source))?;
 
-    let temp_path = parent.join(format!(
-        ".{}.{}.tmp",
-        file_name.to_string_lossy(),
-        Uuid::new_v4()
-    ));
+    let prefix = format!(".{}.", file_name.to_string_lossy());
+    let mut temp_file = Builder::new()
+        .prefix(&prefix)
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .map_err(|source| io_error(temp_op, parent, source))?;
+    let temp_path = temp_file.path().to_path_buf();
 
-    let result = (|| -> Result<(), SettingsError> {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp_path)
-            .map_err(|source| io_error(temp_op, &temp_path, source))?;
-        file.write_all(payload)
-            .and_then(|()| file.write_all(b"\n"))
-            .map_err(|source| io_error(write_op, &temp_path, source))?;
-        file.flush()
-            .and_then(|()| file.sync_all())
-            .map_err(|source| io_error(sync_op, &temp_path, source))?;
-        // Ensure the temporary file handle is closed before rename on Windows.
-        drop(file);
-        replace_file(&temp_path, path).map_err(|source| io_error(replace_op, path, source))
-    })();
+    temp_file
+        .as_file_mut()
+        .write_all(payload)
+        .and_then(|()| temp_file.as_file_mut().write_all(b"\n"))
+        .map_err(|source| io_error(write_op, &temp_path, source))?;
+    temp_file
+        .as_file_mut()
+        .flush()
+        .and_then(|()| temp_file.as_file_mut().sync_all())
+        .map_err(|source| io_error(sync_op, &temp_path, source))?;
 
-    if result.is_err() {
-        let _ = fs::remove_file(&temp_path);
-    }
-    result
-}
-
-#[cfg(windows)]
-fn replace_file(temp_path: &Path, target_path: &Path) -> io::Result<()> {
-    match fs::rename(temp_path, target_path) {
-        Ok(()) => Ok(()),
-        Err(first_error) if target_path.exists() => {
-            fs::remove_file(target_path)?;
-            fs::rename(temp_path, target_path).or(Err(first_error))
-        }
-        Err(error) => Err(error),
-    }
-}
-
-#[cfg(not(windows))]
-fn replace_file(temp_path: &Path, target_path: &Path) -> io::Result<()> {
-    fs::rename(temp_path, target_path)
-}
-
-fn io_error(operation: &'static str, path: &Path, source: io::Error) -> SettingsError {
-    SettingsError::Io {
-        operation,
-        path: path.to_path_buf(),
-        source,
-    }
+    temp_file
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| io_error(replace_op, path, error.error))
 }

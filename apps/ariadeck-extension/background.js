@@ -9,6 +9,7 @@ import {
   ERROR_TEXT,
   cookieHeaderFor,
   cookiesAllowedFor,
+  guessFilename,
   originOf,
   recordResult,
   sendToHost,
@@ -34,47 +35,44 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 });
 
 async function send(url, pageUrl) {
-  const origin = originOf(url);
-  if (!origin) {
-    await report({ ok: false, error: "rejected" });
-    return;
-  }
-
-  const item = { url };
-
-  // Referer is what most gated downloads actually need, and it is not a secret,
-  // so it goes by default (§5).
-  if (pageUrl && originOf(pageUrl)) {
-    item.referer = pageUrl;
-  }
-  // Sending the browser's own UA keeps the engine from looking like a different
-  // client to servers that check.
-  item.user_agent = navigator.userAgent;
-
-  const filename = guessFilename(url);
-  if (filename) {
-    // Display hint only. AriaDeck shows it and then discards it: the engine
-    // resolves the real name (D-001).
-    item.filename = filename;
-  }
-
-  if (await cookiesAllowedFor(origin)) {
-    const cookie = await cookieHeaderFor(url);
-    if (cookie) item.cookie = cookie;
-  }
-
-  await report(await sendToHost([item]));
-}
-
-/** Last path segment, when it looks like a name rather than a route. */
-function guessFilename(url) {
   try {
-    const path = new URL(url).pathname;
-    const candidate = decodeURIComponent(path.split("/").pop() ?? "");
-    // The host refuses anything path-like anyway; not sending it is tidier.
-    return candidate && !candidate.includes("\\") ? candidate : null;
+    const origin = originOf(url);
+    if (!origin) {
+      await report({ ok: false, error: "rejected" });
+      return;
+    }
+
+    const item = { url };
+
+    // Referer is what most gated downloads actually need, and it is not a secret,
+    // so it goes by default (§5).
+    if (pageUrl && originOf(pageUrl)) {
+      item.referer = pageUrl;
+    }
+    // Sending the browser's own UA keeps the engine from looking like a different
+    // client to servers that check.
+    item.user_agent = navigator.userAgent;
+
+    const filename = guessFilename(url);
+    if (filename) {
+      // Display hint only. AriaDeck shows it and then discards it: the engine
+      // resolves the real name (D-001).
+      item.filename = filename;
+    }
+
+    if (await cookiesAllowedFor(origin)) {
+      try {
+        const cookie = await cookieHeaderFor(url);
+        if (cookie) item.cookie = cookie;
+      } catch {
+        // Optional `cookies` permission may have been revoked between check and
+        // lookup; degrade gracefully to sending without cookies.
+      }
+    }
+
+    await report(await sendToHost([item]));
   } catch {
-    return null;
+    await report({ ok: false, error: "rejected" });
   }
 }
 

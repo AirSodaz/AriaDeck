@@ -1,9 +1,9 @@
-//! Settings `categories` section logic and rendering for `AppShell`.
+//! Settings `categories` section logic and rendering for `SettingsPanelView`.
 
 use super::*;
 
-impl AppShell {
-    pub(crate) fn flush_category_editor(&mut self, cx: &mut Context<Self>) {
+impl SettingsPanelView {
+    pub(super) fn flush_category_editor(&mut self, cx: &mut Context<Self>) {
         let Some(index) = self.settings_page.draft_category_edit_index else {
             return;
         };
@@ -37,6 +37,38 @@ impl AppShell {
         }
         category.extensions = extensions;
         category.directory = directory;
+    }
+
+    pub(crate) fn preview_draft_categories(&self, cx: &App) -> Vec<crate::DownloadCategoryView> {
+        let mut preview = self.settings_page.draft_categories.clone();
+        if let Some(index) = self.settings_page.draft_category_edit_index
+            && let Some(category) = preview.get_mut(index)
+        {
+            let name = self
+                .settings_inputs
+                .category_name
+                .read(cx)
+                .value()
+                .trim()
+                .to_owned();
+            if !name.is_empty() {
+                category.name = name;
+            }
+            category.extensions = self
+                .settings_inputs
+                .category_extensions
+                .read(cx)
+                .value()
+                .to_string();
+            category.directory = self
+                .settings_inputs
+                .directory
+                .read(cx)
+                .value()
+                .trim()
+                .to_owned();
+        }
+        preview
     }
 
     pub(crate) fn select_category_editor(
@@ -101,7 +133,7 @@ impl AppShell {
         if removed.is_fallback {
             return;
         }
-        let removed = self.settings_page.draft_categories.remove(index);
+        let _removed = self.settings_page.draft_categories.remove(index);
         if let Some(edit) = self.settings_page.draft_category_edit_index {
             if edit == index {
                 self.settings_page.draft_category_edit_index = None;
@@ -126,15 +158,12 @@ impl AppShell {
                 general.is_fallback = true;
             }
         }
-        if self.add_dialog.category_id.as_deref() == Some(removed.id.as_str()) {
-            self.add_dialog.category_id = None;
-        }
         cx.notify();
     }
 
-    pub(crate) fn render_settings_categories(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn render_settings_categories(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
-        let pending = self.pending_settings_save.is_some();
+        let pending = self.is_pending();
         let categories = self.settings_page.draft_categories.clone();
         let edit_index = self.settings_page.draft_category_edit_index;
         let title = self.t("settings-categories");
@@ -161,6 +190,7 @@ impl AppShell {
         for (index, category) in categories.iter().enumerate() {
             let is_fallback = category.is_fallback;
             let is_editing = edit_index == Some(index);
+            let category_id = category.id.clone();
             let name = category.name.clone();
             let directory = category.directory.clone();
             let extensions = category.extensions.clone();
@@ -171,7 +201,7 @@ impl AppShell {
             };
             list = list.child(
                 div()
-                    .id(SharedString::from(format!("category-row-{index}")))
+                    .id(SharedString::from(format!("category-row-{category_id}")))
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -210,7 +240,7 @@ impl AppShell {
                                             .text_sm()
                                             .font_weight(gpui::FontWeight::MEDIUM)
                                             .text_color(colors.text_primary)
-                                            .child(category_display_name(&name, self)),
+                                            .child(category_display_name(&name, &self.translator)),
                                     ),
                             )
                             .when(is_fallback, |row| {
@@ -228,7 +258,7 @@ impl AppShell {
                             })
                             .child({
                                 let mut button = KitButton::new(SharedString::from(format!(
-                                    "category-edit-{index}"
+                                    "category-edit-{category_id}"
                                 )))
                                 .small()
                                 .compact()
@@ -246,7 +276,7 @@ impl AppShell {
                             .when(!is_fallback, |row| {
                                 row.child(
                                     KitButton::new(SharedString::from(format!(
-                                        "category-remove-{index}"
+                                        "category-remove-{category_id}"
                                     )))
                                     .ghost()
                                     .small()
@@ -303,13 +333,12 @@ impl AppShell {
                                                 .text_color(colors.text_muted)
                                                 .child(self.t("settings-category-directory")),
                                         )
-                                        .child(settings_path_field_row(
+                                        .child(Self::settings_path_field_row(
                                             &self.settings_inputs.directory,
                                             "browse-category-directory",
                                             browse_label.clone(),
                                             self.t("settings-category-directory-browse-aria"),
                                             PathPickTarget::CategoryDirectory { index },
-                                            colors,
                                             cx,
                                         )),
                                 ),

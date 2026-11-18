@@ -15,17 +15,20 @@
 //! removal. Network fetch / signed manifests remain deferred.
 
 use std::{
-    fs::{self, File, OpenOptions},
-    io::Write,
+    cmp::Ordering,
+    fs,
     path::{Path, PathBuf},
-    process::Stdio,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use ariadeck_domain::CoreInstallationId;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-use crate::{EngineError, console_free_command, io_error, validate_executable};
+use crate::{
+    EngineError, atomic_io::write_atomic_bytes, io_error, supervisor::run_aria2_version,
+    validate_executable,
+};
 
 const REGISTRY_FILE_NAME: &str = "cores.json";
 const INSTALLATION_FILE_NAME: &str = "installation.json";
@@ -200,12 +203,12 @@ impl CoreStore {
         let bytes =
             fs::read(&path).map_err(|error| io_error("read core registry", &path, error))?;
         let registry: CoreRegistry =
-            serde_json::from_slice(&bytes).map_err(|error| EngineError::MalformedProfile {
+            serde_json::from_slice(&bytes).map_err(|error| EngineError::MalformedCoreManifest {
                 path: path.clone(),
                 message: error.to_string(),
             })?;
         if registry.schema_version != REGISTRY_SCHEMA_VERSION {
-            return Err(EngineError::MalformedProfile {
+            return Err(EngineError::MalformedCoreManifest {
                 path,
                 message: format!("unsupported cores.json schema {}", registry.schema_version),
             });
@@ -230,7 +233,7 @@ impl CoreStore {
         let path = dir.join(INSTALLATION_FILE_NAME);
         let bytes = fs::read(&path)
             .map_err(|error| io_error("read installation manifest", &path, error))?;
-        serde_json::from_slice(&bytes).map_err(|error| EngineError::MalformedProfile {
+        serde_json::from_slice(&bytes).map_err(|error| EngineError::MalformedCoreManifest {
             path,
             message: error.to_string(),
         })
@@ -316,8 +319,8 @@ impl CoreStore {
                 status,
             });
         }
-        // Newest versions first (lexicographic on version string is good enough for semver-ish).
-        views.sort_by(|left, right| right.version.cmp(&left.version));
+        // Newest versions first using numeric component comparison ("1.37.0" > "1.9.0").
+        views.sort_by(|left, right| compare_version_strings(&right.version, &left.version));
         Ok(views)
     }
 
@@ -346,7 +349,6 @@ impl CoreStore {
         source: CoreSource,
     ) -> Result<CoreInstallationView, EngineError> {
         let source_path = source_path.as_ref();
-        validate_executable(source_path)?;
         let probe = probe_aria2(source_path)?;
         let target = host_target();
         let version = sanitize_path_component(&probe.version)?;
@@ -367,6 +369,7 @@ impl CoreStore {
         }
         fs::create_dir_all(&staging)
             .map_err(|error| io_error("create core staging directory", &staging, error))?;
+        let mut staging_guard = StagingDirGuard::new(staging.clone());
 
         let file_name = source_path
             .file_name()
@@ -388,7 +391,6 @@ impl CoreStore {
         }
 
         // Re-validate the staged copy before promoting.
-        validate_executable(&dest_executable)?;
         let staged_probe = probe_aria2(&dest_executable)?;
         let sha256 = file_sha256_hex(&dest_executable)?;
         let id = CoreInstallationId::new();
@@ -413,10 +415,9 @@ impl CoreStore {
             fs::create_dir_all(parent)
                 .map_err(|error| io_error("create cores version parent", parent, error))?;
         }
-        fs::rename(&staging, &version_dir).map_err(|error| {
-            let _ = fs::remove_dir_all(&staging);
-            io_error("promote staged core installation", &version_dir, error)
-        })?;
+        fs::rename(&staging, &version_dir)
+            .map_err(|error| io_error("promote staged core installation", &version_dir, error))?;
+        staging_guard.disarm();
 
         let mut registry = self.load_or_default()?;
         let summary = CoreInstallationSummary {
@@ -432,7 +433,10 @@ impl CoreStore {
             registry.active_id = Some(id);
             registry.last_working_id = Some(id);
         }
-        self.save_registry(&registry)?;
+        if let Err(error) = self.save_registry(&registry) {
+            let _ = fs::remove_dir_all(&version_dir);
+            return Err(error);
+        }
 
         Ok(CoreInstallationView {
             id,
@@ -461,7 +465,6 @@ impl CoreStore {
         source_path: impl AsRef<Path>,
     ) -> Result<CoreInstallationView, EngineError> {
         let source_path = source_path.as_ref();
-        validate_executable(source_path)?;
         let probe = probe_aria2(source_path)?;
         let target = host_target();
         let version = sanitize_path_component(&probe.version)?;
@@ -528,7 +531,6 @@ impl CoreStore {
         let version_dir = self.product_root.join(&summary.relative_dir);
         let mut installation = self.load_installation(&summary)?;
         let executable = installation.absolute_executable(&version_dir);
-        validate_executable(&executable)?;
         let probe = probe_aria2(&executable)?;
         installation.validated_version = Some(probe.version.clone());
         installation.features = probe.features.clone();
@@ -659,36 +661,53 @@ impl CoreInstallStatus {
     }
 }
 
-/// Probe `aria2c --version` for version + feature list.
+/// Probe `aria2c --version` for version + feature list in a single subprocess spawn.
 pub fn probe_aria2(path: impl AsRef<Path>) -> Result<Aria2Probe, EngineError> {
     let path = path.as_ref();
-    validate_executable(path)?;
-    let output = console_free_command(path)
-        .arg("--version")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|error| EngineError::ExecutableValidation {
-            path: path.to_path_buf(),
-            reason: error.to_string(),
-        })?;
-    if !output.status.success() {
-        return Err(EngineError::ExecutableValidation {
-            path: path.to_path_buf(),
-            reason: format!("process exited with {}", output.status),
-        });
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = if stdout.trim().is_empty() {
-        stderr.into_owned()
-    } else {
-        stdout.into_owned()
-    };
+    let combined = run_aria2_version(path)?;
     parse_aria2_version_output(&combined).ok_or_else(|| EngineError::ExecutableValidation {
         path: path.to_path_buf(),
         reason: "could not parse aria2 version from --version output".into(),
     })
+}
+
+/// Compare version strings numerically by dot-separated segments (`"1.37.0" > "1.9.0"`),
+/// falling back to prerelease/lexicographic tie-breaking so stable releases sort ahead
+/// of prereleases of the same numeric tuple.
+#[must_use]
+pub(crate) fn compare_version_strings(left: &str, right: &str) -> Ordering {
+    let (left_core, left_pre) = split_version_prerelease(left);
+    let (right_core, right_pre) = split_version_prerelease(right);
+    let left_parts = left_core.split('.');
+    let right_parts = right_core.split('.');
+    let left_vec: Vec<&str> = left_parts.collect();
+    let right_vec: Vec<&str> = right_parts.collect();
+    let len = left_vec.len().max(right_vec.len());
+    for i in 0..len {
+        let a = left_vec.get(i).copied().unwrap_or("0");
+        let b = right_vec.get(i).copied().unwrap_or("0");
+        let ord = match (a.parse::<u64>(), b.parse::<u64>()) {
+            (Ok(na), Ok(nb)) => na.cmp(&nb),
+            _ => a.cmp(b),
+        };
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    match (left_pre, right_pre) {
+        (None, None) => left.cmp(right),
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(lp), Some(rp)) => lp.cmp(rp),
+    }
+}
+
+fn split_version_prerelease(version: &str) -> (&str, Option<&str>) {
+    let trimmed = version.trim().trim_start_matches(['v', 'V']);
+    match trimmed.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (trimmed, None),
+    }
 }
 
 /// Parse version and features from aria2 `--version` text.
@@ -824,12 +843,7 @@ fn utc_now_iso() -> String {
 }
 
 fn short_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    format!("{nanos:x}")
+    Uuid::new_v4().simple().to_string()
 }
 
 fn canonicalize_best_effort(path: &Path) -> PathBuf {
@@ -843,37 +857,37 @@ fn file_sha256_hex(path: &Path) -> Result<String, EngineError> {
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+struct StagingDirGuard {
+    path: Option<PathBuf>,
+}
+
+impl StagingDirGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    fn disarm(&mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for StagingDirGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
+
 fn atomic_write(path: &Path, payload: &[u8]) -> Result<(), EngineError> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)
-        .map_err(|error| io_error("create parent directory", parent, error))?;
-    let temp = parent.join(format!(
-        ".{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("write")
-    ));
-    {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&temp)
-            .map_err(|error| io_error("open temporary file", &temp, error))?;
-        file.write_all(payload)
-            .map_err(|error| io_error("write temporary file", &temp, error))?;
-        file.sync_all()
-            .map_err(|error| io_error("sync temporary file", &temp, error))?;
-    }
-    fs::rename(&temp, path).map_err(|error| {
-        let _ = fs::remove_file(&temp);
-        io_error("replace file atomically", path, error)
-    })?;
-    // Best-effort parent sync on platforms that support it.
-    if let Ok(dir) = File::open(parent) {
-        let _ = dir.sync_all();
-    }
-    Ok(())
+    write_atomic_bytes(
+        path,
+        payload,
+        false,
+        "create parent directory",
+        "write temporary file",
+        "replace file atomically",
+    )
 }
 
 #[cfg(test)]
@@ -998,5 +1012,36 @@ System: Linux 6.1.0 x86_64\n\
     fn sanitize_rejects_traversal() {
         assert!(sanitize_path_component("../evil").is_err());
         assert!(sanitize_path_component("1.37.0").is_ok());
+    }
+
+    #[test]
+    fn version_comparison_orders_semver_numerically() {
+        assert_eq!(
+            compare_version_strings("1.37.0", "1.9.0"),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            compare_version_strings("1.9.0", "1.37.0"),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_version_strings("1.37.0", "1.37.0-rc1"),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            compare_version_strings("2.0", "1.37.0"),
+            std::cmp::Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn corrupt_core_registry_returns_malformed_core_manifest() {
+        let root = temp_dir();
+        let store = CoreStore::new(&root);
+        fs::create_dir_all(store.product_root()).expect("cores dir");
+        fs::write(store.registry_path(), b"{corrupt").expect("write corrupt");
+        let err = store.load_or_default().expect_err("must reject");
+        assert!(matches!(err, EngineError::MalformedCoreManifest { .. }));
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -52,19 +52,17 @@ impl AppShell {
     }
 
     pub(crate) fn open_task_output_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.output_name_dialog.is_some() {
-            window.focus(&self.output_name_input.focus_handle(cx), cx);
+        if let Some(ActiveModal::OutputName { input, .. }) = &self.active_modal {
+            window.focus(&input.focus_handle(cx), cx);
             return;
         }
-        if self.add_dialog.open
-            || self.remove_confirmation.is_some()
-            || self.batch_failure_details.is_some()
+        if self.active_modal.is_some()
             || self.pending_task_command.is_some()
             || self.pending_batch_command.is_some()
         {
             return;
         }
-        let Some(task) = self.selected_task_view() else {
+        let Some(task) = self.selected_task_view(cx) else {
             self.show_notice(self.t("notice-select-task-first"), true, cx);
             return;
         };
@@ -78,20 +76,35 @@ impl AppShell {
         } else {
             task.display_name.clone()
         };
-        self.output_name_input
-            .update(cx, |input, cx| input.set_value(initial_name, window, cx));
-        self.output_name_dialog = Some(TaskOutputNameDialog {
-            identity: task.identity.clone(),
-            display_name: task_display_name(&task),
-            active: task.status.uses_active_connections(),
-            error: None,
+        let input = make_input("archive.iso".into(), false, window, cx);
+        input.update(cx, |input, cx| input.set_value(initial_name, window, cx));
+        let sub = cx.subscribe(&input, |this: &mut Self, _input, event: &InputEvent, cx| {
+            if let InputEvent::Change = event
+                && this.pending_task_command.is_none()
+                && let Some(ActiveModal::OutputName { dialog, .. }) = &mut this.active_modal
+                && dialog.error.take().is_some()
+            {
+                cx.notify();
+            }
+        });
+        self.active_modal = Some(ActiveModal::OutputName {
+            dialog: TaskOutputNameDialog {
+                identity: task.identity.clone(),
+                display_name: task_display_name(&task, &self.translator),
+                active: task.status.uses_active_connections(),
+                error: None,
+            },
+            input: input.clone(),
+            _sub: sub,
         });
         self.sync_kit_modals(window, cx);
         cx.notify();
         if !has_kit_root(window) {
-            cx.defer_in(window, |this, window, cx| {
-                if this.output_name_dialog.is_some() {
-                    window.focus(&this.output_name_input.focus_handle(cx), cx);
+            cx.defer_in(window, move |this, window, cx| {
+                if let Some(ActiveModal::OutputName { input: active, .. }) = &this.active_modal
+                    && active == &input
+                {
+                    window.focus(&active.focus_handle(cx), cx);
                 }
             });
         }
@@ -107,14 +120,14 @@ impl AppShell {
     }
 
     pub(crate) fn close_task_output_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.output_name_dialog.is_none()
+        if !matches!(self.active_modal, Some(ActiveModal::OutputName { .. }))
             || self.pending_task_command.as_ref().is_some_and(|pending| {
                 matches!(&pending.command, TaskCommandView::SetOutputName { .. })
             })
         {
             return;
         }
-        self.output_name_dialog = None;
+        self.active_modal = None;
         self.sync_kit_modals(window, cx);
         if !has_kit_root(window) {
             window.focus(&self.focus_handle, cx);
@@ -135,17 +148,18 @@ impl AppShell {
         if self.pending_task_command.is_some() {
             return;
         }
-        let Some(identity) = self
-            .output_name_dialog
-            .as_ref()
-            .map(|dialog| dialog.identity.clone())
-        else {
+        let Some((identity, output_name)) = (match &self.active_modal {
+            Some(ActiveModal::OutputName { dialog, input, .. }) => Some((
+                dialog.identity.clone(),
+                input.read(cx).value().trim().to_owned(),
+            )),
+            _ => None,
+        }) else {
             return;
         };
-        let output_name = self.output_name_input.read(cx).value().trim().to_owned();
         if let Some(key) = output_name_validation_error(&output_name) {
             let summary = self.t(key);
-            if let Some(dialog) = &mut self.output_name_dialog {
+            if let Some(ActiveModal::OutputName { dialog, .. }) = &mut self.active_modal {
                 dialog.error = Some(OperationErrorView {
                     code: "validation.invalid_output_name".into(),
                     summary,
@@ -164,7 +178,7 @@ impl AppShell {
             || current_task.is_none_or(|task| !task.can_set_output_name())
         {
             let summary = self.t("error-command-task-changed");
-            if let Some(dialog) = &mut self.output_name_dialog {
+            if let Some(ActiveModal::OutputName { dialog, .. }) = &mut self.active_modal {
                 dialog.error = Some(OperationErrorView {
                     code: "command.task_changed".into(),
                     summary,
@@ -187,20 +201,17 @@ impl AppShell {
     }
 
     pub(crate) fn open_task_speed_limit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.task_speed_limit_dialog.is_some() {
-            window.focus(&self.task_inputs.download_limit.focus_handle(cx), cx);
+        if let Some(ActiveModal::TaskSpeedLimit { download_input, .. }) = &self.active_modal {
+            window.focus(&download_input.focus_handle(cx), cx);
             return;
         }
-        if self.add_dialog.open
-            || self.output_name_dialog.is_some()
-            || self.remove_confirmation.is_some()
-            || self.batch_failure_details.is_some()
+        if self.active_modal.is_some()
             || self.pending_task_command.is_some()
             || self.pending_batch_command.is_some()
         {
             return;
         }
-        let Some(task) = self.selected_task_view() else {
+        let Some(task) = self.selected_task_view(cx) else {
             self.show_notice(self.t("notice-select-task-first"), true, cx);
             return;
         };
@@ -210,23 +221,50 @@ impl AppShell {
         }
         // The list projection does not carry per-task limits (that is DETAIL-001's
         // getOption surface), so the fields start blank and set a fresh value.
-        self.task_inputs
-            .download_limit
-            .update(cx, |input, cx| input.set_value("", window, cx));
-        self.task_inputs
-            .upload_limit
-            .update(cx, |input, cx| input.set_value("", window, cx));
-        self.task_speed_limit_dialog = Some(TaskSpeedLimitDialog {
-            identity: task.identity.clone(),
-            display_name: task_display_name(&task),
-            error: None,
+        let download_input = make_input(
+            self.t("input-download-limit-placeholder").into(),
+            false,
+            window,
+            cx,
+        );
+        let upload_input = make_input(
+            self.t("input-upload-limit-placeholder").into(),
+            false,
+            window,
+            cx,
+        );
+        let subs = [&download_input, &upload_input].map(|input| {
+            cx.subscribe(input, |this: &mut Self, _input, event: &InputEvent, cx| {
+                if let InputEvent::Change = event
+                    && this.pending_task_command.is_none()
+                    && let Some(ActiveModal::TaskSpeedLimit { dialog, .. }) = &mut this.active_modal
+                    && dialog.error.take().is_some()
+                {
+                    cx.notify();
+                }
+            })
+        });
+        self.active_modal = Some(ActiveModal::TaskSpeedLimit {
+            dialog: TaskSpeedLimitDialog {
+                identity: task.identity.clone(),
+                display_name: task_display_name(&task, &self.translator),
+                error: None,
+            },
+            download_input: download_input.clone(),
+            upload_input,
+            _subs: subs,
         });
         self.sync_kit_modals(window, cx);
         cx.notify();
         if !has_kit_root(window) {
-            cx.defer_in(window, |this, window, cx| {
-                if this.task_speed_limit_dialog.is_some() {
-                    window.focus(&this.task_inputs.download_limit.focus_handle(cx), cx);
+            cx.defer_in(window, move |this, window, cx| {
+                if let Some(ActiveModal::TaskSpeedLimit {
+                    download_input: active,
+                    ..
+                }) = &this.active_modal
+                    && active == &download_input
+                {
+                    window.focus(&active.focus_handle(cx), cx);
                 }
             });
         }
@@ -242,14 +280,14 @@ impl AppShell {
     }
 
     pub(crate) fn close_task_speed_limit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.task_speed_limit_dialog.is_none()
+        if !matches!(self.active_modal, Some(ActiveModal::TaskSpeedLimit { .. }))
             || self.pending_task_command.as_ref().is_some_and(|pending| {
                 matches!(&pending.command, TaskCommandView::SetSpeedLimit { .. })
             })
         {
             return;
         }
-        self.task_speed_limit_dialog = None;
+        self.active_modal = None;
         self.sync_kit_modals(window, cx);
         if !has_kit_root(window) {
             window.focus(&self.focus_handle, cx);
@@ -270,28 +308,28 @@ impl AppShell {
         if self.pending_task_command.is_some() {
             return;
         }
-        let Some(identity) = self
-            .task_speed_limit_dialog
-            .as_ref()
-            .map(|dialog| dialog.identity.clone())
-        else {
+        let Some((identity, draft)) = (match &self.active_modal {
+            Some(ActiveModal::TaskSpeedLimit {
+                dialog,
+                download_input,
+                upload_input,
+                ..
+            }) => Some((
+                dialog.identity.clone(),
+                SpeedLimitSettingsView {
+                    download_limit: download_input.read(cx).value().trim().into(),
+                    upload_limit: upload_input.read(cx).value().trim().into(),
+                },
+            )),
+            _ => None,
+        }) else {
             return;
-        };
-        let draft = SpeedLimitSettingsView {
-            download_limit: self
-                .task_inputs
-                .download_limit
-                .read(cx)
-                .value()
-                .trim()
-                .into(),
-            upload_limit: self.task_inputs.upload_limit.read(cx).value().trim().into(),
         };
         let (Some(download_limit), Some(upload_limit)) =
             (draft.parse_download_limit(), draft.parse_upload_limit())
         else {
             let summary = self.t("error-validation-invalid-speed-limit");
-            if let Some(dialog) = &mut self.task_speed_limit_dialog {
+            if let Some(ActiveModal::TaskSpeedLimit { dialog, .. }) = &mut self.active_modal {
                 dialog.error = Some(OperationErrorView {
                     code: "validation.invalid_speed_limit".into(),
                     summary,
@@ -310,7 +348,7 @@ impl AppShell {
             || current_task.is_none_or(|task| !task.status.can_set_speed_limit())
         {
             let summary = self.t("error-command-task-changed");
-            if let Some(dialog) = &mut self.task_speed_limit_dialog {
+            if let Some(ActiveModal::TaskSpeedLimit { dialog, .. }) = &mut self.active_modal {
                 dialog.error = Some(OperationErrorView {
                     code: "command.task_changed".into(),
                     summary,
@@ -348,21 +386,20 @@ impl AppShell {
     }
 
     pub(crate) fn open_task_options(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.task_options_dialog.is_some() {
-            window.focus(&self.task_inputs.seed_ratio.focus_handle(cx), cx);
+        if let Some(ActiveModal::TaskOptions {
+            seed_ratio_input, ..
+        }) = &self.active_modal
+        {
+            window.focus(&seed_ratio_input.focus_handle(cx), cx);
             return;
         }
-        if self.add_dialog.open
-            || self.output_name_dialog.is_some()
-            || self.task_speed_limit_dialog.is_some()
-            || self.remove_confirmation.is_some()
-            || self.batch_failure_details.is_some()
+        if self.active_modal.is_some()
             || self.pending_task_command.is_some()
             || self.pending_batch_command.is_some()
         {
             return;
         }
-        let Some(task) = self.selected_task_view() else {
+        let Some(task) = self.selected_task_view(cx) else {
             self.show_notice(self.t("notice-select-task-first"), true, cx);
             return;
         };
@@ -376,10 +413,10 @@ impl AppShell {
         ) || task.status == TaskStatusView::Seeding;
         // Prefill from the open details drawer options projection when present.
         let (seed_ratio, seed_time) = self
-            .details_drawer
+            .details_panel
             .as_ref()
-            .and_then(|drawer| match &drawer.state {
-                TaskDetailsLoadState::Ready { details } => Some(details),
+            .and_then(|panel| match &panel.read(cx).state {
+                TaskDetailsLoadState::Ready { details } => Some(Arc::clone(details)),
                 _ => None,
             })
             .map(|details| {
@@ -394,54 +431,69 @@ impl AppShell {
                 (value("seed-ratio"), value("seed-time"))
             })
             .unwrap_or_default();
-        self.task_inputs.seed_ratio.update(cx, |input, cx| {
-            input.set_value(
-                if supports_seed_rules {
-                    seed_ratio
-                } else {
-                    String::new()
-                },
-                window,
-                cx,
-            );
+        let seed_ratio_input = make_input(
+            self.t("dialog-task-options-seed-ratio-placeholder").into(),
+            false,
+            window,
+            cx,
+        );
+        let seed_time_input = make_input(
+            self.t("dialog-task-options-seed-time-placeholder").into(),
+            false,
+            window,
+            cx,
+        );
+        if supports_seed_rules {
+            seed_ratio_input.update(cx, |input, cx| input.set_value(seed_ratio, window, cx));
+            seed_time_input.update(cx, |input, cx| input.set_value(seed_time, window, cx));
+        }
+        let subs = [&seed_ratio_input, &seed_time_input].map(|input| {
+            cx.subscribe(input, |this: &mut Self, _input, event: &InputEvent, cx| {
+                if let InputEvent::Change = event
+                    && this.pending_task_command.is_none()
+                    && let Some(ActiveModal::TaskOptions { dialog, .. }) = &mut this.active_modal
+                    && dialog.error.take().is_some()
+                {
+                    cx.notify();
+                }
+            })
         });
-        self.task_inputs.seed_time.update(cx, |input, cx| {
-            input.set_value(
-                if supports_seed_rules {
-                    seed_time
-                } else {
-                    String::new()
-                },
-                window,
-                cx,
-            );
-        });
-        self.task_options_dialog = Some(TaskOptionsDialog {
-            identity: task.identity.clone(),
-            display_name: task_display_name(&task),
-            supports_seed_rules,
-            error: None,
+        self.active_modal = Some(ActiveModal::TaskOptions {
+            dialog: TaskOptionsDialog {
+                identity: task.identity.clone(),
+                display_name: task_display_name(&task, &self.translator),
+                supports_seed_rules,
+                error: None,
+            },
+            seed_ratio_input: seed_ratio_input.clone(),
+            seed_time_input,
+            _subs: subs,
         });
         self.sync_kit_modals(window, cx);
         cx.notify();
         if !has_kit_root(window) {
-            cx.defer_in(window, |this, window, cx| {
-                if this.task_options_dialog.is_some() {
-                    window.focus(&this.task_inputs.seed_ratio.focus_handle(cx), cx);
+            cx.defer_in(window, move |this, window, cx| {
+                if let Some(ActiveModal::TaskOptions {
+                    seed_ratio_input: active,
+                    ..
+                }) = &this.active_modal
+                    && active == &seed_ratio_input
+                {
+                    window.focus(&active.focus_handle(cx), cx);
                 }
             });
         }
     }
 
     pub(crate) fn close_task_options(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.task_options_dialog.is_none()
+        if !matches!(self.active_modal, Some(ActiveModal::TaskOptions { .. }))
             || self.pending_task_command.as_ref().is_some_and(|pending| {
                 matches!(&pending.command, TaskCommandView::SetOptions { .. })
             })
         {
             return;
         }
-        self.task_options_dialog = None;
+        self.active_modal = None;
         self.sync_kit_modals(window, cx);
         if !has_kit_root(window) {
             window.focus(&self.focus_handle, cx);
@@ -453,30 +505,29 @@ impl AppShell {
         if self.pending_task_command.is_some() {
             return;
         }
-        let Some(dialog) = self.task_options_dialog.as_ref() else {
+        let Some((identity, supports_seed_rules, seed_ratio_raw, seed_time_raw)) =
+            (match &self.active_modal {
+                Some(ActiveModal::TaskOptions {
+                    dialog,
+                    seed_ratio_input,
+                    seed_time_input,
+                    ..
+                }) => Some((
+                    dialog.identity.clone(),
+                    dialog.supports_seed_rules,
+                    seed_ratio_input.read(cx).value().trim().to_owned(),
+                    seed_time_input.read(cx).value().trim().to_owned(),
+                )),
+                _ => None,
+            })
+        else {
             return;
         };
-        let identity = dialog.identity.clone();
-        let supports_seed_rules = dialog.supports_seed_rules;
-        let seed_ratio_raw = self
-            .task_inputs
-            .seed_ratio
-            .read(cx)
-            .value()
-            .trim()
-            .to_owned();
-        let seed_time_raw = self
-            .task_inputs
-            .seed_time
-            .read(cx)
-            .value()
-            .trim()
-            .to_owned();
         let mut seed_ratio = None;
         let mut seed_time_minutes = None;
         if !supports_seed_rules {
             let summary = self.t("error-command-seed-rules-unsupported");
-            if let Some(dialog) = &mut self.task_options_dialog {
+            if let Some(ActiveModal::TaskOptions { dialog, .. }) = &mut self.active_modal {
                 dialog.error = Some(OperationErrorView {
                     code: "command.seed_rules_unsupported".into(),
                     summary,
@@ -493,7 +544,7 @@ impl AppShell {
                 }
                 _ => {
                     let summary = self.t("error-validation-invalid-seed-ratio");
-                    if let Some(dialog) = &mut self.task_options_dialog {
+                    if let Some(ActiveModal::TaskOptions { dialog, .. }) = &mut self.active_modal {
                         dialog.error = Some(OperationErrorView {
                             code: "validation.invalid_seed_ratio".into(),
                             summary,
@@ -510,7 +561,7 @@ impl AppShell {
                 Ok(_) => seed_time_minutes = Some(seed_time_raw.clone()),
                 Err(_) => {
                     let summary = self.t("error-validation-invalid-seed-time");
-                    if let Some(dialog) = &mut self.task_options_dialog {
+                    if let Some(ActiveModal::TaskOptions { dialog, .. }) = &mut self.active_modal {
                         dialog.error = Some(OperationErrorView {
                             code: "validation.invalid_seed_time".into(),
                             summary,
@@ -524,7 +575,7 @@ impl AppShell {
         }
         if seed_ratio.is_none() && seed_time_minutes.is_none() {
             let summary = self.t("error-validation-empty-task-options");
-            if let Some(dialog) = &mut self.task_options_dialog {
+            if let Some(ActiveModal::TaskOptions { dialog, .. }) = &mut self.active_modal {
                 dialog.error = Some(OperationErrorView {
                     code: "validation.empty_task_options".into(),
                     summary,
@@ -543,7 +594,7 @@ impl AppShell {
             || current_task.is_none_or(|task| !task.status.can_set_speed_limit())
         {
             let summary = self.t("error-command-task-changed");
-            if let Some(dialog) = &mut self.task_options_dialog {
+            if let Some(ActiveModal::TaskOptions { dialog, .. }) = &mut self.active_modal {
                 dialog.error = Some(OperationErrorView {
                     code: "command.task_changed".into(),
                     summary,
@@ -637,14 +688,7 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<TaskIdentity> {
-        if self.page != AppPage::Downloads
-            || self.add_dialog.open
-            || self.output_name_dialog.is_some()
-            || self.task_speed_limit_dialog.is_some()
-            || self.task_options_dialog.is_some()
-            || self.remove_confirmation.is_some()
-            || self.batch_failure_details.is_some()
-        {
+        if self.page != AppPage::Downloads || self.active_modal.is_some() {
             return None;
         }
         let index = self
@@ -674,7 +718,7 @@ impl AppShell {
 
     /// Prefer the right-clicked menu identity so multi-selection still has a
     /// single authoritative target for copy/open/details actions.
-    pub(crate) fn context_menu_task_view(&self) -> Option<DownloadRowView> {
+    pub(crate) fn context_menu_task_view(&self, cx: &App) -> Option<DownloadRowView> {
         if let Some(target) = self.context_menu_target.as_ref()
             && let Some(task) = self
                 .snapshot
@@ -684,8 +728,8 @@ impl AppShell {
         {
             return Some(task.clone());
         }
-        self.selected_task_view()
-            .or_else(|| self.command_target_task_view())
+        self.selected_task_view(cx)
+            .or_else(|| self.command_target_task_view(cx))
     }
 
     pub(crate) fn copy_task_source(&mut self, task: &DownloadRowView, cx: &mut Context<Self>) {
@@ -721,7 +765,7 @@ impl AppShell {
         let Some(session) = self.snapshot.engine_session() else {
             return;
         };
-        let Some(task) = self.context_menu_task_view() else {
+        let Some(task) = self.context_menu_task_view(cx) else {
             self.show_notice(self.t("notice-select-task-first"), true, cx);
             return;
         };
@@ -756,11 +800,11 @@ impl AppShell {
         if self.pending_task_command.is_some()
             || self.pending_global_task_command.is_some()
             || self.pending_batch_command.is_some()
-            || self.batch_failure_details.is_some()
+            || matches!(self.active_modal, Some(ActiveModal::BatchFailureDetails(_)))
         {
             return;
         }
-        let Some(task) = self.command_target_task_view() else {
+        let Some(task) = self.command_target_task_view(cx) else {
             self.show_notice(self.t("notice-select-task-first"), true, cx);
             return;
         };
@@ -864,7 +908,7 @@ impl AppShell {
         if self.pending_task_command.is_some()
             || self.pending_global_task_command.is_some()
             || self.pending_batch_command.is_some()
-            || self.batch_failure_details.is_some()
+            || matches!(self.active_modal, Some(ActiveModal::BatchFailureDetails(_)))
         {
             return;
         }
@@ -881,9 +925,7 @@ impl AppShell {
             && !self.snapshot.capabilities.force_pause_all
         {
             self.show_notice(
-                self.snapshot
-                    .capabilities
-                    .unsupported_force_pause_all_message(),
+                self.t("notice-capability-force-pause-all-unsupported"),
                 true,
                 cx,
             );
@@ -914,7 +956,7 @@ impl AppShell {
         if self.pending_task_command.is_some()
             || self.pending_global_task_command.is_some()
             || self.pending_batch_command.is_some()
-            || self.batch_failure_details.is_some()
+            || matches!(self.active_modal, Some(ActiveModal::BatchFailureDetails(_)))
         {
             return;
         }
@@ -971,9 +1013,7 @@ impl AppShell {
     }
 
     pub(crate) fn confirm_remove_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.remove_confirmation.is_some()
-            || self.output_name_dialog.is_some()
-            || self.batch_failure_details.is_some()
+        if self.active_modal.is_some()
             || self.pending_task_command.is_some()
             || self.pending_batch_command.is_some()
         {
@@ -992,7 +1032,7 @@ impl AppShell {
                 .map(|task| task.identity.clone())
                 .collect::<Vec<_>>();
             if identities.len() > 1 && self.snapshot.commands_available() {
-                self.remove_confirmation = Some(RemoveConfirmation {
+                self.active_modal = Some(ActiveModal::RemoveConfirmation(RemoveConfirmation {
                     display_name: self.t_count(
                         "dialog-selected-task-count",
                         u64::try_from(identities.len()).unwrap_or(u64::MAX),
@@ -1001,13 +1041,13 @@ impl AppShell {
                     has_live_tasks: selected_tasks.iter().any(|task| !task.status.is_terminal()),
                     has_terminal_tasks: selected_tasks.iter().any(|task| task.status.is_terminal()),
                     delete_files: false,
-                });
+                }));
                 self.sync_kit_modals(window, cx);
                 cx.notify();
             }
             return;
         }
-        let Some(task) = self.command_target_task_view() else {
+        let Some(task) = self.command_target_task_view(cx) else {
             if !self.selected_tasks.is_empty() {
                 self.show_notice(self.t("notice-hidden-selection"), true, cx);
             }
@@ -1018,14 +1058,14 @@ impl AppShell {
             return;
         }
 
-        let display_name = task_display_name(&task);
-        self.remove_confirmation = Some(RemoveConfirmation {
+        let display_name = task_display_name(&task, &self.translator);
+        self.active_modal = Some(ActiveModal::RemoveConfirmation(RemoveConfirmation {
             identities: vec![task.identity],
             display_name,
             has_live_tasks: !task.status.is_terminal(),
             has_terminal_tasks: task.status.is_terminal(),
             delete_files: false,
-        });
+        }));
         self.sync_kit_modals(window, cx);
         cx.notify();
     }
@@ -1035,9 +1075,10 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remove_confirmation.take().is_none() {
+        if !matches!(self.active_modal, Some(ActiveModal::RemoveConfirmation(_))) {
             return;
         }
+        self.active_modal = None;
         self.sync_kit_modals(window, cx);
         if !has_kit_root(window) {
             window.focus(&self.focus_handle, cx);
@@ -1046,8 +1087,12 @@ impl AppShell {
     }
 
     pub(crate) fn submit_remove_confirmation(&mut self, cx: &mut Context<Self>) {
-        let Some(confirmation) = self.remove_confirmation.take() else {
-            return;
+        let confirmation = match self.active_modal.take() {
+            Some(ActiveModal::RemoveConfirmation(confirmation)) => confirmation,
+            other => {
+                self.active_modal = other;
+                return;
+            }
         };
         self.sync_kit_modals_deferred(cx);
         let selection_matches = if confirmation.identities.len() > 1 {
@@ -1090,7 +1135,7 @@ impl AppShell {
         if matches!(self.engine_health, EngineHealthView::External) {
             return;
         }
-        if let Some(confirmation) = &mut self.remove_confirmation {
+        if let Some(ActiveModal::RemoveConfirmation(confirmation)) = &mut self.active_modal {
             confirmation.delete_files = !confirmation.delete_files;
             cx.notify();
         }
@@ -1123,7 +1168,7 @@ impl AppShell {
         cx.notify();
     }
 
-    pub(crate) fn selected_task_view(&self) -> Option<DownloadRowView> {
+    pub(crate) fn selected_task_view(&self, cx: &App) -> Option<DownloadRowView> {
         let selected = self.selected.as_ref()?;
         self.snapshot
             .tasks
@@ -1131,14 +1176,15 @@ impl AppShell {
             .find(|task| &task.identity == selected)
             .cloned()
             .or_else(|| {
-                self.details_drawer
+                self.details_panel
                     .as_ref()
+                    .map(|panel| panel.read(cx))
                     .filter(|drawer| &drawer.identity == selected)
                     .map(|drawer| drawer.overview.clone())
             })
     }
 
-    pub(crate) fn command_target_task_view(&self) -> Option<DownloadRowView> {
+    pub(crate) fn command_target_task_view(&self, cx: &App) -> Option<DownloadRowView> {
         let mut visible_selected = self
             .snapshot
             .tasks
@@ -1151,7 +1197,7 @@ impl AppShell {
         if first.is_none() && !self.selected_tasks.is_empty() {
             return None;
         }
-        self.selected_task_view()
+        self.selected_task_view(cx)
     }
 }
 

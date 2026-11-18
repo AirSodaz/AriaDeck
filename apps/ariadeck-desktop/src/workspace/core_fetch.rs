@@ -12,14 +12,13 @@
 //! registers it like any other managed core (D-029).
 
 use std::{
-    io::{Cursor, Write as _},
+    io::{Cursor, Read as _, Write as _},
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use ariadeck_engine::{CoreInstallationView, CoreStore};
-
-use super::*;
+use tokio::sync::mpsc;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(300);
 /// Hard ceiling on the extracted executable, independent of the catalog entry.

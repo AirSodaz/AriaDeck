@@ -14,7 +14,7 @@ use tokio_tungstenite::{
     connect_async,
     tungstenite::{Error as WebSocketError, Message},
 };
-use url::{Host, Url};
+use url::Url;
 
 use crate::{
     Aria2Notification, RpcCall, RpcError,
@@ -94,8 +94,12 @@ impl WebSocketTransport {
         let (notifications, _) = broadcast::channel(128);
         let (closed_tx, closed) = watch::channel(None);
         let actor_notifications = notifications.clone();
+        let write_timeout = config
+            .request_timeout
+            .clamp(Duration::from_millis(500), Duration::from_secs(5));
         tokio::spawn(async move {
-            let reason = run_connection(stream, command_rx, actor_notifications).await;
+            let reason =
+                run_connection(stream, command_rx, actor_notifications, write_timeout).await;
             let _ = closed_tx.send(Some(reason));
         });
 
@@ -123,14 +127,23 @@ impl WebSocketTransport {
         if closed.borrow().is_some() {
             return;
         }
-        if self.commands.send(Command::Shutdown).await.is_err() {
+        if tokio::time::timeout(
+            Duration::from_secs(1),
+            self.commands.send(Command::Shutdown),
+        )
+        .await
+        .is_err()
+        {
             return;
         }
-        while closed.borrow().is_none() {
-            if closed.changed().await.is_err() {
-                break;
+        let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            while closed.borrow().is_none() {
+                if closed.changed().await.is_err() {
+                    break;
+                }
             }
-        }
+        })
+        .await;
     }
 
     async fn dispatch(
@@ -177,6 +190,13 @@ impl WebSocketTransport {
             .await
             .map_err(|_| RpcError::Closed)?;
 
+        // Ensure both timeout and caller future cancellation remove pending IDs
+        // without blocking on a full command channel.
+        let mut cancel_guard = CancelGuard {
+            commands: self.commands.clone(),
+            ids: Some(ids),
+        };
+
         let receive_all = async {
             let mut results = Vec::with_capacity(waiters.len());
             for (_, receiver) in waiters {
@@ -186,9 +206,12 @@ impl WebSocketTransport {
         };
 
         match tokio::time::timeout(self.request_timeout, receive_all).await {
-            Ok(results) => Ok(results),
+            Ok(results) => {
+                cancel_guard.disarm();
+                Ok(results)
+            }
             Err(_) => {
-                let _ = self.commands.send(Command::Cancel(ids)).await;
+                drop(cancel_guard);
                 let method = calls
                     .iter()
                     .map(|call| call.method.as_str())
@@ -196,6 +219,25 @@ impl WebSocketTransport {
                     .join(",");
                 Err(RpcError::Timeout { method })
             }
+        }
+    }
+}
+
+struct CancelGuard {
+    commands: mpsc::Sender<Command>,
+    ids: Option<Vec<RpcId>>,
+}
+
+impl CancelGuard {
+    fn disarm(&mut self) {
+        self.ids = None;
+    }
+}
+
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        if let Some(ids) = self.ids.take() {
+            let _ = self.commands.try_send(Command::Cancel(ids));
         }
     }
 }
@@ -229,6 +271,7 @@ async fn run_connection<S>(
     stream: tokio_tungstenite::WebSocketStream<S>,
     mut commands: mpsc::Receiver<Command>,
     notifications: broadcast::Sender<Aria2Notification>,
+    write_timeout: Duration,
 ) -> RpcError
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -242,10 +285,18 @@ where
                 match command {
                     Some(Command::Send { payload, pending: new_pending }) => {
                         pending.extend(new_pending);
-                        if let Err(error) = sink.send(Message::Text(payload.into())).await {
-                            let error = map_websocket_error(error);
-                            fail_all(&mut pending, &error);
-                            return error;
+                        match tokio::time::timeout(write_timeout, sink.send(Message::Text(payload.into()))).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => {
+                                let error = map_websocket_error(error);
+                                fail_all(&mut pending, &error);
+                                return error;
+                            }
+                            Err(_) => {
+                                let error = RpcError::Transport("WebSocket write timed out".into());
+                                fail_all(&mut pending, &error);
+                                return error;
+                            }
                         }
                     }
                     Some(Command::Cancel(ids)) => {
@@ -254,7 +305,7 @@ where
                         }
                     }
                     Some(Command::Shutdown) | None => {
-                        let _ = sink.close().await;
+                        let _ = tokio::time::timeout(write_timeout, sink.close()).await;
                         fail_all(&mut pending, &RpcError::Closed);
                         return RpcError::Closed;
                     }
@@ -263,16 +314,30 @@ where
             message = stream.next() => {
                 match message {
                     Some(Ok(Message::Text(text))) => {
-                        handle_payload(text.as_bytes(), &mut pending, &notifications);
+                        if let Err(error) = handle_payload(text.as_bytes(), &mut pending, &notifications) {
+                            let _ = tokio::time::timeout(write_timeout, sink.close()).await;
+                            return error;
+                        }
                     }
                     Some(Ok(Message::Binary(bytes))) => {
-                        handle_payload(bytes.as_ref(), &mut pending, &notifications);
+                        if let Err(error) = handle_payload(bytes.as_ref(), &mut pending, &notifications) {
+                            let _ = tokio::time::timeout(write_timeout, sink.close()).await;
+                            return error;
+                        }
                     }
                     Some(Ok(Message::Ping(payload))) => {
-                        if let Err(error) = sink.send(Message::Pong(payload)).await {
-                            let error = map_websocket_error(error);
-                            fail_all(&mut pending, &error);
-                            return error;
+                        match tokio::time::timeout(write_timeout, sink.send(Message::Pong(payload))).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => {
+                                let error = map_websocket_error(error);
+                                fail_all(&mut pending, &error);
+                                return error;
+                            }
+                            Err(_) => {
+                                let error = RpcError::Transport("WebSocket pong write timed out".into());
+                                fail_all(&mut pending, &error);
+                                return error;
+                            }
                         }
                     }
                     Some(Ok(Message::Pong(_) | Message::Frame(_))) => {}
@@ -292,56 +357,8 @@ where
 }
 
 fn validate_endpoint(endpoint: &Url, allow_insecure_remote: bool) -> Result<(), RpcError> {
-    match endpoint.scheme() {
-        "ws" | "wss" => {}
-        "http" | "https" => {
-            return Err(RpcError::Configuration(
-                "HTTP JSON-RPC fallback is disabled because it loses aria2 WebSocket notifications; use ws:// or wss:// explicitly"
-                    .into(),
-            ));
-        }
-        _ => {
-            return Err(RpcError::Configuration(
-                "RPC endpoint must use ws:// or wss://".into(),
-            ));
-        }
-    }
-    if endpoint.host().is_none() {
-        return Err(RpcError::Configuration(
-            "RPC endpoint must include a host".into(),
-        ));
-    }
-    if !endpoint.username().is_empty() || endpoint.password().is_some() {
-        return Err(RpcError::Configuration(
-            "RPC endpoint credentials are forbidden; supply ARIADECK_RPC_SECRET separately".into(),
-        ));
-    }
-    if endpoint.path() != "/jsonrpc" {
-        return Err(RpcError::Configuration(
-            "aria2 RPC endpoint path must be exactly /jsonrpc".into(),
-        ));
-    }
-    if endpoint.query().is_some() || endpoint.fragment().is_some() {
-        return Err(RpcError::Configuration(
-            "RPC endpoint query and fragment components are forbidden".into(),
-        ));
-    }
-    if endpoint.scheme() == "ws" && !allow_insecure_remote && !is_loopback(endpoint) {
-        return Err(RpcError::Configuration(
-            "remote aria2 RPC requires wss://; set ARIADECK_RPC_ALLOW_INSECURE_REMOTE=true only for an explicitly trusted network"
-                .into(),
-        ));
-    }
-    Ok(())
-}
-
-fn is_loopback(endpoint: &Url) -> bool {
-    match endpoint.host() {
-        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(Host::Ipv4(address)) => address.is_loopback(),
-        Some(Host::Ipv6(address)) => address.is_loopback(),
-        None => false,
-    }
+    ariadeck_domain::validate_rpc_endpoint(endpoint, allow_insecure_remote)
+        .map_err(|error| RpcError::Configuration(error.to_string()))
 }
 
 fn redacted_endpoint(endpoint: &Url) -> String {
@@ -374,11 +391,18 @@ fn map_connect_error(error: WebSocketError, secure: bool) -> RpcError {
     }
 }
 
+fn is_uncorrelated_notification(payload: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(payload)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .is_some_and(|object| object.contains_key("method") && !object.contains_key("id"))
+}
+
 fn handle_payload(
     payload: &[u8],
     pending: &mut HashMap<RpcId, ResponseSender>,
     notifications: &broadcast::Sender<Aria2Notification>,
-) {
+) -> Result<(), RpcError> {
     match decode_payload(payload) {
         Ok(messages) => {
             for message in messages {
@@ -398,10 +422,16 @@ fn handle_payload(
                     }
                 }
             }
+            Ok(())
         }
         Err(error) => {
-            tracing::warn!(%error, "discarding malformed JSON-RPC payload");
+            if is_uncorrelated_notification(payload) {
+                tracing::warn!(%error, "ignoring malformed JSON-RPC notification frame");
+                return Ok(());
+            }
+            tracing::warn!(%error, "closing WebSocket after malformed JSON-RPC frame");
             fail_all(pending, &error);
+            Err(error)
         }
     }
 }
@@ -724,5 +754,47 @@ mod tests {
         assert!(closed.borrow().is_some());
         server.await??;
         Ok(())
+    }
+
+    #[test]
+    fn malformed_notification_does_not_fail_unrelated_pending_requests() {
+        let (tx, mut rx) = oneshot::channel();
+        let (notifications, _) = broadcast::channel(4);
+        let mut pending = HashMap::new();
+        pending.insert(RpcId(42), tx);
+
+        // Notification missing jsonrpc version fails decode, but must not abort pending RPCs.
+        let outcome = handle_payload(
+            br#"{"method":"aria2.onDownloadComplete","params":[{"gid":"not-a-gid"}]}"#,
+            &mut pending,
+            &notifications,
+        );
+        assert!(outcome.is_ok());
+        assert!(pending.contains_key(&RpcId(42)));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn cancel_guard_enqueues_cancel_on_drop_unless_disarmed() {
+        let (tx, mut rx) = mpsc::channel(4);
+        {
+            let _guard = CancelGuard {
+                commands: tx.clone(),
+                ids: Some(vec![RpcId(7), RpcId(8)]),
+            };
+        }
+        match rx.try_recv() {
+            Ok(Command::Cancel(ids)) => assert_eq!(ids, vec![RpcId(7), RpcId(8)]),
+            _ => panic!("expected Cancel command on guard drop"),
+        }
+
+        {
+            let mut guard = CancelGuard {
+                commands: tx,
+                ids: Some(vec![RpcId(9)]),
+            };
+            guard.disarm();
+        }
+        assert!(rx.try_recv().is_err());
     }
 }

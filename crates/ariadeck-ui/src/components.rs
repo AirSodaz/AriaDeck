@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ElementId, Hsla, IntoElement, RenderOnce, SharedString, Window, div,
+    AnyElement, App, ElementId, Hsla, IntoElement, RenderOnce, Role, SharedString, Window, div,
     prelude::*, px, svg,
 };
 
@@ -16,7 +16,7 @@ pub use gpui_kit::component::tab::{Tab, TabBar, TabVariant};
 pub use gpui_kit::component::tag::{Tag, TagVariant};
 pub use gpui_kit::component::{Disableable as _, Sizable as _};
 
-use crate::{Theme, ThemeColors};
+use crate::Theme;
 
 type SelectionHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
@@ -245,11 +245,25 @@ impl Icon {
 impl RenderOnce for Icon {
     fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
         let color = self.color.unwrap_or_else(|| window.text_style().color);
-        svg()
+        let glyph = svg()
             .path(self.name.path())
             .size(px(self.size.pixels()))
             .flex_none()
-            .text_color(color)
+            .text_color(color);
+        if let Some(label) = self.label {
+            div()
+                .id(ElementId::NamedChild(
+                    ElementId::Name("icon".into()).into(),
+                    label.clone(),
+                ))
+                .flex_none()
+                .role(Role::Image)
+                .aria_label(label)
+                .child(glyph)
+                .into_any_element()
+        } else {
+            glyph.into_any_element()
+        }
     }
 }
 
@@ -322,11 +336,6 @@ impl SegmentedControl {
     #[must_use]
     pub fn on_select(mut self, handler: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
         self.on_select = Some(Rc::new(handler));
-        self
-    }
-
-    #[must_use]
-    pub fn render(self, _colors: ThemeColors) -> Self {
         self
     }
 }
@@ -602,5 +611,29 @@ mod tests {
         assert_eq!(control.segments[1].icon, Some(IconName::Sun));
         assert_eq!(control.segments[2].label.as_ref(), "Dark");
         assert_eq!(control.segments[2].icon, Some(IconName::Moon));
+    }
+
+    #[gpui::test]
+    fn icon_label_renders_with_image_accessibility_wrapper(cx: &mut gpui::TestAppContext) {
+        let labeled = Icon::new(IconName::Wifi).label("Connected");
+        assert_eq!(labeled.label.as_deref(), Some("Connected"));
+
+        let (_view, visual_cx) = cx.add_window_view(|_window, _cx| {
+            struct IconHost;
+            impl gpui::Render for IconHost {
+                fn render(
+                    &mut self,
+                    _window: &mut Window,
+                    _cx: &mut gpui::Context<Self>,
+                ) -> impl IntoElement {
+                    div()
+                        .child(Icon::new(IconName::Wifi).label("Connected"))
+                        .child(Icon::new(IconName::Moon))
+                }
+            }
+            IconHost
+        });
+        visual_cx.run_until_parked();
+        let _ = visual_cx.update(|window, cx| window.draw(cx));
     }
 }

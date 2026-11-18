@@ -2,7 +2,6 @@
 
 use std::{
     fs::{self, OpenOptions},
-    io::{self, Write},
     path::{Path, PathBuf},
 };
 
@@ -11,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 use uuid::Uuid;
 
-use crate::{EngineError, ExternalEngineProfile, LocalEngineConfig, error::io_error};
+use crate::{
+    EngineError, ExternalEngineProfile, LocalEngineConfig, atomic_io::write_atomic_bytes,
+    error::io_error,
+};
 
 /// Recovery metadata when a corrupt profile document is replaced with defaults.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -235,17 +237,11 @@ pub(crate) fn validate_remote_endpoint(endpoint: &str) -> Result<(), EngineError
     let parsed = Url::parse(endpoint).map_err(|error| EngineError::InvalidRemoteEndpoint {
         reason: error.to_string(),
     })?;
-    if !matches!(parsed.scheme(), "ws" | "wss") {
-        return Err(EngineError::InvalidRemoteEndpoint {
-            reason: "endpoint must use ws or wss".into(),
-        });
-    }
-    if parsed.host_str().is_none() {
-        return Err(EngineError::InvalidRemoteEndpoint {
-            reason: "endpoint must include a host".into(),
-        });
-    }
-    Ok(())
+    ariadeck_domain::validate_rpc_endpoint_shape(&parsed).map_err(|error| {
+        EngineError::InvalidRemoteEndpoint {
+            reason: error.to_string(),
+        }
+    })
 }
 
 /// Versioned multi-profile catalog (PROFILE-001).
@@ -410,54 +406,16 @@ impl JsonProfileStore {
 
     /// Atomically replace the profile file with a fully written temporary file.
     pub fn save(&self, profile: &ExternalEngineProfile) -> Result<(), EngineError> {
-        let parent = self
-            .path
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        if self.path.file_name().is_none() {
-            return Err(EngineError::InvalidStorePath {
-                path: self.path.clone(),
-            });
-        }
-        fs::create_dir_all(parent)
-            .map_err(|error| io_error("create the profile store directory", parent, error))?;
-
         let payload = serde_json::to_vec_pretty(profile)
             .map_err(|source| EngineError::Serialize { source })?;
-        let temp_path = parent.join(format!(
-            ".{}.{}.tmp",
-            self.path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("profile"),
-            Uuid::new_v4()
-        ));
-
-        let write_result = (|| {
-            let mut file = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&temp_path)
-                .map_err(|error| {
-                    io_error("create the temporary profile file", &temp_path, error)
-                })?;
-            file.write_all(&payload)
-                .map_err(|error| io_error("write the profile metadata", &temp_path, error))?;
-            file.write_all(b"\n")
-                .map_err(|error| io_error("finish the profile metadata", &temp_path, error))?;
-            file.flush()
-                .map_err(|error| io_error("flush the profile metadata", &temp_path, error))?;
-            file.sync_all()
-                .map_err(|error| io_error("sync the profile metadata", &temp_path, error))?;
-            replace_file(&temp_path, &self.path).map_err(|error| {
-                io_error("atomically replace the profile metadata", &self.path, error)
-            })
-        })();
-        if write_result.is_err() {
-            let _ = fs::remove_file(&temp_path);
-        }
-        write_result
+        write_atomic_bytes(
+            &self.path,
+            &payload,
+            true,
+            "create the profile store directory",
+            "write the profile metadata",
+            "atomically replace the profile metadata",
+        )
     }
 
     pub fn load(&self) -> Result<ExternalEngineProfile, EngineError> {
@@ -629,54 +587,16 @@ impl JsonProfileStore {
         let mut catalog = catalog.clone();
         catalog.schema_version = PROFILE_CATALOG_SCHEMA_VERSION;
         catalog.validate()?;
-        let parent = self
-            .path
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        if self.path.file_name().is_none() {
-            return Err(EngineError::InvalidStorePath {
-                path: self.path.clone(),
-            });
-        }
-        fs::create_dir_all(parent)
-            .map_err(|error| io_error("create the profile store directory", parent, error))?;
-
         let payload = serde_json::to_vec_pretty(&catalog)
             .map_err(|source| EngineError::Serialize { source })?;
-        let temp_path = parent.join(format!(
-            ".{}.{}.tmp",
-            self.path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("profiles"),
-            Uuid::new_v4()
-        ));
-
-        let write_result = (|| {
-            let mut file = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&temp_path)
-                .map_err(|error| {
-                    io_error("create the temporary profile catalog", &temp_path, error)
-                })?;
-            file.write_all(&payload)
-                .map_err(|error| io_error("write the profile catalog", &temp_path, error))?;
-            file.write_all(b"\n")
-                .map_err(|error| io_error("finish the profile catalog", &temp_path, error))?;
-            file.flush()
-                .map_err(|error| io_error("flush the profile catalog", &temp_path, error))?;
-            file.sync_all()
-                .map_err(|error| io_error("sync the profile catalog", &temp_path, error))?;
-            replace_file(&temp_path, &self.path).map_err(|error| {
-                io_error("atomically replace the profile catalog", &self.path, error)
-            })
-        })();
-        if write_result.is_err() {
-            let _ = fs::remove_file(&temp_path);
-        }
-        write_result
+        write_atomic_bytes(
+            &self.path,
+            &payload,
+            true,
+            "create the profile store directory",
+            "write the profile catalog",
+            "atomically replace the profile catalog",
+        )
     }
 
     fn preserve_corrupt_document_bytes(&self, bytes: &[u8]) -> Result<PathBuf, EngineError> {
@@ -707,19 +627,251 @@ impl JsonProfileStore {
     }
 }
 
-#[cfg(windows)]
-pub(crate) fn replace_file(temp_path: &Path, target_path: &Path) -> io::Result<()> {
-    match fs::rename(temp_path, target_path) {
-        Ok(()) => Ok(()),
-        Err(first_error) if target_path.exists() => {
-            fs::remove_file(target_path)?;
-            fs::rename(temp_path, target_path).or(Err(first_error))
-        }
-        Err(error) => Err(error),
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{EngineError, ExternalEngineProfile};
+    use ariadeck_domain::ProfileId;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
 
-#[cfg(not(windows))]
-pub(crate) fn replace_file(temp_path: &Path, target_path: &Path) -> io::Result<()> {
-    fs::rename(temp_path, target_path)
+    fn temporary_directory() -> PathBuf {
+        let path = std::env::temp_dir().join(format!("ariadeck-engine-{}", Uuid::new_v4()));
+        fs::create_dir_all(&path).expect("create test dir");
+        path
+    }
+
+    fn sample_profile(root: &Path) -> ExternalEngineProfile {
+        ExternalEngineProfile::new(
+            ProfileId::new(),
+            "Test profile",
+            std::env::current_exe().expect("current exe"),
+            root.join("data"),
+            root.join("downloads"),
+        )
+    }
+
+    #[test]
+    fn profile_store_round_trips_atomically_and_handles_malformed_json() {
+        let root = temporary_directory();
+        let profile = sample_profile(&root);
+        let store = JsonProfileStore::new(root.join("profiles").join("profile.json"));
+        assert!(store.save(&profile).is_ok());
+        assert_eq!(
+            store
+                .load()
+                .unwrap_or_else(|error| panic!("load failed: {error}")),
+            profile
+        );
+
+        let replacement = ExternalEngineProfile::new(
+            profile.profile_id,
+            "Replacement",
+            profile.executable.clone(),
+            profile.data_dir.clone(),
+            profile.download_dir.clone(),
+        );
+        assert!(store.save(&replacement).is_ok());
+        assert_eq!(
+            store
+                .load()
+                .unwrap_or_else(|error| panic!("reload failed: {error}")),
+            replacement
+        );
+        let raw = fs::read_to_string(store.path())
+            .unwrap_or_else(|error| panic!("profile file read failed: {error}"));
+        assert!(!raw.contains("rpc-secret"));
+        let temporary_files = fs::read_dir(store.path().parent().unwrap_or_else(|| Path::new(".")))
+            .unwrap_or_else(|error| panic!("profile directory read failed: {error}"))
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(temporary_files, 0);
+
+        fs::write(store.path(), b"{ definitely not json")
+            .unwrap_or_else(|error| panic!("malformed profile write failed: {error}"));
+
+        assert!(matches!(
+            store.load(),
+            Err(EngineError::MalformedProfile { .. })
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn profile_store_load_or_recover_preserves_identity_from_corrupt_document() {
+        let root = temporary_directory();
+        let profile_id = ProfileId::new();
+        let store = JsonProfileStore::new(root.join("profiles.json"));
+        let defaults = ExternalEngineProfile::new(
+            ProfileId::new(),
+            "Recovered",
+            std::env::current_exe().expect("exe"),
+            root.join("data"),
+            root.join("downloads"),
+        );
+        fs::write(
+            store.path(),
+            format!(
+                "{{\"profile_id\":\"{profile_id}\",\"name\":true,\"executable\":\"x\",\"data_dir\":\"y\",\"download_dir\":\"z\"}}"
+            ),
+        )
+        .expect("seed corrupt profile");
+
+        let loaded = store
+            .load_or_recover(&defaults)
+            .unwrap_or_else(|error| panic!("recover failed: {error}"));
+        assert_eq!(loaded.profile.profile_id, profile_id);
+        assert_eq!(loaded.profile.name, "Recovered");
+        let recovery = loaded.recovery.expect("recovery metadata");
+        assert!(recovery.backup_path.is_file());
+        assert_eq!(
+            store
+                .load()
+                .unwrap_or_else(|error| panic!("load recovered failed: {error}"))
+                .profile_id,
+            profile_id
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn profile_catalog_round_trips_current_schema() {
+        let root = temporary_directory();
+        let defaults = sample_profile(&root);
+        let store = JsonProfileStore::new(root.join("profiles.json"));
+        let mut catalog = ProfileCatalog::from_single(defaults.clone());
+        assert_eq!(catalog.schema_version, PROFILE_CATALOG_SCHEMA_VERSION);
+
+        let remote = ProfileEntry::remote_rpc(
+            ProfileId::new(),
+            "NAS",
+            "wss://aria2.example.invalid/jsonrpc",
+            root.join("nas-downloads"),
+            None,
+        )
+        .expect("remote entry");
+        catalog.upsert(remote.clone()).expect("upsert remote");
+        catalog
+            .set_active(remote.profile_id)
+            .expect("activate remote");
+        store.save_catalog(&catalog).expect("save catalog");
+
+        let reloaded = store
+            .load_catalog_or_recover(&defaults)
+            .expect("reload catalog");
+        assert!(!reloaded.migrated);
+        assert_eq!(
+            reloaded.catalog.schema_version,
+            PROFILE_CATALOG_SCHEMA_VERSION
+        );
+        assert_eq!(reloaded.catalog.profiles.len(), 2);
+        assert_eq!(reloaded.catalog.active_profile_id, remote.profile_id);
+        assert_eq!(
+            reloaded.catalog.active().map(|p| p.kind),
+            Some(ProfileKind::RemoteRpc)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unsupported_profile_catalog_schema_is_rejected_without_replace() {
+        let root = temporary_directory();
+        let defaults = sample_profile(&root);
+        let path = root.join("profiles.json");
+        let store = JsonProfileStore::new(&path);
+        fs::write(
+            &path,
+            r#"{"schema_version":99,"active_profile_id":"00000000-0000-4000-8000-000000000001","profiles":[]}"#,
+        )
+        .expect("seed unsupported schema");
+        let err = store
+            .load_catalog_or_recover(&defaults)
+            .expect_err("unsupported schema");
+        assert!(matches!(
+            err,
+            EngineError::UnsupportedSchemaVersion {
+                found: 99,
+                supported: PROFILE_CATALOG_SCHEMA_VERSION
+            }
+        ));
+        let on_disk = fs::read_to_string(&path).expect("read");
+        assert!(on_disk.contains("\"schema_version\":99"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_profile_endpoint_validation_rejects_http_and_empty() {
+        let root = temporary_directory();
+        assert!(matches!(
+            ProfileEntry::remote_rpc(
+                ProfileId::new(),
+                "Bad",
+                "http://example.invalid/jsonrpc",
+                root.join("d"),
+                None,
+            ),
+            Err(EngineError::InvalidRemoteEndpoint { .. })
+        ));
+        assert!(matches!(
+            ProfileEntry::remote_rpc(ProfileId::new(), "Bad", "", root.join("d"), None),
+            Err(EngineError::InvalidRemoteEndpoint { .. })
+                | Err(EngineError::MissingRemoteEndpoint)
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_profile_allows_empty_executable_for_managed_core() {
+        let root = temporary_directory();
+        let mut entry = ProfileEntry::local_managed(
+            ProfileId::new(),
+            "Managed",
+            PathBuf::new(),
+            root.clone(),
+            root.join("downloads"),
+        );
+        entry.executable = None;
+        entry
+            .validate()
+            .expect("empty executable is managed-core opt-in");
+        assert!(entry.uses_managed_core());
+        let config = entry.as_local_config().expect("local config");
+        assert!(config.executable.as_os_str().is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn catalog_refuses_to_remove_the_last_profile() {
+        let root = temporary_directory();
+        let profile = sample_profile(&root);
+        let mut catalog = ProfileCatalog::from_single(profile.clone());
+        assert!(matches!(
+            catalog.remove(profile.profile_id),
+            Err(EngineError::CannotRemoveLastProfile)
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_profile_rejects_embedded_credentials_query_and_non_jsonrpc_path() {
+        let root = temporary_directory();
+        for bad in [
+            "wss://user:pass@nas.example:6800/jsonrpc",
+            "wss://nas.example:6800/jsonrpc?token=secret",
+            "wss://nas.example:6800/jsonrpc#frag",
+            "wss://nas.example:6800/wrong",
+        ] {
+            assert!(
+                matches!(
+                    ProfileEntry::remote_rpc(ProfileId::new(), "Bad", bad, root.join("d"), None),
+                    Err(EngineError::InvalidRemoteEndpoint { .. })
+                ),
+                "expected {bad} to be rejected"
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
 }

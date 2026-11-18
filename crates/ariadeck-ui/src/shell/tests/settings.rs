@@ -132,24 +132,25 @@ fn bridge_downloads_fill_the_dialog_without_submitting(cx: &mut TestAppContext) 
         )];
         assert_eq!(shell.open_bridge_downloads(&downloads, window, cx), 1);
 
-        assert!(shell.add_dialog.open);
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
         // D-045 §6: fill, never submit.
-        assert!(shell.add_dialog.pending.is_none());
+        assert!(dialog.pending.is_none());
         assert_eq!(
-            shell.add_input.read(cx).text(),
+            dialog.add_input.read(cx).text(),
             "https://example.test/file.bin"
         );
         assert_eq!(
-            shell.add_inputs.referer.read(cx).text(),
+            dialog.add_inputs.referer.read(cx).text(),
             "https://example.test/page"
         );
         // A prefilled cookie must be visible to whoever confirms the add.
-        assert!(shell.add_dialog.advanced_open);
-        assert!(shell.add_inputs.cookie.read(cx).presentation().is_masked());
+        assert!(dialog.advanced_open);
+        assert!(dialog.add_inputs.cookie.read(cx).presentation().is_masked());
     });
 
     view.read_with(cx, |shell, cx| {
-        let advanced = shell.collect_add_advanced_options(cx);
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
+        let advanced = dialog.collect_advanced_options(cx);
         assert_eq!(
             advanced
                 .cookie
@@ -179,9 +180,9 @@ fn bridge_confirms_by_default_and_auto_submits_only_when_opted_in(cx: &mut TestA
         assert!(shell.bridge_requires_confirmation());
         let downloads = [bridge_download("https://example.test/a.bin", "", None)];
         assert_eq!(shell.accept_bridge_downloads(&downloads, window, cx), 1);
-        assert!(shell.add_dialog.open);
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
         assert!(
-            shell.add_dialog.pending.is_none(),
+            dialog.pending.is_none(),
             "the default path must not submit for the user"
         );
     });
@@ -192,8 +193,9 @@ fn bridge_confirms_by_default_and_auto_submits_only_when_opted_in(cx: &mut TestA
         assert!(!shell.bridge_requires_confirmation());
         let downloads = [bridge_download("https://example.test/b.bin", "", None)];
         assert_eq!(shell.accept_bridge_downloads(&downloads, window, cx), 1);
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
         assert!(
-            shell.add_dialog.pending.is_some(),
+            dialog.pending.is_some(),
             "auto-submit must reach the engine without a confirmation"
         );
     });
@@ -217,12 +219,13 @@ fn bridge_downloads_consume_only_the_leading_header_group(cx: &mut TestAppContex
             bridge_download("https://other.test/c.bin", "https://other.test/p", None),
         ];
         assert_eq!(shell.open_bridge_downloads(&downloads, window, cx), 3);
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
         assert_eq!(
-            shell.add_input.read(cx).text(),
+            dialog.add_input.read(cx).text(),
             "https://example.test/a.bin\nhttps://example.test/b.bin"
         );
         assert_eq!(
-            shell.add_inputs.referer.read(cx).text(),
+            dialog.add_inputs.referer.read(cx).text(),
             "https://example.test/p"
         );
 
@@ -317,26 +320,30 @@ fn proxy_settings_build_a_manual_draft_with_a_masked_password(cx: &mut TestAppCo
 
     view.update_in(cx, |shell, window, cx| {
         shell.open_settings(&OpenSettings, window, cx);
-        shell.select_proxy_mode(ProxyModeView::Manual, cx);
-        shell.settings_inputs.all_proxy.update(cx, |input, cx| {
-            input.set_value("proxy.example:8080", window, cx);
-        });
-        shell
-            .settings_inputs
-            .proxy_username
-            .update(cx, |input, cx| input.set_value("proxy-user", window, cx));
-        shell
-            .settings_inputs
-            .proxy_password
-            .update(cx, |input, cx| {
-                input.set_value("never-render-this", window, cx)
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| {
+            panel.select_proxy_mode(ProxyModeView::Manual, cx);
+            panel.settings_inputs.all_proxy.update(cx, |input, cx| {
+                input.set_value("proxy.example:8080", window, cx);
             });
-        shell.submit_proxy_settings(cx);
+            panel
+                .settings_inputs
+                .proxy_username
+                .update(cx, |input, cx| input.set_value("proxy-user", window, cx));
+            panel
+                .settings_inputs
+                .proxy_password
+                .update(cx, |input, cx| {
+                    input.set_value("never-render-this", window, cx)
+                });
+            panel.submit_proxy_settings(cx);
+        });
     });
 
     view.read_with(cx, |shell, cx| {
+        let panel = shell.settings_panel().expect("settings open").read(cx);
         assert!(
-            shell
+            panel
                 .settings_inputs
                 .proxy_password
                 .read(cx)
@@ -416,21 +423,25 @@ fn transfers_footer_saves_speed_limit_and_policy_together(cx: &mut TestAppContex
         shell.open_settings(&OpenSettings, window, cx);
     });
     view.update_in(cx, |shell, window, cx| {
-        shell
-            .settings_inputs
-            .download_limit
-            .update(cx, |input, cx| {
-                input.set_value("2M", window, cx);
-            });
-        shell
-            .settings_inputs
-            .max_concurrent
-            .update(cx, |input, cx| {
-                input.set_value("8", window, cx);
-            });
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| {
+            panel
+                .settings_inputs
+                .download_limit
+                .update(cx, |input, cx| {
+                    input.set_value("2M", window, cx);
+                });
+            panel
+                .settings_inputs
+                .max_concurrent
+                .update(cx, |input, cx| {
+                    input.set_value("8", window, cx);
+                });
+        });
     });
     view.update(cx, |shell, cx| {
-        shell.submit_transfers(cx);
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| panel.submit_transfers(cx));
     });
 
     view.read_with(cx, |shell, _cx| {
@@ -462,25 +473,30 @@ fn transfers_footer_rejects_invalid_speed_even_when_policy_is_dirty(cx: &mut Tes
         shell.open_settings(&OpenSettings, window, cx);
     });
     view.update_in(cx, |shell, window, cx| {
-        shell
-            .settings_inputs
-            .download_limit
-            .update(cx, |input, cx| {
-                input.set_value("5MB", window, cx);
-            });
-        shell
-            .settings_inputs
-            .max_concurrent
-            .update(cx, |input, cx| {
-                input.set_value("8", window, cx);
-            });
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| {
+            panel
+                .settings_inputs
+                .download_limit
+                .update(cx, |input, cx| {
+                    input.set_value("5MB", window, cx);
+                });
+            panel
+                .settings_inputs
+                .max_concurrent
+                .update(cx, |input, cx| {
+                    input.set_value("8", window, cx);
+                });
+        });
     });
     view.update(cx, |shell, cx| {
-        shell.submit_transfers(cx);
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| panel.submit_transfers(cx));
     });
-    view.read_with(cx, |shell, _cx| {
+    view.read_with(cx, |shell, cx| {
         assert!(shell.pending_settings_save.is_none());
-        let error = shell
+        let panel = shell.settings_panel().expect("settings open").read(cx);
+        let error = panel
             .settings_page
             .error
             .as_ref()
@@ -508,12 +524,11 @@ fn task_settings_dialogs_keep_tab_focus_inside_the_modal(cx: &mut TestAppContext
     let _ = cx.update(|window, cx| window.draw(cx));
     assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
     view.update_in(&mut cx, |shell, window, cx| {
+        let (_, download_limit, _) = shell
+            .task_speed_limit_modal()
+            .expect("speed limit dialog open");
         assert!(
-            shell
-                .task_inputs
-                .download_limit
-                .focus_handle(cx)
-                .is_focused(window),
+            download_limit.focus_handle(cx).is_focused(window),
             "speed limit dialog should focus download_limit"
         );
     });
@@ -534,7 +549,7 @@ fn task_settings_dialogs_keep_tab_focus_inside_the_modal(cx: &mut TestAppContext
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
     view.read_with(&cx, |shell, _| {
-        assert!(shell.task_speed_limit_dialog.is_none());
+        assert!(shell.task_speed_limit_modal().is_none());
     });
     assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
 
@@ -548,7 +563,7 @@ fn task_settings_dialogs_keep_tab_focus_inside_the_modal(cx: &mut TestAppContext
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
     view.read_with(&cx, |shell, _| {
-        assert!(shell.task_options_dialog.is_none());
+        assert!(shell.task_options_modal().is_none());
     });
     assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
 
@@ -562,7 +577,7 @@ fn task_settings_dialogs_keep_tab_focus_inside_the_modal(cx: &mut TestAppContext
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
     view.read_with(&cx, |shell, _| {
-        assert!(!shell.core_setup.onboarding_open);
+        assert!(!shell.core_setup_onboarding_open());
     });
     assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
 
@@ -575,7 +590,7 @@ fn task_settings_dialogs_keep_tab_focus_inside_the_modal(cx: &mut TestAppContext
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
     view.read_with(&cx, |shell, _| {
-        assert!(shell.power_countdown.is_none());
+        assert!(shell.power_countdown().is_none());
     });
     assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
 }
@@ -585,11 +600,14 @@ fn transfer_policy_integrity_toggle_updates_draft(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
     view.update_in(cx, |shell, window, cx| {
         shell.open_settings(&OpenSettings, window, cx);
-        let before = shell.settings_page.draft_check_integrity;
-        shell.toggle_check_integrity(cx);
-        assert_ne!(shell.settings_page.draft_check_integrity, before);
-        shell.toggle_check_integrity(cx);
-        assert_eq!(shell.settings_page.draft_check_integrity, before);
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| {
+            let before = panel.settings_page.draft_check_integrity;
+            panel.toggle_check_integrity(cx);
+            assert_ne!(panel.settings_page.draft_check_integrity, before);
+            panel.toggle_check_integrity(cx);
+            assert_eq!(panel.settings_page.draft_check_integrity, before);
+        });
     });
 }
 
@@ -604,14 +622,18 @@ fn about_settings_category_has_no_footer_save(cx: &mut TestAppContext) {
     view.update_in(cx, |shell, window, cx| {
         shell.open_settings(&OpenSettings, window, cx);
         shell.snapshot.capabilities.version = "1.37.0".into();
-        shell.select_settings_category(SettingsCategory::About, cx);
-        assert_eq!(shell.settings_page.active_category, SettingsCategory::About);
-        assert_eq!(shell.t("settings-nav-about"), "About");
-        assert_eq!(shell.t("settings-about-version"), "Version");
-        // About actions are self-contained: the category has no draft save footer.
-        let _ = shell.render_settings_about(cx);
-        let footer = shell.render_settings_footer(cx);
-        drop(footer);
+        shell.sync_settings_panel(None, cx);
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| {
+            panel.select_settings_category(SettingsCategory::About, cx);
+            assert_eq!(panel.settings_page.active_category, SettingsCategory::About);
+            assert_eq!(panel.t("settings-nav-about"), "About");
+            assert_eq!(panel.t("settings-about-version"), "Version");
+            // About actions are self-contained: the category has no draft save footer.
+            let _ = panel.render_settings_about(cx);
+            let footer = panel.render_settings_footer(cx);
+            drop(footer);
+        });
         assert!(shell.pending_settings_save.is_none());
     });
 }
@@ -788,9 +810,14 @@ fn notification_preferences_save_emits_settings_request(cx: &mut TestAppContext)
     let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
     view.update_in(cx, |shell, window, cx| {
         shell.open_settings(&OpenSettings, window, cx);
-        shell.select_notification_volume(NotificationVolumeView::Quiet, cx);
-        shell.toggle_notify_on_completion(cx);
-        shell.submit_notifications(cx);
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| {
+            panel.select_notification_volume(NotificationVolumeView::Quiet, cx);
+            panel.toggle_notify_on_completion(cx);
+            panel.submit_notifications(cx);
+        });
+    });
+    view.read_with(cx, |shell, _| {
         let pending = shell
             .pending_settings_save
             .as_ref()
@@ -892,24 +919,37 @@ fn profile_catalog_can_switch_and_add_drafts(cx: &mut TestAppContext) {
         assert!(shell.status_notice.as_ref().is_some_and(|notice| {
             notice.message.contains("already active") || notice.message.contains("已是当前配置")
         }));
-        shell.add_draft_local_profile(window, cx);
+        shell.open_settings_page(SettingsCategory::Profiles, window, cx);
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| {
+            panel.add_draft_local_profile(window, cx);
+        });
+    });
+    view.update_in(cx, |shell, window, cx| {
+        let panel = shell.settings_panel().expect("settings open").clone();
         assert_eq!(shell.profiles.profiles.len(), 3);
         let draft = shell
             .profiles
             .profiles
             .iter()
             .find(|profile| profile.profile_id.starts_with("draft-local-"))
-            .expect("local draft");
+            .expect("local draft")
+            .clone();
         assert!(draft.executable.is_empty(), "local draft uses managed core");
         assert_eq!(
-            shell.settings_page.editing_profile_id.as_deref(),
+            panel.read(cx).settings_page.editing_profile_id.as_deref(),
             Some(draft.profile_id.as_str())
         );
-        shell.settings_inputs.profile_name.update(cx, |input, cx| {
-            input.set_value("Home NAS-ready", window, cx);
+        panel.update(cx, |panel, cx| {
+            panel.settings_inputs.profile_name.update(cx, |input, cx| {
+                input.set_value("Home NAS-ready", window, cx);
+            });
+            panel.apply_profile_editor(window, cx);
         });
-        shell.apply_profile_editor(window, cx);
-        assert!(shell.settings_page.editing_profile_id.is_none());
+    });
+    view.update_in(cx, |shell, window, cx| {
+        let panel = shell.settings_panel().expect("settings open").clone();
+        assert!(panel.read(cx).settings_page.editing_profile_id.is_none());
         assert!(
             shell
                 .profiles
@@ -918,7 +958,12 @@ fn profile_catalog_can_switch_and_add_drafts(cx: &mut TestAppContext) {
                 .any(|profile| profile.name == "Home NAS-ready")
         );
 
-        shell.add_draft_remote_profile(window, cx);
+        panel.update(cx, |panel, cx| {
+            panel.add_draft_remote_profile(window, cx);
+        });
+    });
+    view.update_in(cx, |shell, _window, cx| {
+        let panel = shell.settings_panel().expect("settings open").clone();
         assert_eq!(shell.profiles.profiles.len(), 4);
         assert!(
             shell
@@ -931,17 +976,29 @@ fn profile_catalog_can_switch_and_add_drafts(cx: &mut TestAppContext) {
 
         // Delete requires confirmation, then persists via save request.
         let remove_id = shell.profiles.profiles[3].profile_id.clone();
-        shell.request_remove_profile(remove_id.clone(), cx);
-        assert!(shell.settings_page.pending_profile_delete.is_some());
-        shell.cancel_remove_profile(cx);
-        assert!(shell.settings_page.pending_profile_delete.is_none());
+        panel.update(cx, |panel, cx| {
+            panel.request_remove_profile(remove_id.clone(), cx);
+            assert!(panel.settings_page.pending_profile_delete.is_some());
+            panel.cancel_remove_profile(cx);
+            assert!(panel.settings_page.pending_profile_delete.is_none());
+        });
         assert_eq!(shell.profiles.profiles.len(), 4);
-        shell.request_remove_profile(remove_id, cx);
-        shell.confirm_remove_profile(cx);
+        panel.update(cx, |panel, cx| {
+            panel.request_remove_profile(remove_id, cx);
+            panel.confirm_remove_profile(cx);
+        });
+    });
+    view.update_in(cx, |shell, window, cx| {
+        let panel = shell.settings_panel().expect("settings open").clone();
         assert_eq!(shell.profiles.profiles.len(), 3);
 
         // Remote secret set is staged until Save profiles.
-        shell.add_draft_remote_profile(window, cx);
+        panel.update(cx, |panel, cx| {
+            panel.add_draft_remote_profile(window, cx);
+        });
+    });
+    let remote_id = view.update_in(cx, |shell, window, cx| {
+        let panel = shell.settings_panel().expect("settings open").clone();
         let remote_id = shell
             .profiles
             .profiles
@@ -949,16 +1006,23 @@ fn profile_catalog_can_switch_and_add_drafts(cx: &mut TestAppContext) {
             .find(|profile| profile.profile_id.starts_with("draft-remote-"))
             .map(|profile| profile.profile_id.clone())
             .expect("remote draft");
-        shell.open_profile_editor(remote_id.clone(), window, cx);
-        shell
-            .settings_inputs
-            .profile_secret
-            .update(cx, |input, cx| {
-                input.set_value("s3cret", window, cx);
-            });
-        shell.apply_profile_editor(window, cx);
+        panel.update(cx, |panel, cx| {
+            panel.open_profile_editor(remote_id.clone(), window, cx);
+            panel
+                .settings_inputs
+                .profile_secret
+                .update(cx, |input, cx| {
+                    input.set_value("s3cret", window, cx);
+                });
+            panel.apply_profile_editor(window, cx);
+        });
+        remote_id
+    });
+    view.update_in(cx, |shell, _window, cx| {
+        let panel = shell.settings_panel().expect("settings open").clone();
         assert!(
-            shell
+            panel
+                .read(cx)
                 .settings_page
                 .profile_secret_updates
                 .get(&remote_id)
@@ -1057,7 +1121,7 @@ fn core_registry_commands_emit_and_apply_results(cx: &mut TestAppContext) {
             shell
                 .status_notice
                 .as_ref()
-                .is_some_and(|notice| notice.message.contains("verified"))
+                .is_some_and(|notice| notice.message == shell.t("notice-core-verified"))
         );
     });
 }
@@ -1234,7 +1298,12 @@ fn core_setup_guide_hands_off_to_engine_settings(cx: &mut TestAppContext) {
         assert!(!shell.core_setup_onboarding_open());
         assert_eq!(shell.page, AppPage::Settings);
         assert_eq!(
-            shell.settings_page.active_category,
+            shell
+                .settings_panel()
+                .expect("settings open")
+                .read(cx)
+                .settings_page
+                .active_category,
             SettingsCategory::Engine
         );
     });
@@ -1253,7 +1322,12 @@ fn core_setup_panel_is_never_mounted_in_two_places_at_once(cx: &mut TestAppConte
         shell.open_core_setup_onboarding(window, cx);
         assert!(!shell.core_setup_onboarding_open());
         assert_eq!(
-            shell.settings_page.active_category,
+            shell
+                .settings_panel()
+                .expect("settings open")
+                .read(cx)
+                .settings_page
+                .active_category,
             SettingsCategory::Engine
         );
         shell.close_settings(window, cx);
@@ -1274,7 +1348,8 @@ fn core_setup_panel_is_never_mounted_in_two_places_at_once(cx: &mut TestAppConte
     // Another modal already owns the screen: the guide waits rather than stacks.
     view.update_in(cx, |shell, window, cx| {
         shell.close_settings(window, cx);
-        shell.add_dialog.open = true;
+        shell.snapshot = snapshot(1);
+        shell.open_add_download(&OpenAddDownload, window, cx);
         shell.open_core_setup_onboarding(window, cx);
         assert!(!shell.core_setup_onboarding_open());
     });
@@ -1285,13 +1360,13 @@ fn power_action_change_during_countdown_updates_action(cx: &mut TestAppContext) 
     let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
 
     view.update(cx, |shell, cx| {
-        shell.power_countdown = Some(PowerCountdownState {
+        shell.active_modal = Some(ActiveModal::PowerCountdown(PowerCountdownState {
             action: CompletionPowerActionView::Sleep,
             remaining_seconds: 30,
-        });
+        }));
         shell.select_completion_action(CompletionPowerActionView::Shutdown, cx);
         assert_eq!(
-            shell.power_countdown.expect("countdown active").action,
+            shell.power_countdown().expect("countdown active").action,
             CompletionPowerActionView::Shutdown
         );
     });
@@ -1329,15 +1404,21 @@ fn input_placeholders_sync_on_language_switch_and_apply_settings(cx: &mut TestAp
         };
         let mut shell = AppShell::new_with_settings(settings, window, cx);
         shell.snapshot = snapshot(1);
+        shell.snapshot.tasks[0].status = TaskStatusView::Active;
+        shell.selected = Some(shell.snapshot.tasks[0].identity.clone());
         shell
     });
 
     let en = Translator::new(LocaleId::En);
     let zh = Translator::new(LocaleId::ZhCn);
 
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_add_download(&OpenAddDownload, window, cx);
+    });
     view.read_with(cx, |shell, cx| {
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
         assert_eq!(
-            shell
+            dialog
                 .add_input
                 .read(cx)
                 .presentation()
@@ -1346,7 +1427,7 @@ fn input_placeholders_sync_on_language_switch_and_apply_settings(cx: &mut TestAp
             en.t("dialog-add-url-placeholder")
         );
         assert_eq!(
-            shell
+            dialog
                 .add_inputs
                 .user_agent
                 .read(cx)
@@ -1356,7 +1437,7 @@ fn input_placeholders_sync_on_language_switch_and_apply_settings(cx: &mut TestAp
             en.t("dialog-add-user-agent-placeholder")
         );
         assert_eq!(
-            shell
+            dialog
                 .add_inputs
                 .headers
                 .read(cx)
@@ -1366,7 +1447,7 @@ fn input_placeholders_sync_on_language_switch_and_apply_settings(cx: &mut TestAp
             en.t("dialog-add-headers-placeholder")
         );
         assert_eq!(
-            shell
+            dialog
                 .add_inputs
                 .http_user
                 .read(cx)
@@ -1376,7 +1457,7 @@ fn input_placeholders_sync_on_language_switch_and_apply_settings(cx: &mut TestAp
             en.t("dialog-add-http-username-placeholder")
         );
         assert_eq!(
-            shell
+            dialog
                 .add_inputs
                 .http_passwd
                 .read(cx)
@@ -1385,35 +1466,16 @@ fn input_placeholders_sync_on_language_switch_and_apply_settings(cx: &mut TestAp
                 .as_ref(),
             en.t("dialog-add-http-password-placeholder")
         );
-        assert_eq!(
-            shell
-                .task_inputs
-                .download_limit
-                .read(cx)
-                .presentation()
-                .placeholder()
-                .as_ref(),
-            en.t("input-download-limit-placeholder")
-        );
-        assert_eq!(
-            shell
-                .settings_inputs
-                .profile_name
-                .read(cx)
-                .presentation()
-                .placeholder()
-                .as_ref(),
-            en.t("settings-profile-name-placeholder")
-        );
     });
 
-    // Switch language directly via Settings -> all placeholders must switch to Chinese.
+    // Switch language directly via Settings -> open modal placeholders switch to Chinese.
     view.update_in(cx, |shell, window, cx| {
         shell.select_language(LanguagePreferenceView::ChineseSimplified, window, cx);
     });
     view.read_with(cx, |shell, cx| {
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
         assert_eq!(
-            shell
+            dialog
                 .add_input
                 .read(cx)
                 .presentation()
@@ -1422,7 +1484,7 @@ fn input_placeholders_sync_on_language_switch_and_apply_settings(cx: &mut TestAp
             zh.t("dialog-add-url-placeholder")
         );
         assert_eq!(
-            shell
+            dialog
                 .add_inputs
                 .user_agent
                 .read(cx)
@@ -1432,7 +1494,7 @@ fn input_placeholders_sync_on_language_switch_and_apply_settings(cx: &mut TestAp
             zh.t("dialog-add-user-agent-placeholder")
         );
         assert_eq!(
-            shell
+            dialog
                 .add_inputs
                 .headers
                 .read(cx)
@@ -1442,7 +1504,7 @@ fn input_placeholders_sync_on_language_switch_and_apply_settings(cx: &mut TestAp
             zh.t("dialog-add-headers-placeholder")
         );
         assert_eq!(
-            shell
+            dialog
                 .add_inputs
                 .http_user
                 .read(cx)
@@ -1452,7 +1514,7 @@ fn input_placeholders_sync_on_language_switch_and_apply_settings(cx: &mut TestAp
             zh.t("dialog-add-http-username-placeholder")
         );
         assert_eq!(
-            shell
+            dialog
                 .add_inputs
                 .http_passwd
                 .read(cx)
@@ -1461,18 +1523,18 @@ fn input_placeholders_sync_on_language_switch_and_apply_settings(cx: &mut TestAp
                 .as_ref(),
             zh.t("dialog-add-http-password-placeholder")
         );
+    });
+
+    // Opening Settings after switching to Chinese initializes its lazy inputs in Chinese,
+    // and switching back to English refreshes open Settings placeholders live.
+    view.update_in(cx, |shell, window, cx| {
+        shell.close_add_download(window, cx);
+        shell.open_settings(&OpenSettings, window, cx);
+    });
+    view.read_with(cx, |shell, cx| {
+        let panel = shell.settings_panel().expect("settings open").read(cx);
         assert_eq!(
-            shell
-                .task_inputs
-                .download_limit
-                .read(cx)
-                .presentation()
-                .placeholder()
-                .as_ref(),
-            zh.t("input-download-limit-placeholder")
-        );
-        assert_eq!(
-            shell
+            panel
                 .settings_inputs
                 .profile_name
                 .read(cx)
@@ -1483,9 +1545,29 @@ fn input_placeholders_sync_on_language_switch_and_apply_settings(cx: &mut TestAp
         );
     });
 
+    // Lazily opened speed limit modal also inherits the active Chinese locale.
+    view.update_in(cx, |shell, window, cx| {
+        shell.close_settings(window, cx);
+        shell.open_task_speed_limit(window, cx);
+    });
+    view.read_with(cx, |shell, cx| {
+        let (_, download_limit, _) = shell
+            .task_speed_limit_modal()
+            .expect("speed limit dialog open");
+        assert_eq!(
+            download_limit
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            zh.t("input-download-limit-placeholder")
+        );
+    });
+
     // Apply settings without a window handle (startup edge case), then open Add Download:
     // opening the dialog must still synchronize placeholders to the new language.
     view.update_in(cx, |shell, window, cx| {
+        shell.close_task_speed_limit(window, cx);
         shell.pending_settings_save = None;
         let mut settings = shell.settings.clone();
         settings.language = LanguagePreferenceView::English;
@@ -1493,8 +1575,9 @@ fn input_placeholders_sync_on_language_switch_and_apply_settings(cx: &mut TestAp
         shell.open_add_download(&OpenAddDownload, window, cx);
     });
     view.read_with(cx, |shell, cx| {
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
         assert_eq!(
-            shell
+            dialog
                 .add_input
                 .read(cx)
                 .presentation()
@@ -1503,7 +1586,7 @@ fn input_placeholders_sync_on_language_switch_and_apply_settings(cx: &mut TestAp
             en.t("dialog-add-url-placeholder")
         );
         assert_eq!(
-            shell
+            dialog
                 .add_inputs
                 .http_user
                 .read(cx)
@@ -1580,7 +1663,7 @@ fn settings_page_and_add_download_dialog_keep_scrollbars_inside_narrow_viewport(
         |window, cx| {
             let mut shell = AppShell::new(Theme::dark(), window, cx);
             shell.snapshot = snapshot(5);
-            shell.page = AppPage::Settings;
+            shell.open_settings(&OpenSettings, window, cx);
             shell
         },
     );
@@ -1588,8 +1671,13 @@ fn settings_page_and_add_download_dialog_keep_scrollbars_inside_narrow_viewport(
     visual_cx.run_until_parked();
     let _ = visual_cx.update(|window, cx| window.draw(cx));
 
-    shell.read_with(&visual_cx, |shell, _| {
-        let bounds = shell.settings_scroll.bounds();
+    shell.read_with(&visual_cx, |shell, cx| {
+        let bounds = shell
+            .settings_panel()
+            .expect("settings open")
+            .read(cx)
+            .settings_scroll
+            .bounds();
         assert!(
             bounds.size.width > px(0.0),
             "settings scroll viewport must have positive width"
@@ -1613,6 +1701,9 @@ fn settings_page_and_add_download_dialog_keep_scrollbars_inside_narrow_viewport(
     assert!(visual_cx.update(|window, cx| window.has_active_dialog(cx)));
     shell.read_with(&visual_cx, |shell, cx| {
         let bounds = shell
+            .add_dialog_entity()
+            .expect("dialog open")
+            .read(cx)
             .add_input
             .read(cx)
             .text_bounds()
@@ -1627,5 +1718,175 @@ fn settings_page_and_add_download_dialog_keep_scrollbars_inside_narrow_viewport(
             bounds.right(),
             viewport_width
         );
+    });
+}
+
+#[gpui::test]
+fn save_settings_shortcut_submits_active_category_and_general_detects_inline_edits(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (shell, visual_cx) =
+        cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+    let mut visual_cx = visual_cx.clone();
+    let events: std::rc::Rc<std::cell::RefCell<Vec<AppShellEvent>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = events.clone();
+    visual_cx.update(|_, cx| {
+        cx.subscribe(&shell, move |_, event, _| {
+            captured.borrow_mut().push(event.clone());
+        })
+        .detach();
+    });
+
+    shell.update_in(&mut visual_cx, |shell, window, cx| {
+        let settings = SettingsView {
+            categories: vec![crate::DownloadCategoryView {
+                id: "general".into(),
+                name: "General".into(),
+                directory: "C:/Downloads".into(),
+                extensions: String::new(),
+                is_fallback: true,
+            }],
+            ..SettingsView::default()
+        };
+        shell.apply_settings(settings, Some(window), cx);
+        shell.open_settings_page(SettingsCategory::General, window, cx);
+        // Edit the active General category directory input directly without flushing.
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| {
+            panel.select_category_editor(0, window, cx);
+            panel.settings_inputs.directory.update(cx, |input, cx| {
+                input.set_value("D:/CustomDownloads", window, cx);
+            });
+            assert_ne!(
+                panel.preview_draft_categories(cx),
+                panel.settings.categories,
+                "inline category edit must mark General page dirty before flush"
+            );
+
+            // Switch to Network tab, toggle proxy mode, and press Ctrl/Cmd+Enter (`SaveSettings`).
+            panel.settings_page.active_category = SettingsCategory::Network;
+            panel.settings_page.draft_proxy_mode = ProxyModeView::System;
+        });
+        shell.save_settings_action(&SaveSettings, window, cx);
+    });
+
+    let emitted = events.borrow();
+    assert!(
+        emitted.iter().any(|event| matches!(
+            event,
+            AppShellEvent::SettingsSaveRequested(req)
+                if req.settings.download_proxy.mode == ProxyModeView::System
+        )),
+        "SaveSettings shortcut on Network tab must submit proxy settings, not General categories"
+    );
+}
+
+#[gpui::test]
+fn child_entities_are_created_lazily_on_open_and_dropped_on_close(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(2);
+        shell
+    });
+
+    // Startup: no settings panel, no add dialog, no task details panel.
+    view.read_with(cx, |shell, _| {
+        assert!(shell.settings_panel().is_none());
+        assert!(shell.add_dialog_entity().is_none());
+        assert!(shell.details_panel.is_none());
+    });
+
+    // SettingsPanelView: created on open, destroyed on close and on leaving via filter.
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_settings(&OpenSettings, window, cx);
+        assert!(shell.settings_panel().is_some());
+        shell.close_settings(window, cx);
+        assert!(shell.settings_panel().is_none());
+
+        shell.open_settings(&OpenSettings, window, cx);
+        assert!(shell.settings_panel().is_some());
+        shell.set_filter(WorkspaceFilter::Active, window, cx);
+        assert!(shell.settings_panel().is_none());
+    });
+
+    // AddDownloadDialogView: created on open, destroyed on close.
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_add_download(&OpenAddDownload, window, cx);
+        assert!(shell.add_dialog_entity().is_some());
+        shell.close_add_download(window, cx);
+        assert!(shell.add_dialog_entity().is_none());
+    });
+
+    // TaskDetailsPanelView: created on open, destroyed on close.
+    view.update_in(cx, |shell, window, cx| {
+        let row = shell.snapshot.tasks[0].clone();
+        shell.open_details_for(row, cx);
+        assert!(shell.details_panel.is_some());
+        shell.close_task_details(window, cx);
+        assert!(shell.details_panel.is_none());
+    });
+}
+
+#[gpui::test]
+fn newly_localized_notices_and_task_overviews_render_in_chinese(cx: &mut TestAppContext) {
+    let settings = SettingsView {
+        language: LanguagePreferenceView::ChineseSimplified,
+        ..SettingsView::default()
+    };
+    let (view, cx) =
+        cx.add_window_view(move |window, cx| AppShell::new_with_settings(settings, window, cx));
+
+    view.update(cx, |shell, cx| {
+        // Profile already-active notice localizes to Chinese.
+        shell.set_profiles(
+            ProfileCatalogView {
+                active_profile_id: "p1".into(),
+                profiles: vec![ProfileEntryView {
+                    profile_id: "p1".into(),
+                    name: "Local".into(),
+                    kind: ProfileKindView::LocalManaged,
+                    executable: String::new(),
+                    download_dir: "D:/Downloads".into(),
+                    endpoint: String::new(),
+                    has_secret: false,
+                }],
+            },
+            cx,
+        );
+        shell.request_switch_profile("p1".into(), cx);
+        let notice = shell
+            .status_notice
+            .as_ref()
+            .expect("profile notice emitted");
+        assert_eq!(notice.message, shell.t("notice-profile-already-active"));
+        assert!(
+            notice.message.contains("已是当前配置"),
+            "expected Chinese profile notice, got: {}",
+            notice.message
+        );
+
+        // Task display name fallback, built-in category label, and task overview strings localize in Chinese.
+        let mut pending_task = task(0);
+        pending_task.display_name = "Metadata pending".into();
+        pending_task.name_state = TaskNameStateView::Resolving;
+        assert_eq!(
+            task_display_name(&pending_task, &shell.translator),
+            shell.t("task-name-resolving")
+        );
+        assert_eq!(
+            category_display_name("General", &shell.translator),
+            shell.t("category-general")
+        );
+        let remaining = shell.t_args(
+            "task-overview-remaining",
+            &[("duration", FluentValue::from("5m"))],
+        );
+        assert!(
+            remaining != "task-overview-remaining" && !remaining.contains("remaining"),
+            "expected localized Chinese task-overview-remaining, got: {remaining}"
+        );
+        let _overview_div =
+            task_overview_summary(&pending_task, &shell.translator, shell.theme.colors);
     });
 }

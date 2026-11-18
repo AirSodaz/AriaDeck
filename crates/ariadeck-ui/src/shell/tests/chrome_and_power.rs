@@ -64,7 +64,7 @@ fn title_bar_renders_centered_search_and_add_action(cx: &mut TestAppContext) {
 
     shell.read_with(&visual_cx, |shell, _| {
         assert!(
-            shell.add_dialog.open,
+            shell.add_dialog_entity().is_some(),
             "clicking the titlebar add download button must open the Add Download dialog"
         );
     });
@@ -155,10 +155,7 @@ fn local_engine_health_surfaces_recovery_and_terminal_failure(cx: &mut TestAppCo
     view.read_with(cx, |shell, _| {
         let notice = shell.status_notice.as_ref().expect("recovery notice");
         assert!(!notice.is_error);
-        assert_eq!(
-            notice.message,
-            "Local aria2 recovered after 1 restart attempt."
-        );
+        assert_eq!(notice.message, shell.t_count("notice-engine-recovered", 1));
     });
 
     view.update(cx, |shell, cx| {
@@ -244,11 +241,21 @@ fn task_status_transitions_group_completions_into_one_notice(cx: &mut TestAppCon
         assert_eq!(shell.activity_log[0].count, 1);
         assert_eq!(shell.activity_log[1].kind, ActivityKindView::Completion);
         assert_eq!(shell.activity_log[1].count, 2);
+        let expected_failure = shell.t_args(
+            "notice-task-failed-single",
+            &[(
+                "name",
+                FluentValue::from(task_display_name(
+                    &shell.snapshot.tasks[2],
+                    shell.translator(),
+                )),
+            )],
+        );
         assert!(
             shell
                 .status_notice
                 .as_ref()
-                .is_some_and(|notice| notice.is_error && notice.message.contains("failed")),
+                .is_some_and(|notice| notice.is_error && notice.message == expected_failure),
             "latest automatic notice should be the failure group"
         );
     });
@@ -360,7 +367,7 @@ fn power_action_armed_with_zero_tasks_does_not_trigger(cx: &mut TestAppContext) 
         snap.counts.active = 0;
         snap.counts.waiting = 0;
         shell.set_snapshot(snap, cx);
-        assert!(shell.power_countdown.is_none());
+        assert!(shell.power_countdown().is_none());
         assert_eq!(
             shell.settings.platform.action_after_done,
             CompletionPowerActionView::Shutdown
@@ -377,7 +384,7 @@ fn power_action_triggers_when_active_tasks_complete(cx: &mut TestAppContext) {
         let mut snap = snapshot(1);
         snap.counts.active = 1;
         shell.set_snapshot(snap, cx);
-        assert!(shell.power_countdown.is_none());
+        assert!(shell.power_countdown().is_none());
         assert!(shell.power_had_active_tasks);
 
         let mut done_snap = snapshot(1);
@@ -385,8 +392,8 @@ fn power_action_triggers_when_active_tasks_complete(cx: &mut TestAppContext) {
         done_snap.counts.active = 0;
         done_snap.counts.waiting = 0;
         shell.set_snapshot(done_snap, cx);
-        assert!(shell.power_countdown.is_some());
-        let cd = shell.power_countdown.expect("countdown active");
+        assert!(shell.power_countdown().is_some());
+        let cd = shell.power_countdown().expect("countdown active");
         assert_eq!(cd.action, CompletionPowerActionView::Shutdown);
         assert_eq!(cd.remaining_seconds, 30);
     });
@@ -407,10 +414,10 @@ fn power_action_countdown_cancelled_by_user(cx: &mut TestAppContext) {
         done_snap.counts.active = 0;
         done_snap.counts.waiting = 0;
         shell.set_snapshot(done_snap, cx);
-        assert!(shell.power_countdown.is_some());
+        assert!(shell.power_countdown().is_some());
 
         shell.cancel_power_countdown(cx);
-        assert!(shell.power_countdown.is_none());
+        assert!(shell.power_countdown().is_none());
         assert_eq!(
             shell.settings.platform.action_after_done,
             CompletionPowerActionView::None
@@ -433,13 +440,13 @@ fn power_action_countdown_cancelled_by_new_task(cx: &mut TestAppContext) {
         done_snap.counts.active = 0;
         done_snap.counts.waiting = 0;
         shell.set_snapshot(done_snap, cx);
-        assert!(shell.power_countdown.is_some());
+        assert!(shell.power_countdown().is_some());
 
         let mut new_snap = snapshot(2);
         new_snap.source_revision = 3;
         new_snap.counts.active = 1;
         shell.set_snapshot(new_snap, cx);
-        assert!(shell.power_countdown.is_none());
+        assert!(shell.power_countdown().is_none());
         assert!(shell.power_had_active_tasks);
     });
 }
@@ -449,21 +456,21 @@ fn power_action_countdown_ticks_and_emits_on_zero(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
 
     view.update(cx, |shell, cx| {
-        shell.power_countdown = Some(PowerCountdownState {
+        shell.active_modal = Some(ActiveModal::PowerCountdown(PowerCountdownState {
             action: CompletionPowerActionView::Hibernate,
             remaining_seconds: 2,
-        });
+        }));
         assert!(shell.tick_power_countdown(cx));
         assert_eq!(
             shell
-                .power_countdown
+                .power_countdown()
                 .expect("countdown active")
                 .remaining_seconds,
             1
         );
 
         assert!(!shell.tick_power_countdown(cx));
-        assert!(shell.power_countdown.is_none());
+        assert!(shell.power_countdown().is_none());
         assert_eq!(
             shell.settings.platform.action_after_done,
             CompletionPowerActionView::None
@@ -489,12 +496,12 @@ fn power_countdown_cancelled_by_escape(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
 
     view.update_in(cx, |shell, window, cx| {
-        shell.power_countdown = Some(PowerCountdownState {
+        shell.active_modal = Some(ActiveModal::PowerCountdown(PowerCountdownState {
             action: CompletionPowerActionView::Shutdown,
             remaining_seconds: 30,
-        });
+        }));
         shell.clear_search(&ClearSearch, window, cx);
-        assert!(shell.power_countdown.is_none());
+        assert!(shell.power_countdown().is_none());
         assert_eq!(
             shell.settings.platform.action_after_done,
             CompletionPowerActionView::None

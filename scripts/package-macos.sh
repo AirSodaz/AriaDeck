@@ -26,6 +26,9 @@ binary="$root/target/release/ariadeck-desktop"
 actual_arch="$(lipo -archs "$binary")"
 [[ "$actual_arch" == "$arch" ]] || { echo "expected $arch binary, got $actual_arch" >&2; exit 1; }
 
+icns_source="$(ls -t "$root"/target/release/build/ariadeck-desktop-*/out/icon.icns 2>/dev/null | head -n 1 || true)"
+[[ -f "$icns_source" ]] || { echo "generated icon.icns is missing under target/release/build/ariadeck-desktop-*/out/" >&2; exit 1; }
+
 dist="$root/dist"
 mkdir -p "$dist"
 output="$dist/AriaDeck_${version}_${arch_tag}.dmg"
@@ -38,6 +41,7 @@ app="$work/AriaDeck.app"
 bundle="$app/Contents"
 mkdir -p "$bundle/MacOS" "$bundle/Resources"
 install -m 0755 "$binary" "$bundle/MacOS/AriaDeck"
+install -m 0644 "$icns_source" "$bundle/Resources/AriaDeck.icns"
 install -m 0644 "$root/LICENSE" "$root/THIRD_PARTY_NOTICES.md" "$bundle/Resources/"
 
 cat > "$bundle/Info.plist" <<PLIST
@@ -46,6 +50,7 @@ cat > "$bundle/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key><string>AriaDeck</string>
+  <key>CFBundleIconFile</key><string>AriaDeck</string>
   <key>CFBundleIdentifier</key><string>com.ariadeck.desktop</string>
   <key>CFBundleName</key><string>AriaDeck</string>
   <key>CFBundleDisplayName</key><string>AriaDeck</string>
@@ -69,7 +74,7 @@ mkdir "$mount"
 hdiutil attach -quiet -nobrowse -readonly -mountpoint "$mount" "$work/AriaDeck.dmg"
 trap 'hdiutil detach -quiet "$mount" || true; rm -rf "$work"' EXIT
 verified_app="$mount/AriaDeck.app/Contents"
-for path in Info.plist MacOS/AriaDeck Resources/LICENSE Resources/THIRD_PARTY_NOTICES.md; do
+for path in Info.plist MacOS/AriaDeck Resources/AriaDeck.icns Resources/LICENSE Resources/THIRD_PARTY_NOTICES.md; do
   [[ -f "$verified_app/$path" ]] || { echo "app bundle is missing $path" >&2; exit 1; }
 done
 plutil -lint "$verified_app/Info.plist"
@@ -78,5 +83,6 @@ mv "$work/AriaDeck.dmg" "$output"
 
 tar -czf "$output_tar" -C "$work" AriaDeck.app
 tar -tzf "$output_tar" | grep -q 'AriaDeck.app/Contents/MacOS/AriaDeck' || { echo "app tarball verification failed" >&2; exit 1; }
+tar -tzf "$output_tar" | grep -q 'AriaDeck.app/Contents/Resources/AriaDeck.icns' || { echo "app tarball missing AriaDeck.icns" >&2; exit 1; }
 
 echo "Created and verified $output and $output_tar"

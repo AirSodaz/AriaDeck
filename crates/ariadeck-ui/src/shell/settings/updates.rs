@@ -1,4 +1,4 @@
-//! Settings `updates` section logic and rendering for `AppShell`.
+//! Update check/download/install coordination for `AppShell`.
 
 use super::*;
 
@@ -11,6 +11,7 @@ impl AppShell {
         } else {
             crate::UpdateStatusView::Disabled
         };
+        self.sync_settings_panel(None, cx);
         cx.notify();
     }
 
@@ -28,6 +29,7 @@ impl AppShell {
         let request_id = self.allocate_request_id();
         self.pending_update_check = Some(request_id);
         self.update_status = crate::UpdateStatusView::Checking;
+        self.sync_settings_panel(None, cx);
         cx.emit(AppShellEvent::CheckForUpdatesRequested { request_id });
         cx.notify();
     }
@@ -53,6 +55,7 @@ impl AppShell {
             },
             Err(error) => crate::UpdateStatusView::Failed(error),
         };
+        self.sync_settings_panel(None, cx);
         cx.notify();
     }
 
@@ -76,6 +79,7 @@ impl AppShell {
             downloaded_bytes: 0,
             total_bytes: None,
         };
+        self.sync_settings_panel(None, cx);
         cx.emit(AppShellEvent::DownloadUpdateRequested { request_id });
         cx.notify();
     }
@@ -97,6 +101,7 @@ impl AppShell {
                 downloaded_bytes,
                 total_bytes,
             };
+            self.sync_settings_panel(None, cx);
             cx.notify();
         }
     }
@@ -115,6 +120,7 @@ impl AppShell {
             Ok(version) => crate::UpdateStatusView::Downloaded { version },
             Err(error) => crate::UpdateStatusView::Failed(error),
         };
+        self.sync_settings_panel(None, cx);
         cx.notify();
     }
 
@@ -132,6 +138,7 @@ impl AppShell {
 
     pub fn set_update_install_error(&mut self, error: String, cx: &mut Context<Self>) {
         self.update_status = crate::UpdateStatusView::Failed(error);
+        self.sync_settings_panel(None, cx);
         cx.notify();
     }
 }

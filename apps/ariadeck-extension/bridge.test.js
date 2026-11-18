@@ -12,6 +12,7 @@ import {
   MESSAGE_VERSION,
   batchTooLarge,
   buildMessage,
+  guessFilename,
   hostLabelOf,
   messageTooLarge,
   originOf,
@@ -74,4 +75,21 @@ test("byte length, not character count, decides the size limit", () => {
 test("hostLabelOf extracts host and tolerates malformed storage entries", () => {
   assert.equal(hostLabelOf("https://example.test:8443"), "example.test:8443");
   assert.equal(hostLabelOf("not a valid url"), "not a valid url");
+});
+
+test("guessFilename enforces IPC filename hint rules and drops unsafe segments", () => {
+  assert.equal(guessFilename("https://example.test/files/archive.tar.gz"), "archive.tar.gz");
+  assert.equal(guessFilename("https://example.test/files/my%20file.zip"), "my file.zip");
+  for (const dropped of [
+    "https://example.test/",
+    "https://example.test/files/%20%20",
+    "https://example.test/files/a%2Fb.bin",
+    "https://example.test/files/a%5Cb.bin",
+    "https://example.test/files/%2e%2e",
+    "https://example.test/files/.",
+    "https://example.test/files/bad%00name.bin",
+    `https://example.test/files/${"a".repeat(1025)}.bin`,
+  ]) {
+    assert.equal(guessFilename(dropped), null, `${dropped} must not emit a filename hint`);
+  }
 });

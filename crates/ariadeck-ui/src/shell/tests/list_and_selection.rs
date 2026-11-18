@@ -92,7 +92,7 @@ fn context_menu_opens_from_right_click_and_preserves_multi_selection(cx: &mut Te
         assert!(shell.selected_tasks.contains(&task(1).identity));
 
         // Multi-select still targets the right-clicked row for copy.
-        let target = shell.context_menu_task_view().expect("menu target");
+        let target = shell.context_menu_task_view(cx).expect("menu target");
         shell.copy_task_gid(&target, cx);
         assert_eq!(
             cx.read_from_clipboard().and_then(|item| item.text()),
@@ -337,8 +337,8 @@ fn cookies_plus_auto_submit_still_confirms_once_per_session(cx: &mut TestAppCont
             Some("session=secret"),
         )];
         assert_eq!(shell.accept_bridge_downloads(&downloads, window, cx), 1);
-        assert!(shell.add_dialog.open);
-        assert!(shell.add_dialog.pending.is_none(), "first add is confirmed");
+        let dialog = shell.add_dialog_entity().expect("dialog open").read(cx);
+        assert!(dialog.pending.is_none(), "first add is confirmed");
 
         // Cancelling does not buy the unlock.
         shell.close_add_download(window, cx);
@@ -354,7 +354,14 @@ fn cookies_plus_auto_submit_still_confirms_once_per_session(cx: &mut TestAppCont
         )];
         assert_eq!(shell.accept_bridge_downloads(&downloads, window, cx), 1);
         shell.submit_add_download(cx);
-        assert!(shell.add_dialog.pending.is_some());
+        assert!(
+            shell
+                .add_dialog_entity()
+                .expect("dialog open")
+                .read(cx)
+                .pending
+                .is_some()
+        );
         assert!(!shell.bridge_requires_confirmation());
     });
 }
@@ -369,18 +376,17 @@ fn task_removal_requires_the_matching_internal_confirmation(cx: &mut TestAppCont
         shell
     });
     view.read_with(cx, |shell, _| {
-        assert!(shell.remove_confirmation.is_some());
+        assert!(shell.remove_confirmation_modal().is_some());
         assert!(
             !shell
-                .remove_confirmation
-                .as_ref()
+                .remove_confirmation_modal()
                 .is_some_and(|value| value.delete_files)
         );
         assert!(shell.pending_task_command.is_none());
     });
     view.update(cx, |shell, cx| shell.submit_remove_confirmation(cx));
     view.read_with(cx, |shell, _| {
-        assert!(shell.remove_confirmation.is_none());
+        assert!(shell.remove_confirmation_modal().is_none());
         assert!(matches!(
             shell
                 .pending_task_command
@@ -405,8 +411,7 @@ fn local_removal_can_explicitly_request_recycle_bin_files(cx: &mut TestAppContex
     view.read_with(cx, |shell, _| {
         assert!(
             shell
-                .remove_confirmation
-                .as_ref()
+                .remove_confirmation_modal()
                 .is_some_and(|value| value.delete_files)
         );
     });
@@ -447,7 +452,7 @@ fn navigation_shortcuts_return_to_downloads_and_preserve_selection(cx: &mut Test
     });
     view.read_with(cx, |shell, _| {
         assert_eq!(shell.page, AppPage::Downloads);
-        assert!(shell.add_dialog.open);
+        assert!(shell.add_dialog_entity().is_some());
         assert_eq!(shell.selected, selected);
     });
 }
@@ -469,10 +474,15 @@ fn failed_directory_save_keeps_the_draft(cx: &mut TestAppContext) {
     };
     let (view, cx) =
         cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
-    let (request_id, requested) = view.update(cx, |shell, cx| {
-        shell.page = AppPage::Settings;
-        shell.settings_page.draft_categories[0].directory = "D:/Transfers".into();
-        shell.submit_settings(cx);
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_settings(&OpenSettings, window, cx);
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| {
+            panel.settings_page.draft_categories[0].directory = "D:/Transfers".into();
+            panel.submit_settings(cx);
+        });
+    });
+    let (request_id, requested) = view.read_with(cx, |shell, _| {
         let pending = shell
             .pending_settings_save
             .as_ref()
@@ -495,14 +505,15 @@ fn failed_directory_save_keeps_the_draft(cx: &mut TestAppContext) {
             cx,
         );
     });
-    view.read_with(cx, |shell, _cx| {
+    view.read_with(cx, |shell, cx| {
         assert_eq!(shell.settings.download_directory, "C:/Downloads");
+        let panel = shell.settings_panel().expect("settings open").read(cx);
         assert_eq!(
-            shell.settings_page.draft_categories[0].directory,
+            panel.settings_page.draft_categories[0].directory,
             "D:/Transfers"
         );
         assert_eq!(shell.page, AppPage::Settings);
-        assert!(shell.settings_page.error.is_some());
+        assert!(panel.settings_page.error.is_some());
     });
 }
 
@@ -591,9 +602,14 @@ fn platform_preferences_save_and_close_policy(cx: &mut TestAppContext) {
 
     view.update_in(cx, |shell, window, cx| {
         shell.open_settings(&OpenSettings, window, cx);
-        shell.select_close_behavior(CloseBehaviorView::Quit, cx);
-        shell.toggle_start_minimized_to_tray(cx);
-        shell.submit_platform(cx);
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| {
+            panel.select_close_behavior(CloseBehaviorView::Quit, cx);
+            panel.toggle_start_minimized_to_tray(cx);
+            panel.submit_platform(cx);
+        });
+    });
+    view.update_in(cx, |shell, window, cx| {
         let pending = shell
             .pending_settings_save
             .as_ref()

@@ -1,9 +1,350 @@
-//! Settings `profiles` section logic and rendering for `AppShell`.
+//! Settings `profiles` section logic and rendering for `SettingsPanelView`.
 
 use super::*;
 
-impl AppShell {
-    pub(crate) fn render_settings_profiles(&mut self, cx: &mut Context<Self>) -> Div {
+impl SettingsPanelView {
+    pub(crate) fn add_draft_local_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let id = format!("draft-local-{}", self.allocate_draft_profile_seq());
+        let download_dir = self.settings.download_directory.clone();
+        let name = format!("Local {}", self.profiles.profiles.len() + 1);
+        self.profiles.profiles.push(ProfileEntryView {
+            profile_id: id.clone(),
+            name,
+            kind: ProfileKindView::LocalManaged,
+            // Empty = use Settings → Engine active managed core at spawn.
+            executable: String::new(),
+            download_dir,
+            endpoint: String::new(),
+            has_secret: false,
+        });
+        cx.emit(SettingsPanelEvent::ProfileCatalogChanged(
+            self.profiles.clone(),
+        ));
+        self.open_profile_editor(id, window, cx);
+        cx.emit(SettingsPanelEvent::Notice {
+            message: self.t("notice-profile-draft-local-added"),
+            is_error: false,
+        });
+    }
+
+    pub(crate) fn add_draft_remote_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let id = format!("draft-remote-{}", self.allocate_draft_profile_seq());
+        let download_dir = self.settings.download_directory.clone();
+        let name = format!("Remote {}", self.profiles.profiles.len() + 1);
+        self.profiles.profiles.push(ProfileEntryView {
+            profile_id: id.clone(),
+            name,
+            kind: ProfileKindView::RemoteRpc,
+            executable: String::new(),
+            download_dir,
+            endpoint: "wss://127.0.0.1:6800/jsonrpc".into(),
+            has_secret: false,
+        });
+        cx.emit(SettingsPanelEvent::ProfileCatalogChanged(
+            self.profiles.clone(),
+        ));
+        self.open_profile_editor(id, window, cx);
+        cx.emit(SettingsPanelEvent::Notice {
+            message: self.t("notice-profile-draft-remote-added"),
+            is_error: false,
+        });
+    }
+
+    pub(crate) fn open_profile_editor(
+        &mut self,
+        profile_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(profile) = self
+            .profiles
+            .profiles
+            .iter()
+            .find(|profile| profile.profile_id == profile_id)
+            .cloned()
+        else {
+            cx.emit(SettingsPanelEvent::Notice {
+                message: self.t("notice-profile-gone"),
+                is_error: true,
+            });
+            return;
+        };
+        self.settings_page.editing_profile_id = Some(profile.profile_id);
+        self.settings_page.draft_profile_kind = profile.kind;
+        self.settings_inputs.profile_name.update(cx, |input, cx| {
+            input.set_value(profile.name, window, cx);
+        });
+        self.settings_inputs
+            .profile_executable
+            .update(cx, |input, cx| {
+                input.set_value(profile.executable, window, cx);
+            });
+        self.settings_inputs
+            .profile_endpoint
+            .update(cx, |input, cx| {
+                input.set_value(profile.endpoint, window, cx);
+            });
+        self.settings_inputs.profile_secret.update(cx, |input, cx| {
+            input.set_value(String::new(), window, cx);
+        });
+        self.settings_page.clear_profile_rpc_secret = false;
+        cx.notify();
+    }
+
+    pub(crate) fn close_profile_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings_page.editing_profile_id = None;
+        self.settings_page.clear_profile_rpc_secret = false;
+        self.settings_inputs.profile_secret.update(cx, |input, cx| {
+            input.set_value(String::new(), window, cx);
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn apply_profile_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(profile_id) = self.settings_page.editing_profile_id.clone() else {
+            cx.emit(SettingsPanelEvent::Notice {
+                message: self.t("notice-profile-none-editing"),
+                is_error: true,
+            });
+            return;
+        };
+        let name = self
+            .settings_inputs
+            .profile_name
+            .read(cx)
+            .value()
+            .trim()
+            .to_owned();
+        if name.is_empty() {
+            cx.emit(SettingsPanelEvent::Notice {
+                message: self.t("notice-profile-name-empty"),
+                is_error: true,
+            });
+            return;
+        }
+        let kind = self.settings_page.draft_profile_kind;
+        let executable = self
+            .settings_inputs
+            .profile_executable
+            .read(cx)
+            .value()
+            .trim()
+            .to_owned();
+        let endpoint = self
+            .settings_inputs
+            .profile_endpoint
+            .read(cx)
+            .value()
+            .trim()
+            .to_owned();
+        if kind == ProfileKindView::RemoteRpc && endpoint.is_empty() {
+            cx.emit(SettingsPanelEvent::Notice {
+                message: self.t("notice-profile-remote-endpoint"),
+                is_error: true,
+            });
+            return;
+        }
+        let Some(profile) = self
+            .profiles
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.profile_id == profile_id)
+        else {
+            cx.emit(SettingsPanelEvent::Notice {
+                message: self.t("notice-profile-gone"),
+                is_error: true,
+            });
+            self.settings_page.editing_profile_id = None;
+            cx.notify();
+            return;
+        };
+        profile.name = name;
+        profile.kind = kind;
+        profile.executable = if kind == ProfileKindView::LocalManaged {
+            executable
+        } else {
+            String::new()
+        };
+        profile.endpoint = if kind == ProfileKindView::RemoteRpc {
+            endpoint
+        } else {
+            String::new()
+        };
+        profile.download_dir = self.settings.download_directory.clone();
+        if kind == ProfileKindView::RemoteRpc {
+            let secret_text = self
+                .settings_inputs
+                .profile_secret
+                .read(cx)
+                .value()
+                .trim()
+                .to_owned();
+            let update = if self.settings_page.clear_profile_rpc_secret {
+                ProfileRpcSecretUpdateView::Clear
+            } else if !secret_text.is_empty() {
+                ProfileRpcSecretUpdateView::Set(SecretStringView::new(secret_text))
+            } else {
+                ProfileRpcSecretUpdateView::Unchanged
+            };
+            match &update {
+                ProfileRpcSecretUpdateView::Unchanged => {}
+                ProfileRpcSecretUpdateView::Clear => {
+                    profile.has_secret = false;
+                    self.settings_page
+                        .profile_secret_updates
+                        .insert(profile_id.clone(), update);
+                }
+                ProfileRpcSecretUpdateView::Set(_) => {
+                    profile.has_secret = true;
+                    self.settings_page
+                        .profile_secret_updates
+                        .insert(profile_id.clone(), update);
+                }
+            }
+        } else {
+            profile.has_secret = false;
+            self.settings_page
+                .profile_secret_updates
+                .remove(&profile_id);
+        }
+        self.settings_page.editing_profile_id = None;
+        self.settings_page.clear_profile_rpc_secret = false;
+        self.settings_inputs.profile_secret.update(cx, |input, cx| {
+            input.set_value(String::new(), window, cx);
+        });
+        cx.emit(SettingsPanelEvent::ProfileCatalogChanged(
+            self.profiles.clone(),
+        ));
+        cx.emit(SettingsPanelEvent::Notice {
+            message: self.t("notice-profile-draft-updated"),
+            is_error: false,
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn request_remove_profile(&mut self, profile_id: String, cx: &mut Context<Self>) {
+        if self.profiles.profiles.len() <= 1 {
+            cx.emit(SettingsPanelEvent::Notice {
+                message: self.t("notice-profile-at-least-remain"),
+                is_error: true,
+            });
+            return;
+        }
+        let Some(profile) = self
+            .profiles
+            .profiles
+            .iter()
+            .find(|profile| profile.profile_id == profile_id)
+        else {
+            cx.emit(SettingsPanelEvent::Notice {
+                message: self.t("notice-profile-gone"),
+                is_error: true,
+            });
+            return;
+        };
+        self.settings_page.pending_profile_delete = Some(PendingProfileDelete {
+            profile_id: profile.profile_id.clone(),
+            name: profile.name.clone(),
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_remove_profile(&mut self, cx: &mut Context<Self>) {
+        self.settings_page.pending_profile_delete = None;
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_remove_profile(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.settings_page.pending_profile_delete.take() else {
+            return;
+        };
+        self.remove_profile(pending.profile_id, cx);
+    }
+
+    pub(crate) fn remove_profile(&mut self, profile_id: String, cx: &mut Context<Self>) {
+        if self.profiles.profiles.len() <= 1 {
+            cx.emit(SettingsPanelEvent::Notice {
+                message: self.t("notice-profile-at-least-remain"),
+                is_error: true,
+            });
+            return;
+        }
+        let Some(index) = self
+            .profiles
+            .profiles
+            .iter()
+            .position(|profile| profile.profile_id == profile_id)
+        else {
+            cx.emit(SettingsPanelEvent::Notice {
+                message: self.t("notice-profile-gone"),
+                is_error: true,
+            });
+            return;
+        };
+        let removed = self.profiles.profiles.remove(index);
+        self.settings_page
+            .profile_secret_updates
+            .remove(&profile_id);
+        if self.settings_page.editing_profile_id.as_deref() == Some(profile_id.as_str()) {
+            self.settings_page.editing_profile_id = None;
+        }
+        if self.profiles.active_profile_id == profile_id {
+            self.profiles.active_profile_id = self
+                .profiles
+                .profiles
+                .first()
+                .map(|profile| profile.profile_id.clone())
+                .unwrap_or_default();
+        }
+        let catalog = self.profiles.clone();
+        let secret_updates = self.settings_page.profile_secret_updates.clone();
+        cx.emit(SettingsPanelEvent::ProfileCatalogChanged(catalog.clone()));
+        cx.emit(SettingsPanelEvent::Notice {
+            message: self.t_args(
+                "notice-profile-removed-saving",
+                &[("name", FluentValue::from(removed.name.as_str()))],
+            ),
+            is_error: false,
+        });
+        cx.emit(SettingsPanelEvent::SaveProfileCatalog {
+            catalog,
+            secret_updates,
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_clear_profile_rpc_secret(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let clear = !self.settings_page.clear_profile_rpc_secret;
+        if clear {
+            self.settings_inputs.profile_secret.update(cx, |input, cx| {
+                input.set_value(String::new(), window, cx);
+            });
+        }
+        self.settings_page.clear_profile_rpc_secret = clear;
+        cx.notify();
+    }
+
+    pub(crate) fn select_profile_editor_kind(
+        &mut self,
+        kind: ProfileKindView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings_page.draft_profile_kind = kind;
+        if kind == ProfileKindView::LocalManaged {
+            self.settings_page.clear_profile_rpc_secret = false;
+            self.settings_inputs.profile_secret.update(cx, |input, cx| {
+                input.set_value(String::new(), window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    pub(super) fn render_settings_profiles(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
         let profiles = self.profiles.clone();
         let active_id = profiles.active_profile_id.clone();
@@ -148,8 +489,8 @@ impl AppShell {
                             })
                             .disabled(is_active)
                             .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.request_switch_profile(switch_id.clone(), cx);
+                                move |_this, _, _, cx| {
+                                    cx.emit(SettingsPanelEvent::SwitchProfile(switch_id.clone()));
                                 },
                             ));
                             if !is_active {
@@ -192,7 +533,7 @@ impl AppShell {
                 |section, editing_id| {
                     let kind = self.settings_page.draft_profile_kind;
                     let is_local = kind == ProfileKindView::LocalManaged;
-                    let kind_shell = cx.entity().downgrade();
+                    let kind_panel = cx.entity().downgrade();
                     let kind_control = SegmentedControl::new(
                         "settings-profile-kind",
                         [
@@ -209,9 +550,9 @@ impl AppShell {
                         } else {
                             ProfileKindView::RemoteRpc
                         };
-                        kind_shell
-                            .update(cx, |shell, cx| {
-                                shell.select_profile_editor_kind(kind, window, cx);
+                        kind_panel
+                            .update(cx, |panel, cx| {
+                                panel.select_profile_editor_kind(kind, window, cx);
                             })
                             .ok();
                     });
@@ -280,13 +621,12 @@ impl AppShell {
                                             .text_color(colors.text_muted)
                                             .child(self.t("settings-profile-executable-label")),
                                     )
-                                    .child(settings_path_field_row(
+                                    .child(Self::settings_path_field_row(
                                         &self.settings_inputs.profile_executable,
                                         "browse-profile-executable",
                                         self.t("button-browse"),
                                         self.t("settings-profile-executable-browse-aria"),
                                         PathPickTarget::ProfileExecutable,
-                                        colors,
                                         cx,
                                     ))
                                     .into_any_element()
@@ -415,8 +755,13 @@ impl AppShell {
                             .label(self.t("settings-profile-save"))
                             .accessibility_label(self.t("settings-profile-save-aria"))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                let catalog = this.profiles.clone();
-                                this.request_save_profile_catalog(catalog, cx);
+                                cx.emit(SettingsPanelEvent::SaveProfileCatalog {
+                                    catalog: this.profiles.clone(),
+                                    secret_updates: this
+                                        .settings_page
+                                        .profile_secret_updates
+                                        .clone(),
+                                });
                             })),
                     ),
             )

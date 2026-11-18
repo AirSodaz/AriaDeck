@@ -15,6 +15,12 @@ const MAX_MESSAGE_BYTES = 64 * 1024;
 /** Matches MAX_LAUNCH_ITEMS on the AriaDeck side. */
 const MAX_ITEMS = 32;
 
+/** Matches `ariadeck_ipc::MAX_FILENAME_BYTES` (display hint cap). */
+const MAX_FILENAME_BYTES = 1024;
+
+/** Matches `ariadeck_ipc::MAX_COOKIE_BYTES`. */
+const MAX_COOKIE_BYTES = 8 * 1024;
+
 const STORAGE_KEY_COOKIE_ORIGINS = "cookieOrigins";
 const STORAGE_KEY_LAST_RESULT = "lastResult";
 
@@ -51,6 +57,30 @@ export function hostLabelOf(origin) {
     return new URL(origin).host || String(origin);
   } catch {
     return String(origin);
+  }
+}
+
+/**
+ * Last path segment, when it satisfies the exact IPC filename hint rules
+ * (non-empty after trim, no `/` or `\`, not `.` / `..`, no C0/DEL control
+ * characters, UTF-8 byte length <= 1024). Invalid hints return null so a
+ * cosmetic filename never causes the whole download to be rejected.
+ */
+export function guessFilename(url) {
+  try {
+    const path = new URL(url).pathname;
+    const raw = decodeURIComponent(path.split("/").pop() ?? "");
+    const candidate = raw.trim();
+    if (!candidate || candidate === "." || candidate === "..") return null;
+    if (candidate.includes("/") || candidate.includes("\\")) return null;
+    // eslint-disable-next-line no-control-regex
+    if (/[\x00-\x1f\x7f]/.test(candidate)) return null;
+    if (new TextEncoder().encode(candidate).length > MAX_FILENAME_BYTES) {
+      return null;
+    }
+    return candidate;
+  } catch {
+    return null;
   }
 }
 
@@ -115,13 +145,17 @@ export async function revokeCookieAccess(origin) {
  * over, so cookies from other sites cannot leak into the request.
  */
 export async function cookieHeaderFor(url) {
+  if (!chrome.cookies?.getAll) return null;
   const cookies = await chrome.cookies.getAll({ url });
   if (!cookies.length) return null;
   const header = cookies
     .map((cookie) => `${cookie.name}=${cookie.value}`)
     .join("; ");
-  // Single line only; the host refuses control characters outright.
-  return /[\r\n]/.test(header) ? null : header;
+  // Single line only, no control chars, and within IPC cookie byte cap.
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f]/.test(header)) return null;
+  if (new TextEncoder().encode(header).length > MAX_COOKIE_BYTES) return null;
+  return header;
 }
 
 /** Build the host payload. Fields not in the D-045 whitelist are never added. */

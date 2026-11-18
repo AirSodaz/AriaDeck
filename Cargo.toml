@@ -29,6 +29,7 @@ bitflags = { version = "2.10.0", features = ["serde"] }
 data-encoding = "2.11.0"
 rust-embed = "8.11.0"
 fluent-bundle = "0.16.0"
+fluent-syntax = "0.12.0"
 futures = "0.3.31"
 futures-util = "0.3.31"
 gpui-kit = { version = "0.9.0", default-features = true }

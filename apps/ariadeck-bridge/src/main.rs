@@ -29,6 +29,7 @@ use crate::protocol::{
 /// What this invocation is for. The browser passes its own arguments (the host
 /// manifest path and the caller's origin), so anything unrecognized means "serve
 /// the port" rather than an error.
+#[derive(Debug, Eq, PartialEq)]
 enum Mode {
     Serve,
     Register { extension_id: Option<String> },
@@ -36,7 +37,7 @@ enum Mode {
     Help,
 }
 
-fn parse_mode(arguments: &[String]) -> Mode {
+fn parse_mode(arguments: &[String]) -> Result<Mode, String> {
     let mut mode = Mode::Serve;
     let mut extension_id = None;
     let mut arguments = arguments.iter();
@@ -44,24 +45,43 @@ fn parse_mode(arguments: &[String]) -> Mode {
         match argument.as_str() {
             "--register" => mode = Mode::Register { extension_id: None },
             "--unregister" => mode = Mode::Unregister,
-            "--help" | "-h" => return Mode::Help,
-            "--extension-id" => extension_id = arguments.next().cloned(),
+            "--help" | "-h" => return Ok(Mode::Help),
+            "--extension-id" => {
+                let value = arguments
+                    .next()
+                    .map(String::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty() && !value.starts_with('-'))
+                    .ok_or_else(|| "--extension-id requires a non-empty extension ID".to_owned())?;
+                extension_id = Some(value.to_owned());
+            }
             other => {
                 if let Some(value) = other.strip_prefix("--extension-id=") {
-                    extension_id = Some(value.to_owned());
+                    let trimmed = value.trim();
+                    if trimmed.is_empty() {
+                        return Err("--extension-id= requires a non-empty extension ID".to_owned());
+                    }
+                    extension_id = Some(trimmed.to_owned());
                 }
             }
         }
     }
-    match mode {
+    Ok(match mode {
         Mode::Register { .. } => Mode::Register { extension_id },
         other => other,
-    }
+    })
 }
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    match parse_mode(&arguments) {
+    let mode = match parse_mode(&arguments) {
+        Ok(mode) => mode,
+        Err(error) => {
+            report(&error);
+            return ExitCode::FAILURE;
+        }
+    };
+    match mode {
         Mode::Help => {
             print_usage();
             return ExitCode::SUCCESS;
@@ -112,6 +132,9 @@ fn serve(runtime: &tokio::runtime::Runtime, data_dir: &Path) -> io::Result<()> {
     loop {
         match read_frame(&mut input)? {
             Frame::Eof => return Ok(()),
+            Frame::Empty => {
+                write_reply(&mut output, &Reply::failed(ErrorCode::Rejected))?;
+            }
             Frame::Oversize => {
                 // The body was deliberately not consumed, so the stream is out
                 // of sync — answer once and let the browser reopen the port.
@@ -192,4 +215,44 @@ fn print_usage() {
 /// fields never appear here — a cookie must not leak into browser logs (D-045 §5.3).
 fn report(message: &str) {
     let _ = writeln!(io::stderr(), "ariadeck-bridge: {message}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn parse_mode_rejects_missing_or_empty_extension_id() {
+        assert!(parse_mode(&args(&["--register", "--extension-id"])).is_err());
+        assert!(parse_mode(&args(&["--register", "--extension-id="])).is_err());
+        assert!(parse_mode(&args(&["--register", "--extension-id", "   "])).is_err());
+        assert!(parse_mode(&args(&["--register", "--extension-id", "--unregister"])).is_err());
+    }
+
+    #[test]
+    fn parse_mode_accepts_register_with_extension_id() {
+        assert_eq!(
+            parse_mode(&args(&[
+                "--register",
+                "--extension-id",
+                "abcdefghijklmnopabcdefghijklmnop"
+            ])),
+            Ok(Mode::Register {
+                extension_id: Some("abcdefghijklmnopabcdefghijklmnop".into()),
+            })
+        );
+        assert_eq!(
+            parse_mode(&args(&[
+                "--register",
+                "--extension-id=abcdefghijklmnopabcdefghijklmnop"
+            ])),
+            Ok(Mode::Register {
+                extension_id: Some("abcdefghijklmnopabcdefghijklmnop".into()),
+            })
+        );
+    }
 }

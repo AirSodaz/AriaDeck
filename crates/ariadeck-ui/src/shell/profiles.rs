@@ -1,4 +1,4 @@
-//! Profile catalog and managed core registry for AppShell.
+//! Profile catalog and managed core registry coordination for `AppShell`.
 
 use super::*;
 
@@ -9,6 +9,7 @@ impl AppShell {
 
     pub fn set_profiles(&mut self, profiles: ProfileCatalogView, cx: &mut Context<Self>) {
         self.profiles = profiles;
+        self.sync_settings_panel(None, cx);
         cx.notify();
     }
 
@@ -28,11 +29,7 @@ impl AppShell {
             .iter()
             .any(|profile| profile.profile_id == profile_id)
         {
-            self.show_notice(
-                "The selected profile is no longer in the catalog.",
-                true,
-                cx,
-            );
+            self.show_notice(self.t("notice-profile-missing-catalog"), true, cx);
             return;
         }
         let request_id = self.allocate_request_id();
@@ -54,6 +51,7 @@ impl AppShell {
         match result.outcome {
             SwitchProfileOutcomeView::Success => {
                 self.profiles = result.catalog;
+                self.sync_settings_panel(None, cx);
                 let name = self
                     .profiles
                     .active()
@@ -80,6 +78,20 @@ impl AppShell {
         catalog: ProfileCatalogView,
         cx: &mut Context<Self>,
     ) {
+        let secret_updates = self
+            .settings_panel
+            .as_ref()
+            .map(|(panel, _)| panel.read(cx).settings_page.profile_secret_updates.clone())
+            .unwrap_or_default();
+        self.request_save_profile_catalog_with_secrets(catalog, secret_updates, cx);
+    }
+
+    pub(super) fn request_save_profile_catalog_with_secrets(
+        &mut self,
+        catalog: ProfileCatalogView,
+        secret_updates: HashMap<String, ProfileRpcSecretUpdateView>,
+        cx: &mut Context<Self>,
+    ) {
         if catalog.profiles.is_empty() {
             self.show_notice(self.t("notice-profile-at-least-one"), true, cx);
             return;
@@ -93,7 +105,6 @@ impl AppShell {
             return;
         }
         let request_id = self.allocate_request_id();
-        let secret_updates = self.settings_page.profile_secret_updates.clone();
         self.show_notice(self.t("notice-profile-saving"), false, cx);
         cx.emit(AppShellEvent::SaveProfileCatalogRequested(
             SaveProfileCatalogRequestView {
@@ -114,11 +125,21 @@ impl AppShell {
         match result.outcome {
             SaveProfileCatalogOutcomeView::Success => {
                 self.profiles = result.catalog;
-                self.settings_page.profile_secret_updates.clear();
-                self.settings_page.clear_profile_rpc_secret = false;
-                if let Some(window) = window {
-                    self.settings_inputs.profile_secret.update(cx, |input, cx| {
-                        input.set_value(String::new(), window, cx);
+                if let Some(panel) = self.settings_panel_entity() {
+                    let profiles = self.profiles.clone();
+                    panel.update(cx, |panel, cx| {
+                        panel.profiles = profiles;
+                        panel.settings_page.profile_secret_updates.clear();
+                        panel.settings_page.clear_profile_rpc_secret = false;
+                        if let Some(window) = window {
+                            panel
+                                .settings_inputs
+                                .profile_secret
+                                .update(cx, |input, cx| {
+                                    input.set_value(String::new(), window, cx);
+                                });
+                        }
+                        cx.notify();
                     });
                 }
                 self.show_notice(self.t("notice-profile-saved"), false, cx);
@@ -130,323 +151,23 @@ impl AppShell {
         cx.notify();
     }
 
-    pub(crate) fn add_draft_local_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let id = format!("draft-local-{}", self.allocate_request_id().get());
-        let download_dir = self.settings.download_directory.clone();
-        let name = format!("Local {}", self.profiles.profiles.len() + 1);
-        self.profiles.profiles.push(ProfileEntryView {
-            profile_id: id.clone(),
-            name,
-            kind: ProfileKindView::LocalManaged,
-            // Empty = use Settings → Engine active managed core at spawn.
-            executable: String::new(),
-            download_dir,
-            endpoint: String::new(),
-            has_secret: false,
-        });
-        self.open_profile_editor(id, window, cx);
-        self.show_notice(
-            "Local profile draft added (uses managed core). Edit fields, Apply, then Save profiles.",
-            false,
-            cx,
-        );
-    }
-
-    pub(crate) fn add_draft_remote_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let id = format!("draft-remote-{}", self.allocate_request_id().get());
-        let download_dir = self.settings.download_directory.clone();
-        let name = format!("Remote {}", self.profiles.profiles.len() + 1);
-        self.profiles.profiles.push(ProfileEntryView {
-            profile_id: id.clone(),
-            name,
-            kind: ProfileKindView::RemoteRpc,
-            executable: String::new(),
-            download_dir,
-            endpoint: "wss://127.0.0.1:6800/jsonrpc".into(),
-            has_secret: false,
-        });
-        self.open_profile_editor(id, window, cx);
-        self.show_notice(
-            "Remote profile draft added. Set the endpoint, Apply, then Save profiles.",
-            false,
-            cx,
-        );
-    }
-
-    pub(crate) fn open_profile_editor(
-        &mut self,
-        profile_id: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(profile) = self
-            .profiles
-            .profiles
-            .iter()
-            .find(|profile| profile.profile_id == profile_id)
-            .cloned()
-        else {
-            self.show_notice(self.t("notice-profile-gone"), true, cx);
-            return;
-        };
-        self.settings_page.editing_profile_id = Some(profile.profile_id);
-        self.settings_page.draft_profile_kind = profile.kind;
-        self.settings_inputs.profile_name.update(cx, |input, cx| {
-            input.set_value(profile.name, window, cx);
-        });
-        self.settings_inputs
-            .profile_executable
-            .update(cx, |input, cx| {
-                input.set_value(profile.executable, window, cx);
-            });
-        self.settings_inputs
-            .profile_endpoint
-            .update(cx, |input, cx| {
-                input.set_value(profile.endpoint, window, cx);
-            });
-        self.settings_inputs.profile_secret.update(cx, |input, cx| {
-            input.set_value(String::new(), window, cx);
-        });
-        self.settings_page.clear_profile_rpc_secret = false;
-        cx.notify();
-    }
-
-    pub(crate) fn close_profile_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings_page.editing_profile_id = None;
-        self.settings_page.clear_profile_rpc_secret = false;
-        self.settings_inputs.profile_secret.update(cx, |input, cx| {
-            input.set_value(String::new(), window, cx);
-        });
-        cx.notify();
-    }
-
-    pub(crate) fn apply_profile_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(profile_id) = self.settings_page.editing_profile_id.clone() else {
-            self.show_notice(self.t("notice-profile-none-editing"), true, cx);
-            return;
-        };
-        let name = self
-            .settings_inputs
-            .profile_name
-            .read(cx)
-            .value()
-            .trim()
-            .to_owned();
-        if name.is_empty() {
-            self.show_notice(self.t("notice-profile-name-empty"), true, cx);
-            return;
-        }
-        let kind = self.settings_page.draft_profile_kind;
-        let executable = self
-            .settings_inputs
-            .profile_executable
-            .read(cx)
-            .value()
-            .trim()
-            .to_owned();
-        let endpoint = self
-            .settings_inputs
-            .profile_endpoint
-            .read(cx)
-            .value()
-            .trim()
-            .to_owned();
-        if kind == ProfileKindView::RemoteRpc && endpoint.is_empty() {
-            self.show_notice(self.t("notice-profile-remote-endpoint"), true, cx);
-            return;
-        }
-        let Some(profile) = self
-            .profiles
-            .profiles
-            .iter_mut()
-            .find(|profile| profile.profile_id == profile_id)
-        else {
-            self.show_notice(self.t("notice-profile-gone"), true, cx);
-            self.settings_page.editing_profile_id = None;
-            cx.notify();
-            return;
-        };
-        profile.name = name;
-        profile.kind = kind;
-        profile.executable = if kind == ProfileKindView::LocalManaged {
-            executable
-        } else {
-            String::new()
-        };
-        profile.endpoint = if kind == ProfileKindView::RemoteRpc {
-            endpoint
-        } else {
-            String::new()
-        };
-        // Download paths are owned by categories (D-042); profiles share the fallback root.
-        profile.download_dir = self.settings.download_directory.clone();
-        if kind == ProfileKindView::RemoteRpc {
-            let secret_text = self
-                .settings_inputs
-                .profile_secret
-                .read(cx)
-                .value()
-                .trim()
-                .to_owned();
-            let update = if self.settings_page.clear_profile_rpc_secret {
-                ProfileRpcSecretUpdateView::Clear
-            } else if !secret_text.is_empty() {
-                ProfileRpcSecretUpdateView::Set(SecretStringView::new(secret_text))
-            } else {
-                ProfileRpcSecretUpdateView::Unchanged
-            };
-            match &update {
-                ProfileRpcSecretUpdateView::Unchanged => {}
-                ProfileRpcSecretUpdateView::Clear => {
-                    profile.has_secret = false;
-                    self.settings_page
-                        .profile_secret_updates
-                        .insert(profile_id.clone(), update);
-                }
-                ProfileRpcSecretUpdateView::Set(_) => {
-                    profile.has_secret = true;
-                    self.settings_page
-                        .profile_secret_updates
-                        .insert(profile_id.clone(), update);
-                }
-            }
-        } else {
-            profile.has_secret = false;
-            self.settings_page
-                .profile_secret_updates
-                .remove(&profile_id);
-        }
-        self.settings_page.editing_profile_id = None;
-        self.settings_page.clear_profile_rpc_secret = false;
-        self.settings_inputs.profile_secret.update(cx, |input, cx| {
-            input.set_value(String::new(), window, cx);
-        });
-        self.show_notice(
-            "Profile updated in the draft catalog. Click Save profiles to persist.",
-            false,
-            cx,
-        );
-        cx.notify();
-    }
-
-    pub(crate) fn request_remove_profile(&mut self, profile_id: String, cx: &mut Context<Self>) {
-        if self.profiles.profiles.len() <= 1 {
-            self.show_notice(self.t("notice-profile-at-least-remain"), true, cx);
-            return;
-        }
-        let Some(profile) = self
-            .profiles
-            .profiles
-            .iter()
-            .find(|profile| profile.profile_id == profile_id)
-        else {
-            self.show_notice(self.t("notice-profile-gone"), true, cx);
-            return;
-        };
-        self.settings_page.pending_profile_delete = Some(PendingProfileDelete {
-            profile_id: profile.profile_id.clone(),
-            name: profile.name.clone(),
-        });
-        cx.notify();
-    }
-
-    pub(crate) fn cancel_remove_profile(&mut self, cx: &mut Context<Self>) {
-        self.settings_page.pending_profile_delete = None;
-        cx.notify();
-    }
-
-    pub(crate) fn confirm_remove_profile(&mut self, cx: &mut Context<Self>) {
-        let Some(pending) = self.settings_page.pending_profile_delete.take() else {
-            return;
-        };
-        self.remove_profile(pending.profile_id, cx);
-    }
-
-    pub(crate) fn remove_profile(&mut self, profile_id: String, cx: &mut Context<Self>) {
-        if self.profiles.profiles.len() <= 1 {
-            self.show_notice(self.t("notice-profile-at-least-remain"), true, cx);
-            return;
-        }
-        let Some(index) = self
-            .profiles
-            .profiles
-            .iter()
-            .position(|profile| profile.profile_id == profile_id)
-        else {
-            self.show_notice(self.t("notice-profile-gone"), true, cx);
-            return;
-        };
-        let removed = self.profiles.profiles.remove(index);
-        self.settings_page
-            .profile_secret_updates
-            .remove(&profile_id);
-        if self.settings_page.editing_profile_id.as_deref() == Some(profile_id.as_str()) {
-            self.settings_page.editing_profile_id = None;
-        }
-        if self.profiles.active_profile_id == profile_id {
-            self.profiles.active_profile_id = self
-                .profiles
-                .profiles
-                .first()
-                .map(|profile| profile.profile_id.clone())
-                .unwrap_or_default();
-        }
-        let catalog = self.profiles.clone();
-        self.show_notice(
-            format!("Removed “{}”. Saving catalog…", removed.name),
-            false,
-            cx,
-        );
-        self.request_save_profile_catalog(catalog, cx);
-    }
-
-    pub(crate) fn toggle_clear_profile_rpc_secret(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let clear = !self.settings_page.clear_profile_rpc_secret;
-        if clear {
-            self.settings_inputs.profile_secret.update(cx, |input, cx| {
-                input.set_value(String::new(), window, cx);
-            });
-        }
-        self.settings_page.clear_profile_rpc_secret = clear;
-        cx.notify();
-    }
-
-    pub(crate) fn select_profile_editor_kind(
-        &mut self,
-        kind: ProfileKindView,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.settings_page.draft_profile_kind = kind;
-        if kind == ProfileKindView::LocalManaged {
-            self.settings_page.clear_profile_rpc_secret = false;
-            self.settings_inputs.profile_secret.update(cx, |input, cx| {
-                input.set_value(String::new(), window, cx);
-            });
-        }
-        cx.notify();
-    }
-
     pub fn set_cores(&mut self, cores: CoreRegistryView, cx: &mut Context<Self>) {
         self.cores = cores;
+        self.sync_settings_panel(None, cx);
         cx.notify();
     }
 
     pub fn request_core_command(&mut self, command: CoreCommandView, cx: &mut Context<Self>) {
         let request_id = self.allocate_request_id();
-        let notice = match &command {
-            CoreCommandView::Import { .. } => "Importing aria2 core...",
-            CoreCommandView::Link { .. } => "Linking aria2 core...",
-            CoreCommandView::Verify { .. } => "Verifying aria2 core...",
-            CoreCommandView::Activate { .. } => "Activating aria2 core...",
-            CoreCommandView::Rollback => "Rolling back to last working core...",
-            CoreCommandView::Remove { .. } => "Removing aria2 core...",
+        let notice_key = match &command {
+            CoreCommandView::Import { .. } => "notice-core-importing",
+            CoreCommandView::Link { .. } => "notice-core-linking",
+            CoreCommandView::Verify { .. } => "notice-core-verifying",
+            CoreCommandView::Activate { .. } => "notice-core-activating",
+            CoreCommandView::Rollback => "notice-core-rolling-back",
+            CoreCommandView::Remove { .. } => "notice-core-removing",
         };
-        self.show_notice(notice, false, cx);
+        self.show_notice(self.t(notice_key), false, cx);
         cx.emit(AppShellEvent::CoreCommandRequested(
             CoreCommandRequestView {
                 request_id,
@@ -464,58 +185,21 @@ impl AppShell {
         match result.outcome {
             CoreCommandOutcomeView::Success => {
                 self.cores = result.registry;
-                let message = match result.command {
-                    CoreCommandView::Import { .. } => {
-                        "aria2 core imported. Activate it, then restart AriaDeck to use it."
-                    }
-                    CoreCommandView::Link { .. } => {
-                        "aria2 core linked. Activate it, then restart AriaDeck to use it."
-                    }
-                    CoreCommandView::Verify { .. } => "aria2 core verified.",
-                    CoreCommandView::Activate { .. } => {
-                        "Active aria2 core updated. Restart AriaDeck to start that version."
-                    }
-                    CoreCommandView::Rollback => {
-                        "Rolled back to the last working core. Restart AriaDeck to apply."
-                    }
-                    CoreCommandView::Remove { .. } => "aria2 core removed.",
+                self.sync_settings_panel(None, cx);
+                let message_key = match result.command {
+                    CoreCommandView::Import { .. } => "notice-core-imported",
+                    CoreCommandView::Link { .. } => "notice-core-linked",
+                    CoreCommandView::Verify { .. } => "notice-core-verified",
+                    CoreCommandView::Activate { .. } => "notice-core-activated",
+                    CoreCommandView::Rollback => "notice-core-rolled-back",
+                    CoreCommandView::Remove { .. } => "notice-core-removed",
                 };
-                self.show_notice(message, false, cx);
+                self.show_notice(self.t(message_key), false, cx);
             }
             CoreCommandOutcomeView::Failure(error) => {
                 self.show_notice(self.te(&error), true, cx);
             }
         }
         cx.notify();
-    }
-
-    pub(crate) fn request_import_core_from_input(&mut self, cx: &mut Context<Self>) {
-        let path = self
-            .settings_inputs
-            .core_path
-            .read(cx)
-            .value()
-            .trim()
-            .to_owned();
-        if path.is_empty() {
-            self.show_notice(self.t("notice-profile-enter-aria2c"), true, cx);
-            return;
-        }
-        self.request_core_command(CoreCommandView::Import { path }, cx);
-    }
-
-    pub(crate) fn request_link_core_from_input(&mut self, cx: &mut Context<Self>) {
-        let path = self
-            .settings_inputs
-            .core_path
-            .read(cx)
-            .value()
-            .trim()
-            .to_owned();
-        if path.is_empty() {
-            self.show_notice(self.t("notice-profile-enter-aria2c"), true, cx);
-            return;
-        }
-        self.request_core_command(CoreCommandView::Link { path }, cx);
     }
 }

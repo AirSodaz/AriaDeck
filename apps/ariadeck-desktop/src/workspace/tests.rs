@@ -1,70 +1,75 @@
-use super::*;
-
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    fs,
+    path::PathBuf,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use ariadeck_application::{
-    ConnectedSyncSession, DownloadEngineGateway, DownloadSyncConnector, DownloadSyncSession,
-    EngineCapabilities, GatewayError, GatewayErrorKind, InitialSyncSnapshot, ItemFailure,
-    LiveSyncSnapshot, RefreshHint, StoppedPage, SyncError, SyncErrorKind,
-    TaskConnectionDetailsGateway, TaskDetailsGateway, TaskFileRemovalPreview,
-    TaskFileRemovalReport, TaskRemovalTarget,
+    AddDownloadRequest, AddDownloadSource, ApplicationError, ApplicationErrorCode, CommandItem,
+    CommandOutcome, ConnectedSyncSession, CoordinatorConfig, DownloadDestinationFile,
+    DownloadEngineGateway, DownloadProxyMode as ApplicationProxyMode, DownloadSyncConnector,
+    DownloadSyncSession, EngineCapabilities, FileConflictPolicy, GatewayError, GatewayErrorKind,
+    InitialSyncSnapshot, ItemFailure, LiveSyncSnapshot, ReconnectPolicy, RefreshHint, StoppedPage,
+    SyncError, SyncErrorKind, TaskConnectionDetailsGateway, TaskDetailsGateway, TaskFileGateway,
+    TaskFileRemovalPreview, TaskFileRemovalReport, TaskFileRemovalRequest, TaskRemovalTarget,
+    spawn_sync_coordinator,
 };
 use ariadeck_domain::{
-    ByteCount, ByteRate, EnginePath, Gid, GlobalStat, TaskDetails, TaskFile, TaskSnapshot,
+    ByteCount, ByteRate, ConnectionState, DownloadFilter, DownloadStatus, DownloadTask, EnginePath,
+    EngineSession, EngineSessionId, Gid, GlobalStat, ProfileId, SessionGeneration, SortDirection,
+    SortKey, TaskConnectionDetails, TaskDetails, TaskFile, TaskIdentity as DomainTaskIdentity,
+    TaskSnapshot, TaskUriStatus,
+};
+use ariadeck_engine::{
+    CoreDiscoveryOrigin, DiscoveredCore, ExternalEngineProfile, JsonProfileStore,
+    LocalDownloadDestinationGateway, LocalEngineHealth, ProfileCatalog, ProfileEntry,
+};
+use ariadeck_settings::{
+    AppSettings, ColorScheme, CompletionPowerAction, DownloadProxyMode, DownloadProxySettings,
+    JsonSettingsStore, JsonWindowGeometryStore, LanguagePreference, ListFilterPreference,
+    ListSortDirectionPreference, ListSortKeyPreference, NotificationSettings, PlatformSettings,
+    ProfileEnvironmentStore, ProxyCredentialRef, ProxyCredentialStore, SpeedLimitSettings,
+    SystemProxyCredentialStore, TransferPolicySettings, UiPreferences,
+};
+use ariadeck_ui::{
+    AddDownloadAdvancedOptionsView, AddDownloadMetadataKindView, AddDownloadModeView,
+    AddDownloadRequestView, AddDownloadSourceView, BatchCommandOutcomeView,
+    BrowserBridgeSettingsView, ColorSchemeView, CommandOutcomeView, CompletionPowerActionView,
+    CoreDiscoveryOriginView, CoreInstallStatusView, CoreInstallationView, CoreRegistryView,
+    CoreSourceView, DownloadCategoryView, DownloadProxySettingsView, EngineHealthView,
+    EngineSessionView, FileConflictPolicyView, LanguagePreferenceView, NotificationSettingsView,
+    PlatformSettingsView, ProfileCatalogView, ProfileEntryView, ProfileKindView,
+    ProfileRpcSecretUpdateView, ProxyModeView, ProxyPasswordUpdateView, SecretStringView,
+    SettingsView, SpeedLimitSettingsView, TaskCommandRequestView, TaskCommandResultView,
+    TaskCommandView, TaskErrorView, TaskIdentity, TaskPathValidationView, TaskStatusView,
+    TaskUriStatusView, TransferPolicySettingsView, WorkspaceFilter, WorkspaceQuery,
+    WorkspaceSortDirection, WorkspaceSortKey,
 };
 use async_trait::async_trait;
+use secrecy::{ExposeSecret as _, SecretString};
 use tokio::sync::mpsc;
 
-#[derive(Default)]
-struct FakeProxyCredentialStore {
-    passwords: Mutex<HashMap<ProxyCredentialRef, String>>,
-}
+use crate::metadata::parse_metadata;
 
-impl ProxyCredentialStore for FakeProxyCredentialStore {
-    fn load(
-        &self,
-        credential: ProxyCredentialRef,
-    ) -> Result<Option<SecretString>, ariadeck_settings::ProxyCredentialError> {
-        Ok(self
-            .passwords
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&credential)
-            .cloned()
-            .map(SecretString::new))
-    }
-
-    fn save(
-        &self,
-        credential: ProxyCredentialRef,
-        password: &SecretString,
-    ) -> Result<(), ariadeck_settings::ProxyCredentialError> {
-        use secrecy::ExposeSecret as _;
-
-        self.passwords
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(credential, password.expose_secret().clone());
-        Ok(())
-    }
-
-    fn delete(
-        &self,
-        credential: ProxyCredentialRef,
-    ) -> Result<(), ariadeck_settings::ProxyCredentialError> {
-        self.passwords
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&credential);
-        Ok(())
-    }
-}
+use super::{
+    ProxyPasswordUpdate, SettingsPersistenceRequest,
+    core_fetch::*,
+    engine_setup::*,
+    mapping::*,
+    ops::*,
+    persistence::*,
+    settings_bridge::*,
+    test_support::{
+        MemoryProxyCredentialStore as FakeProxyCredentialStore, MemoryProxyCredentialStore,
+        RecordingGateway, connected_sync,
+    },
+    updates::*,
+};
 
 struct UnknownAcceptedAddGateway {
     accepted: Arc<AtomicBool>,
@@ -2424,6 +2429,7 @@ fn profile_catalog_save_preserves_remote_secret_ref_when_unchanged() {
     )
     .expect("map catalog");
     let mapped_remote = mapped
+        .catalog
         .profiles
         .iter()
         .find(|profile| profile.profile_id == remote.profile_id)
@@ -2431,11 +2437,136 @@ fn profile_catalog_save_preserves_remote_secret_ref_when_unchanged() {
     assert_eq!(mapped_remote.secret_ref, Some(secret_ref));
     assert!(mapped_remote.has_secret);
     let mapped_local = mapped
+        .catalog
         .profiles
         .iter()
         .find(|profile| profile.profile_id == local.profile_id)
         .expect("local retained");
     assert!(mapped_local.uses_managed_core());
+}
+
+#[test]
+fn two_draft_remote_profiles_with_same_name_and_endpoint_keep_distinct_secrets() {
+    let data_dir = PathBuf::from("D:/AriaDeckData");
+    let settings = AppSettings::new(data_dir.join("downloads"));
+    let existing = ProfileCatalog::from_single(ExternalEngineProfile::new(
+        ProfileId::new(),
+        "Local",
+        PathBuf::new(),
+        data_dir.clone(),
+        data_dir.join("downloads"),
+    ));
+    let view = ProfileCatalogView {
+        active_profile_id: existing.active_profile_id.to_string(),
+        profiles: vec![
+            ProfileEntryView {
+                profile_id: existing.active_profile_id.to_string(),
+                name: "Local".into(),
+                kind: ProfileKindView::LocalManaged,
+                executable: String::new(),
+                download_dir: data_dir.join("downloads").to_string_lossy().into_owned(),
+                endpoint: String::new(),
+                has_secret: false,
+            },
+            ProfileEntryView {
+                profile_id: "draft-remote-1".into(),
+                name: "Shared NAS".into(),
+                kind: ProfileKindView::RemoteRpc,
+                executable: String::new(),
+                download_dir: data_dir.join("downloads").to_string_lossy().into_owned(),
+                endpoint: "wss://nas.example/jsonrpc".into(),
+                has_secret: true,
+            },
+            ProfileEntryView {
+                profile_id: "draft-remote-2".into(),
+                name: "Shared NAS".into(),
+                kind: ProfileKindView::RemoteRpc,
+                executable: String::new(),
+                download_dir: data_dir.join("downloads").to_string_lossy().into_owned(),
+                endpoint: "wss://nas.example/jsonrpc".into(),
+                has_secret: true,
+            },
+        ],
+    };
+    let mut secret_updates = HashMap::new();
+    secret_updates.insert(
+        "draft-remote-1".to_owned(),
+        ProfileRpcSecretUpdateView::Set(SecretStringView::new("secret-alpha".to_owned())),
+    );
+    secret_updates.insert(
+        "draft-remote-2".to_owned(),
+        ProfileRpcSecretUpdateView::Set(SecretStringView::new("secret-beta".to_owned())),
+    );
+
+    let mapped =
+        map_profile_catalog_request(&view, &secret_updates, &existing, &data_dir, &settings)
+            .expect("map two identical drafts");
+    assert_eq!(mapped.secret_updates.len(), 2);
+
+    let first_remote = &mapped.catalog.profiles[1];
+    let second_remote = &mapped.catalog.profiles[2];
+    assert_ne!(first_remote.profile_id, second_remote.profile_id);
+    assert_ne!(first_remote.secret_ref, second_remote.secret_ref);
+
+    let store = MemoryProxyCredentialStore::default();
+    apply_profile_secret_updates_with_store(
+        &store,
+        &mapped.catalog,
+        &mapped.secret_updates,
+        &existing,
+    )
+    .expect("apply secrets");
+
+    let first_saved = store
+        .load(ProxyCredentialRef::from_uuid(
+            first_remote.secret_ref.expect("first ref").as_uuid(),
+        ))
+        .expect("load first")
+        .expect("first present");
+    let second_saved = store
+        .load(ProxyCredentialRef::from_uuid(
+            second_remote.secret_ref.expect("second ref").as_uuid(),
+        ))
+        .expect("load second")
+        .expect("second present");
+    assert_eq!(first_saved.expose_secret(), "secret-alpha");
+    assert_eq!(second_saved.expose_secret(), "secret-beta");
+}
+
+#[tokio::test]
+async fn set_task_options_rejects_invalid_seed_time_with_validation_error() {
+    let profile_id = ProfileId::new();
+    let session_id = EngineSessionId::new();
+    let handle = connected_sync(Arc::new(RecordingGateway::default()), profile_id).await;
+    let result = execute_task_command(
+        Some(handle),
+        None,
+        TaskCommandRequestView {
+            request_id: ariadeck_ui::RequestId::from_u64(42),
+            session: EngineSessionView {
+                profile_id: profile_id.to_string(),
+                session_id: session_id.to_string(),
+                generation: 1,
+            },
+            identity: TaskIdentity {
+                profile_id: profile_id.to_string(),
+                gid: "0123456789abcdef".into(),
+            },
+            command: TaskCommandView::SetOptions {
+                seed_ratio: None,
+                seed_time_minutes: Some("not-a-number".into()),
+                selected_file_indices: None,
+            },
+        },
+    )
+    .await;
+    match result.outcome {
+        CommandOutcomeView::Failure(error) => {
+            assert_eq!(error.code, ApplicationErrorCode::Validation.as_str());
+            assert!(error.summary.contains("not-a-number"));
+        }
+        other => panic!("expected validation failure, got {other:?}"),
+    }
 }
 
 // Data-dir resolution moved to `ariadeck-ipc` (D-045 §4) so the native
