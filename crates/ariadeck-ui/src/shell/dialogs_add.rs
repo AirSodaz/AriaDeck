@@ -102,6 +102,7 @@ impl AppShell {
             return;
         }
 
+        self.refresh_input_placeholders(window, cx);
         self.add_input
             .update(cx, |input, cx| input.set_value("", window, cx));
         for input in [
@@ -1459,8 +1460,11 @@ impl AppShell {
         let file_list = active_index.map(|preview_index| {
             let list_id = SharedString::from(format!("metadata-preview-files-{preview_index}"));
             div()
+                .relative()
                 .h(px(220.0))
                 .min_h_0()
+                .min_w_0()
+                .overflow_hidden()
                 .child(
                     uniform_list(
                         list_id.clone(),
@@ -1614,6 +1618,10 @@ impl AppShell {
                     })
                     .size_full(),
                 )
+                .child(vertical_scrollbar_overlay(
+                    "metadata-files-scrollbar",
+                    &self.metadata_file_scroll,
+                ))
                 .border_1()
                 .border_color(colors.border)
                 .rounded_md()

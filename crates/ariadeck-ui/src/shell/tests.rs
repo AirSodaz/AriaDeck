@@ -4251,3 +4251,395 @@ fn sort_popover_closes_on_escape_and_when_sort_key_selected(cx: &mut TestAppCont
         );
     });
 }
+
+#[gpui::test]
+fn input_placeholders_sync_on_language_switch_and_apply_settings(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let settings = SettingsView {
+            language: LanguagePreferenceView::English,
+            ..Default::default()
+        };
+        let mut shell = AppShell::new_with_settings(settings, window, cx);
+        shell.snapshot = snapshot(1);
+        shell
+    });
+
+    let en = Translator::new(LocaleId::En);
+    let zh = Translator::new(LocaleId::ZhCn);
+
+    view.read_with(cx, |shell, cx| {
+        assert_eq!(
+            shell
+                .add_input
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            en.t("dialog-add-url-placeholder")
+        );
+        assert_eq!(
+            shell
+                .add_inputs
+                .user_agent
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            en.t("dialog-add-user-agent-placeholder")
+        );
+        assert_eq!(
+            shell
+                .add_inputs
+                .headers
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            en.t("dialog-add-headers-placeholder")
+        );
+        assert_eq!(
+            shell
+                .add_inputs
+                .http_user
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            en.t("dialog-add-http-username-placeholder")
+        );
+        assert_eq!(
+            shell
+                .add_inputs
+                .http_passwd
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            en.t("dialog-add-http-password-placeholder")
+        );
+        assert_eq!(
+            shell
+                .task_inputs
+                .download_limit
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            en.t("input-download-limit-placeholder")
+        );
+        assert_eq!(
+            shell
+                .settings_inputs
+                .profile_name
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            en.t("settings-profile-name-placeholder")
+        );
+    });
+
+    // Switch language directly via Settings -> all placeholders must switch to Chinese.
+    view.update_in(cx, |shell, window, cx| {
+        shell.select_language(LanguagePreferenceView::ChineseSimplified, window, cx);
+    });
+    view.read_with(cx, |shell, cx| {
+        assert_eq!(
+            shell
+                .add_input
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            zh.t("dialog-add-url-placeholder")
+        );
+        assert_eq!(
+            shell
+                .add_inputs
+                .user_agent
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            zh.t("dialog-add-user-agent-placeholder")
+        );
+        assert_eq!(
+            shell
+                .add_inputs
+                .headers
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            zh.t("dialog-add-headers-placeholder")
+        );
+        assert_eq!(
+            shell
+                .add_inputs
+                .http_user
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            zh.t("dialog-add-http-username-placeholder")
+        );
+        assert_eq!(
+            shell
+                .add_inputs
+                .http_passwd
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            zh.t("dialog-add-http-password-placeholder")
+        );
+        assert_eq!(
+            shell
+                .task_inputs
+                .download_limit
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            zh.t("input-download-limit-placeholder")
+        );
+        assert_eq!(
+            shell
+                .settings_inputs
+                .profile_name
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            zh.t("settings-profile-name-placeholder")
+        );
+    });
+
+    // Apply settings without a window handle (startup edge case), then open Add Download:
+    // opening the dialog must still synchronize placeholders to the new language.
+    view.update_in(cx, |shell, window, cx| {
+        shell.pending_settings_save = None;
+        let mut settings = shell.settings.clone();
+        settings.language = LanguagePreferenceView::English;
+        shell.apply_settings(settings, None, cx);
+        shell.open_add_download(&OpenAddDownload, window, cx);
+    });
+    view.read_with(cx, |shell, cx| {
+        assert_eq!(
+            shell
+                .add_input
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            en.t("dialog-add-url-placeholder")
+        );
+        assert_eq!(
+            shell
+                .add_inputs
+                .http_user
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            en.t("dialog-add-http-username-placeholder")
+        );
+    });
+}
+
+#[gpui::test]
+fn sidebar_scrolls_upper_region_while_keeping_settings_pinned_on_short_window(
+    cx: &mut TestAppContext,
+) {
+    let window_handle = cx.add_window(|window, cx| {
+        let settings = SettingsView {
+            categories: (0..12)
+                .map(|index| crate::DownloadCategoryView {
+                    id: format!("cat-{index}"),
+                    name: format!("Category {index}"),
+                    directory: format!("D:\\Downloads\\cat-{index}"),
+                    extensions: format!("ext{index}"),
+                    is_fallback: false,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut shell = AppShell::new_with_settings(settings, window, cx);
+        shell.snapshot = snapshot(1);
+        shell
+    });
+    cx.simulate_window_resize(window_handle.into(), gpui::size(px(900.0), px(360.0)));
+
+    let mut visual_cx = gpui::VisualTestContext::from_window(window_handle.into(), cx);
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    window_handle
+        .read_with(&visual_cx, |shell, _| {
+            let bounds = shell.sidebar_scroll.bounds();
+            let max_offset = shell.sidebar_scroll.max_offset();
+            assert!(
+                bounds.size.height > px(0.0),
+                "sidebar scroll viewport must have positive height"
+            );
+            assert!(
+                bounds.bottom() < px(360.0),
+                "sidebar scroll viewport must leave room at the bottom for pinned Settings button (bottom={:?})",
+                bounds.bottom()
+            );
+            assert!(
+                max_offset.y > px(0.0),
+                "sidebar upper region should overflow vertically and scroll on a 360px window (max_offset={:?})",
+                max_offset
+            );
+        })
+        .expect("read shell");
+}
+
+#[gpui::test]
+fn settings_page_and_add_download_dialog_keep_scrollbars_inside_narrow_viewport(
+    cx: &mut TestAppContext,
+) {
+    let viewport_width = px(640.0);
+    let viewport_height = px(440.0);
+    let window_handle = cx.add_window(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(5);
+        shell.page = AppPage::Settings;
+        shell
+    });
+    cx.simulate_window_resize(
+        window_handle.into(),
+        gpui::size(viewport_width, viewport_height),
+    );
+
+    let mut visual_cx = gpui::VisualTestContext::from_window(window_handle.into(), cx);
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    window_handle
+        .read_with(&visual_cx, |shell, _| {
+            let bounds = shell.settings_scroll.bounds();
+            assert!(
+                bounds.size.width > px(0.0),
+                "settings scroll viewport must have positive width"
+            );
+            assert!(
+                bounds.right() <= viewport_width + px(0.5),
+                "settings scroll viewport (and its overlay scrollbar) must stay within narrow viewport (right={:?}, viewport={:?})",
+                bounds.right(),
+                viewport_width
+            );
+        })
+        .expect("read settings scroll bounds");
+
+    // Now open Add Download with advanced options expanded so the dialog overflows vertically.
+    let _ = window_handle.update(&mut visual_cx, |shell, window, cx| {
+        shell.open_add_download(&OpenAddDownload, window, cx);
+        shell.toggle_add_advanced(cx);
+    });
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    window_handle
+        .read_with(&visual_cx, |shell, _| {
+            let bounds = shell.add_dialog_scroll.bounds();
+            let max_offset = shell.add_dialog_scroll.max_offset();
+            assert!(
+                bounds.size.width > px(0.0) && bounds.size.height > px(0.0),
+                "add download scroll body must have positive bounds"
+            );
+            assert!(
+                bounds.right() <= viewport_width + px(0.5),
+                "add download dialog must fit inside narrow viewport (right={:?}, viewport={:?})",
+                bounds.right(),
+                viewport_width
+            );
+            assert!(
+                max_offset.y > px(0.0),
+                "expanded add download dialog must overflow vertically on a 440px window (max_offset={:?})",
+                max_offset
+            );
+        })
+        .expect("read add dialog scroll bounds");
+}
+
+#[gpui::test]
+fn details_drawer_tabs_render_with_scrollbars_inside_viewport(cx: &mut TestAppContext) {
+    let viewport_width = px(720.0);
+    let viewport_height = px(420.0);
+    let window_handle = cx.add_window(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(2);
+        shell.selected = Some(shell.snapshot.tasks[0].identity.clone());
+        shell
+    });
+    cx.simulate_window_resize(
+        window_handle.into(),
+        gpui::size(viewport_width, viewport_height),
+    );
+
+    let mut visual_cx = gpui::VisualTestContext::from_window(window_handle.into(), cx);
+    let (request_id, session, identity) = window_handle
+        .update(&mut visual_cx, |shell, window, cx| {
+            shell.open_task_details_action(&OpenTaskDetails, window, cx);
+            let drawer = shell.details_drawer.as_ref().expect("drawer opened");
+            let pending = drawer.pending.as_ref().expect("details request pending");
+            (
+                pending.request_id,
+                drawer.session.clone(),
+                drawer.identity.clone(),
+            )
+        })
+        .expect("open details");
+
+    let _ = window_handle.update(&mut visual_cx, |shell, _window, cx| {
+        shell.set_task_details_result(
+            TaskDetailsResultView {
+                request_id,
+                session,
+                identity,
+                outcome: TaskDetailsOutcomeView::Ready(Box::new(details(12))),
+            },
+            cx,
+        );
+    });
+
+    for tab in [
+        TaskDetailsTab::Info,
+        TaskDetailsTab::Files,
+        TaskDetailsTab::Network,
+        TaskDetailsTab::Options,
+    ] {
+        let _ = window_handle.update(&mut visual_cx, |shell, _window, cx| {
+            if let Some(drawer) = &mut shell.details_drawer {
+                drawer.tab = tab;
+            }
+            cx.notify();
+        });
+        visual_cx.run_until_parked();
+        let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+        window_handle
+            .read_with(&visual_cx, |shell, _| {
+                let drawer = shell.details_drawer.as_ref().expect("drawer present");
+                let bounds = match tab {
+                    TaskDetailsTab::Info => drawer.info_scroll.bounds(),
+                    TaskDetailsTab::Files => drawer.file_scroll.0.borrow().base_handle.bounds(),
+                    TaskDetailsTab::Network => drawer.network_scroll.bounds(),
+                    TaskDetailsTab::Options => drawer.options_scroll.bounds(),
+                };
+                assert!(
+                    bounds.size.width > px(0.0) && bounds.size.height > px(0.0),
+                    "details tab {tab:?} must have positive scroll bounds"
+                );
+                assert!(
+                    bounds.right() <= viewport_width + px(0.5),
+                    "details tab {tab:?} scroll bounds must remain inside viewport (right={:?}, viewport={:?})",
+                    bounds.right(),
+                    viewport_width
+                );
+            })
+            .expect("read details tab bounds");
+    }
+}

@@ -54,7 +54,7 @@ use crate::{
     Toast, ToastKind, Toggle, Tooltip, TrackerListSettingsView, TrackerListSourceView,
     TransferPolicySettingsView, Translator, WorkspaceFilter, WorkspaceQuery, WorkspaceSnapshot,
     WorkspaceSortDirection, WorkspaceSortKey, format_bytes, format_eta, format_percent,
-    format_rate, format_share_ratio,
+    format_rate, format_share_ratio, vertical_scrollbar_overlay,
 };
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 
@@ -349,6 +349,7 @@ impl Render for ResizeLinkInput {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum SmoothScrollArea {
+    Sidebar,
     TaskList,
     Settings,
     MetadataFiles,
@@ -774,6 +775,7 @@ pub struct AppShell {
     next_request_id: u64,
     links_input_height: f32,
     links_input_drag_origin: Option<(Pixels, f32)>,
+    sidebar_scroll: ScrollHandle,
     add_dialog_scroll: ScrollHandle,
     list_scroll: UniformListScrollHandle,
     settings_scroll: ScrollHandle,
@@ -874,7 +876,7 @@ impl AppShell {
             },
         );
 
-        let make_input = |placeholder: &'static str,
+        let make_input = |placeholder: SharedString,
                           masked: bool,
                           window: &mut Window,
                           cx: &mut Context<Self>| {
@@ -887,13 +889,41 @@ impl AppShell {
             })
         };
 
-        let add_referer_input = make_input("https://example.test/page", false, window, cx);
-        let add_user_agent_input = make_input("Optional User-Agent", false, window, cx);
-        let add_headers_input = make_input("One Name: value header per line", false, window, cx);
-        let add_cookie_input = make_input("session=…", true, window, cx);
-        let add_http_user_input = make_input("username", false, window, cx);
-        let add_http_passwd_input = make_input("password", true, window, cx);
-        let add_checksum_input = make_input("sha-256=…", false, window, cx);
+        let add_referer_input = make_input("https://example.test/page".into(), false, window, cx);
+        let add_user_agent_input = make_input(
+            initial_translator
+                .t("dialog-add-user-agent-placeholder")
+                .into(),
+            false,
+            window,
+            cx,
+        );
+        let add_headers_input = make_input(
+            initial_translator
+                .t("dialog-add-headers-placeholder")
+                .into(),
+            false,
+            window,
+            cx,
+        );
+        let add_cookie_input = make_input("session=…".into(), true, window, cx);
+        let add_http_user_input = make_input(
+            initial_translator
+                .t("dialog-add-http-username-placeholder")
+                .into(),
+            false,
+            window,
+            cx,
+        );
+        let add_http_passwd_input = make_input(
+            initial_translator
+                .t("dialog-add-http-password-placeholder")
+                .into(),
+            true,
+            window,
+            cx,
+        );
+        let add_checksum_input = make_input("sha-256=…".into(), false, window, cx);
 
         let add_advanced_subscriptions = [
             &add_referer_input,
@@ -916,7 +946,7 @@ impl AppShell {
             })
         });
 
-        let output_name_input = make_input("archive.iso", false, window, cx);
+        let output_name_input = make_input("archive.iso".into(), false, window, cx);
         let output_name_subscription = cx.subscribe(
             &output_name_input,
             |this: &mut Self, _input, event: &InputEvent, cx| {
@@ -930,8 +960,22 @@ impl AppShell {
             },
         );
 
-        let task_download_limit_input = make_input("Unlimited (e.g. 2M, 512K)", false, window, cx);
-        let task_upload_limit_input = make_input("Unlimited (e.g. 1M, 256K)", false, window, cx);
+        let task_download_limit_input = make_input(
+            initial_translator
+                .t("input-download-limit-placeholder")
+                .into(),
+            false,
+            window,
+            cx,
+        );
+        let task_upload_limit_input = make_input(
+            initial_translator
+                .t("input-upload-limit-placeholder")
+                .into(),
+            false,
+            window,
+            cx,
+        );
         let task_speed_limit_subscriptions = [&task_download_limit_input, &task_upload_limit_input]
             .map(|input| {
                 cx.subscribe(input, |this: &mut Self, _input, event: &InputEvent, cx| {
@@ -945,8 +989,22 @@ impl AppShell {
                 })
             });
 
-        let task_seed_ratio_input = make_input("e.g. 1.0 or 0 to disable", false, window, cx);
-        let task_seed_time_input = make_input("Minutes (e.g. 60)", false, window, cx);
+        let task_seed_ratio_input = make_input(
+            initial_translator
+                .t("dialog-task-options-seed-ratio-placeholder")
+                .into(),
+            false,
+            window,
+            cx,
+        );
+        let task_seed_time_input = make_input(
+            initial_translator
+                .t("dialog-task-options-seed-time-placeholder")
+                .into(),
+            false,
+            window,
+            cx,
+        );
         let task_options_subscriptions =
             [&task_seed_ratio_input, &task_seed_time_input].map(|input| {
                 cx.subscribe(input, |this: &mut Self, _input, event: &InputEvent, cx| {
@@ -960,51 +1018,104 @@ impl AppShell {
                 })
             });
 
-        let settings_directory_input = make_input("D:\\Downloads", false, window, cx);
+        let settings_directory_input = make_input("D:\\Downloads".into(), false, window, cx);
         let settings_core_path_input = make_input(
             if cfg!(windows) {
                 "C:\\path\\to\\aria2c.exe"
             } else {
                 "/usr/bin/aria2c"
-            },
+            }
+            .into(),
             false,
             window,
             cx,
         );
-        let settings_profile_name_input = make_input("Local aria2", false, window, cx);
+        let settings_profile_name_input = make_input(
+            initial_translator
+                .t("settings-profile-name-placeholder")
+                .into(),
+            false,
+            window,
+            cx,
+        );
         let settings_profile_executable_input = make_input(
-            "Leave empty to use the active managed core",
+            initial_translator
+                .t("settings-profile-executable-placeholder")
+                .into(),
             false,
             window,
             cx,
         );
         let settings_profile_endpoint_input =
-            make_input("wss://host:6800/jsonrpc", false, window, cx);
-        let settings_profile_secret_input =
-            make_input("Leave blank to keep the saved secret", true, window, cx);
-        let settings_all_proxy_input = make_input("http://proxy.example:8080", false, window, cx);
-        let settings_http_proxy_input = make_input("http://proxy.example:8080", false, window, cx);
-        let settings_https_proxy_input = make_input("http://proxy.example:8080", false, window, cx);
-        let settings_ftp_proxy_input = make_input("http://proxy.example:8080", false, window, cx);
+            make_input("wss://host:6800/jsonrpc".into(), false, window, cx);
+        let settings_profile_secret_input = make_input(
+            initial_translator
+                .t("settings-profile-secret-placeholder")
+                .into(),
+            true,
+            window,
+            cx,
+        );
+        let settings_all_proxy_input =
+            make_input("http://proxy.example:8080".into(), false, window, cx);
+        let settings_http_proxy_input =
+            make_input("http://proxy.example:8080".into(), false, window, cx);
+        let settings_https_proxy_input =
+            make_input("http://proxy.example:8080".into(), false, window, cx);
+        let settings_ftp_proxy_input =
+            make_input("http://proxy.example:8080".into(), false, window, cx);
         let settings_no_proxy_input =
-            make_input("localhost, 127.0.0.1, 10.0.0.0/8", false, window, cx);
-        let settings_proxy_username_input = make_input("Optional username", false, window, cx);
-        let settings_proxy_password_input =
-            make_input("Optional password or replacement", true, window, cx);
-        let settings_download_limit_input =
-            make_input("Unlimited (e.g. 2M, 512K)", false, window, cx);
-        let settings_upload_limit_input =
-            make_input("Unlimited (e.g. 1M, 256K)", false, window, cx);
-        let settings_max_concurrent_input = make_input("5", false, window, cx);
-        let settings_max_connection_input = make_input("1-16", false, window, cx);
-        let settings_split_input = make_input("5", false, window, cx);
-        let settings_min_split_size_input = make_input("20M", false, window, cx);
+            make_input("localhost, 127.0.0.1, 10.0.0.0/8".into(), false, window, cx);
+        let settings_proxy_username_input = make_input(
+            initial_translator
+                .t("settings-proxy-username-placeholder")
+                .into(),
+            false,
+            window,
+            cx,
+        );
+        let settings_proxy_password_input = make_input(
+            initial_translator
+                .t("settings-proxy-password-placeholder")
+                .into(),
+            true,
+            window,
+            cx,
+        );
+        let settings_download_limit_input = make_input(
+            initial_translator
+                .t("input-download-limit-placeholder")
+                .into(),
+            false,
+            window,
+            cx,
+        );
+        let settings_upload_limit_input = make_input(
+            initial_translator
+                .t("input-upload-limit-placeholder")
+                .into(),
+            false,
+            window,
+            cx,
+        );
+        let settings_max_concurrent_input = make_input("5".into(), false, window, cx);
+        let settings_max_connection_input = make_input("1-16".into(), false, window, cx);
+        let settings_split_input = make_input("5".into(), false, window, cx);
+        let settings_min_split_size_input = make_input("20M".into(), false, window, cx);
         let settings_tracker_custom_url_input =
-            make_input("https://example.com/trackers.txt", false, window, cx);
+            make_input("https://example.com/trackers.txt".into(), false, window, cx);
         let settings_tracker_list_text_input =
-            make_input("https://tracker.example/announce", false, window, cx);
-        let settings_category_name_input = make_input("General", false, window, cx);
-        let settings_category_extensions_input = make_input("mp4, mkv, zip", false, window, cx);
+            make_input("https://tracker.example/announce".into(), false, window, cx);
+        let settings_category_name_input = make_input(
+            initial_translator
+                .t("settings-category-name-placeholder")
+                .into(),
+            false,
+            window,
+            cx,
+        );
+        let settings_category_extensions_input =
+            make_input("mp4, mkv, zip".into(), false, window, cx);
 
         let mut settings_subscriptions = [
             &settings_directory_input,
@@ -1220,6 +1331,7 @@ impl AppShell {
             next_request_id: 1,
             links_input_height: DEFAULT_LINKS_INPUT_HEIGHT,
             links_input_drag_origin: None,
+            sidebar_scroll: ScrollHandle::new(),
             add_dialog_scroll: ScrollHandle::new(),
             list_scroll: UniformListScrollHandle::new(),
             settings_scroll: ScrollHandle::new(),
@@ -2207,6 +2319,92 @@ impl AppShell {
         self.translator = translator_for_language(language);
     }
 
+    pub(crate) fn refresh_input_placeholders(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let search_placeholder = self.t("search-placeholder");
+        self.search_input.update(cx, |input, cx| {
+            input.set_placeholder(search_placeholder, window, cx);
+        });
+
+        let add_url_placeholder = self.t("dialog-add-url-placeholder");
+        self.add_input.update(cx, |input, cx| {
+            input.set_placeholder(add_url_placeholder, window, cx);
+        });
+
+        let localized_inputs: [(&Entity<InputState>, &'static str); 16] = [
+            (
+                &self.add_inputs.user_agent,
+                "dialog-add-user-agent-placeholder",
+            ),
+            (&self.add_inputs.headers, "dialog-add-headers-placeholder"),
+            (
+                &self.add_inputs.http_user,
+                "dialog-add-http-username-placeholder",
+            ),
+            (
+                &self.add_inputs.http_passwd,
+                "dialog-add-http-password-placeholder",
+            ),
+            (
+                &self.task_inputs.download_limit,
+                "input-download-limit-placeholder",
+            ),
+            (
+                &self.task_inputs.upload_limit,
+                "input-upload-limit-placeholder",
+            ),
+            (
+                &self.task_inputs.seed_ratio,
+                "dialog-task-options-seed-ratio-placeholder",
+            ),
+            (
+                &self.task_inputs.seed_time,
+                "dialog-task-options-seed-time-placeholder",
+            ),
+            (
+                &self.settings_inputs.profile_name,
+                "settings-profile-name-placeholder",
+            ),
+            (
+                &self.settings_inputs.profile_executable,
+                "settings-profile-executable-placeholder",
+            ),
+            (
+                &self.settings_inputs.profile_secret,
+                "settings-profile-secret-placeholder",
+            ),
+            (
+                &self.settings_inputs.proxy_username,
+                "settings-proxy-username-placeholder",
+            ),
+            (
+                &self.settings_inputs.proxy_password,
+                "settings-proxy-password-placeholder",
+            ),
+            (
+                &self.settings_inputs.download_limit,
+                "input-download-limit-placeholder",
+            ),
+            (
+                &self.settings_inputs.upload_limit,
+                "input-upload-limit-placeholder",
+            ),
+            (
+                &self.settings_inputs.category_name,
+                "settings-category-name-placeholder",
+            ),
+        ];
+        for (entity, key) in localized_inputs {
+            let placeholder = self.t(key);
+            entity.update(cx, |input, cx| {
+                input.set_placeholder(placeholder, window, cx);
+            });
+        }
+    }
+
     pub fn settings(&self) -> &SettingsView {
         &self.settings
     }
@@ -2876,6 +3074,7 @@ impl Render for AppShell {
                 div()
                     .flex_1()
                     .min_h_0()
+                    .min_w_0()
                     .flex()
                     .child(self.render_sidebar(shell_layout.sidebar_width, cx))
                     .child(match self.page {

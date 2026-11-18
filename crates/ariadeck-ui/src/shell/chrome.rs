@@ -247,98 +247,141 @@ impl AppShell {
         div()
             .w(px(sidebar_width))
             .flex_none()
+            .min_h_0()
+            .h_full()
             .flex()
             .flex_col()
-            .justify_between()
             .border_r_1()
             .border_color(colors.border)
             .bg(colors.surface)
-            .p_3()
             .child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
+                    .id("sidebar-scroll-shell")
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_hidden()
                     .child(
                         div()
-                            .id("active-profile-banner")
-                            .role(Role::Status)
-                            .aria_label(active_profile_aria)
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(colors.border)
-                            .bg(colors.toolbar_surface)
-                            .shadow_xs()
+                            .id("sidebar-scroll")
+                            .size_full()
+                            .min_h_0()
+                            .min_w_0()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.sidebar_scroll)
+                            .on_scroll({
+                                let handle = self.sidebar_scroll.clone();
+                                cx.listener(move |this, event, window, cx| {
+                                    this.smooth_discrete_scroll(
+                                        SmoothScrollArea::Sidebar,
+                                        handle.clone(),
+                                        event,
+                                        window,
+                                        cx,
+                                    );
+                                })
+                            })
+                            .p_3()
                             .flex()
-                            .items_center()
-                            .gap_2p5()
-                            .child(
-                                Icon::new(IconName::Activity)
-                                    .size(IconSize::Small)
-                                    .color(colors.accent),
-                            )
+                            .flex_col()
+                            .gap_2()
                             .child(
                                 div()
-                                    .flex_1()
-                                    .min_w_0()
+                                    .id("active-profile-banner")
+                                    .role(Role::Status)
+                                    .aria_label(active_profile_aria)
+                                    .px_3()
+                                    .py_2()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(colors.border)
+                                    .bg(colors.toolbar_surface)
+                                    .shadow_xs()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2p5()
                                     .child(
-                                        div()
-                                            .text_xs()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(colors.text_primary)
-                                            .child(active_profile_name),
+                                        Icon::new(IconName::Activity)
+                                            .size(IconSize::Small)
+                                            .color(colors.accent),
                                     )
                                     .child(
                                         div()
-                                            .text_xs()
-                                            .text_color(colors.text_muted)
-                                            .child(profile_summary),
+                                            .flex_1()
+                                            .min_w_0()
+                                            .child(
+                                                div()
+                                                    .truncate()
+                                                    .text_xs()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(colors.text_primary)
+                                                    .child(active_profile_name),
+                                            )
+                                            .child(
+                                                div()
+                                                    .truncate()
+                                                    .text_xs()
+                                                    .text_color(colors.text_muted)
+                                                    .child(profile_summary),
+                                            ),
                                     ),
-                            ),
+                            )
+                            .child(div().flex().flex_col().gap_1().children(filters))
+                            .child(self.render_sidebar_categories(cx)),
                     )
-                    .child(div().flex().flex_col().gap_1().children(filters))
-                    .child(self.render_sidebar_categories(cx)),
+                    .child(vertical_scrollbar_overlay(
+                        "sidebar-scrollbar",
+                        &self.sidebar_scroll,
+                    )),
             )
             .child(
                 div()
-                    .id("open-settings")
-                    .focusable()
-                    .tab_stop(true)
-                    .role(Role::Button)
-                    .aria_label(self.t("action-open-settings"))
-                    .h(px(38.0))
-                    .w_full()
+                    .flex_none()
                     .px_3()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .rounded_md()
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(if self.page == AppPage::Settings {
-                        colors.accent
-                    } else {
-                        colors.text_secondary
-                    })
-                    .when(self.page == AppPage::Settings, |element| {
-                        element.bg(with_alpha(colors.accent, 0.09))
-                    })
-                    .cursor_pointer()
-                    .hover(|style| style.bg(colors.surface_hover))
-                    .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_settings(&OpenSettings, window, cx);
-                    }))
-                    .child(Icon::new(IconName::Settings).size(IconSize::Small).color(
-                        if self.page == AppPage::Settings {
-                            colors.accent
-                        } else {
-                            colors.text_muted
-                        },
-                    ))
-                    .child(self.t("settings-label")),
+                    .pt_2()
+                    .pb_3()
+                    .border_t_1()
+                    .border_color(colors.border)
+                    .child(
+                        div()
+                            .id("open-settings")
+                            .focusable()
+                            .tab_stop(true)
+                            .role(Role::Button)
+                            .aria_label(self.t("action-open-settings"))
+                            .h(px(38.0))
+                            .w_full()
+                            .px_3()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .rounded_md()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(if self.page == AppPage::Settings {
+                                colors.accent
+                            } else {
+                                colors.text_secondary
+                            })
+                            .when(self.page == AppPage::Settings, |element| {
+                                element.bg(with_alpha(colors.accent, 0.09))
+                            })
+                            .cursor_pointer()
+                            .hover(|style| style.bg(colors.surface_hover))
+                            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_settings(&OpenSettings, window, cx);
+                            }))
+                            .child(Icon::new(IconName::Settings).size(IconSize::Small).color(
+                                if self.page == AppPage::Settings {
+                                    colors.accent
+                                } else {
+                                    colors.text_muted
+                                },
+                            ))
+                            .child(self.t("settings-label")),
+                    ),
             )
     }
 
@@ -905,113 +948,138 @@ impl AppShell {
                             .into_any_element()
                     } else {
                         div()
-                            .id("activity-panel-scroll")
+                            .relative()
                             .flex_1()
                             .min_h_0()
+                            .min_w_0()
                             .max_h(px(320.0))
-                            .overflow_y_scroll()
-                            .track_scroll(&self.activity_scroll)
-                            .on_scroll({
-                                let handle = self.activity_scroll.clone();
-                                cx.listener(move |this, event, window, cx| {
-                                    this.smooth_discrete_scroll(
-                                        SmoothScrollArea::Activity,
-                                        handle.clone(),
-                                        event,
-                                        window,
-                                        cx,
-                                    );
-                                })
-                            })
                             .flex()
                             .flex_col()
-                            .gap_2()
-                            .children(entries.into_iter().map(|entry| {
-                                let kind_color = match entry.kind {
-                                    ActivityKindView::Completion => colors.success,
-                                    ActivityKindView::Error => colors.danger,
-                                    ActivityKindView::Engine => colors.warning,
-                                    ActivityKindView::Command => colors.information,
-                                    ActivityKindView::Info => colors.text_muted,
-                                };
+                            .overflow_hidden()
+                            .child(
                                 div()
-                                    .id(SharedString::from(format!("activity-entry-{}", entry.id)))
+                                    .id("activity-panel-scroll")
+                                    .flex_1()
+                                    .min_h_0()
+                                    .min_w_0()
+                                    .pr_3()
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.activity_scroll)
+                                    .on_scroll({
+                                        let handle = self.activity_scroll.clone();
+                                        cx.listener(move |this, event, window, cx| {
+                                            this.smooth_discrete_scroll(
+                                                SmoothScrollArea::Activity,
+                                                handle.clone(),
+                                                event,
+                                                window,
+                                                cx,
+                                            );
+                                        })
+                                    })
                                     .flex()
                                     .flex_col()
-                                    .gap_1()
-                                    .p_2()
-                                    .rounded_md()
-                                    .bg(colors.surface)
-                                    .border_1()
-                                    .border_color(colors.border)
-                                    .child(
+                                    .gap_2()
+                                    .children(entries.into_iter().map(|entry| {
+                                        let kind_color = match entry.kind {
+                                            ActivityKindView::Completion => colors.success,
+                                            ActivityKindView::Error => colors.danger,
+                                            ActivityKindView::Engine => colors.warning,
+                                            ActivityKindView::Command => colors.information,
+                                            ActivityKindView::Info => colors.text_muted,
+                                        };
                                         div()
+                                            .id(SharedString::from(format!(
+                                                "activity-entry-{}",
+                                                entry.id
+                                            )))
                                             .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .child(StatusIndicator::new(kind_color).icon(
-                                                match entry.kind {
-                                                    ActivityKindView::Completion => {
-                                                        IconName::CircleCheck
-                                                    }
-                                                    ActivityKindView::Error => IconName::CircleX,
-                                                    ActivityKindView::Engine => {
-                                                        IconName::TriangleAlert
-                                                    }
-                                                    ActivityKindView::Command => IconName::Activity,
-                                                    ActivityKindView::Info => IconName::Info,
-                                                },
-                                            ))
+                                            .flex_col()
+                                            .gap_1()
+                                            .p_2()
+                                            .rounded_md()
+                                            .bg(colors.surface)
+                                            .border_1()
+                                            .border_color(colors.border)
                                             .child(
                                                 div()
-                                                    .text_xs()
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .text_color(colors.text_muted)
-                                                    .child(self.t(match entry.kind {
-                                                        ActivityKindView::Completion => {
-                                                            "activity-kind-completion"
-                                                        }
-                                                        ActivityKindView::Error => {
-                                                            "activity-kind-error"
-                                                        }
-                                                        ActivityKindView::Engine => {
-                                                            "activity-kind-engine"
-                                                        }
-                                                        ActivityKindView::Command => {
-                                                            "activity-kind-command"
-                                                        }
-                                                        ActivityKindView::Info => {
-                                                            "activity-kind-info"
-                                                        }
-                                                    })),
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .child(StatusIndicator::new(kind_color).icon(
+                                                        match entry.kind {
+                                                            ActivityKindView::Completion => {
+                                                                IconName::CircleCheck
+                                                            }
+                                                            ActivityKindView::Error => {
+                                                                IconName::CircleX
+                                                            }
+                                                            ActivityKindView::Engine => {
+                                                                IconName::TriangleAlert
+                                                            }
+                                                            ActivityKindView::Command => {
+                                                                IconName::Activity
+                                                            }
+                                                            ActivityKindView::Info => {
+                                                                IconName::Info
+                                                            }
+                                                        },
+                                                    ))
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(colors.text_muted)
+                                                            .child(self.t(match entry.kind {
+                                                                ActivityKindView::Completion => {
+                                                                    "activity-kind-completion"
+                                                                }
+                                                                ActivityKindView::Error => {
+                                                                    "activity-kind-error"
+                                                                }
+                                                                ActivityKindView::Engine => {
+                                                                    "activity-kind-engine"
+                                                                }
+                                                                ActivityKindView::Command => {
+                                                                    "activity-kind-command"
+                                                                }
+                                                                ActivityKindView::Info => {
+                                                                    "activity-kind-info"
+                                                                }
+                                                            })),
+                                                    )
+                                                    .when(entry.count > 1, |element| {
+                                                        element.child(
+                                                            div()
+                                                                .text_xs()
+                                                                .text_color(colors.text_muted)
+                                                                .child(self.t_count(
+                                                                    "activity-repeated-count",
+                                                                    u64::from(entry.count),
+                                                                )),
+                                                        )
+                                                    }),
                                             )
-                                            .when(entry.count > 1, |element| {
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_color(colors.text_primary)
+                                                    .child(entry.summary.clone()),
+                                            )
+                                            .when_some(entry.detail.clone(), |element, detail| {
                                                 element.child(
                                                     div()
                                                         .text_xs()
                                                         .text_color(colors.text_muted)
-                                                        .child(self.t_count(
-                                                            "activity-repeated-count",
-                                                            u64::from(entry.count),
-                                                        )),
+                                                        .child(detail),
                                                 )
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .text_color(colors.text_primary)
-                                            .child(entry.summary.clone()),
-                                    )
-                                    .when_some(entry.detail.clone(), |element, detail| {
-                                        element.child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(colors.text_muted)
-                                                .child(detail),
-                                        )
-                                    })
-                            }))
+                                            })
+                                    })),
+                            )
+                            .child(vertical_scrollbar_overlay(
+                                "activity-panel-scrollbar",
+                                &self.activity_scroll,
+                            ))
                             .into_any_element()
                     }),
             )

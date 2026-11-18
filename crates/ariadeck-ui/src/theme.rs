@@ -201,6 +201,10 @@ impl Theme {
             },
         };
         gpui_kit::component::Theme::change(mode, window, cx);
+        gpui_kit::component::Theme::set_scrollbar_mode(
+            gpui_kit::component::scroll::ScrollbarMode::Always,
+            cx,
+        );
         let kit = gpui_kit::component::Theme::global_mut(cx);
         kit.primary = self.colors.accent;
         kit.primary_hover = self.colors.accent_hover;

@@ -188,3 +188,13 @@ power-action-verb-shutdown = 关机
 power-action-btn-sleep = 立即睡眠
 power-action-btn-hibernate = 立即休眠
 power-action-btn-shutdown = 立即关机
+
+# 输入框占位符
+dialog-add-user-agent-placeholder = 可选 User-Agent
+dialog-add-headers-placeholder = 每行一个请求头（格式：Name: value）
+dialog-add-http-username-placeholder = 用户名
+dialog-add-http-password-placeholder = 密码
+input-download-limit-placeholder = 不限速（例如 2M、512K）
+input-upload-limit-placeholder = 不限速（例如 1M、256K）
+dialog-task-options-seed-ratio-placeholder = 例如 1.0，设为 0 则禁用
+dialog-task-options-seed-time-placeholder = 分钟（例如 60）

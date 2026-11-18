@@ -134,6 +134,7 @@ impl AppShell {
                     "download-list-aria",
                     u64::try_from(task_count).unwrap_or(u64::MAX),
                 ))
+                .relative()
                 .size_full()
                 .overflow_hidden()
                 .on_scroll({
@@ -168,6 +169,10 @@ impl AppShell {
                     .h_full()
                     .w_full(),
                 )
+                .child(vertical_scrollbar_overlay(
+                    "download-list-scrollbar",
+                    &self.list_scroll,
+                ))
                 .into_any_element()
         };
 
@@ -247,7 +252,7 @@ impl AppShell {
                     .child(self.render_task_toolbar(cx)),
             )
             .child(self.render_task_header(layout, cx))
-            .child(div().flex_1().min_h_0().child(content));
+            .child(div().flex_1().min_w_0().min_h_0().child(content));
 
         let pane = div()
             .relative()
@@ -276,6 +281,8 @@ impl AppShell {
                     .child(
                         div()
                             .h_full()
+                            .max_w_full()
+                            .flex()
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .child(self.render_task_details_drawer(cx)),
                     ),

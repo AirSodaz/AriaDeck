@@ -297,3 +297,11 @@ core-setup-download-running = Downloading...
 core-setup-download-aria = Download and verify aria2 { $version }
 core-setup-manual-title = Choose manually
 core-setup-manual-description = Import copies the executable into AriaDeck's managed cores; Link registers the path where it is.
+
+# Input placeholders
+settings-profile-name-placeholder = Local aria2
+settings-profile-executable-placeholder = Leave empty to use the active managed core
+settings-profile-secret-placeholder = Leave blank to keep the saved secret
+settings-proxy-username-placeholder = Optional username
+settings-proxy-password-placeholder = Optional password or replacement
+settings-category-name-placeholder = General

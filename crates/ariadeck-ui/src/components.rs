@@ -2,7 +2,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AnimationExt as _, AnyElement, AnyView, App, AppContext as _, ClickEvent, DefiniteLength,
+    AnimationExt as _, AnyElement, AnyView, App, AppContext as _, ClickEvent, DefiniteLength, Div,
     ElementId, FocusHandle, Hsla, IntoElement, Render, RenderOnce, Role, ScrollEvent, ScrollHandle,
     SharedString, Stateful, Window, div, prelude::*, px, svg,
 };
@@ -15,6 +15,7 @@ pub use gpui_kit::component::checkbox::Checkbox;
 pub use gpui_kit::component::kbd::Kbd;
 pub use gpui_kit::component::notification::Notification;
 pub use gpui_kit::component::progress::{Progress, ProgressCircle};
+pub use gpui_kit::component::scroll::{Scrollbar, ScrollbarHandle, ScrollbarMode};
 pub use gpui_kit::component::spinner::Spinner;
 pub use gpui_kit::component::switch::Switch;
 pub use gpui_kit::component::tab::{Tab, TabBar, TabVariant};
@@ -1184,6 +1185,24 @@ impl Dialog {
     }
 }
 
+/// Overlay layer rendering a native `gpui-kit` vertical scrollbar.
+///
+/// Must be mounted as a child of a `.relative().overflow_hidden()` container
+/// so the scrollbar resolves against the viewport edge and is never squeezed
+/// out when horizontal space shrinks.
+#[must_use]
+pub fn vertical_scrollbar_overlay<H: ScrollbarHandle + Clone>(
+    id: impl Into<ElementId>,
+    scroll_handle: &H,
+) -> Div {
+    div().absolute().inset_0().child(
+        Scrollbar::vertical(scroll_handle)
+            .id(id)
+            .mode(ScrollbarMode::Always)
+            .viewport_from_layout(),
+    )
+}
+
 impl RenderOnce for Dialog {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let colors = self.theme.colors;
@@ -1191,8 +1210,9 @@ impl RenderOnce for Dialog {
             .id(self.id.clone())
             .role(Role::Dialog)
             .aria_label(self.title.clone())
-            .w(px(self.width))
-            .max_w(px(720.0))
+            .w(px(self.width.min(720.0)))
+            .max_w_full()
+            .min_w_0()
             .when_some(self.max_height, |card, max_h| card.max_h(max_h))
             .flex()
             .flex_col()
@@ -1232,24 +1252,40 @@ impl RenderOnce for Dialog {
                 ElementId::Name(self.id.clone()).into(),
                 "scroll-body".into(),
             );
+            let scrollbar_id =
+                ElementId::NamedChild(ElementId::Name(self.id.clone()).into(), "scrollbar".into());
             let mut body_container = div()
                 .id(body_id)
                 .flex_1()
                 .min_h_0()
+                .min_w_0()
                 .overflow_y_scroll()
                 .flex()
                 .flex_col()
                 .gap_4()
-                .px_1();
-            if let Some(scroll_handle) = self.scroll_handle {
-                body_container = body_container.track_scroll(&scroll_handle);
+                .pl_1()
+                .pr_3();
+            if let Some(scroll_handle) = self.scroll_handle.as_ref() {
+                body_container = body_container.track_scroll(scroll_handle);
             }
             if let Some(scroll_handler) = self.scroll_handler {
                 body_container = body_container.on_scroll(move |event, window, cx| {
                     scroll_handler(event, window, cx);
                 });
             }
-            card = card.child(body_container.children(self.body));
+            let body_shell = div()
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .child(body_container.children(self.body))
+                .when_some(self.scroll_handle.as_ref(), |shell, handle| {
+                    shell.child(vertical_scrollbar_overlay(scrollbar_id, handle))
+                });
+            card = card.child(body_shell);
         } else {
             card = card.children(self.body);
         }
@@ -1288,6 +1324,7 @@ impl RenderOnce for Dialog {
             .occlude()
             .absolute()
             .inset_0()
+            .px_4()
             .flex()
             .items_center()
             .justify_center()

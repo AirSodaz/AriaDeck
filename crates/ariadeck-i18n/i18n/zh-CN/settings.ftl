@@ -297,3 +297,11 @@ core-setup-download-running = 正在下载……
 core-setup-download-aria = 下载并校验 aria2 { $version }
 core-setup-manual-title = 手动选择
 core-setup-manual-description = “导入副本”会把可执行文件复制进 AriaDeck 的托管核心；“链接路径”只登记原位置。
+
+# 输入框占位符
+settings-profile-name-placeholder = 本地 aria2
+settings-profile-executable-placeholder = 留空则使用当前启用的托管核心
+settings-profile-secret-placeholder = 留空则保留已保存的密钥
+settings-proxy-username-placeholder = 可选用户名
+settings-proxy-password-placeholder = 可选密码或替换已保存密码
+settings-category-name-placeholder = 常规

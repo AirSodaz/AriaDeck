@@ -373,67 +373,6 @@ impl ToolbarButtonState {
     }
 }
 
-pub(crate) fn render_vertical_scrollbar(
-    scroll: &ScrollHandle,
-    colors: crate::ThemeColors,
-) -> AnyElement {
-    let bounds = scroll.bounds();
-    let max_offset = scroll.max_offset();
-    let offset = scroll.offset();
-    let viewport = bounds.size.height;
-    let content = viewport + max_offset.y;
-    if max_offset.y <= px(0.0) || viewport <= px(0.0) || content <= px(0.0) {
-        return div().w(px(10.0)).flex_none().into_any_element();
-    }
-    let thumb_ratio = (viewport / content).clamp(0.12, 1.0);
-    let thumb_height = (viewport * thumb_ratio).max(px(28.0));
-    let travel = (viewport - thumb_height).max(px(0.0));
-    let progress = if max_offset.y.as_f32().abs() < f32::EPSILON {
-        0.0
-    } else {
-        ((-offset.y) / max_offset.y).clamp(0.0, 1.0)
-    };
-    let thumb_top = travel * progress;
-    let handle = scroll.clone();
-    let max_y = max_offset.y;
-    div()
-        .id("vertical-scrollbar-track")
-        .w(px(10.0))
-        .flex_none()
-        .h_full()
-        .py_1()
-        .pr_1()
-        .child(
-            div()
-                .id("vertical-scrollbar-rail")
-                .relative()
-                .w(px(6.0))
-                .h_full()
-                .rounded_full()
-                .bg(with_alpha(colors.border, 0.35))
-                .child(
-                    div()
-                        .id("vertical-scrollbar-thumb")
-                        .absolute()
-                        .top(thumb_top)
-                        .left_0()
-                        .right_0()
-                        .h(thumb_height)
-                        .rounded_full()
-                        .bg(with_alpha(colors.text_muted, 0.55))
-                        .hover(|style| style.bg(with_alpha(colors.text_muted, 0.8)))
-                        .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            let track_y = event.position.y - bounds.origin.y;
-                            let ratio = (track_y / viewport).clamp(0.0, 1.0);
-                            let y = -(max_y * ratio);
-                            handle.set_offset(point(px(0.0), y));
-                        }),
-                ),
-        )
-        .into_any_element()
-}
-
 pub(crate) fn settings_labeled_input(
     label: impl Into<SharedString>,
     input: &Entity<InputState>,

@@ -284,10 +284,7 @@ impl AppShell {
         self.settings_page.draft_language = settings.language;
         self.set_language_runtime(settings.language);
         if let Some(window) = window.as_deref_mut() {
-            let placeholder = self.t("search-placeholder");
-            self.search_input.update(cx, |input, cx| {
-                input.set_placeholder(placeholder, window, cx);
-            });
+            self.refresh_input_placeholders(window, cx);
         }
         self.settings_page.draft_file_allocation = settings.transfer_policy.file_allocation;
         self.settings_page.draft_check_certificate = settings.download_proxy.check_certificate;
@@ -660,10 +657,7 @@ impl AppShell {
         self.settings_page.draft_language = language;
         // Apply immediately so chrome switches language before save returns.
         self.set_language_runtime(language);
-        let placeholder = self.t("search-placeholder");
-        self.search_input.update(cx, |input, cx| {
-            input.set_placeholder(placeholder, window, cx);
-        });
+        self.refresh_input_placeholders(window, cx);
         let mut settings = self.settings.clone();
         settings.language = language;
         self.request_settings_save(
@@ -1566,7 +1560,10 @@ impl AppShell {
             .key_context("SettingsPage")
             .role(Role::Main)
             .aria_label(self.t("settings-title"))
-            .size_full()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .h_full()
             .flex()
             .flex_col()
             .bg(colors.background)
@@ -1590,6 +1587,7 @@ impl AppShell {
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
                     .min_h_0()
                     .flex()
                     .child(self.render_settings_nav(cx))
@@ -1597,18 +1595,22 @@ impl AppShell {
                         div()
                             .flex_1()
                             .min_w_0()
+                            .min_h_0()
                             .flex()
                             .flex_col()
                             .child(
                                 div()
                                     .id("settings-scroll-shell")
+                                    .relative()
                                     .flex_1()
+                                    .min_w_0()
                                     .min_h_0()
-                                    .flex()
+                                    .overflow_hidden()
                                     .child(
                                         div()
                                             .id("settings-scroll")
-                                            .flex_1()
+                                            .size_full()
+                                            .min_w_0()
                                             .min_h_0()
                                             .px_6()
                                             .py_6()
@@ -1661,9 +1663,9 @@ impl AppShell {
                                                     }),
                                             ),
                                     )
-                                    .child(render_vertical_scrollbar(
+                                    .child(vertical_scrollbar_overlay(
+                                        "settings-scrollbar",
                                         &self.settings_scroll,
-                                        colors,
                                     )),
                             )
                             .child(self.render_settings_footer(cx)),
@@ -1678,6 +1680,8 @@ impl AppShell {
             .id("settings-category-list")
             .w(px(168.0))
             .flex_none()
+            .min_h_0()
+            .overflow_y_scroll()
             .flex()
             .flex_col()
             .border_r_1()

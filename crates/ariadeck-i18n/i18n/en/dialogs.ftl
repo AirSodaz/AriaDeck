@@ -206,3 +206,13 @@ power-action-verb-shutdown = shut down
 power-action-btn-sleep = Sleep now
 power-action-btn-hibernate = Hibernate now
 power-action-btn-shutdown = Shut down now
+
+# Input placeholders
+dialog-add-user-agent-placeholder = Optional User-Agent
+dialog-add-headers-placeholder = One Name: value header per line
+dialog-add-http-username-placeholder = Username
+dialog-add-http-password-placeholder = Password
+input-download-limit-placeholder = Unlimited (e.g. 2M, 512K)
+input-upload-limit-placeholder = Unlimited (e.g. 1M, 256K)
+dialog-task-options-seed-ratio-placeholder = e.g. 1.0 or 0 to disable
+dialog-task-options-seed-time-placeholder = Minutes (e.g. 60)

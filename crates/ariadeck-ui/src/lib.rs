@@ -33,7 +33,7 @@ pub use components::{
     Badge, Button, ButtonStyle, ButtonVariant, Checkbox, Dialog, Icon, IconButton, IconName,
     IconSize, Kbd, LoadingIndicator, Notification, Progress, ProgressCircle, Segment,
     SegmentedControl, Spinner, StatusIndicator, Switch, Tab, TabBar, TabVariant, Tag, TagVariant,
-    Toast, ToastKind, Toggle, Tooltip,
+    Toast, ToastKind, Toggle, Tooltip, vertical_scrollbar_overlay,
 };
 pub use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 pub use gpui_kit::component::link::Link;
