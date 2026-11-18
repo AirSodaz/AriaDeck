@@ -725,6 +725,7 @@ fn filesystem_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use crate::console_free_command;
     use ariadeck_application::{
         DownloadDestinationFile, DownloadDestinationGateway, DownloadDestinationRequest,
