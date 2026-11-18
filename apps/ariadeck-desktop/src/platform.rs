@@ -347,6 +347,11 @@ impl ChildProcessJob {
     pub fn assign_pid(&self, _pid: u32) {}
 }
 
+#[cfg(not(windows))]
+impl Drop for ChildProcessJob {
+    fn drop(&mut self) {}
+}
+
 #[cfg(windows)]
 #[allow(unsafe_code)]
 #[link(name = "powrprof")]
