@@ -26,17 +26,6 @@ use ariadeck_settings::{JsonWindowGeometryStore, WINDOW_DEFAULT_HEIGHT, WINDOW_D
 use crate::workspace::DesktopRoot;
 
 fn main() {
-    #[cfg(target_os = "windows")]
-    if std::env::var_os("GPUI_DISABLE_DIRECT_COMPOSITION").is_none() {
-        // DirectComposition visual swapchain causes invisible/transparent windows on
-        // various Windows GPU configurations (notably AMD Radeon and hybrid graphics).
-        // Defaulting to standard DXGI HWND swapchains guarantees reliable presentation.
-        // SAFETY: Invoked at process start before any threads are spawned.
-        unsafe {
-            std::env::set_var("GPUI_DISABLE_DIRECT_COMPOSITION", "1");
-        }
-    }
-
     let startup_started = Instant::now();
     ariadeck_telemetry::init("ariadeck=info");
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting AriaDeck");
