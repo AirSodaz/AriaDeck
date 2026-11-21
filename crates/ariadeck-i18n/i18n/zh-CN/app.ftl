@@ -83,4 +83,3 @@ task-overview-remaining = 剩余 { $duration }
 task-overview-error-code = 错误 { $code }：{ $summary }
 task-overview-uploaded = 已上传 { $bytes }
 task-overview-upload-rate = 上传 { $rate }
-loading-label = 加载中

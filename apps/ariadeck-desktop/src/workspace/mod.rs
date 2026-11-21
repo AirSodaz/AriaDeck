@@ -175,6 +175,7 @@ pub struct DesktopRoot {
     query_sender: watch::Sender<TaskListQuery>,
     persistence_sender: Option<mpsc::UnboundedSender<PersistenceCommand>>,
     persistence_task: Option<JoinHandle<()>>,
+    background_tasks: Vec<JoinHandle<()>>,
     settings_persistence_available: bool,
     tracker_list_sender: Option<mpsc::UnboundedSender<TrackerListRefreshRequest>>,
     /// Verified aria2 download worker (B4). Only ever fed by a button press.
@@ -587,18 +588,22 @@ impl DesktopRoot {
         }
 
         spawn_persistence_event_bridge(persistence_events, window, cx);
+        let mut background_tasks = Vec::new();
         let tracker_list_sender = if let Some(store) = proxy_reapply_store.clone() {
             let (req_tx, req_rx) = mpsc::unbounded_channel::<TrackerListRefreshRequest>();
             let (res_tx, res_rx) = mpsc::unbounded_channel::<TrackerListRefreshResult>();
-            spawn_tracker_list_refresh_bridge(
+            background_tasks.push(spawn_tracker_list_refresh_bridge(
                 runtime.handle().clone(),
                 store,
                 persistence_sender.clone(),
                 req_rx,
                 res_tx,
-            );
+            ));
             spawn_tracker_list_result_bridge(res_rx, window, cx);
-            spawn_tracker_list_auto_refresh(runtime.handle().clone(), req_tx.clone());
+            background_tasks.push(spawn_tracker_list_auto_refresh(
+                runtime.handle().clone(),
+                req_tx.clone(),
+            ));
             Some(req_tx)
         } else {
             None
@@ -606,12 +611,12 @@ impl DesktopRoot {
         let core_download_sender = {
             let (req_tx, req_rx) = mpsc::unbounded_channel::<CoreDownloadRequest>();
             let (res_tx, res_rx) = mpsc::unbounded_channel::<CoreDownloadResult>();
-            spawn_core_download_bridge(
+            background_tasks.push(spawn_core_download_bridge(
                 runtime.handle().clone(),
                 core_store.clone(),
                 req_rx,
                 res_tx,
-            );
+            ));
             spawn_core_download_result_bridge(res_rx, window, cx);
             Some(req_tx)
         };
@@ -675,6 +680,7 @@ impl DesktopRoot {
             query_sender,
             persistence_sender: Some(persistence_sender),
             persistence_task: Some(persistence_task),
+            background_tasks,
             settings_persistence_available,
             tracker_list_sender,
             core_download_sender,
@@ -844,7 +850,14 @@ impl DesktopRoot {
                     .as_ref()
                     .map(LocalEngineSupervisor::health_handle);
                 let local_download_roots = local_engine.as_ref().map(|_| {
-                    LocalDownloadRootRegistry::new(self.settings.download_directory.clone())
+                    LocalDownloadRootRegistry::with_initial_roots(
+                        std::iter::once(self.settings.download_directory.clone()).chain(
+                            self.settings
+                                .categories
+                                .iter()
+                                .map(|category| category.directory.clone()),
+                        ),
+                    )
                 });
                 let download_destination_gateway = local_download_roots.as_ref().map(|roots| {
                     Arc::new(LocalDownloadDestinationGateway::with_roots(roots.clone()))
@@ -1910,6 +1923,10 @@ impl DesktopRoot {
 impl Drop for DesktopRoot {
     fn drop(&mut self) {
         let pending_geometry = self.platform.cleanup_on_drop();
+        let mut background_tasks = std::mem::take(&mut self.background_tasks);
+        for task in &background_tasks {
+            task.abort();
+        }
         self.tracker_list_sender.take();
         self.core_download_sender.take();
         let persistence_sender = self.persistence_sender.take();
@@ -1925,10 +1942,21 @@ impl Drop for DesktopRoot {
         // return the `JoinHandle` to `main()`, which awaits it on the main OS thread.
         let handle = self.runtime.handle().spawn(async move {
             drop(persistence_sender);
-            if let Some(task) = persistence_task
-                && let Err(error) = task.await
-            {
-                tracing::warn!(%error, "persistence worker did not stop cleanly");
+            // Await aborted background tasks so any cloned `persistence_sender`
+            // drops immediately before waiting for `persistence_task`.
+            for task in background_tasks.drain(..) {
+                let _ = task.await;
+            }
+            if let Some(task) = persistence_task {
+                match tokio::time::timeout(Duration::from_secs(2), task).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        tracing::warn!(%error, "persistence worker did not stop cleanly");
+                    }
+                    Err(_) => {
+                        tracing::warn!("persistence worker did not stop within 2 seconds");
+                    }
+                }
             }
             if let Some(handle) = sync
                 && tokio::time::timeout(Duration::from_secs(2), handle.stop())

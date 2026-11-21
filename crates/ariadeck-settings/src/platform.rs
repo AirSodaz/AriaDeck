@@ -88,7 +88,7 @@ impl CompletionPowerAction {
     }
 }
 
-/// Platform window/tray and power preferences (schema v6).
+/// Platform window/tray and power preferences (schema v1).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformSettings {
@@ -125,8 +125,10 @@ pub struct BrowserBridgeSettings {
     /// Forward the extension's cookie for the download's origin. A cookie is the
     /// highest-impact field the bridge can carry, so it needs this **and** the
     /// extension's own host-permission grant (browser-bridge.md §5).
+    #[serde(default)]
     pub allow_cookies: bool,
     /// Add forwarded downloads without opening the confirmation dialog. Never
     /// silent: every add still leaves a toast and an activity entry (§6, D-025).
+    #[serde(default)]
     pub auto_submit: bool,
 }

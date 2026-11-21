@@ -2201,7 +2201,7 @@ fn save_settings_and_profile_env_dual_writes_active_bag() {
     let profile_id = ProfileId::new();
     let mut settings = AppSettings::new(root.path().join("downloads"));
     settings.speed_limits.download_limit = 4_096;
-    save_settings_and_profile_env(&store, &env_store, Some(profile_id), &settings)
+    save_settings_and_profile_env(&store, &env_store, Some(profile_id), &settings, None)
         .expect("dual write");
     let reloaded = store.load().expect("reload settings");
     assert_eq!(reloaded.speed_limits.download_limit, 4_096);
@@ -2210,6 +2210,31 @@ fn save_settings_and_profile_env_dual_writes_active_bag() {
         .expect("reload env bag");
     assert_eq!(env.speed_limits.download_limit, 4_096);
     assert_eq!(env.download_directory, settings.download_directory);
+
+    // Simulate a profile environment persistence failure (directory at environment.json)
+    // and confirm settings.json rolls back to the previous settings snapshot.
+    let failing_profile = ProfileId::new();
+    std::fs::create_dir_all(env_store.path_for(failing_profile.as_uuid()))
+        .expect("block profile env save with directory");
+    let mut modified = settings.clone();
+    modified.speed_limits.download_limit = 99_999;
+    let err = save_settings_and_profile_env(
+        &store,
+        &env_store,
+        Some(failing_profile),
+        &modified,
+        Some(&settings),
+    )
+    .expect_err("blocked profile env save should fail");
+    assert!(!err.is_empty());
+    assert_eq!(
+        store
+            .load()
+            .expect("reload rolled back settings")
+            .speed_limits
+            .download_limit,
+        4_096
+    );
 }
 
 #[test]

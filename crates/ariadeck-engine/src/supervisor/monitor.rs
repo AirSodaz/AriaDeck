@@ -308,6 +308,13 @@ fn monitor_local_engine(shared: &SupervisorShared) {
         let Some(status) = exit else {
             continue;
         };
+        if *shared
+            .stop
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        {
+            break;
+        }
         let restart_count = u32::try_from(restarts.len()).unwrap_or(u32::MAX);
         if restart_count >= shared.policy.max_restarts {
             set_supervisor_health(

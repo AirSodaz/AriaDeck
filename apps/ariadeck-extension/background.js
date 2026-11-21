@@ -7,11 +7,14 @@
 
 import {
   ERROR_TEXT,
+  MAX_REFERER_BYTES,
+  MAX_USER_AGENT_BYTES,
   cookieHeaderFor,
   cookiesAllowedFor,
   guessFilename,
   originOf,
   recordResult,
+  sanitizeHeaderValue,
   sendToHost,
 } from "./bridge.js";
 
@@ -47,11 +50,15 @@ async function send(url, pageUrl) {
     // Referer is what most gated downloads actually need, and it is not a secret,
     // so it goes by default (§5).
     if (pageUrl && originOf(pageUrl)) {
-      item.referer = pageUrl;
+      const referer = sanitizeHeaderValue(pageUrl, MAX_REFERER_BYTES);
+      if (referer) item.referer = referer;
     }
     // Sending the browser's own UA keeps the engine from looking like a different
     // client to servers that check.
-    item.user_agent = navigator.userAgent;
+    const userAgent = sanitizeHeaderValue(navigator.userAgent, MAX_USER_AGENT_BYTES);
+    if (userAgent) {
+      item.user_agent = userAgent;
+    }
 
     const filename = guessFilename(url);
     if (filename) {

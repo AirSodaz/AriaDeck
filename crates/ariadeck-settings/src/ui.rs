@@ -53,5 +53,6 @@ pub struct UiPreferences {
 pub struct OnboardingSettings {
     /// The core-setup guide has been completed or explicitly dismissed, so it
     /// must not reopen on its own. Settings → Engine still offers the same panel.
+    #[serde(default)]
     pub core_setup_dismissed: bool,
 }

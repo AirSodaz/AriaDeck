@@ -1057,3 +1057,54 @@ fn malformed_mutation_responses_are_reported_as_unknown_outcomes() {
         assert!(!error.retryable);
     }
 }
+
+#[tokio::test]
+async fn change_options_preserves_repeated_header_keys() {
+    let transport = ScriptedTransport::new([Ok(json!("OK"))]);
+    let client = Aria2Client::new(transport);
+    client
+        .change_options(
+            Gid::from_u64(1),
+            &[
+                ("header".into(), "X-One: 1".into()),
+                ("header".into(), "X-Two: 2".into()),
+            ],
+        )
+        .await
+        .expect("change_options");
+
+    let calls = client
+        .transport()
+        .calls
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(calls[0].1[1], json!({ "header": ["X-One: 1", "X-Two: 2"] }));
+}
+
+#[tokio::test]
+async fn retry_uri_falls_back_when_original_gid_was_purged() {
+    let transport = ScriptedTransport::new([
+        Err(RpcError::Remote {
+            code: 1,
+            message: "GID 0000000000000009 is not found".into(),
+            data: None,
+        }),
+        Err(RpcError::Remote {
+            code: 1,
+            message: "GID 0000000000000009 is not found".into(),
+            data: None,
+        }),
+        Ok(json!("00000000000000aa")),
+    ]);
+    let client = Aria2Client::new(transport);
+    let fallback = AddDownloadRequest {
+        source: AddDownloadSource::Uris(vec!["https://example.test/file.bin".into()]),
+        destination: Some(ariadeck_domain::EnginePath::new("/downloads")),
+        ..AddDownloadRequest::default()
+    };
+    let next = client
+        .retry_uri(Gid::from_u64(9), &fallback)
+        .await
+        .expect("retry should fall back to fallback URI");
+    assert_eq!(next, Gid::from_u64(0xaa));
+}

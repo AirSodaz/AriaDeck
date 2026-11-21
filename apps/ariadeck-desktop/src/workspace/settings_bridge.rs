@@ -30,9 +30,7 @@ use tokio::{
 use super::{
     DesktopRoot, ProxyPasswordUpdate,
     core_fetch::CoreDownloadResult,
-    mapping::{
-        map_core_registry, map_local_engine_health, map_profile_catalog, map_settings, map_snapshot,
-    },
+    mapping::{map_local_engine_health, map_profile_catalog, map_settings, map_snapshot},
     tracker_list::TrackerListRefreshResult,
 };
 
@@ -477,7 +475,6 @@ pub(crate) fn spawn_core_download_result_bridge(
         while let Some(result) = results.recv().await {
             if this
                 .update_in(cx, |this, _window, cx| {
-                    let registry = map_core_registry(&this.core_store);
                     let installed_version = result
                         .installed
                         .as_ref()
@@ -496,7 +493,7 @@ pub(crate) fn spawn_core_download_result_bridge(
                         workspace.set_core_download_result(
                             CoreDownloadResultView {
                                 request_id: result.request_id,
-                                registry,
+                                registry: result.registry,
                                 installed_version,
                                 outcome,
                             },

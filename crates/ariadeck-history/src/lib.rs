@@ -16,8 +16,9 @@ use ariadeck_domain::{
 use rusqlite::{Connection, OptionalExtension, params};
 use thiserror::Error;
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 const DEFAULT_LIST_LIMIT: usize = 10_000;
+const DEFAULT_CATEGORY_LIST_LIMIT: i64 = 50_000;
 const MAX_ERROR_MESSAGE_CHARS: usize = 512;
 
 #[derive(Debug, Error)]
@@ -58,6 +59,7 @@ impl SqliteHistoryStore {
         connection.execute_batch(
             "
             PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
             PRAGMA foreign_keys = ON;
             ",
         )?;
@@ -208,22 +210,51 @@ impl TaskHistoryStore for SqliteHistoryStore {
     ) -> Result<Vec<(Gid, String)>, ariadeck_application::HistoryStoreError> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare_cached(
-                "SELECT gid, category_id FROM task_category WHERE profile_id = ?1",
+                "SELECT gid, category_id FROM task_category WHERE profile_id = ?1 LIMIT ?2",
             )?;
-            let rows = statement.query_map(params![profile_id.to_string()], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?;
+            let rows = statement.query_map(
+                params![profile_id.to_string(), DEFAULT_CATEGORY_LIST_LIMIT],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?;
             let mut out = Vec::new();
             for row in rows {
-                let (gid_s, category_id) = row?;
-                let gid = gid_s
-                    .parse()
-                    .map_err(|_| HistoryError::InvalidGid(gid_s.clone()))?;
+                let (gid_s, category_id) = match row {
+                    Ok(row) => row,
+                    Err(error) => {
+                        tracing::warn!(%error, "skipping unreadable task_category row");
+                        continue;
+                    }
+                };
+                let Ok(gid) = gid_s.parse() else {
+                    tracing::warn!(gid = %gid_s, "skipping task_category row with invalid gid");
+                    continue;
+                };
                 if !category_id.is_empty() {
                     out.push((gid, category_id));
                 }
             }
             Ok(out)
+        })
+        .map_err(Into::into)
+    }
+
+    fn remove_profile(
+        &self,
+        profile_id: ProfileId,
+    ) -> Result<(), ariadeck_application::HistoryStoreError> {
+        self.with_connection(|connection| {
+            let tx = connection.transaction()?;
+            let profile_s = profile_id.to_string();
+            tx.execute(
+                "DELETE FROM task_history WHERE profile_id = ?1",
+                params![&profile_s],
+            )?;
+            tx.execute(
+                "DELETE FROM task_category WHERE profile_id = ?1",
+                params![&profile_s],
+            )?;
+            tx.commit()?;
+            Ok(())
         })
         .map_err(Into::into)
     }
@@ -312,6 +343,18 @@ fn migrate(connection: &mut Connection) -> Result<(), HistoryError> {
             );
             CREATE INDEX IF NOT EXISTS idx_task_category_profile_category
                 ON task_category (profile_id, category_id);
+            ",
+        )?;
+        tx.pragma_update(None, "user_version", 2)?;
+    }
+    if version < 3 {
+        tx.execute_batch(
+            "
+            DROP INDEX IF EXISTS idx_task_history_profile_status;
+            DROP INDEX IF EXISTS idx_task_category_profile_category;
+            DROP INDEX IF EXISTS idx_task_history_profile_recorded;
+            CREATE INDEX IF NOT EXISTS idx_task_history_profile_recorded
+                ON task_history (profile_id, recorded_at DESC, gid DESC);
             ",
         )?;
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -430,8 +473,19 @@ fn list_records(
 
     let mut records = Vec::new();
     for row in rows {
-        let raw = row?;
-        records.push(raw.into_record()?);
+        let raw = match row {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::warn!(%error, "skipping unreadable task_history row");
+                continue;
+            }
+        };
+        match raw.into_record() {
+            Ok(record) => records.push(record),
+            Err(error) => {
+                tracing::warn!(%error, "skipping corrupt task_history row");
+            }
+        }
     }
     Ok(records)
 }
@@ -473,10 +527,14 @@ impl RawHistoryRow {
             source_kind: source_kind_from_sql(&self.source_kind)?,
             total_length: ByteCount::new(self.total_length.max(0) as u64),
             completed_length: ByteCount::new(self.completed_length.max(0) as u64),
-            error: self.error_message.map(|message| TaskError {
-                code: self.error_code.and_then(|code| u32::try_from(code).ok()),
-                message,
-            }),
+            error: if self.error_code.is_some() || self.error_message.is_some() {
+                Some(TaskError {
+                    code: self.error_code.and_then(|code| u32::try_from(code).ok()),
+                    message: self.error_message.unwrap_or_default(),
+                })
+            } else {
+                None
+            },
             primary_uri_redacted: self.primary_uri_redacted,
             recorded_at_ms: self.recorded_at.max(0) as u64,
             updated_at_ms: self.updated_at.max(0) as u64,
@@ -739,5 +797,117 @@ mod tests {
         let listed = store.list(profile, 10).expect("list");
         assert_eq!(listed[0].total_length.get(), i64::MAX as u64);
         assert_eq!(listed[0].recorded_at_ms, i64::MAX as u64);
+    }
+
+    #[test]
+    fn schema_v2_migrates_to_v3_and_remove_profile_deletes_all_profile_rows() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("history.sqlite");
+        {
+            let conn = Connection::open(&path).expect("seed v2 db");
+            conn.execute_batch(
+                "
+                CREATE TABLE task_history (
+                    profile_id TEXT NOT NULL, gid TEXT NOT NULL, status TEXT NOT NULL,
+                    display_name TEXT NOT NULL, directory TEXT, info_hash TEXT,
+                    source_kind TEXT NOT NULL, total_length INTEGER NOT NULL,
+                    completed_length INTEGER NOT NULL, error_code INTEGER, error_message TEXT,
+                    primary_uri_redacted TEXT, recorded_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (profile_id, gid)
+                );
+                CREATE INDEX idx_task_history_profile_recorded ON task_history (profile_id, recorded_at DESC);
+                CREATE INDEX idx_task_history_profile_status ON task_history (profile_id, status, recorded_at DESC);
+                CREATE TABLE task_category (
+                    profile_id TEXT NOT NULL, gid TEXT NOT NULL, category_id TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL, PRIMARY KEY (profile_id, gid)
+                );
+                CREATE INDEX idx_task_category_profile_category ON task_category (profile_id, category_id);
+                PRAGMA user_version = 2;
+                ",
+            )
+            .expect("seed v2 schema");
+        }
+        let store = SqliteHistoryStore::open(&path).expect("migrate v2 -> v3");
+        let profile_a = ProfileId::new();
+        let profile_b = ProfileId::new();
+        store
+            .upsert(
+                &HistoryRecord::from_task(
+                    profile_a,
+                    &sample_task(1, DownloadStatus::Complete, "a.bin"),
+                    10,
+                )
+                .expect("a"),
+            )
+            .expect("upsert a");
+        store
+            .set_task_category(profile_a, Gid::from_u64(1), Some("cat-1"))
+            .expect("cat a");
+        store
+            .upsert(
+                &HistoryRecord::from_task(
+                    profile_b,
+                    &sample_task(2, DownloadStatus::Complete, "b.bin"),
+                    10,
+                )
+                .expect("b"),
+            )
+            .expect("upsert b");
+
+        store.remove_profile(profile_a).expect("remove_profile");
+        assert_eq!(store.count(profile_a).expect("count a"), 0);
+        assert!(
+            store
+                .list_task_categories(profile_a)
+                .expect("cats a")
+                .is_empty()
+        );
+        assert_eq!(store.count(profile_b).expect("count b"), 1);
+    }
+
+    #[test]
+    fn corrupt_rows_are_skipped_and_error_code_without_message_is_preserved() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("history.sqlite");
+        let store = SqliteHistoryStore::open(&path).expect("open");
+        let profile = ProfileId::new();
+        let valid = HistoryRecord::from_task(
+            profile,
+            &sample_task(1, DownloadStatus::Complete, "good.bin"),
+            100,
+        )
+        .expect("valid");
+        store.upsert(&valid).expect("upsert valid");
+
+        // Insert one corrupt row (invalid status) and one error_code-only row (NULL error_message).
+        store
+            .with_connection(|conn| {
+                conn.execute(
+                    "INSERT INTO task_history (profile_id, gid, status, display_name, directory, info_hash, source_kind, total_length, completed_length, error_code, error_message, primary_uri_redacted, recorded_at, updated_at)
+                     VALUES (?1, 'not-a-gid', 'complete', 'bad.bin', NULL, NULL, 'unknown', 0, 0, NULL, NULL, NULL, 99, 99)",
+                    params![profile.to_string()],
+                )?;
+                conn.execute(
+                    "INSERT INTO task_history (profile_id, gid, status, display_name, directory, info_hash, source_kind, total_length, completed_length, error_code, error_message, primary_uri_redacted, recorded_at, updated_at)
+                     VALUES (?1, ?2, 'error', 'err-only.bin', NULL, NULL, 'direct_uri', 10, 0, 24, NULL, NULL, 50, 50)",
+                    params![profile.to_string(), Gid::from_u64(5).to_string()],
+                )?;
+                Ok(())
+            })
+            .expect("seed raw rows");
+
+        let records = store.list(profile, 10).expect("list skipping corrupt row");
+        assert_eq!(records.len(), 2);
+        let err_row = records
+            .iter()
+            .find(|r| r.gid == Gid::from_u64(5))
+            .expect("error_code-only row present");
+        assert_eq!(
+            err_row.error,
+            Some(TaskError {
+                code: Some(24),
+                message: String::new(),
+            })
+        );
     }
 }

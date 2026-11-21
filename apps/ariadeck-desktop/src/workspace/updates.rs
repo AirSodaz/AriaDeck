@@ -3,13 +3,19 @@
 use std::{
     collections::HashMap,
     env,
+    io::{BufWriter, Write as _},
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
 use gpui::{Context, Window};
 use semver::Version;
 use serde::Deserialize;
+use sha2::{Digest as _, Sha256};
 
 use super::DesktopRoot;
 
@@ -281,10 +287,13 @@ async fn fetch_bounded(
     super::http::fetch_bounded_bytes(url, limit, REQUEST_TIMEOUT, label, headers).await
 }
 
-pub(crate) async fn download_verified_package<F>(
+pub(crate) async fn download_verified_package_to_dir<F>(
     offer: &UpdateOffer,
+    update_dir: &Path,
+    os: &str,
+    arch: &str,
     on_progress: F,
-) -> Result<Vec<u8>, String>
+) -> Result<PathBuf, String>
 where
     F: FnMut(u64, Option<u64>),
 {
@@ -292,6 +301,8 @@ where
         .package_url
         .as_deref()
         .ok_or_else(|| "This release has no download package for your platform.".to_owned())?;
+    let public_key = UPDATE_PUBLIC_KEY
+        .ok_or_else(|| "This build has no trusted update signing key.".to_owned())?;
 
     let signature_bytes = if let Some(sig_data) = &offer.signature_data {
         sig_data.as_bytes().to_vec()
@@ -301,57 +312,196 @@ where
         return Err("This release has no package signature.".to_owned());
     };
 
-    let bytes = super::http::fetch_bounded_with_progress(
-        package_url,
-        MAX_INSTALLER_BYTES,
-        Duration::from_secs(300),
-        "Package",
-        on_progress,
-    )
-    .await?;
+    // Fail fast on bad key/signature before streaming an installer payload.
+    let _ = decode_minisign_inputs(public_key, &signature_bytes)?;
 
-    let checksum_input = if let Some(checksums_url) = &offer.checksums_url {
+    let update_dir_for_worker = update_dir.to_path_buf();
+    let version = offer.version.clone();
+    let os_owned = os.to_owned();
+    let arch_owned = arch.to_owned();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+    let download_completed = Arc::new(AtomicBool::new(false));
+    let completed_for_worker = Arc::clone(&download_completed);
+
+    let verify_task = tokio::task::spawn_blocking(move || {
+        prepare_update_dir(&update_dir_for_worker).map_err(StreamVerifyError::Other)?;
+        stream_verify_to_tempfile_with_key(
+            public_key,
+            &signature_bytes,
+            &update_dir_for_worker,
+            rx,
+            &completed_for_worker,
+        )
+    });
+
+    let download_fut = async {
+        let outcome = super::http::fetch_bounded_to_channel(
+            package_url,
+            MAX_INSTALLER_BYTES,
+            Duration::from_secs(300),
+            "Package",
+            on_progress,
+            tx,
+        )
+        .await;
+        if outcome.is_ok() {
+            download_completed.store(true, Ordering::Release);
+        }
+        outcome
+    };
+
+    let (download_res, verify_res) = tokio::join!(download_fut, verify_task);
+    let verify_res =
+        verify_res.map_err(|error| format!("Update verification task failed: {error}"));
+    let (temp_file, actual_sha256_hex) = match (download_res, verify_res) {
+        (Ok(()), Ok(Ok(verified))) => verified,
+        (Err(download_err), Ok(Err(StreamVerifyError::Interrupted)) | Ok(Ok(_))) => {
+            return Err(download_err);
+        }
+        (_, Ok(Err(error))) => return Err(error.into_message()),
+        (_, Err(join_err)) => return Err(join_err),
+    };
+
+    if let Some(checksums_url) = &offer.checksums_url {
         let package_name = url::Url::parse(package_url)
             .ok()
             .and_then(|url| url.path_segments()?.next_back().map(str::to_owned));
         let checksums_bytes =
             fetch_bounded(checksums_url, MAX_CHECKSUM_BYTES, "Checksum file", &[]).await;
         match (package_name, checksums_bytes) {
-            (Some(name), Ok(checksums_bytes)) => Some((checksums_bytes, name)),
+            (Some(name), Ok(checksums_bytes)) => {
+                verify_sha256sum_hex(&checksums_bytes, &name, &actual_sha256_hex)?;
+            }
             (_, Err(error)) => {
                 tracing::warn!(%error, "optional SHA256SUMS fetch failed; relying on Minisign verification");
-                None
             }
-            _ => None,
+            _ => {}
         }
-    } else {
-        None
-    };
+    }
 
-    // Offload CPU-heavy signature & SHA-256 verification over up to 512 MiB
-    // so Tokio async worker threads remain responsive.
-    tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
-        verify_minisign(&signature_bytes, &bytes)?;
-        if let Some((checksums_bytes, name)) = checksum_input {
-            verify_sha256sum(&checksums_bytes, &name, &bytes)?;
-        }
-        Ok(bytes)
+    let dest_path = package_destination_path(update_dir, &version, &os_owned, &arch_owned);
+    tokio::task::spawn_blocking(move || {
+        temp_file
+            .persist(&dest_path)
+            .map(|_| dest_path)
+            .map_err(|error| format!("Could not save the verified package: {}", error.error))
     })
     .await
-    .map_err(|error| format!("Update verification task failed: {error}"))?
+    .map_err(|error| format!("Package save task failed: {error}"))?
 }
 
+#[derive(Debug)]
+enum StreamVerifyError {
+    Interrupted,
+    Other(String),
+}
+
+impl StreamVerifyError {
+    fn into_message(self) -> String {
+        match self {
+            Self::Interrupted => "Package download was interrupted before completion.".to_owned(),
+            Self::Other(msg) => msg,
+        }
+    }
+}
+
+fn stream_verify_to_tempfile_with_key(
+    public_key: &str,
+    signature_bytes: &[u8],
+    update_dir: &Path,
+    mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    download_completed: &AtomicBool,
+) -> Result<(tempfile::NamedTempFile, String), StreamVerifyError> {
+    let (public_key, signature) =
+        decode_minisign_inputs(public_key, signature_bytes).map_err(StreamVerifyError::Other)?;
+    let mut verifier = match public_key.verify_stream(&signature) {
+        Ok(verifier) => Some(verifier),
+        Err(minisign_verify::Error::UnsupportedLegacyMode) => None,
+        Err(_) => {
+            return Err(StreamVerifyError::Other(
+                "Package signature verification failed.".to_owned(),
+            ));
+        }
+    };
+
+    let mut temp_file = tempfile::Builder::new()
+        .prefix(".AriaDeck-update-")
+        .suffix(".tmp")
+        .tempfile_in(update_dir)
+        .map_err(|error| {
+            StreamVerifyError::Other(format!("Could not prepare update temp file: {error}"))
+        })?;
+
+    let mut hasher = Sha256::new();
+    {
+        let mut writer = BufWriter::new(temp_file.as_file_mut());
+        while let Some(chunk) = rx.blocking_recv() {
+            writer.write_all(&chunk).map_err(|error| {
+                StreamVerifyError::Other(format!("Could not write the downloaded package: {error}"))
+            })?;
+            hasher.update(&chunk);
+            if let Some(stream_verifier) = verifier.as_mut() {
+                stream_verifier.update(&chunk);
+            }
+        }
+        writer.flush().map_err(|error| {
+            StreamVerifyError::Other(format!("Could not flush the downloaded package: {error}"))
+        })?;
+    }
+    temp_file.as_file().sync_all().map_err(|error| {
+        StreamVerifyError::Other(format!("Could not sync the downloaded package: {error}"))
+    })?;
+
+    if !download_completed.load(Ordering::Acquire) {
+        return Err(StreamVerifyError::Interrupted);
+    }
+
+    if let Some(mut stream_verifier) = verifier {
+        stream_verifier.finalize().map_err(|_| {
+            StreamVerifyError::Other("Package signature verification failed.".to_owned())
+        })?;
+    } else {
+        // Legacy non-prehashed signatures require reading from disk after EOF.
+        let legacy_bytes = std::fs::read(temp_file.path()).map_err(|error| {
+            StreamVerifyError::Other(format!(
+                "Could not read the downloaded package for signature verification: {error}"
+            ))
+        })?;
+        public_key
+            .verify(&legacy_bytes, &signature, true)
+            .map_err(|_| {
+                StreamVerifyError::Other("Package signature verification failed.".to_owned())
+            })?;
+    }
+
+    let actual_hex = sha256_bytes_hex(&hasher.finalize());
+    Ok((temp_file, actual_hex))
+}
+
+#[cfg(test)]
 fn verify_minisign(signature: &[u8], bytes: &[u8]) -> Result<(), String> {
     let public_key = UPDATE_PUBLIC_KEY
         .ok_or_else(|| "This build has no trusted update signing key.".to_owned())?;
     verify_minisign_with_key(public_key, signature, bytes)
 }
 
+#[cfg(test)]
 fn verify_minisign_with_key(
     public_key: &str,
     signature: &[u8],
     bytes: &[u8],
 ) -> Result<(), String> {
+    let (public_key, signature) = decode_minisign_inputs(public_key, signature)?;
+    public_key
+        .verify(bytes, &signature, true)
+        .map_err(|_| "Package signature verification failed.".to_owned())
+}
+
+fn decode_minisign_inputs(
+    public_key: &str,
+    signature: &[u8],
+) -> Result<(minisign_verify::PublicKey, minisign_verify::Signature), String> {
     let encoded_key = public_key
         .lines()
         .filter(|line| !line.starts_with("untrusted comment:"))
@@ -383,15 +533,17 @@ fn verify_minisign_with_key(
 
     let signature = minisign_verify::Signature::decode(effective_sig_str)
         .map_err(|_| "Package signature is invalid.".to_owned())?;
-    public_key
-        .verify(bytes, &signature, true)
-        .map_err(|_| "Package signature verification failed.".to_owned())
+    Ok((public_key, signature))
 }
 
-pub(crate) fn verify_sha256sum(
+fn sha256_bytes_hex(digest: &[u8]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn verify_sha256sum_hex(
     checksums: &[u8],
     expected_name: &str,
-    bytes: &[u8],
+    actual_hex: &str,
 ) -> Result<(), String> {
     let text = std::str::from_utf8(checksums)
         .map_err(|_| "Checksum file is not valid UTF-8.".to_owned())?;
@@ -404,25 +556,23 @@ pub(crate) fn verify_sha256sum(
     if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("Package checksum entry is invalid.".into());
     }
-    use sha2::{Digest as _, Sha256};
-    let actual = Sha256::digest(bytes);
-    let actual = actual
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    if !actual.eq_ignore_ascii_case(expected) {
+    if !actual_hex.eq_ignore_ascii_case(expected) {
         return Err("Package failed SHA-256 verification.".into());
     }
     Ok(())
 }
 
-pub(crate) fn save_package(
+#[cfg(test)]
+pub(crate) fn verify_sha256sum(
+    checksums: &[u8],
+    expected_name: &str,
     bytes: &[u8],
-    directory: &Path,
-    version: &str,
-    os: &str,
-    arch: &str,
-) -> Result<std::path::PathBuf, String> {
+) -> Result<(), String> {
+    let actual_hex = sha256_bytes_hex(&Sha256::digest(bytes));
+    verify_sha256sum_hex(checksums, expected_name, &actual_hex)
+}
+
+fn prepare_update_dir(directory: &Path) -> Result<(), String> {
     std::fs::create_dir_all(directory)
         .map_err(|error| format!("Could not prepare the update directory: {error}"))?;
     #[cfg(unix)]
@@ -430,6 +580,10 @@ pub(crate) fn save_package(
         use std::os::unix::fs::PermissionsExt as _;
         let _ = std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700));
     }
+    Ok(())
+}
+
+fn package_destination_path(directory: &Path, version: &str, os: &str, arch: &str) -> PathBuf {
     let target = target_platform_key(os, arch).unwrap_or("unknown");
     let ext = match os {
         "windows" => "exe",
@@ -437,16 +591,15 @@ pub(crate) fn save_package(
         "linux" => "AppImage",
         _ => "bin",
     };
-    let path = directory.join(format!("AriaDeck_{version}_{target}.{ext}"));
-    std::fs::write(&path, bytes)
-        .map_err(|error| format!("Could not save the verified package: {error}"))?;
-    Ok(path)
+    directory.join(format!("AriaDeck_{version}_{target}.{ext}"))
 }
 
 #[derive(Default)]
 pub(crate) struct UpdateController {
     offer: Option<UpdateOffer>,
     verified_installer: Option<PathBuf>,
+    checking: bool,
+    downloading: bool,
 }
 
 impl UpdateController {
@@ -458,12 +611,40 @@ impl UpdateController {
         self.offer.clone()
     }
 
+    pub(crate) fn begin_check(&mut self) -> bool {
+        if self.checking {
+            return false;
+        }
+        self.checking = true;
+        true
+    }
+
+    pub(crate) fn finish_check(&mut self) {
+        self.checking = false;
+    }
+
+    pub(crate) fn begin_download(&mut self) -> bool {
+        if self.downloading {
+            return false;
+        }
+        self.downloading = true;
+        true
+    }
+
+    pub(crate) fn finish_download(&mut self) {
+        self.downloading = false;
+    }
+
     pub(crate) fn set_verified_installer(&mut self, path: PathBuf) {
         self.verified_installer = Some(path);
     }
 
-    pub(crate) fn take_verified_installer(&mut self) -> Option<PathBuf> {
-        self.verified_installer.take()
+    pub(crate) fn verified_installer(&self) -> Option<&PathBuf> {
+        self.verified_installer.as_ref()
+    }
+
+    pub(crate) fn clear_verified_installer(&mut self) {
+        self.verified_installer = None;
     }
 }
 
@@ -615,9 +796,12 @@ fn launch_verified_update(package: PathBuf, executable: PathBuf) -> Result<(), S
         else {
             return Err("In-app update on macOS requires running from an .app bundle.".into());
         };
+        let staging_parent = package
+            .parent()
+            .ok_or_else(|| "Update package path has no parent directory.".to_owned())?;
         let staging_temp = tempfile::Builder::new()
             .prefix("AriaDeck-update-stage-")
-            .tempdir()
+            .tempdir_in(staging_parent)
             .map_err(|e| format!("Could not create macOS update staging directory: {e}"))?;
         let staging_dir = staging_temp.path().to_path_buf();
 
@@ -680,6 +864,16 @@ impl DesktopRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.updates.begin_check() {
+            self.workspace.update(cx, |shell, cx| {
+                shell.set_update_check_result(
+                    request_id,
+                    Err("An update check is already in progress.".into()),
+                    cx,
+                );
+            });
+            return;
+        }
         let version = env!("CARGO_PKG_VERSION").to_owned();
         let os = std::env::consts::OS;
         let arch = std::env::consts::ARCH;
@@ -693,6 +887,7 @@ impl DesktopRoot {
                 Err(error) => Err(format!("Update check worker failed: {error}")),
             };
             this.update_in(cx, |this, _window, cx| {
+                this.updates.finish_check();
                 let view_result = match result {
                     Ok(offer) => {
                         this.updates.set_offer(offer.clone());
@@ -728,6 +923,13 @@ impl DesktopRoot {
         cx: &mut Context<Self>,
     ) {
         if is_read_only_update_install() {
+            self.workspace.update(cx, |shell, cx| {
+                shell.set_update_download_result(
+                    request_id,
+                    Err("In-app updates are disabled for portable or read-only installs.".into()),
+                    cx,
+                );
+            });
             return;
         }
         let Some(offer) = self.updates.offer() else {
@@ -740,6 +942,16 @@ impl DesktopRoot {
             });
             return;
         };
+        if !self.updates.begin_download() {
+            self.workspace.update(cx, |shell, cx| {
+                shell.set_update_download_result(
+                    request_id,
+                    Err("An update download is already in progress.".into()),
+                    cx,
+                );
+            });
+            return;
+        }
         let version = offer.version.clone();
         let os = std::env::consts::OS;
         let arch = std::env::consts::ARCH;
@@ -752,9 +964,15 @@ impl DesktopRoot {
                 tokio::sync::mpsc::unbounded_channel::<(u64, Option<u64>)>();
             let offer_clone = offer.clone();
             let download_task = runtime.spawn(async move {
-                download_verified_package(&offer_clone, move |downloaded, total| {
-                    let _ = progress_tx.send((downloaded, total));
-                })
+                download_verified_package_to_dir(
+                    &offer_clone,
+                    &update_dir,
+                    os,
+                    arch,
+                    move |downloaded, total| {
+                        let _ = progress_tx.send((downloaded, total));
+                    },
+                )
                 .await
             });
 
@@ -768,21 +986,12 @@ impl DesktopRoot {
             }
 
             let result = match download_task.await {
-                Ok(Ok(bytes)) => {
-                    let version_for_file = version.clone();
-                    runtime
-                        .spawn_blocking(move || {
-                            save_package(&bytes, &update_dir, &version_for_file, os, arch)
-                        })
-                        .await
-                        .map_err(|error| format!("Package save task failed: {error}"))
-                        .and_then(|result| result)
-                }
-                Ok(Err(error)) => Err(error),
+                Ok(res) => res,
                 Err(panic_err) => Err(format!("Download task panicked: {panic_err}")),
             };
 
             this.update_in(cx, |this, _window, cx| {
+                this.updates.finish_download();
                 let view_result = match result {
                     Ok(path) => {
                         this.updates.set_verified_installer(path);
@@ -803,7 +1012,7 @@ impl DesktopRoot {
     }
 
     pub(super) fn install_verified_update(&mut self, cx: &mut Context<Self>) {
-        let Some(installer) = self.updates.take_verified_installer() else {
+        let Some(installer) = self.updates.verified_installer().cloned() else {
             return;
         };
         let executable = match env::current_exe() {
@@ -824,7 +1033,10 @@ impl DesktopRoot {
                 .map_err(|error| format!("Update launch worker failed: {error}"))
                 .and_then(|res| res);
             this.update(cx, |this, cx| match result {
-                Ok(()) => this.quit_application(cx),
+                Ok(()) => {
+                    this.updates.clear_verified_installer();
+                    this.quit_application(cx);
+                }
                 Err(error) => {
                     tracing::error!(%error, "could not start the verified update installer");
                     this.workspace.update(cx, |shell, cx| {
@@ -1119,5 +1331,77 @@ QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfN
                 .flatten()
         });
         assert_eq!(pid_env.as_deref(), Some("1357"));
+    }
+
+    #[test]
+    fn update_controller_enforces_single_flight_and_keeps_verified_installer_until_cleared() {
+        let mut controller = UpdateController::default();
+        assert!(controller.begin_check());
+        assert!(!controller.begin_check());
+        controller.finish_check();
+        assert!(controller.begin_check());
+
+        assert!(controller.begin_download());
+        assert!(!controller.begin_download());
+        controller.finish_download();
+        assert!(controller.begin_download());
+
+        let pkg = PathBuf::from("AriaDeck_0.3.0.exe");
+        controller.set_verified_installer(pkg.clone());
+        assert_eq!(controller.verified_installer(), Some(&pkg));
+        controller.clear_verified_installer();
+        assert_eq!(controller.verified_installer(), None);
+    }
+
+    #[test]
+    fn stream_verify_to_tempfile_handles_legacy_fallback_tamper_and_interruption() {
+        let public_key = "untrusted comment: minisign public key E7620F1842B4E81F\nRWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
+        let signature = br#"untrusted comment: signature from minisign secret key
+RWQf6LRCGA9i59SLOFxz6NxvASXDJeRtuZykwQepbDEGt87ig1BNpWaVWuNrm73YiIiJbq71Wi+dP9eKL8OC351vwIasSSbXxwA=
+trusted comment: timestamp:1555779966	file:test
+QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfNQUaOAA=="#;
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // Valid streamed payload
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tx.try_send(b"te".to_vec()).expect("send chunk 1");
+        tx.try_send(b"st".to_vec()).expect("send chunk 2");
+        drop(tx);
+        let completed = AtomicBool::new(true);
+        let (temp_file, digest) =
+            stream_verify_to_tempfile_with_key(public_key, signature, dir.path(), rx, &completed)
+                .expect("verified stream");
+        assert_eq!(digest, sha256_bytes_hex(&Sha256::digest(b"test")));
+        let final_path = dir.path().join("AriaDeck_verified.bin");
+        temp_file.persist(&final_path).expect("persist");
+        assert_eq!(std::fs::read(&final_path).expect("read"), b"test");
+
+        // Interrupted download before completion must report Interrupted, not signature error.
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tx.try_send(b"te".to_vec()).expect("send partial");
+        drop(tx);
+        let incomplete = AtomicBool::new(false);
+        let err =
+            stream_verify_to_tempfile_with_key(public_key, signature, dir.path(), rx, &incomplete)
+                .expect_err("interrupted download must fail");
+        assert!(matches!(err, StreamVerifyError::Interrupted));
+
+        // Completed tampered payload must fail verification and leave no temp file.
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tx.try_send(b"tampered".to_vec()).expect("send tampered");
+        drop(tx);
+        let err =
+            stream_verify_to_tempfile_with_key(public_key, signature, dir.path(), rx, &completed)
+                .expect_err("tampered payload must fail");
+        assert!(matches!(err, StreamVerifyError::Other(_)));
+        let remaining: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("readdir")
+            .filter_map(Result::ok)
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(
+            remaining,
+            vec![std::ffi::OsString::from("AriaDeck_verified.bin")]
+        );
     }
 }

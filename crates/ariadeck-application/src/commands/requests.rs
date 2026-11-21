@@ -440,13 +440,15 @@ impl Default for DownloadProxyConfig {
 
 impl std::fmt::Debug for DownloadProxyConfig {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redact_opt =
+            |value: &Option<String>| value.as_deref().map(ariadeck_domain::redact_source_uri);
         formatter
             .debug_struct("DownloadProxyConfig")
             .field("mode", &self.mode)
-            .field("all_proxy", &self.all_proxy)
-            .field("http_proxy", &self.http_proxy)
-            .field("https_proxy", &self.https_proxy)
-            .field("ftp_proxy", &self.ftp_proxy)
+            .field("all_proxy", &redact_opt(&self.all_proxy))
+            .field("http_proxy", &redact_opt(&self.http_proxy))
+            .field("https_proxy", &redact_opt(&self.https_proxy))
+            .field("ftp_proxy", &redact_opt(&self.ftp_proxy))
             .field("no_proxy", &self.no_proxy)
             .field("username", &self.username)
             .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
@@ -474,6 +476,23 @@ impl Eq for DownloadProxyConfig {}
 
 impl DownloadProxyConfig {
     pub(super) fn validate(&self) -> Result<(), ApplicationError> {
+        for endpoint in [
+            self.all_proxy.as_deref(),
+            self.http_proxy.as_deref(),
+            self.https_proxy.as_deref(),
+            self.ftp_proxy.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if endpoint.trim().is_empty() || endpoint.chars().any(char::is_control) {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::Validation,
+                    "Proxy endpoint must be non-empty and free of control characters.",
+                    false,
+                ));
+            }
+        }
         // Manual requires at least one endpoint. System may resolve to “direct”
         // (no proxy), which applies as cleared global proxy options.
         if self.mode == DownloadProxyMode::Manual
@@ -710,7 +729,8 @@ fn normalize_seed_ratio(ratio: &str) -> String {
         .unwrap_or_else(|| ratio.trim().to_owned())
 }
 
-fn format_selected_file_indices(indices: &[u32]) -> String {
+#[must_use]
+pub fn format_selected_file_indices(indices: &[u32]) -> String {
     let mut ranges = Vec::new();
     let Some(&first) = indices.first() else {
         return String::new();
@@ -761,4 +781,5 @@ pub enum AppCommand {
 pub struct TaskCommandContext {
     pub status: DownloadStatus,
     pub metadata: TaskMetadata,
+    pub is_history_only: bool,
 }

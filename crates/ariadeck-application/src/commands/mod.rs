@@ -13,5 +13,6 @@ pub use requests::{
     DownloadProxyConfig, DownloadProxyMode, FileConflictPolicy, MoveTaskInQueueRequest, QueueMove,
     RemoveTasksRequest, SetTaskConnectionPolicyRequest, SetTaskOptionsRequest,
     SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, TaskCommandContext, TaskRemovalScope,
+    format_selected_file_indices,
 };
 pub use service::CommandService;

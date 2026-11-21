@@ -146,7 +146,11 @@ fn main() {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .take();
     if let Some(handle) = pending_shutdown {
-        let _ = runtime.block_on(tokio::time::timeout(Duration::from_secs(5), handle));
+        match runtime.block_on(tokio::time::timeout(Duration::from_secs(5), handle)) {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "shutdown cleanup task failed"),
+            Err(_) => tracing::warn!("shutdown cleanup task exceeded 5-second timeout"),
+        }
     }
     if let Ok(runtime) = Arc::try_unwrap(runtime) {
         runtime.shutdown_timeout(Duration::from_secs(1));

@@ -49,6 +49,7 @@ struct SettingsExportProxy {
     ftp_proxy: Option<String>,
     no_proxy: Vec<String>,
     username: Option<String>,
+    #[serde(default = "crate::proxy::default_true")]
     check_certificate: bool,
 }
 
@@ -133,7 +134,7 @@ impl SettingsExportDocument {
         let credential = same_proxy_identity
             .then_some(current.download_proxy.credential)
             .flatten();
-        let settings = AppSettings {
+        let mut settings = AppSettings {
             color_scheme: self.color_scheme,
             language: self.language,
             download_directory: self.download_directory,
@@ -168,6 +169,7 @@ impl SettingsExportDocument {
             categories: self.categories,
             tracker_list: self.tracker_list,
         };
+        crate::sync_download_directory_from_fallback(&mut settings);
         settings.validate()?;
         Ok(settings)
     }

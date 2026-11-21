@@ -81,26 +81,13 @@ impl RpcSyncSession {
         &self,
         mut tasks: Vec<TaskSnapshot>,
     ) -> Result<Vec<TaskSnapshot>, SyncError> {
-        let mut missing = Vec::new();
-        {
+        let missing = {
             let cache = self
                 .metadata_cache
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            for task in &mut tasks {
-                if let Some((display_name, metadata)) = cache.get(&task.gid) {
-                    let followed_by = std::mem::take(&mut task.metadata.followed_by);
-                    let belongs_to = task.metadata.belongs_to;
-                    task.display_name.clone_from(display_name);
-                    task.name_state = TaskNameState::Resolved;
-                    task.metadata.clone_from(metadata);
-                    task.metadata.followed_by = followed_by;
-                    task.metadata.belongs_to = belongs_to;
-                } else {
-                    missing.push(task.gid);
-                }
-            }
-        }
+            apply_cached_metadata(&cache, &mut tasks)
+        };
         if missing.is_empty() {
             return Ok(tasks);
         }
@@ -130,6 +117,31 @@ impl RpcSyncSession {
         }
         Ok(tasks)
     }
+}
+
+fn apply_cached_metadata(
+    cache: &HashMap<Gid, (String, TaskMetadata)>,
+    tasks: &mut [TaskSnapshot],
+) -> Vec<Gid> {
+    let mut missing = Vec::new();
+    for task in tasks {
+        if let Some((display_name, metadata)) = cache.get(&task.gid) {
+            let followed_by = std::mem::take(&mut task.metadata.followed_by);
+            let belongs_to = task.metadata.belongs_to;
+            task.display_name.clone_from(display_name);
+            task.name_state = TaskNameState::Resolved;
+            task.metadata.clone_from(metadata);
+            if !followed_by.is_empty() {
+                task.metadata.followed_by = followed_by;
+            }
+            if belongs_to.is_some() {
+                task.metadata.belongs_to = belongs_to;
+            }
+        } else {
+            missing.push(task.gid);
+        }
+    }
+    missing
 }
 
 fn insert_resolved_tasks<'a>(
@@ -436,5 +448,39 @@ mod tests {
         prune_metadata_cache(&mut cache, &live, 1);
         assert!(cache.contains_key(&resolved_gid));
         assert!(!cache.contains_key(&stale_gid));
+    }
+
+    #[test]
+    fn apply_cached_metadata_preserves_cached_followed_by_and_belongs_to() {
+        let gid = Gid::from_u64(5);
+        let child = Gid::from_u64(6);
+        let parent = Gid::from_u64(4);
+        let uncached = Gid::from_u64(7);
+        let mut cache = HashMap::new();
+        let cached_meta = ariadeck_domain::TaskMetadata {
+            followed_by: vec![child],
+            belongs_to: Some(parent),
+            ..Default::default()
+        };
+        cache.insert(gid, ("ubuntu.iso".into(), cached_meta));
+
+        let mut tasks = vec![
+            TaskSnapshot::new(
+                gid,
+                ariadeck_domain::DownloadStatus::Active,
+                gid.to_string(),
+            ),
+            TaskSnapshot::new(
+                uncached,
+                ariadeck_domain::DownloadStatus::Active,
+                uncached.to_string(),
+            ),
+        ];
+        let missing = apply_cached_metadata(&cache, &mut tasks);
+        assert_eq!(missing, vec![uncached]);
+        assert_eq!(tasks[0].display_name, "ubuntu.iso");
+        assert_eq!(tasks[0].name_state, TaskNameState::Resolved);
+        assert_eq!(tasks[0].metadata.followed_by, vec![child]);
+        assert_eq!(tasks[0].metadata.belongs_to, Some(parent));
     }
 }

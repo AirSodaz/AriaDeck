@@ -47,7 +47,9 @@ impl LocaleId {
     /// Map a language tag / env locale string onto a supported catalog.
     #[must_use]
     pub fn parse_tag(tag: &str) -> Option<Self> {
-        let normalized = tag.trim().replace('_', "-");
+        let base = tag.split('.').next().unwrap_or(tag);
+        let base = base.split('@').next().unwrap_or(base);
+        let normalized = base.trim().replace('_', "-");
         if normalized.is_empty() {
             return None;
         }
@@ -56,16 +58,15 @@ impl LocaleId {
             return Some(Self::En);
         }
         if lower == "zh"
-            || lower.starts_with("zh-cn")
-            || lower.starts_with("zh-hans")
-            || lower.starts_with("zh-sg")
+            || lower == "zh-cn"
+            || lower.starts_with("zh-cn-")
+            || lower == "zh-hans"
+            || lower.starts_with("zh-hans-")
+            || lower == "zh-sg"
+            || lower.starts_with("zh-sg-")
             || lower == "zh-cmn-hans"
         {
             return Some(Self::ZhCn);
-        }
-        // Traditional Chinese tags fall back to English until zh-TW ships.
-        if lower.starts_with("zh-") {
-            return Some(Self::En);
         }
         None
     }
@@ -513,6 +514,7 @@ mod tests {
             "error-sync-unavailable",
             "error-command-no-result",
             "error-settings-invalid-download-directory",
+            "error-settings-empty-categories",
             "error-settings-invalid-speed-limit",
             "error-settings-invalid-transfer-policy",
             "error-settings-path-picker-failed",
@@ -521,12 +523,16 @@ mod tests {
             "error-settings-export-failed",
             "error-settings-import-failed",
             "error-settings-import-busy",
+            "error-settings-tracker-refresh-unavailable",
+            "error-settings-tracker-refresh-failed",
             "error-profile-switch-failed",
             "error-profile-save-failed",
             "error-core-command-failed",
             "error-diagnostics-export-failed",
             "error-persistence-unavailable",
             "error-core-download-unsupported-platform",
+            "error-core-download-unavailable",
+            "error-core-download-failed",
             "error-power-action-failed",
         ];
         for locale in LocaleId::all() {
@@ -573,14 +579,9 @@ mod tests {
         // Windows GetUserPreferredUILanguages-style tags
         assert_eq!(LocaleId::parse_tag("zh-CN"), Some(LocaleId::ZhCn));
         assert_eq!(LocaleId::parse_tag("zh-Hans"), Some(LocaleId::ZhCn));
-    }
-
-    #[test]
-    fn prints_system_locale_for_manual_debug() {
-        // Not an assertion-heavy test: helps diagnose Windows UI language detection.
-        let tags: Vec<_> = sys_locale::get_locales().collect();
-        eprintln!("sys_locale tags: {tags:?}");
-        eprintln!("from_system_env: {:?}", LocaleId::from_system_env());
+        assert_eq!(LocaleId::parse_tag("zh-TW"), None);
+        assert_eq!(LocaleId::parse_tag("zh-HK"), None);
+        assert_eq!(LocaleId::parse_tag("zh-Hant"), None);
     }
 
     #[test]

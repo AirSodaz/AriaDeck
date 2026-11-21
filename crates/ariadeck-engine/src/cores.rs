@@ -229,7 +229,7 @@ impl CoreStore {
         &self,
         summary: &CoreInstallationSummary,
     ) -> Result<CoreInstallation, EngineError> {
-        let dir = self.product_root.join(&summary.relative_dir);
+        let dir = self.resolve_relative_dir(&summary.relative_dir)?;
         let path = dir.join(INSTALLATION_FILE_NAME);
         let bytes = fs::read(&path)
             .map_err(|error| io_error("read installation manifest", &path, error))?;
@@ -237,6 +237,12 @@ impl CoreStore {
             path,
             message: error.to_string(),
         })
+    }
+
+    fn resolve_relative_dir(&self, relative_dir: &str) -> Result<PathBuf, EngineError> {
+        let relative = Path::new(relative_dir);
+        validate_relative_core_dir(relative)?;
+        Ok(self.product_root.join(relative))
     }
 
     fn save_installation(
@@ -270,8 +276,10 @@ impl CoreStore {
         }
     }
 
-    /// List installations with absolute executable paths for UI/desktop.
-    pub fn list_installations(&self) -> Result<Vec<CoreInstallationView>, EngineError> {
+    /// Load `cores.json` once together with resolved installation views.
+    pub fn load_registry_with_installations(
+        &self,
+    ) -> Result<(CoreRegistry, Vec<CoreInstallationView>), EngineError> {
         let registry = self.load_or_default()?;
         let mut views = Vec::with_capacity(registry.installations.len());
         for summary in &registry.installations {
@@ -321,7 +329,13 @@ impl CoreStore {
         }
         // Newest versions first using numeric component comparison ("1.37.0" > "1.9.0").
         views.sort_by(|left, right| compare_version_strings(&right.version, &left.version));
-        Ok(views)
+        Ok((registry, views))
+    }
+
+    /// List installations with absolute executable paths for UI/desktop.
+    pub fn list_installations(&self) -> Result<Vec<CoreInstallationView>, EngineError> {
+        self.load_registry_with_installations()
+            .map(|(_, views)| views)
     }
 
     /// Import an existing aria2c by copying it into the managed cores tree.
@@ -605,8 +619,8 @@ impl CoreStore {
         if registry.last_working_id == Some(id) {
             registry.last_working_id = registry.active_id;
         }
+        let version_dir = self.resolve_relative_dir(&summary.relative_dir)?;
         self.save_registry(&registry)?;
-        let version_dir = self.product_root.join(&summary.relative_dir);
         if version_dir.exists() {
             let _ = fs::remove_dir_all(&version_dir);
         }
@@ -733,7 +747,7 @@ pub fn parse_aria2_version_output(output: &str) -> Option<Aria2Probe> {
             in_features = true;
             // Same-line features: "Enabled Features: Async DNS, BitTorrent"
             if let Some((_, rest)) = trimmed.split_once(':') {
-                for part in rest.split([',', ' ']) {
+                for part in rest.split(',') {
                     let feature = part.trim();
                     if !feature.is_empty() {
                         features.push(feature.to_owned());
@@ -812,6 +826,20 @@ fn default_aria2_file_name() -> &'static str {
     } else {
         "aria2c"
     }
+}
+
+fn validate_relative_core_dir(dir: &Path) -> Result<(), EngineError> {
+    if dir.as_os_str().is_empty()
+        || dir.is_absolute()
+        || dir
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(EngineError::InvalidCoreRelativeDir {
+            path: dir.to_path_buf(),
+        });
+    }
+    Ok(())
 }
 
 fn sanitize_path_component(value: &str) -> Result<String, EngineError> {
@@ -924,6 +952,9 @@ System: Linux 6.1.0 x86_64\n\
         assert_eq!(probe.version, "1.37.0");
         assert!(probe.features.iter().any(|f| f == "BitTorrent"));
         assert!(probe.features.iter().any(|f| f == "HTTPS"));
+        assert!(probe.features.iter().any(|f| f == "Async DNS"));
+        assert!(probe.features.iter().any(|f| f == "Firefox3 Cookie"));
+        assert!(!probe.features.iter().any(|f| f == "Async"));
     }
 
     #[test]
@@ -1042,6 +1073,41 @@ System: Linux 6.1.0 x86_64\n\
         fs::write(store.registry_path(), b"{corrupt").expect("write corrupt");
         let err = store.load_or_default().expect_err("must reject");
         assert!(matches!(err, EngineError::MalformedCoreManifest { .. }));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remove_rejects_traversal_and_absolute_relative_dir() {
+        let root = temp_dir();
+        let store = CoreStore::new(root.join("data"));
+        let victim = root.join("victim");
+        fs::create_dir_all(&victim).expect("victim dir");
+        fs::write(victim.join("keep.txt"), b"keep").expect("victim file");
+
+        for bad_relative in ["../victim", victim.to_string_lossy().as_ref(), ""] {
+            let bad_id = CoreInstallationId::new();
+            let mut registry = CoreRegistry::empty();
+            registry.installations.push(CoreInstallationSummary {
+                id: bad_id,
+                version: "1.37.0".into(),
+                target: "test-target".into(),
+                source: CoreSource::Imported,
+                relative_dir: bad_relative.to_owned(),
+            });
+            store.save_registry(&registry).expect("save registry");
+
+            let err = store
+                .remove(bad_id)
+                .expect_err("traversal relative_dir must be rejected");
+            assert!(
+                matches!(err, EngineError::InvalidCoreRelativeDir { .. }),
+                "expected InvalidCoreRelativeDir for {bad_relative:?}, got {err:?}"
+            );
+            assert!(
+                victim.join("keep.txt").exists(),
+                "outside victim directory must remain untouched"
+            );
+        }
         let _ = fs::remove_dir_all(root);
     }
 }

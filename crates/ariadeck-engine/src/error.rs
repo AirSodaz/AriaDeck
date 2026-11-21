@@ -88,6 +88,10 @@ pub enum EngineError {
     AlreadyOnLastWorkingCore {
         id: ariadeck_domain::CoreInstallationId,
     },
+    #[error("invalid managed core directory: {path}")]
+    InvalidCoreRelativeDir { path: PathBuf },
+    #[error("duplicate profile id {profile_id} in catalog")]
+    DuplicateProfileId { profile_id: ProfileId },
     #[error("cannot remove the last remaining profile")]
     CannotRemoveLastProfile,
     #[error("unsupported profile catalog schema version {found}; this build supports {supported}")]

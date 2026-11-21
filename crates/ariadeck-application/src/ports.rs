@@ -432,6 +432,12 @@ pub trait TaskHistoryStore: Send + Sync {
     ) -> Result<(), HistoryStoreError> {
         self.set_task_category(profile_id, gid, None)
     }
+
+    /// Delete all history and category rows belonging to a deleted profile.
+    fn remove_profile(&self, profile_id: ProfileId) -> Result<(), HistoryStoreError> {
+        let _ = profile_id;
+        Ok(())
+    }
 }
 
 /// No-op history store used when SQLite is unavailable or in unit tests.

@@ -5,7 +5,7 @@
 
 import {
   ERROR_TEXT,
-  cookieOrigins,
+  activeCookieOrigins,
   cookiesAllowedFor,
   hostLabelOf,
   lastResult,
@@ -49,6 +49,9 @@ async function render() {
           return;
         }
         await render();
+      } catch {
+        cookieState.textContent = "Permission update failed";
+        cookieState.className = "status bad";
       } finally {
         cookieToggle.disabled = false;
       }
@@ -61,7 +64,7 @@ async function render() {
     cookieToggle.hidden = true;
   }
 
-  const origins = await cookieOrigins();
+  const origins = await activeCookieOrigins();
   allowedBlock.hidden = origins.length === 0;
   allowedList.replaceChildren(
     ...origins.map((entry) => {
@@ -85,4 +88,8 @@ async function render() {
   }
 }
 
-void render();
+render().catch(() => {
+  cookieState.textContent = "Unavailable";
+  cookieState.className = "status bad";
+  cookieToggle.hidden = true;
+});

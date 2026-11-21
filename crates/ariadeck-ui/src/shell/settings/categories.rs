@@ -101,16 +101,23 @@ impl SettingsPanelView {
         self.flush_category_editor(cx);
         let n = self.settings_page.draft_categories.len() + 1;
         let name = format!("Category {n}");
+        let id = loop {
+            self.settings_page.next_draft_category_seq += 1;
+            let seq = self.settings_page.next_draft_category_seq;
+            let candidate = format!("00000000-0000-4000-8000-{seq:012x}");
+            if !self
+                .settings_page
+                .draft_categories
+                .iter()
+                .any(|category| category.id == candidate)
+            {
+                break candidate;
+            }
+        };
         self.settings_page
             .draft_categories
             .push(crate::DownloadCategoryView {
-                id: format!(
-                    "{:x}",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_nanos())
-                        .unwrap_or(0)
-                ),
+                id,
                 name,
                 directory: self.settings.download_directory.clone(),
                 extensions: String::new(),
@@ -338,7 +345,9 @@ impl SettingsPanelView {
                                             "browse-category-directory",
                                             browse_label.clone(),
                                             self.t("settings-category-directory-browse-aria"),
-                                            PathPickTarget::CategoryDirectory { index },
+                                            PathPickTarget::CategoryDirectory {
+                                                category_id: category_id.clone(),
+                                            },
                                             cx,
                                         )),
                                 ),

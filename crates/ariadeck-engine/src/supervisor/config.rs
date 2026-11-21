@@ -158,23 +158,61 @@ pub(crate) fn run_aria2_version(path: &Path) -> Result<String, EngineError> {
         }
     }
 
-    let output = console_free_command(path)
+    let mut child = console_free_command(path)
         .arg("--version")
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .spawn()
         .map_err(|error| EngineError::ExecutableValidation {
             path: path.to_path_buf(),
             reason: error.to_string(),
         })?;
-    if !output.status.success() {
+
+    const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+    const MAX_PROBE_BYTES: u64 = 1024 * 1024;
+
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_reader = std::thread::spawn(move || read_bounded_pipe(stdout_pipe, MAX_PROBE_BYTES));
+    let stderr_reader = std::thread::spawn(move || read_bounded_pipe(stderr_pipe, MAX_PROBE_BYTES));
+
+    let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(EngineError::ExecutableValidation {
+                        path: path.to_path_buf(),
+                        reason: "timed out probing --version".into(),
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(EngineError::ExecutableValidation {
+                    path: path.to_path_buf(),
+                    reason: error.to_string(),
+                });
+            }
+        }
+    };
+
+    if !status.success() {
         return Err(EngineError::ExecutableValidation {
             path: path.to_path_buf(),
-            reason: format!("process exited with {}", output.status),
+            reason: format!("process exited with {status}"),
         });
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout_bytes = stdout_reader.join().unwrap_or_default();
+    let stderr_bytes = stderr_reader.join().unwrap_or_default();
+    let stdout = String::from_utf8_lossy(&stdout_bytes);
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
     let stdout_lower = stdout.to_ascii_lowercase();
     let stderr_lower = stderr.to_ascii_lowercase();
     if !stdout_lower.contains("aria2") && !stderr_lower.contains("aria2") {
@@ -188,6 +226,15 @@ pub(crate) fn run_aria2_version(path: &Path) -> Result<String, EngineError> {
     } else {
         stdout.into_owned()
     })
+}
+
+fn read_bounded_pipe(pipe: Option<impl io::Read>, limit: u64) -> Vec<u8> {
+    let Some(pipe) = pipe else {
+        return Vec::new();
+    };
+    let mut buffer = Vec::new();
+    let _ = io::Read::read_to_end(&mut io::Read::take(pipe, limit), &mut buffer);
+    buffer
 }
 
 /// Validate that a path names an executable that accepts `--version`.

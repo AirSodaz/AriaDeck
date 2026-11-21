@@ -16,8 +16,7 @@ use super::{
     backoff::PollTimers,
     handle::{Control, stale_session_error, unsupported_error, wrong_profile_error},
     history_sync::{
-        HistoryWriteTracker, delete_history_for_gids, persist_task_category,
-        persist_terminal_snapshots, seed_history_into_store, spawn_history_writer,
+        HistoryWriteTracker, HistoryWriter, persist_terminal_snapshots, seed_history_into_store,
     },
     offline::wait_for_cancellation,
     types::{
@@ -44,7 +43,10 @@ pub(super) struct ConnectedContext<'a> {
 }
 
 pub(super) async fn run_connected(ctx: ConnectedContext<'_>) -> ConnectedExit {
-    ConnectedRunner::new(ctx).run().await
+    let mut runner = ConnectedRunner::new(ctx);
+    let exit = runner.run().await;
+    runner.finish().await;
+    exit
 }
 
 struct ConnectedRunner<'a> {
@@ -53,13 +55,16 @@ struct ConnectedRunner<'a> {
     pending_tasks: HashSet<Gid>,
     pending_full: bool,
     history_tracker: HistoryWriteTracker,
-    history_writer: mpsc::Sender<Vec<crate::HistoryRecord>>,
+    history_writer: Option<HistoryWriter>,
+    session_cancel_tx: watch::Sender<bool>,
+    session_cancel_rx: watch::Receiver<bool>,
 }
 
 impl<'a> ConnectedRunner<'a> {
     fn new(ctx: ConnectedContext<'a>) -> Self {
         let timers = PollTimers::new(ctx.config.refresh, *ctx.activity);
-        let history_writer = spawn_history_writer(Arc::clone(&ctx.config.history));
+        let history_writer = Some(HistoryWriter::spawn(Arc::clone(&ctx.config.history)));
+        let (session_cancel_tx, session_cancel_rx) = watch::channel(false);
         Self {
             ctx,
             timers,
@@ -67,6 +72,15 @@ impl<'a> ConnectedRunner<'a> {
             pending_full: false,
             history_tracker: HistoryWriteTracker::default(),
             history_writer,
+            session_cancel_tx,
+            session_cancel_rx,
+        }
+    }
+
+    async fn finish(mut self) {
+        let _ = self.session_cancel_tx.send(true);
+        if let Some(writer) = self.history_writer.take() {
+            writer.shutdown().await;
         }
     }
 
@@ -138,16 +152,27 @@ impl<'a> ConnectedRunner<'a> {
                 category_id,
                 sender,
             } => {
-                persist_task_category(
-                    &self.ctx.config.history,
-                    self.ctx.config.profile_id,
+                if let Some(writer) = self.history_writer.as_ref() {
+                    writer
+                        .set_task_category(
+                            &self.ctx.config.history,
+                            self.ctx.config.profile_id,
+                            gid,
+                            category_id.clone(),
+                        )
+                        .await;
+                }
+                match self.ctx.store.set_task_category_affiliation_patch(
+                    self.ctx.generation,
                     gid,
-                    category_id.clone(),
-                )
-                .await;
-                self.ctx
-                    .store
-                    .set_task_category_affiliation(gid, category_id);
+                    category_id,
+                ) {
+                    Ok(patch) => emit_patch(self.ctx.events, patch),
+                    Err(error) => {
+                        let _ = sender.send(());
+                        return Some(ConnectedExit::Retry(SyncError::store(error)));
+                    }
+                }
                 let _ = sender.send(());
                 None
             }
@@ -244,6 +269,9 @@ impl<'a> ConnectedRunner<'a> {
         // refresh so hints emitted prior to this call are subsumed, while hints
         // arriving during or after `refresh_all` are preserved.
         while self.ctx.notifications.try_recv().is_ok() {}
+        if let Some(writer) = self.history_writer.as_ref() {
+            writer.flush().await;
+        }
         let result = tokio::select! {
             biased;
             () = wait_for_cancellation(self.ctx.cancellation) => return Some(ConnectedExit::Stop),
@@ -299,6 +327,9 @@ impl<'a> ConnectedRunner<'a> {
                 ) {
                     Ok(patch) => {
                         emit_patch(self.ctx.events, patch);
+                        if let Some(writer) = self.history_writer.as_ref() {
+                            writer.flush().await;
+                        }
                         seed_history_into_store(
                             self.ctx.store,
                             self.ctx.generation,
@@ -343,7 +374,7 @@ impl<'a> ConnectedRunner<'a> {
         let refresh_after_success = refresh_hint_for_command(&command);
         let custom_output_name = match &command {
             AppCommand::SetTaskOutputName(request) => {
-                Some((request.task.gid, request.output_name.clone()))
+                Some((request.task.gid, request.output_name.trim().to_owned()))
             }
             _ => None,
         };
@@ -386,12 +417,15 @@ impl<'a> ConnectedRunner<'a> {
                 .collect::<Vec<_>>();
             if !deleted.is_empty() {
                 self.history_tracker.forget(&deleted);
-                delete_history_for_gids(
-                    &self.ctx.config.history,
-                    self.ctx.config.profile_id,
-                    deleted.clone(),
-                )
-                .await;
+                if let Some(writer) = self.history_writer.as_ref() {
+                    writer
+                        .remove_batch(
+                            &self.ctx.config.history,
+                            self.ctx.config.profile_id,
+                            deleted.clone(),
+                        )
+                        .await;
+                }
                 match self
                     .ctx
                     .store
@@ -472,10 +506,12 @@ impl<'a> ConnectedRunner<'a> {
             return;
         };
         let mut cancel_rx = self.ctx.cancellation.clone();
+        let mut session_cancel_rx = self.session_cancel_rx.clone();
         tokio::spawn(async move {
             let result = tokio::select! {
                 biased;
                 () = wait_for_cancellation(&mut cancel_rx) => return,
+                () = wait_for_cancellation(&mut session_cancel_rx) => return,
                 result = gateway.task_details(task.gid) => result.map_err(Into::into),
             };
             let _ = sender.send(result);
@@ -507,10 +543,12 @@ impl<'a> ConnectedRunner<'a> {
             return;
         };
         let mut cancel_rx = self.ctx.cancellation.clone();
+        let mut session_cancel_rx = self.session_cancel_rx.clone();
         tokio::spawn(async move {
             let result = tokio::select! {
                 biased;
                 () = wait_for_cancellation(&mut cancel_rx) => return,
+                () = wait_for_cancellation(&mut session_cancel_rx) => return,
                 result = gateway.connection_details(task.gid, active, is_bittorrent)
                     => result.map_err(Into::into),
             };
@@ -631,13 +669,16 @@ impl<'a> ConnectedRunner<'a> {
                         .diff_changed_records(self.ctx.config.profile_id, &page.tasks);
                     if !batch.is_empty() {
                         let (records, fingerprints) = batch.into_parts();
-                        match self.history_writer.try_send(records) {
-                            Ok(()) => self.history_tracker.commit_enqueued(fingerprints),
-                            Err(_) => {
-                                tracing::debug!(
-                                    "history write queue full; deferring stopped page batch"
-                                );
-                            }
+                        if self
+                            .history_writer
+                            .as_ref()
+                            .is_some_and(|writer| writer.try_upsert_batch(records))
+                        {
+                            self.history_tracker.commit_enqueued(fingerprints);
+                        } else {
+                            tracing::debug!(
+                                "history write queue full; deferring stopped page batch"
+                            );
                         }
                     }
                     match self.ctx.store.apply_stopped_page(
@@ -656,6 +697,10 @@ impl<'a> ConnectedRunner<'a> {
                 }
                 Err(error) => return Some(ConnectedExit::Retry(error)),
             }
+        }
+        match self.ctx.store.prune_unreferenced_tasks(self.ctx.generation) {
+            Ok(patch) => emit_patch(self.ctx.events, patch),
+            Err(error) => return Some(ConnectedExit::Retry(SyncError::store(error))),
         }
         None
     }
@@ -692,6 +737,7 @@ fn build_task_contexts(
                         TaskCommandContext {
                             status: task.status,
                             metadata: task.metadata.clone(),
+                            is_history_only: store.is_history_only(identity.gid),
                         },
                     )
                 })
@@ -744,6 +790,12 @@ pub(super) async fn refresh_all(
             .map_err(SyncError::store)?,
     );
     seed_history_into_store(store, generation, history, profile_id, events).await;
+    emit_patch(
+        events,
+        store
+            .prune_unreferenced_tasks(generation)
+            .map_err(SyncError::store)?,
+    );
     Ok(())
 }
 
@@ -774,6 +826,12 @@ pub(super) async fn refresh_loaded_stopped_pages(
             break;
         }
     }
+    emit_patch(
+        events,
+        store
+            .prune_unreferenced_tasks(generation)
+            .map_err(SyncError::store)?,
+    );
     Ok(())
 }
 

@@ -294,26 +294,29 @@ impl ChildProcessJob {
         const PROCESS_SET_QUOTA: u32 = 0x0100;
 
         // SAFETY: `OpenProcess` opens a handle to the child PID with only the
-        // rights required by `AssignProcessToJobObject`; both handles are valid
-        // and the process handle is closed immediately after assignment.
+        // rights required by `AssignProcessToJobObject`; the handle is closed
+        // immediately after assignment.
+        let process = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
+        if process == 0 {
+            tracing::debug!(
+                pid,
+                error = %std::io::Error::last_os_error(),
+                "OpenProcess failed while attaching aria2c to job object"
+            );
+            return;
+        }
+        // SAFETY: `self.handle` is a valid owned Job Object and `process` is a
+        // valid process handle opened immediately above.
+        let assigned = unsafe { AssignProcessToJobObject(self.handle, process) };
+        if assigned == 0 {
+            tracing::debug!(
+                pid,
+                error = %std::io::Error::last_os_error(),
+                "AssignProcessToJobObject failed for managed aria2c"
+            );
+        }
+        // SAFETY: `process` was opened above and has not been closed yet.
         unsafe {
-            let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
-            if process == 0 {
-                tracing::debug!(
-                    pid,
-                    error = %std::io::Error::last_os_error(),
-                    "OpenProcess failed while attaching aria2c to job object"
-                );
-                return;
-            }
-            let assigned = AssignProcessToJobObject(self.handle, process);
-            if assigned == 0 {
-                tracing::debug!(
-                    pid,
-                    error = %std::io::Error::last_os_error(),
-                    "AssignProcessToJobObject failed for managed aria2c"
-                );
-            }
             CloseHandle(process);
         }
     }
@@ -363,6 +366,7 @@ unsafe extern "system" {
 #[allow(unsafe_code)]
 #[link(name = "user32")]
 unsafe extern "system" {
+    fn IsIconic(hwnd: isize) -> i32;
     fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
     fn SetForegroundWindow(hwnd: isize) -> i32;
     fn BringWindowToTop(hwnd: isize) -> i32;
@@ -380,21 +384,41 @@ const ES_CONTINUOUS: u32 = 0x8000_0000;
 #[allow(unsafe_code)]
 pub fn hide_show_win32(hwnd: isize, show: bool) -> bool {
     const SW_HIDE: i32 = 0;
+    const SW_SHOW: i32 = 5;
     const SW_RESTORE: i32 = 9;
     // SAFETY: `hwnd` is the live GPUI window handle belonging to this process;
-    // ShowWindow, BringWindowToTop, and SetForegroundWindow tolerate invalid
-    // handles safely and take only integer arguments.
-    unsafe {
-        ShowWindow(hwnd, if show { SW_RESTORE } else { SW_HIDE });
+    // IsIconic, ShowWindow, BringWindowToTop, and SetForegroundWindow tolerate
+    // invalid handles safely and take only integer arguments.
+    let foreground_ok = unsafe {
+        let cmd = if !show {
+            SW_HIDE
+        } else if IsIconic(hwnd) != 0 {
+            SW_RESTORE
+        } else {
+            SW_SHOW
+        };
+        ShowWindow(hwnd, cmd);
         if show {
             BringWindowToTop(hwnd);
-            SetForegroundWindow(hwnd);
+            SetForegroundWindow(hwnd) != 0
+        } else {
+            true
         }
+    };
+    if show && !foreground_ok {
+        tracing::debug!(
+            hwnd,
+            error = %std::io::Error::last_os_error(),
+            "SetForegroundWindow failed while restoring window"
+        );
     }
     true
 }
 
 /// Prevent or allow operating system sleep during active downloads (D5).
+///
+/// Must always be called on the dedicated GPUI main/UI thread because
+/// `SetThreadExecutionState` stores state per OS thread.
 #[cfg(windows)]
 #[allow(unsafe_code)]
 pub fn set_keep_awake(enabled: bool) {
@@ -415,13 +439,19 @@ pub fn set_keep_awake(enabled: bool) {
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn suspend_system_win32(hibernate: bool) -> bool {
+fn suspend_system_win32(hibernate: bool) -> Result<(), std::io::Error> {
     // SAFETY: `SetSuspendState` takes three boolean byte flags with no pointer
     // arguments and returns a non-zero BOOLEAN on success.
-    unsafe { SetSuspendState(u8::from(hibernate), 0, 0) != 0 }
+    if unsafe { SetSuspendState(u8::from(hibernate), 0, 0) != 0 } {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 /// Prevent or allow operating system sleep during active downloads (D5).
+///
+/// Must be called from the main UI thread (matching Windows' per-thread invariant).
 #[cfg(not(windows))]
 pub fn set_keep_awake(_enabled: bool) {
     // Safe stub for non-Windows platforms
@@ -474,11 +504,8 @@ pub fn execute_power_action(
         ariadeck_settings::CompletionPowerAction::Sleep => {
             #[cfg(windows)]
             {
-                if suspend_system_win32(false) {
-                    Ok(())
-                } else {
-                    Err("SetSuspendState(0, 0, 0) failed".to_string())
-                }
+                suspend_system_win32(false)
+                    .map_err(|error| format!("SetSuspendState(0, 0, 0) failed: {error}"))
             }
             #[cfg(target_os = "macos")]
             {
@@ -508,17 +535,24 @@ pub fn execute_power_action(
         ariadeck_settings::CompletionPowerAction::Hibernate => {
             #[cfg(windows)]
             {
-                if suspend_system_win32(true) {
-                    Ok(())
-                } else {
-                    let status = ariadeck_engine::console_free_command("shutdown")
-                        .arg("/h")
-                        .status()
-                        .map_err(|e| format!("failed to invoke shutdown /h: {e}"))?;
-                    if status.success() {
-                        Ok(())
-                    } else {
-                        Err(format!("hibernate command exited with {status}"))
+                match suspend_system_win32(true) {
+                    Ok(()) => Ok(()),
+                    Err(suspend_error) => {
+                        tracing::warn!(
+                            error = %suspend_error,
+                            "SetSuspendState(1, 0, 0) failed; falling back to shutdown /h"
+                        );
+                        let status = ariadeck_engine::console_free_command("shutdown")
+                            .arg("/h")
+                            .status()
+                            .map_err(|e| format!("failed to invoke shutdown /h: {e}"))?;
+                        if status.success() {
+                            Ok(())
+                        } else {
+                            Err(format!(
+                                "SetSuspendState(1, 0, 0) failed ({suspend_error}) and hibernate command exited with {status}"
+                            ))
+                        }
                     }
                 }
             }

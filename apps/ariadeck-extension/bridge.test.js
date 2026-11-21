@@ -9,13 +9,18 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  MAX_REFERER_BYTES,
+  MAX_USER_AGENT_BYTES,
   MESSAGE_VERSION,
   batchTooLarge,
   buildMessage,
+  classifyNativeMessagingError,
   guessFilename,
   hostLabelOf,
   messageTooLarge,
   originOf,
+  sanitizeHeaderValue,
+  sendToHost,
 } from "./bridge.js";
 
 const item = (index) => ({ url: `https://example.test/${index}.bin` });
@@ -88,8 +93,47 @@ test("guessFilename enforces IPC filename hint rules and drops unsafe segments",
     "https://example.test/files/%2e%2e",
     "https://example.test/files/.",
     "https://example.test/files/bad%00name.bin",
+    "https://example.test/files/bad%C2%85name.bin",
     `https://example.test/files/${"a".repeat(1025)}.bin`,
   ]) {
     assert.equal(guessFilename(dropped), null, `${dropped} must not emit a filename hint`);
   }
+});
+
+test("sanitizeHeaderValue rejects blank, C0/C1 controls, and over-limit UTF-8 byte lengths", () => {
+  assert.equal(MAX_REFERER_BYTES, 4 * 1024);
+  assert.equal(MAX_USER_AGENT_BYTES, 1024);
+  assert.equal(sanitizeHeaderValue("  https://example.test/page  ", MAX_REFERER_BYTES), "https://example.test/page");
+  assert.equal(sanitizeHeaderValue("   ", MAX_REFERER_BYTES), null);
+  assert.equal(sanitizeHeaderValue(null, MAX_USER_AGENT_BYTES), null);
+  assert.equal(sanitizeHeaderValue("Mozilla\r\nX-Inject: 1", MAX_USER_AGENT_BYTES), null);
+  assert.equal(sanitizeHeaderValue("bad\u0085control", MAX_USER_AGENT_BYTES), null);
+  assert.equal(sanitizeHeaderValue("€".repeat(342), MAX_USER_AGENT_BYTES), null);
+  assert.equal(sanitizeHeaderValue("a".repeat(MAX_REFERER_BYTES), MAX_REFERER_BYTES)?.length, MAX_REFERER_BYTES);
+  assert.equal(sanitizeHeaderValue("a".repeat(MAX_REFERER_BYTES + 1), MAX_REFERER_BYTES), null);
+});
+
+test("classifyNativeMessagingError and sendToHost separate host_missing from host_failed", async () => {
+  assert.equal(
+    classifyNativeMessagingError(new Error("Specified native messaging host not found.")),
+    "host_missing",
+  );
+  assert.equal(
+    classifyNativeMessagingError(new Error("No such native application com.ariadeck.bridge")),
+    "host_missing",
+  );
+  assert.equal(
+    classifyNativeMessagingError(new Error("Native host has exited.")),
+    "host_failed",
+  );
+
+  const missingOutcome = await sendToHost([item(0)], async () => {
+    throw new Error("Specified native messaging host not found.");
+  });
+  assert.deepEqual(missingOutcome, { ok: false, error: "host_missing" });
+
+  const failedOutcome = await sendToHost([item(0)], async () => {
+    throw new Error("Error when communicating with the native messaging host.");
+  });
+  assert.deepEqual(failedOutcome, { ok: false, error: "host_failed" });
 });

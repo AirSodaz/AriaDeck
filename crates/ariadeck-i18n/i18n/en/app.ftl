@@ -92,4 +92,3 @@ task-overview-remaining = { $duration } remaining
 task-overview-error-code = Error { $code }: { $summary }
 task-overview-uploaded = Uploaded { $bytes }
 task-overview-upload-rate = Up { $rate }
-loading-label = Loading

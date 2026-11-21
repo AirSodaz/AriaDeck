@@ -1126,13 +1126,16 @@ impl AddDownloadDialogView {
                     .flex_none()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
-                        Checkbox::new(("metadata-file-check", file_index as usize))
-                            .checked(selected)
-                            .disabled(pending)
-                            .tab_stop(false)
-                            .on_change(cx.listener(move |this, _, _, cx| {
-                                this.toggle_metadata_file_entry(preview_index, file_index, cx);
-                            })),
+                        Checkbox::new(stable_id(
+                            "metadata-preview-file-check",
+                            &format!("{preview_key}:{file_index}"),
+                        ))
+                        .checked(selected)
+                        .disabled(pending)
+                        .tab_stop(false)
+                        .on_change(cx.listener(move |this, _, _, cx| {
+                            this.toggle_metadata_file_entry(preview_index, file_index, cx);
+                        })),
                     ),
             )
             .child(

@@ -1,11 +1,11 @@
 use std::{
     collections::HashMap,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use ariadeck_domain::{Gid, ProfileId, SessionGeneration, TaskSnapshot};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::{DownloadStore, HistoryRecord, TaskHistoryStore};
 
@@ -129,21 +129,155 @@ impl HistoryWriteTracker {
     }
 }
 
-pub(super) fn spawn_history_writer(
-    history: Arc<dyn TaskHistoryStore>,
-) -> mpsc::Sender<Vec<HistoryRecord>> {
-    let (tx, mut rx) = mpsc::channel::<Vec<HistoryRecord>>(32);
-    tokio::spawn(async move {
-        while let Some(records) = rx.recv().await {
-            let history = Arc::clone(&history);
-            match tokio::task::spawn_blocking(move || history.upsert_batch(&records)).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => tracing::warn!(%error, "failed to persist task history batch"),
-                Err(error) => tracing::warn!(%error, "task history persistence task failed"),
+enum HistoryWriteCmd {
+    UpsertBatch(Vec<HistoryRecord>),
+    RemoveBatch {
+        profile_id: ProfileId,
+        gids: Vec<Gid>,
+        ack: oneshot::Sender<()>,
+    },
+    SetTaskCategory {
+        profile_id: ProfileId,
+        gid: Gid,
+        category_id: Option<String>,
+        ack: oneshot::Sender<()>,
+    },
+    Flush(oneshot::Sender<()>),
+}
+
+pub(super) struct HistoryWriter {
+    tx: Option<mpsc::Sender<HistoryWriteCmd>>,
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl HistoryWriter {
+    pub(super) fn spawn(history: Arc<dyn TaskHistoryStore>) -> Self {
+        let (tx, mut rx) = mpsc::channel::<HistoryWriteCmd>(64);
+        let handle = tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                match command {
+                    HistoryWriteCmd::UpsertBatch(records) => {
+                        let history = Arc::clone(&history);
+                        match tokio::task::spawn_blocking(move || history.upsert_batch(&records))
+                            .await
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => {
+                                tracing::warn!(%error, "failed to persist task history batch");
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "task history persistence task failed");
+                            }
+                        }
+                    }
+                    HistoryWriteCmd::RemoveBatch {
+                        profile_id,
+                        gids,
+                        ack,
+                    } => {
+                        delete_history_for_gids(&history, profile_id, gids).await;
+                        let _ = ack.send(());
+                    }
+                    HistoryWriteCmd::SetTaskCategory {
+                        profile_id,
+                        gid,
+                        category_id,
+                        ack,
+                    } => {
+                        persist_task_category(&history, profile_id, gid, category_id).await;
+                        let _ = ack.send(());
+                    }
+                    HistoryWriteCmd::Flush(ack) => {
+                        let _ = ack.send(());
+                    }
+                }
+            }
+        });
+        Self {
+            tx: Some(tx),
+            handle: Some(handle),
+        }
+    }
+
+    pub(super) fn try_upsert_batch(&self, records: Vec<HistoryRecord>) -> bool {
+        let Some(tx) = self.tx.as_ref() else {
+            return false;
+        };
+        tx.try_send(HistoryWriteCmd::UpsertBatch(records)).is_ok()
+    }
+
+    pub(super) async fn remove_batch(
+        &self,
+        history: &Arc<dyn TaskHistoryStore>,
+        profile_id: ProfileId,
+        gids: Vec<Gid>,
+    ) {
+        if gids.is_empty() {
+            return;
+        }
+        if let Some(tx) = self.tx.as_ref() {
+            let (ack, done) = oneshot::channel();
+            if tx
+                .send(HistoryWriteCmd::RemoveBatch {
+                    profile_id,
+                    gids: gids.clone(),
+                    ack,
+                })
+                .await
+                .is_ok()
+            {
+                let _ = done.await;
+                return;
             }
         }
-    });
-    tx
+        delete_history_for_gids(history, profile_id, gids).await;
+    }
+
+    pub(super) async fn set_task_category(
+        &self,
+        history: &Arc<dyn TaskHistoryStore>,
+        profile_id: ProfileId,
+        gid: Gid,
+        category_id: Option<String>,
+    ) {
+        if let Some(tx) = self.tx.as_ref() {
+            let (ack, done) = oneshot::channel();
+            if tx
+                .send(HistoryWriteCmd::SetTaskCategory {
+                    profile_id,
+                    gid,
+                    category_id: category_id.clone(),
+                    ack,
+                })
+                .await
+                .is_ok()
+            {
+                let _ = done.await;
+                return;
+            }
+        }
+        persist_task_category(history, profile_id, gid, category_id).await;
+    }
+
+    pub(super) async fn flush(&self) {
+        if let Some(tx) = self.tx.as_ref() {
+            let (ack, done) = oneshot::channel();
+            if tx.send(HistoryWriteCmd::Flush(ack)).await.is_ok() {
+                let _ = done.await;
+            }
+        }
+    }
+
+    pub(super) async fn shutdown(mut self) {
+        self.tx.take();
+        if let Some(handle) = self.handle.take()
+            && tokio::time::timeout(Duration::from_secs(2), handle)
+                .await
+                .is_err()
+        {
+            tracing::warn!("history writer task did not drain within 2 seconds");
+        }
+    }
 }
 
 pub(super) async fn persist_terminal_snapshots(
@@ -298,6 +432,12 @@ pub(super) async fn apply_initial_snapshot(
             .map_err(SyncError::store)?,
     );
     seed_history_into_store(store, generation, history, profile_id, events).await;
+    emit_patch(
+        events,
+        store
+            .prune_unreferenced_tasks(generation)
+            .map_err(SyncError::store)?,
+    );
     emit_patch(
         events,
         store

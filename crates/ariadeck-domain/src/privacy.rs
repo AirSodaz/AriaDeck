@@ -22,25 +22,30 @@ pub fn magnet_info_hash(uri: &str) -> Option<String> {
     if !parsed.scheme().eq_ignore_ascii_case("magnet") {
         return None;
     }
-    let value = parsed
-        .query_pairs()
-        .find(|(key, _)| key.eq_ignore_ascii_case("xt"))?
-        .1;
-    let value = value.as_ref();
     const BTIH_PREFIX: &str = "urn:btih:";
-    let prefix = value.get(..BTIH_PREFIX.len())?;
-    if !prefix.eq_ignore_ascii_case(BTIH_PREFIX) {
-        return None;
-    }
-    let hash = value.get(BTIH_PREFIX.len()..)?;
-    if hash.len() == 40 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Some(hash.to_ascii_lowercase());
-    }
-    if hash.len() == 32 {
-        let decoded = BASE32_NOPAD
-            .decode(hash.to_ascii_uppercase().as_bytes())
-            .ok()?;
-        return Some(decoded.iter().map(|byte| format!("{byte:02x}")).collect());
+    for (key, value) in parsed.query_pairs() {
+        if !key.eq_ignore_ascii_case("xt") {
+            continue;
+        }
+        let value = value.as_ref();
+        let Some(prefix) = value.get(..BTIH_PREFIX.len()) else {
+            continue;
+        };
+        if !prefix.eq_ignore_ascii_case(BTIH_PREFIX) {
+            continue;
+        }
+        let Some(hash) = value.get(BTIH_PREFIX.len()..) else {
+            continue;
+        };
+        if hash.len() == 40 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Some(hash.to_ascii_lowercase());
+        }
+        if hash.len() == 32 {
+            let Ok(decoded) = BASE32_NOPAD.decode(hash.to_ascii_uppercase().as_bytes()) else {
+                continue;
+            };
+            return Some(decoded.iter().map(|byte| format!("{byte:02x}")).collect());
+        }
     }
     None
 }
@@ -300,5 +305,18 @@ mod tests {
         assert_eq!(redacted, "https://cdn.example/dl");
         assert!(!redacted.contains("s3cret"));
         assert!(!redacted.contains("user"));
+    }
+
+    #[test]
+    fn hybrid_magnet_extracts_btih_hash_after_btmh() {
+        let hybrid = "magnet:?xt=urn:btmh:12200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123&xt=urn:btih:0123456789ABCDEF0123456789ABCDEF01234567&dn=hybrid.iso&tr=https://secret@tracker.example/announce";
+        assert_eq!(
+            magnet_info_hash(hybrid).as_deref(),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
+        assert_eq!(
+            redact_source_uri(hybrid),
+            "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"
+        );
     }
 }

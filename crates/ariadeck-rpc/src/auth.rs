@@ -58,16 +58,28 @@ impl<T> AuthenticatedTransport<T> {
         if method.starts_with("system.") {
             if method == "system.multicall"
                 && let Some(Value::Array(methods)) = params.first_mut()
-                && self.secret.is_some()
+                && let Some(secret) = self.secret.as_ref()
             {
+                let token = Value::String(format!("token:{}", secret.0.expose_secret()));
                 for entry in methods.iter_mut() {
-                    if let Some(nested) = entry
-                        .as_object_mut()
-                        .and_then(|object| object.get_mut("params"))
-                        .and_then(Value::as_array_mut)
+                    let Some(object) = entry.as_object_mut() else {
+                        continue;
+                    };
+                    if object
+                        .get("methodName")
+                        .and_then(Value::as_str)
+                        .is_some_and(|nested_method| nested_method.starts_with("system."))
                     {
-                        let nested_params = std::mem::take(nested);
-                        *nested = self.inject_secret(nested_params);
+                        continue;
+                    }
+                    match object.get_mut("params").and_then(Value::as_array_mut) {
+                        Some(nested) => {
+                            let nested_params = std::mem::take(nested);
+                            *nested = self.inject_secret(nested_params);
+                        }
+                        None => {
+                            object.insert("params".into(), Value::Array(vec![token.clone()]));
+                        }
                     }
                 }
             }
@@ -192,5 +204,33 @@ mod tests {
             .expect("nested multicall params");
         assert_eq!(nested[0], Value::String("token:highly-sensitive".into()));
         assert_eq!(nested[1], Value::String("0000000000000001".into()));
+    }
+
+    #[tokio::test]
+    async fn multicall_skips_nested_system_methods_and_inserts_missing_params() {
+        let transport = AuthenticatedTransport::new(
+            RecordingTransport::default(),
+            Some(RpcSecret::new("secret-token")),
+        );
+
+        transport
+            .call(
+                "system.multicall",
+                vec![Value::Array(vec![
+                    json!({ "methodName": "system.listMethods", "params": [] }),
+                    json!({ "methodName": "aria2.getVersion" }),
+                ])],
+            )
+            .await
+            .expect("multicall");
+
+        let params = transport
+            .inner()
+            .params
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let methods = params[0].as_array().expect("methods array");
+        assert_eq!(methods[0]["params"], json!([]));
+        assert_eq!(methods[1]["params"], json!(["token:secret-token"]));
     }
 }

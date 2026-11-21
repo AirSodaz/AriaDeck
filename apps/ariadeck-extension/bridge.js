@@ -21,6 +21,16 @@ const MAX_FILENAME_BYTES = 1024;
 /** Matches `ariadeck_ipc::MAX_COOKIE_BYTES`. */
 const MAX_COOKIE_BYTES = 8 * 1024;
 
+/** Matches `ariadeck_ipc::MAX_REFERER_BYTES`. */
+export const MAX_REFERER_BYTES = 4 * 1024;
+
+/** Matches `ariadeck_ipc::MAX_USER_AGENT_BYTES`. */
+export const MAX_USER_AGENT_BYTES = 1024;
+
+// Reject ASCII C0/DEL and Unicode C1 control characters across headers/filenames.
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f-\u009f]/;
+
 const STORAGE_KEY_COOKIE_ORIGINS = "cookieOrigins";
 const STORAGE_KEY_LAST_RESULT = "lastResult";
 
@@ -37,6 +47,8 @@ export const ERROR_TEXT = {
   host_missing:
     "The AriaDeck browser bridge is not installed. Enable it in the AriaDeck " +
     "installer, or run: ariadeck-bridge --register --extension-id <ID>",
+  host_failed:
+    "The AriaDeck browser bridge failed while communicating with AriaDeck.",
 };
 
 /** Origin of a URL, or null when it has none we would ever send to. */
@@ -61,8 +73,23 @@ export function hostLabelOf(origin) {
 }
 
 /**
+ * Sanitize an optional HTTP header value (`referer` or `user_agent`).
+ *
+ * Trims surrounding whitespace and returns null if empty, containing C0/DEL/C1
+ * control characters, or exceeding `maxBytes` UTF-8 bytes.
+ */
+export function sanitizeHeaderValue(value, maxBytes) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (CONTROL_CHAR_RE.test(trimmed)) return null;
+  if (new TextEncoder().encode(trimmed).length > maxBytes) return null;
+  return trimmed;
+}
+
+/**
  * Last path segment, when it satisfies the exact IPC filename hint rules
- * (non-empty after trim, no `/` or `\`, not `.` / `..`, no C0/DEL control
+ * (non-empty after trim, no `/` or `\`, not `.` / `..`, no C0/DEL/C1 control
  * characters, UTF-8 byte length <= 1024). Invalid hints return null so a
  * cosmetic filename never causes the whole download to be rejected.
  */
@@ -73,8 +100,7 @@ export function guessFilename(url) {
     const candidate = raw.trim();
     if (!candidate || candidate === "." || candidate === "..") return null;
     if (candidate.includes("/") || candidate.includes("\\")) return null;
-    // eslint-disable-next-line no-control-regex
-    if (/[\x00-\x1f\x7f]/.test(candidate)) return null;
+    if (CONTROL_CHAR_RE.test(candidate)) return null;
     if (new TextEncoder().encode(candidate).length > MAX_FILENAME_BYTES) {
       return null;
     }
@@ -88,6 +114,33 @@ export async function cookieOrigins() {
   const stored = await chrome.storage.local.get(STORAGE_KEY_COOKIE_ORIGINS);
   const origins = stored[STORAGE_KEY_COOKIE_ORIGINS];
   return Array.isArray(origins) ? origins : [];
+}
+
+/**
+ * Return stored allow-listed origins that still hold browser cookie/origin
+ * permissions, dropping stale entries whose permission was revoked externally.
+ */
+export async function activeCookieOrigins() {
+  const allowed = await cookieOrigins();
+  if (allowed.length === 0) return [];
+  const active = [];
+  for (const origin of allowed) {
+    try {
+      const granted = await chrome.permissions.contains({
+        permissions: ["cookies"],
+        origins: [`${origin}/*`],
+      });
+      if (granted) {
+        active.push(origin);
+      }
+    } catch {
+      // Malformed origin or permission check failure: exclude from active list.
+    }
+  }
+  if (active.length !== allowed.length) {
+    await setCookieOrigins(active);
+  }
+  return active;
 }
 
 export async function setCookieOrigins(origins) {
@@ -152,8 +205,7 @@ export async function cookieHeaderFor(url) {
     .map((cookie) => `${cookie.name}=${cookie.value}`)
     .join("; ");
   // Single line only, no control chars, and within IPC cookie byte cap.
-  // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1f\x7f]/.test(header)) return null;
+  if (CONTROL_CHAR_RE.test(header)) return null;
   if (new TextEncoder().encode(header).length > MAX_COOKIE_BYTES) return null;
   return header;
 }
@@ -172,13 +224,28 @@ export function batchTooLarge(items) {
   return items.length === 0 || items.length > MAX_ITEMS;
 }
 
+/** Distinguish a missing native host registration from a native host crash/I/O error. */
+export function classifyNativeMessagingError(error) {
+  const message = String(error?.message ?? error ?? "").toLowerCase();
+  if (
+    message.includes("native messaging host not found") ||
+    message.includes("no such native application")
+  ) {
+    return "host_missing";
+  }
+  return "host_failed";
+}
+
 /**
  * Send a batch to the host and normalize the outcome.
  *
  * Resolves to `{ ok, error? , accepted? }`; it never throws, so callers do not
  * have to distinguish "host absent" from "host said no".
  */
-export async function sendToHost(items) {
+export async function sendToHost(
+  items,
+  transport = (host, message) => chrome.runtime.sendNativeMessage(host, message),
+) {
   if (batchTooLarge(items)) {
     return { ok: false, error: "too_large" };
   }
@@ -187,15 +254,14 @@ export async function sendToHost(items) {
     return { ok: false, error: "too_large" };
   }
   try {
-    const reply = await chrome.runtime.sendNativeMessage(HOST_NAME, message);
+    const reply = await transport(HOST_NAME, message);
     if (reply && reply.ok === true) {
       return { ok: true, accepted: reply.accepted ?? items.length };
     }
     return { ok: false, error: reply?.error ?? "rejected" };
-  } catch {
-    // connectNative throwing means the host is not registered at all, which is
-    // a different fix from "AriaDeck is not running".
-    return { ok: false, error: "host_missing" };
+  } catch (error) {
+    // Missing host registration needs different setup guidance than a failing host process.
+    return { ok: false, error: classifyNativeMessagingError(error) };
   }
 }
 

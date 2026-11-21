@@ -1,5 +1,6 @@
 use ariadeck_application::{
     AddDownloadRequest, DownloadProxyConfig, DownloadProxyMode, FileConflictPolicy,
+    format_selected_file_indices,
 };
 use ariadeck_domain::{SpeedLimitConfig, TransferPolicyConfig, format_bt_tracker_option};
 use secrecy::ExposeSecret;
@@ -24,12 +25,11 @@ pub(super) fn apply_file_conflict_policy(
     );
 }
 
-pub(super) fn request_options(request: &AddDownloadRequest) -> Map<String, Value> {
+/// Collapse same-key option pairs into string arrays so repeated keys such as
+/// `header` travel together without overwriting earlier values.
+pub(super) fn pairs_to_option_map(pairs: &[(String, String)]) -> Map<String, Value> {
     let mut options = Map::new();
-    // aria2 accepts repeated option names for multi-value keys such as
-    // `header`. Collapse same-key pairs into a string array so Cookie/Referer
-    // and custom headers can travel together (ADD-005).
-    for (key, value) in &request.options {
+    for (key, value) in pairs {
         match options.get_mut(key) {
             Some(slot @ Value::String(_)) => {
                 let previous = std::mem::replace(slot, Value::Null);
@@ -41,6 +41,14 @@ pub(super) fn request_options(request: &AddDownloadRequest) -> Map<String, Value
             }
         }
     }
+    options
+}
+
+pub(super) fn request_options(request: &AddDownloadRequest) -> Map<String, Value> {
+    // aria2 accepts repeated option names for multi-value keys such as
+    // `header`. Collapse same-key pairs into a string array so Cookie/Referer
+    // and custom headers can travel together (ADD-005).
+    let mut options = pairs_to_option_map(&request.options);
     apply_file_conflict_policy(&mut options, request.file_conflict);
     if let Some(destination) = &request.destination {
         options.insert("dir".into(), Value::String(destination.as_str().to_owned()));
@@ -52,34 +60,6 @@ pub(super) fn request_options(request: &AddDownloadRequest) -> Map<String, Value
         );
     }
     options
-}
-
-fn format_selected_file_indices(indices: &[u32]) -> String {
-    let mut ranges = Vec::new();
-    let Some(&first) = indices.first() else {
-        return String::new();
-    };
-    let mut start = first;
-    let mut end = first;
-    for &index in &indices[1..] {
-        if index == end.saturating_add(1) {
-            end = index;
-        } else {
-            push_file_index_range(&mut ranges, start, end);
-            start = index;
-            end = index;
-        }
-    }
-    push_file_index_range(&mut ranges, start, end);
-    ranges.join(",")
-}
-
-fn push_file_index_range(ranges: &mut Vec<String>, start: u32, end: u32) {
-    if start == end {
-        ranges.push(start.to_string());
-    } else {
-        ranges.push(format!("{start}-{end}"));
-    }
 }
 
 pub(super) fn speed_limit_options(config: &SpeedLimitConfig) -> Vec<(String, String)> {

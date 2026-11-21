@@ -1122,3 +1122,172 @@ async fn force_refresh_clears_queued_full_notification_refresh() {
     handle.stop().await;
     drop(notification_tx);
 }
+
+#[tokio::test]
+async fn history_only_task_can_be_removed_and_history_writer_serializes_delete_after_upsert() {
+    use super::history_sync::HistoryWriter;
+    use crate::{HistoryRecord, HistoryStoreError, RemoveTasksRequest, TaskRemovalScope};
+
+    #[derive(Default)]
+    struct InMemoryHistoryStore {
+        rows: Mutex<Vec<HistoryRecord>>,
+        categories: Mutex<Vec<(ProfileId, Gid, String)>>,
+    }
+
+    impl TaskHistoryStore for InMemoryHistoryStore {
+        fn upsert(&self, record: &HistoryRecord) -> Result<(), HistoryStoreError> {
+            let mut rows = self
+                .rows
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            rows.retain(|existing| {
+                !(existing.profile_id == record.profile_id && existing.gid == record.gid)
+            });
+            rows.push(record.clone());
+            Ok(())
+        }
+
+        fn remove(&self, profile_id: ProfileId, gid: Gid) -> Result<(), HistoryStoreError> {
+            self.rows
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .retain(|row| !(row.profile_id == profile_id && row.gid == gid));
+            self.categories
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .retain(|(p, g, _)| !(*p == profile_id && *g == gid));
+            Ok(())
+        }
+
+        fn list(
+            &self,
+            profile_id: ProfileId,
+            limit: usize,
+        ) -> Result<Vec<HistoryRecord>, HistoryStoreError> {
+            let rows = self
+                .rows
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Ok(rows
+                .iter()
+                .filter(|row| row.profile_id == profile_id)
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+
+        fn count(&self, profile_id: ProfileId) -> Result<usize, HistoryStoreError> {
+            Ok(self
+                .rows
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .iter()
+                .filter(|row| row.profile_id == profile_id)
+                .count())
+        }
+    }
+
+    let profile_id = ProfileId::new();
+    let gid_history = Gid::from_u64(0xDEAD_BEEF);
+    let history = Arc::new(InMemoryHistoryStore::default());
+
+    let writer = HistoryWriter::spawn(history.clone());
+    let record = HistoryRecord {
+        profile_id,
+        gid: gid_history,
+        status: DownloadStatus::Complete,
+        display_name: "archived.iso".into(),
+        directory: Some(EnginePath::new("/downloads")),
+        info_hash: None,
+        source_kind: TaskSourceKind::DirectUri,
+        total_length: ariadeck_domain::ByteCount::new(100),
+        completed_length: ariadeck_domain::ByteCount::new(100),
+        error: None,
+        primary_uri_redacted: Some("https://cdn.example/archived.iso".into()),
+        recorded_at_ms: 10,
+        updated_at_ms: 10,
+    };
+    assert!(writer.try_upsert_batch(vec![record.clone()]));
+    let history_trait: Arc<dyn TaskHistoryStore> = history.clone();
+    writer
+        .remove_batch(&history_trait, profile_id, vec![gid_history])
+        .await;
+    writer.shutdown().await;
+    assert_eq!(history.count(profile_id).expect("count"), 0);
+
+    history.upsert(&record).expect("seed record");
+    let gateway = Arc::new(FakeInteractiveGateway::default());
+    let (_notification_tx, notification_rx) = mpsc::channel(8);
+    let empty_initial = InitialSyncSnapshot {
+        capabilities: EngineCapabilities {
+            version: "1.37.0".into(),
+            enabled_features: Vec::new(),
+            methods: vec![
+                "aria2.getVersion".into(),
+                "aria2.remove".into(),
+                "aria2.removeDownloadResult".into(),
+            ],
+        },
+        global_stat: GlobalStat::default(),
+        live: LiveSyncSnapshot {
+            active: Vec::new(),
+            waiting: Vec::new(),
+        },
+        stopped: StoppedPage {
+            offset: 0,
+            total: 0,
+            tasks: Vec::new(),
+        },
+    };
+    let mut session = ConnectedSyncSession::new(
+        Box::new(FakeSession {
+            initial: empty_initial,
+            targeted_calls: Arc::new(Mutex::new(Vec::new())),
+        }),
+        notification_rx,
+    );
+    session.command_gateway = Some(gateway.clone());
+    let connector = Arc::new(ScriptedConnector {
+        steps: Mutex::new(VecDeque::from([Ok(session)])),
+        calls: AtomicUsize::new(0),
+    });
+
+    let mut config = test_config(profile_id);
+    config.history = history_trait;
+    let handle = spawn_sync_coordinator(connector, config);
+    let _ = wait_until_connected(&handle).await;
+
+    let before = handle
+        .snapshot(TaskListQuery::default())
+        .await
+        .expect("snapshot before remove");
+    assert!(before.tasks.iter().any(|t| t.gid == gid_history));
+
+    let outcome = handle
+        .execute(
+            before.session,
+            AppCommand::RemoveTasks(RemoveTasksRequest {
+                tasks: vec![TaskIdentity::new(profile_id, gid_history)],
+                scope: TaskRemovalScope::TaskOnly,
+            }),
+        )
+        .await;
+    assert!(matches!(outcome, CommandOutcome::Success { .. }));
+    assert!(
+        gateway
+            .command_calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty(),
+        "removing a history-only task must not call aria2 RPC"
+    );
+    assert_eq!(history.count(profile_id).expect("count after remove"), 0);
+
+    let after = handle
+        .snapshot(TaskListQuery::default())
+        .await
+        .expect("snapshot after remove");
+    assert!(!after.tasks.iter().any(|t| t.gid == gid_history));
+
+    handle.stop().await;
+}

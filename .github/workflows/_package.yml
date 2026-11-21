@@ -381,6 +381,7 @@ jobs:
             '*_x64-setup.exe' '*_x64-setup.exe.sig'
             '*_arm64_en-US.msi' '*_arm64_en-US.msi.sig'
             '*_x64_en-US.msi' '*_x64_en-US.msi.sig'
+            '*_windows-x64-portable.zip'
             'updater.json'
           )
           for pattern in "${required_patterns[@]}"; do

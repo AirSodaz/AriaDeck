@@ -276,41 +276,38 @@ pub(crate) fn map_task_details(
 }
 
 pub(crate) fn map_core_registry(store: &CoreStore) -> CoreRegistryView {
-    match store.list_installations() {
-        Ok(installations) => {
-            let registry = store.load_or_default().unwrap_or_default();
-            CoreRegistryView {
-                active_id: registry.active_id.map(|id| id.to_string()),
-                last_working_id: registry.last_working_id.map(|id| id.to_string()),
-                installations: installations
-                    .into_iter()
-                    .map(|core| CoreInstallationView {
-                        id: core.id.to_string(),
-                        version: core.version,
-                        target: core.target,
-                        source: match core.source {
-                            CoreSource::Imported => CoreSourceView::Imported,
-                            CoreSource::Linked => CoreSourceView::Linked,
-                            CoreSource::Managed => CoreSourceView::Managed,
-                        },
-                        executable: core.executable.to_string_lossy().into_owned(),
-                        features: core.features,
-                        is_active: core.is_active,
-                        is_last_working: core.is_last_working,
-                        validated_version: core.validated_version,
-                        status: match core.status {
-                            CoreInstallStatus::Ready => CoreInstallStatusView::Ready,
-                            CoreInstallStatus::MissingExecutable => {
-                                CoreInstallStatusView::MissingExecutable
-                            }
-                            CoreInstallStatus::MissingManifest => {
-                                CoreInstallStatusView::MissingManifest
-                            }
-                        },
-                    })
-                    .collect(),
-            }
-        }
+    match store.load_registry_with_installations() {
+        Ok((registry, installations)) => CoreRegistryView {
+            active_id: registry.active_id.map(|id| id.to_string()),
+            last_working_id: registry.last_working_id.map(|id| id.to_string()),
+            installations: installations
+                .into_iter()
+                .map(|core| CoreInstallationView {
+                    id: core.id.to_string(),
+                    version: core.version,
+                    target: core.target,
+                    source: match core.source {
+                        CoreSource::Imported => CoreSourceView::Imported,
+                        CoreSource::Linked => CoreSourceView::Linked,
+                        CoreSource::Managed => CoreSourceView::Managed,
+                    },
+                    executable: core.executable.to_string_lossy().into_owned(),
+                    features: core.features,
+                    is_active: core.is_active,
+                    is_last_working: core.is_last_working,
+                    validated_version: core.validated_version,
+                    status: match core.status {
+                        CoreInstallStatus::Ready => CoreInstallStatusView::Ready,
+                        CoreInstallStatus::MissingExecutable => {
+                            CoreInstallStatusView::MissingExecutable
+                        }
+                        CoreInstallStatus::MissingManifest => {
+                            CoreInstallStatusView::MissingManifest
+                        }
+                    },
+                })
+                .collect(),
+        },
         Err(error) => {
             tracing::warn!(%error, "failed to list managed aria2 cores");
             CoreRegistryView::default()
@@ -1064,8 +1061,46 @@ pub(crate) fn map_task(
     }
 }
 
+fn redact_error_message(message: &str) -> String {
+    const SCHEMES: &[&str] = &[
+        "https://", "http://", "ftps://", "ftp://", "sftp://", "wss://", "ws://", "magnet:",
+    ];
+
+    let lower = message.to_ascii_lowercase();
+    let mut out = String::with_capacity(message.len());
+    let mut cursor = 0usize;
+
+    while cursor < message.len() {
+        let next = SCHEMES
+            .iter()
+            .filter_map(|scheme| lower[cursor..].find(scheme).map(|offset| cursor + offset))
+            .min();
+        let Some(start) = next else {
+            out.push_str(&message[cursor..]);
+            break;
+        };
+        out.push_str(&message[cursor..start]);
+
+        let rest = &message[start..];
+        let mut end = rest
+            .find(|ch: char| {
+                ch.is_whitespace() || matches!(ch, '"' | '\'' | ')' | ']' | '}' | '>' | ',' | ';')
+            })
+            .unwrap_or(rest.len());
+        if end > 0 && rest.as_bytes()[end - 1] == b'.' {
+            end -= 1;
+        }
+        let uri_slice = &rest[..end];
+        out.push_str(&ariadeck_domain::redact_source_uri(uri_slice));
+        cursor = start + end;
+    }
+
+    out
+}
+
 pub(crate) fn classify_task_error(error: ariadeck_domain::TaskError) -> TaskErrorView {
-    let message = error.message.trim();
+    let redacted = redact_error_message(error.message.trim());
+    let message = redacted.as_str();
     let normalized = message.to_ascii_lowercase();
     let summary = if normalized.contains("permission denied")
         || normalized.contains("access is denied")
@@ -1112,4 +1147,50 @@ pub(crate) fn classify_task_error(error: ariadeck_domain::TaskError) -> TaskErro
 
 pub(crate) fn sanitize_source_uri(uri: &str) -> String {
     ariadeck_domain::redact_source_uri(uri)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_task_error_redacts_embedded_urls_and_magnets_without_hiding_plain_text() {
+        let plain = classify_task_error(ariadeck_domain::TaskError {
+            code: Some(3),
+            message: "The response status is not successful. status=404".into(),
+        });
+        assert_eq!(
+            plain.summary,
+            "The response status is not successful. status=404"
+        );
+        assert_eq!(
+            plain.details.as_deref(),
+            Some("The response status is not successful. status=404")
+        );
+
+        let url_err = classify_task_error(ariadeck_domain::TaskError {
+            code: Some(22),
+            message: "Failed fetching https://alice:s3cr3t@cdn.example.com/archive.zip?token=xyz."
+                .into(),
+        });
+        assert!(!url_err.summary.contains("s3cr3t"));
+        assert!(!url_err.summary.contains("token=xyz"));
+        assert!(
+            url_err
+                .summary
+                .contains("https://cdn.example.com/archive.zip")
+        );
+        assert_eq!(url_err.details.as_deref(), Some(url_err.summary.as_str()));
+
+        let magnet_err = classify_task_error(ariadeck_domain::TaskError {
+            code: None,
+            message: "Rejected magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&tr=https://t.example/announce?passkey=secret".into(),
+        });
+        assert!(!magnet_err.summary.contains("passkey=secret"));
+        assert!(
+            magnet_err
+                .summary
+                .contains("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+        );
+    }
 }

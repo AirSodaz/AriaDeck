@@ -61,9 +61,9 @@ if (-not $SkipBuild) {
     Write-Host "Building release binaries..."
     if ($target) {
         rustup target add $target
-        cargo build -p ariadeck-desktop -p ariadeck-bridge --release --target $target
+        cargo build -p ariadeck-desktop -p ariadeck-bridge --release --locked --target $target
     } else {
-        cargo build -p ariadeck-desktop -p ariadeck-bridge --release
+        cargo build -p ariadeck-desktop -p ariadeck-bridge --release --locked
     }
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 }

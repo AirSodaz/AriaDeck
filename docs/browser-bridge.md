@@ -103,7 +103,7 @@ One JSON object per native message. Batches use `items`.
 {"ok": false, "error": "not_running"}
 ```
 
-Error codes: `not_running`, `rejected`, `too_large`, `unsupported_version`, `timeout`. No AriaDeck state, no paths, no settings values.
+Error codes: `not_running`, `rejected`, `too_large`, `unsupported_version`, `timeout` (plus extension transport classifications `host_missing` and `host_failed` when `sendNativeMessage` fails). No AriaDeck state, no paths, no settings values.
 
 ---
 
@@ -140,7 +140,7 @@ Existing bounds carry over unchanged: 256 KiB per request, 32 items total across
 
 ## 5. Header, cookie, and filename policy
 
-Bridge items map onto the **existing** `AddDownloadAdvancedOptions` (`crates/ariadeck-application/src/commands.rs:52`). No new option modeling, and no new flattening path — `validate()` and `to_option_pairs()` are reused as-is, which is what keeps CRLF injection and secret redaction consistent with manual advanced add (D-022).
+Bridge items map onto the **existing** `AddDownloadAdvancedOptions` (`crates/ariadeck-application/src/commands/requests.rs`). No new option modeling, and no new flattening path — `validate()` and `to_option_pairs()` are reused as-is, which is what keeps CRLF injection and secret redaction consistent with manual advanced add (D-022). The extension also enforces UTF-8 byte caps (`MAX_REFERER_BYTES`, `MAX_USER_AGENT_BYTES`) and drops C0/DEL/C1 control characters via `sanitizeHeaderValue` before sending.
 
 | Bridge field | Maps to | Default |
 | --- | --- | --- |
@@ -193,7 +193,7 @@ Default is **confirm**, extending D-038's "fill, don't submit" to the bridge.
 | Compromised whitelisted extension | Blast radius bounded by the §5 whitelist: it can add http(s) downloads with headers, but cannot choose paths, set arbitrary options, read state, or exfiltrate settings |
 | Local process forges socket traffic | Pre-existing exposure (D-037/D-038). Bounded by the same whitelist; Confirm mode keeps a human in the loop; auto-submit still cannot pick paths |
 | Cookie exfiltration to disk | Opt-in, memory-only, `SecretString`, excluded from settings/history/logs/diagnostics (§5) |
-| Header injection via `referer`/`cookie` | Existing `AddDownloadAdvancedOptions::validate()` rejects CRLF on every field |
+| Header injection via `referer`/`cookie` | Extension `sanitizeHeaderValue` + `AddDownloadAdvancedOptions::validate()` reject C0/DEL/C1 controls on every field |
 | Oversized / malformed payload flood | 64 KiB per native message, 256 KiB per socket request, 32 items, 2 s timeout — all existing bounds |
 | Downgrade to an unauthenticated path | Bridge has no fallback transport; if the socket fails it reports `not_running` and stops |
 
@@ -218,7 +218,7 @@ Default is **confirm**, extending D-038's "fill, don't submit" to the bridge.
 **B3c (reference extension)** — `apps/ariadeck-extension/`
 
 - [x] Chrome/Edge MV3; no `externally_connectable`; minimum host permissions. Install-time permissions are `activeTab`, `contextMenus`, `nativeMessaging`, `storage` — no host access to any site. `cookies` is optional and host access is `optional_host_permissions`, requested one origin at a time.
-- [x] Cookie attachment gated behind an in-extension toggle, origin-scoped. Three independent grants are all required: the extension's per-site opt-in, the browser's permission prompt for that one origin, and AriaDeck's own `allow_cookies`. `chrome.cookies.getAll({ url })` does the domain/path matching, so another site's cookies cannot ride along; an allow-list entry whose browser permission was revoked sends nothing.
+- [x] Cookie attachment gated behind an in-extension toggle, origin-scoped. Three independent grants are all required: the extension's per-site opt-in, the browser's permission prompt for that one origin, and AriaDeck's own `allow_cookies`. `chrome.cookies.getAll({ url })` does the domain/path matching, so another site's cookies cannot ride along; the popup filters the allow-list against currently granted browser permissions, and an allow-list entry whose browser permission was revoked sends nothing.
 - [x] Interception is opt-in per download — a context-menu item on links and media. No `downloads` permission and no `onDeterminingFilename` hook exist in v1, so blanket interception is not merely unused but unavailable.
 - [x] Icons at 16/32/48/128 px, rendered from the app's own `assets/icon.svg` by `scripts/render-extension-icons.ps1` so the extension and the app cannot drift apart, and pinned by a test that reads the manifest and checks each declared PNG's actual IHDR dimensions — a wrong path or size is otherwise accepted silently and shows as the default puzzle piece. A simplified small-size variant was tried and dropped: without the deck bars the letterform reads as a bare chevron, which looks like a different product beside the app icon.
 - [x] The manifest's security shape is asserted rather than reviewed: no install-time host access, no `externally_connectable`, no content scripts, no web-accessible resources, and neither `downloads` nor `tabs` nor `webRequest` requested anywhere (§7, §9).

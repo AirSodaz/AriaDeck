@@ -6,7 +6,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{self, Write as _},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     sync::{Arc, Mutex},
     thread,
 };
@@ -29,8 +29,20 @@ pub struct LocalDownloadRootRegistry {
 impl LocalDownloadRootRegistry {
     #[must_use]
     pub fn new(initial_root: impl Into<PathBuf>) -> Self {
+        Self::with_initial_roots([initial_root.into()])
+    }
+
+    #[must_use]
+    pub fn with_initial_roots(roots: impl IntoIterator<Item = PathBuf>) -> Self {
+        let mut deduped: Vec<PathBuf> = Vec::new();
+        for root in roots {
+            if root.as_os_str().is_empty() || deduped.iter().any(|existing| existing == &root) {
+                continue;
+            }
+            deduped.push(root);
+        }
         Self {
-            roots: Arc::new(Mutex::new(vec![initial_root.into()])),
+            roots: Arc::new(Mutex::new(deduped)),
         }
     }
 
@@ -521,7 +533,7 @@ pub(crate) struct OpenCommandSpec {
 
 fn open_local_path(path: &Path, is_file: bool) -> Result<(), GatewayError> {
     let spec = open_command_spec(path, is_file);
-    Command::new(spec.program)
+    crate::console_free_command(spec.program)
         .args(&spec.arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -531,10 +543,22 @@ fn open_local_path(path: &Path, is_file: bool) -> Result<(), GatewayError> {
         .map_err(|error| filesystem_error("open task path", path, error, true))
 }
 
+#[cfg(target_os = "windows")]
+fn strip_windows_verbatim_prefix(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    if let Some(unc_tail) = raw.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc_tail}")
+    } else if let Some(drive_tail) = raw.strip_prefix(r"\\?\") {
+        drive_tail.to_owned()
+    } else {
+        raw.into_owned()
+    }
+}
+
 pub(crate) fn open_command_spec(path: &Path, is_file: bool) -> OpenCommandSpec {
-    let value = path.to_string_lossy().into_owned();
     #[cfg(target_os = "windows")]
     {
+        let value = strip_windows_verbatim_prefix(path);
         if is_file {
             OpenCommandSpec {
                 program: "rundll32.exe",
@@ -549,6 +573,7 @@ pub(crate) fn open_command_spec(path: &Path, is_file: bool) -> OpenCommandSpec {
     }
     #[cfg(target_os = "macos")]
     {
+        let value = path.to_string_lossy().into_owned();
         let _ = is_file;
         OpenCommandSpec {
             program: "open",
@@ -557,6 +582,7 @@ pub(crate) fn open_command_spec(path: &Path, is_file: bool) -> OpenCommandSpec {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
+        let value = path.to_string_lossy().into_owned();
         let _ = is_file;
         OpenCommandSpec {
             program: "xdg-open",
@@ -601,6 +627,9 @@ fn resolve_authorized_task_directory(
             continue;
         };
         if task_dir.starts_with(&root) {
+            if task_dir != root {
+                validate_no_reparse_ancestors(&root, &raw_task_dir, "task directory")?;
+            }
             return Ok((root, raw_task_dir, task_dir));
         }
     }
@@ -679,7 +708,49 @@ fn safe_existing_file(
             path.display()
         )));
     }
+    validate_no_reparse_ancestors(task_dir, path, "task file")?;
     Ok(Some(canonical))
+}
+
+fn validate_no_reparse_ancestors(
+    canonical_base: &Path,
+    raw_target: &Path,
+    label: &str,
+) -> Result<(), GatewayError> {
+    let mut current = raw_target.parent();
+    while let Some(ancestor) = current {
+        let metadata = fs::symlink_metadata(ancestor).map_err(|error| {
+            filesystem_error(&format!("inspect {label} parent"), ancestor, error, true)
+        })?;
+        if is_symlink_or_reparse_point(&metadata) {
+            return Err(unsafe_path_error(format!(
+                "{label} cannot traverse a symlink or reparse point: {}",
+                ancestor.display()
+            )));
+        }
+        let canonical = fs::canonicalize(ancestor).map_err(|error| {
+            filesystem_error(
+                &format!("canonicalize {label} parent"),
+                ancestor,
+                error,
+                true,
+            )
+        })?;
+        if canonical == canonical_base {
+            return Ok(());
+        }
+        if !canonical.starts_with(canonical_base) {
+            return Err(unsafe_path_error(format!(
+                "{label} parent resolves outside its permitted root: {}",
+                ancestor.display()
+            )));
+        }
+        current = ancestor.parent();
+    }
+    Err(unsafe_path_error(format!(
+        "{label} does not descend from its permitted root: {}",
+        raw_target.display()
+    )))
 }
 
 fn append_aria2_suffix(path: &Path) -> PathBuf {
@@ -1235,5 +1306,77 @@ mod tests {
 
         assert_eq!(preview.content_files, 1);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn secondary_initial_root_authorizes_files_without_prior_preflight() {
+        let root = temporary_directory();
+        let fallback_dir = root.join("fallback");
+        let video_dir = root.join("videos");
+        let task_dir = video_dir.join("movie");
+        let content = task_dir.join("clip.mkv");
+        fs::create_dir_all(&fallback_dir).expect("create fallback dir");
+        fs::create_dir_all(&task_dir).expect("create video task dir");
+        fs::write(&content, b"video").expect("write video file");
+
+        let registry = LocalDownloadRootRegistry::with_initial_roots([
+            fallback_dir.clone(),
+            video_dir.clone(),
+            video_dir,
+        ]);
+        let gateway = LocalTaskFileGateway::with_roots(registry);
+        let request = TaskFileRemovalRequest {
+            directory: ariadeck_domain::EnginePath::new(task_dir.to_string_lossy()),
+            files: vec![ariadeck_domain::EnginePath::new(content.to_string_lossy())],
+            include_control_files: false,
+        };
+
+        let preview = gateway
+            .preflight(&request)
+            .expect("secondary category root must be authorized");
+        assert_eq!(preview.content_files, 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_intermediate_junction_inside_task_dir_is_rejected() {
+        let root = temporary_directory();
+        let downloads = root.join("downloads");
+        let task_dir = downloads.join("task");
+        let actual = task_dir.join("actual");
+        let junction = task_dir.join("nested_junction");
+        let content = actual.join("item.bin");
+        fs::create_dir_all(&actual).expect("create actual subdir");
+        fs::write(&content, b"content").expect("create content file");
+        create_directory_junction(&junction, &actual);
+
+        let gateway = LocalTaskFileGateway::new(&downloads);
+        let error = gateway
+            .preflight(&TaskFileRemovalRequest {
+                directory: ariadeck_domain::EnginePath::new(task_dir.to_string_lossy()),
+                files: vec![ariadeck_domain::EnginePath::new(
+                    junction.join("item.bin").to_string_lossy(),
+                )],
+                include_control_files: false,
+            })
+            .expect_err("intermediate junction inside task_dir must be rejected");
+        assert_eq!(error.kind, GatewayErrorKind::UnsafePath);
+
+        fs::remove_dir(&junction).expect("remove junction fixture");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_open_command_spec_strips_verbatim_prefixes() {
+        let drive = open_command_spec(Path::new(r"\\?\C:\Downloads\a.bin"), true);
+        assert_eq!(
+            drive.arguments,
+            vec!["url.dll,FileProtocolHandler", r"C:\Downloads\a.bin"]
+        );
+
+        let unc = open_command_spec(Path::new(r"\\?\UNC\server\share\a.bin"), false);
+        assert_eq!(unc.arguments, vec![r"\\server\share\a.bin"]);
     }
 }

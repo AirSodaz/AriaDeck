@@ -137,7 +137,29 @@ impl ProfileEnvironmentStore {
             self.save(profile_id, &env)?;
             return Ok(env);
         }
-        self.load(profile_id)
+        match self.load(profile_id) {
+            Ok(env) => Ok(env),
+            Err(error) if error.is_recoverable_document_error() => {
+                let backup =
+                    path.with_file_name(format!("environment.corrupt.{}.json", Uuid::new_v4()));
+                match fs::rename(&path, &backup) {
+                    Ok(()) => {}
+                    Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(source) => {
+                        return Err(io_error(
+                            "preserve the corrupt profile environment document",
+                            &backup,
+                            source,
+                        ));
+                    }
+                }
+                let env = ProfileEnvironment::from_settings(seed);
+                env.validate()?;
+                self.save(profile_id, &env)?;
+                Ok(env)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub fn load(&self, profile_id: Uuid) -> Result<ProfileEnvironment, SettingsError> {
@@ -280,5 +302,46 @@ mod tests {
             .map(|entry| entry.expect("entry").file_name())
             .collect::<Vec<_>>();
         assert_eq!(entries, vec![std::ffi::OsString::from("environment.json")]);
+    }
+
+    #[test]
+    fn load_or_initialize_recovers_corrupt_document_and_keeps_unsupported_version_fatal() {
+        let root = tempfile::tempdir().expect("temp");
+        let store = ProfileEnvironmentStore::new(root.path());
+        let id = Uuid::new_v4();
+        let seed = AppSettings::new(root.path().join("Downloads"));
+        let path = store.path_for(id);
+        fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        fs::write(&path, b"{corrupt").expect("seed corrupt");
+
+        let recovered = store
+            .load_or_initialize(id, &seed)
+            .expect("corrupt environment should recover");
+        assert_eq!(recovered, ProfileEnvironment::from_settings(&seed));
+        let dir = path.parent().expect("parent");
+        let backups = fs::read_dir(dir)
+            .expect("readdir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("environment.corrupt.")
+            })
+            .count();
+        assert_eq!(backups, 1);
+
+        fs::write(
+            &path,
+            format!(
+                r#"{{"schema_version":{}}}"#,
+                PROFILE_ENVIRONMENT_SCHEMA_VERSION + 1
+            ),
+        )
+        .expect("seed future");
+        assert!(matches!(
+            store.load_or_initialize(id, &seed),
+            Err(SettingsError::UnsupportedSchemaVersion { .. })
+        ));
     }
 }

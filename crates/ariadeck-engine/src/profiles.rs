@@ -285,8 +285,14 @@ impl ProfileCatalog {
         if self.profiles.is_empty() {
             return Err(EngineError::EmptyProfileCatalog);
         }
+        let mut seen = std::collections::HashSet::with_capacity(self.profiles.len());
         for profile in &self.profiles {
             profile.validate()?;
+            if !seen.insert(profile.profile_id) {
+                return Err(EngineError::DuplicateProfileId {
+                    profile_id: profile.profile_id,
+                });
+            }
         }
         if !self
             .profiles
@@ -328,16 +334,19 @@ impl ProfileCatalog {
 
     pub fn upsert(&mut self, entry: ProfileEntry) -> Result<(), EngineError> {
         entry.validate()?;
-        if let Some(existing) = self
+        let mut next = self.clone();
+        if let Some(existing) = next
             .profiles
             .iter_mut()
             .find(|profile| profile.profile_id == entry.profile_id)
         {
             *existing = entry;
         } else {
-            self.profiles.push(entry);
+            next.profiles.push(entry);
         }
-        self.validate()
+        next.validate()?;
+        *self = next;
+        Ok(())
     }
 
     pub fn remove(&mut self, profile_id: ProfileId) -> Result<ProfileEntry, EngineError> {
@@ -534,7 +543,7 @@ impl JsonProfileStore {
             }
         }
 
-        match serde_json::from_slice::<ProfileCatalog>(&bytes) {
+        let validation_error = match serde_json::from_slice::<ProfileCatalog>(&bytes) {
             Ok(catalog) => {
                 if catalog.schema_version != PROFILE_CATALOG_SCHEMA_VERSION {
                     return Err(EngineError::UnsupportedSchemaVersion {
@@ -542,43 +551,47 @@ impl JsonProfileStore {
                         supported: PROFILE_CATALOG_SCHEMA_VERSION,
                     });
                 }
-                catalog.validate()?;
-                Ok(LoadedCatalog {
-                    catalog,
-                    migrated: false,
-                    recovery: None,
-                })
-            }
-            Err(error) => {
-                // Only recover when the probe looked like the current schema or
-                // schema_version was absent; wrong versions already returned above.
-                let reason = format!("profile catalog JSON is malformed: {error}");
-                let recovered_id = serde_json::from_slice::<serde_json::Value>(&bytes)
-                    .ok()
-                    .and_then(|value| {
-                        value
-                            .get("active_profile_id")
-                            .or_else(|| value.get("profile_id"))
-                            .and_then(|id| id.as_str())
-                            .and_then(|id| id.parse::<ProfileId>().ok())
-                    });
-                let backup_path = self.preserve_corrupt_document_bytes(&bytes)?;
-                let mut defaults = defaults.clone();
-                if let Some(profile_id) = recovered_id {
-                    defaults.profile_id = profile_id;
+                match catalog.validate() {
+                    Ok(()) => {
+                        return Ok(LoadedCatalog {
+                            catalog,
+                            migrated: false,
+                            recovery: None,
+                        });
+                    }
+                    Err(error) => format!("profile catalog validation failed: {error}"),
                 }
-                let catalog = ProfileCatalog::from_single(defaults);
-                self.save_catalog(&catalog)?;
-                Ok(LoadedCatalog {
-                    catalog,
-                    migrated: true,
-                    recovery: Some(ProfileStoreRecovery {
-                        backup_path,
-                        reason,
-                    }),
-                })
             }
+            Err(error) => format!("profile catalog JSON is malformed: {error}"),
+        };
+
+        // Only recover when the probe looked like the current schema or
+        // schema_version was absent; wrong versions already returned above.
+        let reason = validation_error;
+        let recovered_id = serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("active_profile_id")
+                    .or_else(|| value.get("profile_id"))
+                    .and_then(|id| id.as_str())
+                    .and_then(|id| id.parse::<ProfileId>().ok())
+            });
+        let backup_path = self.preserve_corrupt_document_bytes(&bytes)?;
+        let mut defaults = defaults.clone();
+        if let Some(profile_id) = recovered_id {
+            defaults.profile_id = profile_id;
         }
+        let catalog = ProfileCatalog::from_single(defaults);
+        self.save_catalog(&catalog)?;
+        Ok(LoadedCatalog {
+            catalog,
+            migrated: true,
+            recovery: Some(ProfileStoreRecovery {
+                backup_path,
+                reason,
+            }),
+        })
     }
 
     pub fn save_catalog(&self, catalog: &ProfileCatalog) -> Result<(), EngineError> {
@@ -872,6 +885,52 @@ mod tests {
                 "expected {bad} to be rejected"
             );
         }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn catalog_rejects_duplicate_profile_ids_and_upsert_is_atomic() {
+        let root = temporary_directory();
+        let profile = sample_profile(&root);
+        let mut catalog = ProfileCatalog::from_single(profile.clone());
+        let mut duplicate = catalog.profiles[0].clone();
+        duplicate.name = "Duplicate".into();
+        catalog.profiles.push(duplicate);
+
+        let err = catalog.validate().expect_err("duplicate id must fail");
+        assert!(matches!(err, EngineError::DuplicateProfileId { .. }));
+
+        // Atomic upsert: failed validation must not mutate existing catalog.
+        let mut valid_catalog = ProfileCatalog::from_single(profile);
+        let mut bad_entry = valid_catalog.profiles[0].clone();
+        bad_entry.name = "   ".into();
+        assert!(valid_catalog.upsert(bad_entry).is_err());
+        assert_eq!(valid_catalog.profiles[0].name, "Test profile");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn schema_v1_catalog_failing_validation_recovers_with_backup() {
+        let root = temporary_directory();
+        let defaults = sample_profile(&root);
+        let path = root.join("profiles.json");
+        let store = JsonProfileStore::new(&path);
+        // Valid JSON for schema_version 1, but `profiles` is empty -> validation failure.
+        fs::write(
+            &path,
+            format!(
+                r#"{{"schema_version":1,"active_profile_id":"{}","profiles":[]}}"#,
+                defaults.profile_id
+            ),
+        )
+        .expect("write invalid v1 catalog");
+
+        let loaded = store
+            .load_catalog_or_recover(&defaults)
+            .expect("invalid schema-v1 catalog should recover");
+        let recovery = loaded.recovery.expect("recovery metadata");
+        assert!(recovery.backup_path.exists());
+        assert_eq!(loaded.catalog.profiles.len(), 1);
         let _ = fs::remove_dir_all(root);
     }
 }

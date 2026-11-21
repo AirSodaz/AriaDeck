@@ -15,7 +15,7 @@ def main() -> int:
     out = root / "THIRD_PARTY_NOTICES.md"
 
     proc = subprocess.run(
-        ["cargo", "metadata", "--format-version", "1"],
+        ["cargo", "metadata", "--format-version", "1", "--locked"],
         cwd=root,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

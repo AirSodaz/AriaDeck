@@ -404,12 +404,15 @@ impl AppShell {
         match kind {
             ModalKind::AddDownload => {
                 let title = self.t("dialog-add-download");
-                let width = self.add_dialog_width(cx);
                 let initial_focus = Cell::new(true);
                 let shell_focus = shell.downgrade();
+                let shell_width = shell.downgrade();
                 let shell_cancel = shell.downgrade();
                 let shell_close = shell.downgrade();
                 window.open_dialog(cx, move |dialog, window, cx| {
+                    let width = shell_width
+                        .read_with(cx, |this, cx| this.add_dialog_width(cx))
+                        .unwrap_or(560.0);
                     if initial_focus.replace(false)
                         && let Some(focus) = shell_focus
                             .read_with(cx, |this, cx| {

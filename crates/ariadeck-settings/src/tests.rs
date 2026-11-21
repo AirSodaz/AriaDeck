@@ -623,3 +623,46 @@ fn duplicate_category_id_returns_dedicated_error() {
         Err(SettingsError::DuplicateCategoryId { id: found }) if found == id
     ));
 }
+
+#[test]
+fn import_settings_defaults_omitted_check_certificate_and_syncs_download_directory() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let mut current = settings(root.path());
+    let fallback_dir = root.path().join("custom-fallback");
+    current.categories[0].directory = fallback_dir.clone();
+    let payload = export_settings_json(&current).expect("export");
+
+    let mut doc: serde_json::Value = serde_json::from_str(&payload).expect("parse export");
+    doc["download_directory"] = serde_json::json!(root.path().join("stale-root"));
+    if let Some(proxy) = doc
+        .get_mut("download_proxy")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        proxy.remove("check_certificate");
+    }
+    let mutated = serde_json::to_string(&doc).expect("serialize");
+
+    let imported = import_settings_json(&mutated, &current).expect("import settings");
+    assert!(imported.download_proxy.check_certificate);
+    assert_eq!(imported.download_directory, fallback_dir);
+}
+
+#[test]
+fn settings_document_allows_omitted_bridge_and_onboarding_flags() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+    let store = JsonSettingsStore::new(&path);
+    let defaults = AppSettings::new(dir.path().join("Downloads"));
+    store.save(&defaults).expect("save defaults");
+
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
+    doc["browser_bridge"] = serde_json::json!({});
+    doc["onboarding"] = serde_json::json!({});
+    fs::write(&path, serde_json::to_vec(&doc).expect("serialize")).expect("write");
+
+    let parsed = store.load().expect("load settings with omitted flags");
+    assert!(!parsed.browser_bridge.allow_cookies);
+    assert!(!parsed.browser_bridge.auto_submit);
+    assert!(!parsed.onboarding.core_setup_dismissed);
+}

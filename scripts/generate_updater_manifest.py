@@ -32,7 +32,7 @@ def read_signature(sig_file: Path) -> str:
     return sig_file.read_text(encoding="utf-8").strip()
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description="Generate updater.json for releases")
     parser.add_argument("--dist-dir", default="dist", help="Directory with release artifacts")
     parser.add_argument("--version", default=None, help="Application version (e.g. 0.2.0)")
@@ -40,6 +40,11 @@ def main():
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "AirSodaz/AriaDeck"))
     parser.add_argument("--notes", default=None, help="Release notes text or file path")
     parser.add_argument("--output", default=None, help="Output path for updater.json")
+    parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="Allow missing platform artifacts or signatures without failing",
+    )
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parent.parent
@@ -70,14 +75,19 @@ def main():
     }
 
     platforms = {}
+    missing = []
     for platform_key, pattern in platform_patterns.items():
         matched_file = find_file(dist, pattern)
         if not matched_file:
-            print(f"Warning: No artifact found for {platform_key} matching {pattern}", file=sys.stderr)
+            message = f"No artifact found for {platform_key} matching {pattern}"
+            print(f"Warning: {message}", file=sys.stderr)
+            missing.append(message)
             continue
         sig_file = dist / f"{matched_file.name}.sig"
         if not sig_file.is_file():
-            print(f"Warning: Signature file missing for {matched_file.name}: {sig_file}", file=sys.stderr)
+            message = f"Signature file missing for {matched_file.name}: {sig_file}"
+            print(f"Warning: {message}", file=sys.stderr)
+            missing.append(message)
             continue
 
         signature = read_signature(sig_file)
@@ -86,6 +96,13 @@ def main():
             "signature": signature,
             "url": url,
         }
+
+    if missing and not args.allow_partial:
+        print(
+            f"Error: {len(missing)} required release artifact(s) missing; pass --allow-partial to emit a partial manifest.",
+            file=sys.stderr,
+        )
+        return 1
 
     manifest = {
         "version": version,
@@ -97,7 +114,8 @@ def main():
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"Wrote updater manifest with {len(platforms)} platforms to {output}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -202,7 +202,7 @@ pub(crate) fn spawn_tracker_list_refresh_bridge(
     persistence: mpsc::UnboundedSender<PersistenceCommand>,
     mut requests: mpsc::UnboundedReceiver<TrackerListRefreshRequest>,
     results: mpsc::UnboundedSender<TrackerListRefreshResult>,
-) {
+) -> tokio::task::JoinHandle<()> {
     // Network fetch stays off the ordered persistence worker so slow HTTP calls
     // never stall user settings saves; successful refreshes commit through the
     // persistence worker to dual-write settings.json + active environment.json.
@@ -225,14 +225,14 @@ pub(crate) fn spawn_tracker_list_refresh_bridge(
                 }
             }
         }
-    });
+    })
 }
 
 /// Background auto-refresh tick (checks every hour; refresh logic enforces 24h).
 pub(crate) fn spawn_tracker_list_auto_refresh(
     runtime: tokio::runtime::Handle,
     requests: mpsc::UnboundedSender<TrackerListRefreshRequest>,
-) {
+) -> tokio::task::JoinHandle<()> {
     runtime.spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -249,7 +249,7 @@ pub(crate) fn spawn_tracker_list_auto_refresh(
                 break;
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]
@@ -292,5 +292,41 @@ mod tests {
             &settings,
             1_700_000_000 + TRACKER_AUTO_REFRESH_INTERVAL.as_secs() as i64
         ));
+    }
+
+    #[test]
+    fn aborting_tracker_background_tasks_releases_persistence_channel_immediately() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = JsonSettingsStore::new(dir.path().join("settings.json"));
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel::<PersistenceCommand>();
+        let (req_tx, req_rx) = mpsc::unbounded_channel::<TrackerListRefreshRequest>();
+        let (res_tx, _res_rx) = mpsc::unbounded_channel::<TrackerListRefreshResult>();
+
+        let bridge = spawn_tracker_list_refresh_bridge(
+            runtime.handle().clone(),
+            store,
+            persistence_tx.clone(),
+            req_rx,
+            res_tx,
+        );
+        let auto = spawn_tracker_list_auto_refresh(runtime.handle().clone(), req_tx.clone());
+
+        bridge.abort();
+        auto.abort();
+        drop(req_tx);
+        drop(persistence_tx);
+
+        runtime.block_on(async {
+            let _ = bridge.await;
+            let _ = auto.await;
+            let closed = tokio::time::timeout(Duration::from_millis(200), persistence_rx.recv())
+                .await
+                .expect("persistence channel must close immediately");
+            assert!(closed.is_none(), "no commands should be queued");
+        });
     }
 }

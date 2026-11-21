@@ -254,7 +254,7 @@ impl RenderOnce for Icon {
             div()
                 .id(ElementId::NamedChild(
                     ElementId::Name("icon".into()).into(),
-                    label.clone(),
+                    SharedString::from(self.name.path()),
                 ))
                 .flex_none()
                 .role(Role::Image)

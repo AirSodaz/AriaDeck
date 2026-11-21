@@ -51,10 +51,12 @@ GPUI → ariadeck-ui → ariadeck-desktop (composition, tray, bridges)
 | `ariadeck-settings` | Versioned JSON settings + per-profile engine env bags; atomic save (schema v1 only in-tree) |
 | `ariadeck-ui` | Tokens, themes, GPUI components (pages use only this + app ports) |
 | `ariadeck-i18n` | Fluent catalogs (en, zh-CN) |
+| `ariadeck-ipc` | Single-instance & browser-bridge local socket protocol/paths (GPUI-free) |
+| `ariadeck-history` | SQLite history store (`history.sqlite`, schema v3) |
 | `ariadeck-telemetry` | Tracing setup |
 | `ariadeck-desktop` | Bootstrap, composition root, platform |
 
-**Not separate crates yet:** core-manager (in engine), platform (partially desktop). History: `ariadeck-history` (SQLite adapter).
+**Not separate crates yet:** core-manager (in engine), platform (partially desktop).
 
 ### Dependency rules
 
@@ -126,7 +128,7 @@ Env knobs: see root `README.md` (`ARIADECK_RPC_*`).
 | D-031 | Theme System/Light/Dark; debounced window geometry |
 | D-032 | **SEC-001:** redact secrets in UI/clipboard/notices/Debug/diagnostics (`domain::privacy`) |
 | D-033 | **PERF-001:** tray → Background poll; virtualize; details coalesce ≥500ms; 10k stress |
-| D-034 | **RELEASE-001:** Windows portable (+ Inno); MIT + notices. Official Windows x64 release builds check GitHub Releases; portable builds show a notice/link only, installed builds offer a SHA-256-verified Inno installer after user confirmation |
+| D-034 | **RELEASE-001:** Windows portable (+ Inno); MIT + notices. Official release builds check GitHub Releases; portable/read-only builds surface a notice/error rather than launching updates, while writable installs verify Minisign signatures (and optional `SHA256SUMS.txt` digests) via streamed temporary files before launching the platform updater |
 | D-035 | Diagnostic export is an explicit user-chosen ZIP containing only the redacted runtime snapshot + privacy notice; no settings, logs, task/source data, paths, or credentials |
 | D-036 | Settings transfer uses a separate versioned JSON format with no password or credential reference; import is strictly validated, preserves local keychain secrets, and applies through the normal settings transaction |
 | D-037 | Windows metadata associations are explicit installer opt-ins. `.torrent`, `.metalink`, and `.meta4` launch `--open-metadata <path>` into the existing preview/confirmation flow; a bounded, versioned per-data-directory local socket forwards to and activates the running instance without lossy path conversion |
@@ -164,7 +166,7 @@ Settings: versioned JSON schema **v1** (`settings.json`); `window.json`; `profil
 1. **Startup:** load `settings.json` → load/seed active bag → optional `ARIADECK_DOWNLOAD_DIR` (process-only; not written to bag until user saves) → align catalog `download_dir` → spawn/connect.
 2. **Activate:** save previous bag from live settings → set active → load/seed next bag → mirror into `settings.json` + UI drafts → notice to restart (engine rebind deferred to F2).
 3. **Save settings:** `settings.json` + active bag (when env fields change).
-4. **Delete profile:** remove bag directory; seed bags for new catalog entries on save.
+4. **Delete profile:** remove bag directory, RPC secret, and `history.sqlite` rows for the deleted profile; seed bags for new catalog entries on save.
 
 **Local vs remote paths**
 
@@ -231,8 +233,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 | --- | --- |
 | Task / seeding | `crates/ariadeck-domain/src/task.rs` |
 | Store / selection | `application/src/store.rs`, `view.rs` |
-| Sync / generations | `application/src/sync.rs` |
-| Commands | `application/src/commands.rs`, `ports.rs` |
+| Sync / generations | `application/src/sync/` (ordered `HistoryWriter`, `prune_unreferenced_tasks`) |
+| Commands | `application/src/commands/`, `ports.rs` |
 | Wire / multicall | `crates/ariadeck-rpc/` |
 | Process / cores | `crates/ariadeck-engine/` (`lib.rs`, `cores.rs`, `discovery.rs`) |
 | Core setup (B4 / D-046) | `crates/ariadeck-ui/src/shell/core_setup.rs` · `apps/ariadeck-desktop/src/workspace/core_fetch.rs` |

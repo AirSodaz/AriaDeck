@@ -52,14 +52,20 @@ enum StreamSizeRule {
     Exact(u64),
 }
 
-async fn fetch_stream_bytes<F>(
+enum StreamSink<'a> {
+    Vec(&'a mut Vec<u8>),
+    Channel(&'a tokio::sync::mpsc::Sender<Vec<u8>>),
+}
+
+async fn fetch_stream_with_sink<F>(
     url: &str,
     size_rule: StreamSizeRule,
     timeout: Duration,
     label: &str,
     headers: &[(&str, &str)],
     mut on_progress: Option<F>,
-) -> Result<Vec<u8>, String>
+    mut sink: StreamSink<'_>,
+) -> Result<(), String>
 where
     F: FnMut(u64, Option<u64>),
 {
@@ -100,7 +106,7 @@ where
         }
     };
 
-    let mut bytes = Vec::new();
+    let mut received_bytes = 0usize;
     let mut last_progress_report = 0u64;
     if let Some(callback) = on_progress.as_mut() {
         callback(0, total_bytes);
@@ -111,7 +117,7 @@ where
         .await
         .map_err(|error| format!("{label} download failed: {error}"))?
     {
-        if bytes.len().saturating_add(chunk.len()) > max_bytes {
+        if received_bytes.saturating_add(chunk.len()) > max_bytes {
             return match size_rule {
                 StreamSizeRule::Max(_) => Err(format!("{label} download is too large.")),
                 StreamSizeRule::Exact(expected_bytes) => Err(format!(
@@ -119,9 +125,17 @@ where
                 )),
             };
         }
-        bytes.extend_from_slice(&chunk);
+        received_bytes += chunk.len();
+        match &mut sink {
+            StreamSink::Vec(bytes) => bytes.extend_from_slice(&chunk),
+            StreamSink::Channel(tx) => {
+                tx.send(chunk.to_vec())
+                    .await
+                    .map_err(|_| format!("{label} download consumer stopped unexpectedly."))?;
+            }
+        }
         if let Some(callback) = on_progress.as_mut() {
-            let current_len = bytes.len() as u64;
+            let current_len = received_bytes as u64;
             if current_len.saturating_sub(last_progress_report) >= 256 * 1024
                 || total_bytes == Some(current_len)
             {
@@ -132,15 +146,64 @@ where
     }
 
     if let StreamSizeRule::Exact(expected_bytes) = size_rule
-        && bytes.len() as u64 != expected_bytes
+        && received_bytes as u64 != expected_bytes
     {
         return Err(format!(
-            "{label} download has an unexpected size ({} bytes, expected {expected_bytes}).",
-            bytes.len()
+            "{label} download has an unexpected size ({received_bytes} bytes, expected {expected_bytes})."
         ));
     }
 
+    Ok(())
+}
+
+async fn fetch_stream_bytes<F>(
+    url: &str,
+    size_rule: StreamSizeRule,
+    timeout: Duration,
+    label: &str,
+    headers: &[(&str, &str)],
+    on_progress: Option<F>,
+) -> Result<Vec<u8>, String>
+where
+    F: FnMut(u64, Option<u64>),
+{
+    let mut bytes = Vec::new();
+    fetch_stream_with_sink(
+        url,
+        size_rule,
+        timeout,
+        label,
+        headers,
+        on_progress,
+        StreamSink::Vec(&mut bytes),
+    )
+    .await?;
     Ok(bytes)
+}
+
+/// Stream chunks up to `max_bytes` into a bounded channel without buffering
+/// the entire payload in memory.
+pub(crate) async fn fetch_bounded_to_channel<F>(
+    url: &str,
+    max_bytes: usize,
+    timeout: Duration,
+    label: &str,
+    on_progress: F,
+    tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+) -> Result<(), String>
+where
+    F: FnMut(u64, Option<u64>),
+{
+    fetch_stream_with_sink(
+        url,
+        StreamSizeRule::Max(max_bytes),
+        timeout,
+        label,
+        &[],
+        Some(on_progress),
+        StreamSink::Channel(&tx),
+    )
+    .await
 }
 
 /// Fetch `url` into memory while enforcing a hard upper bound of `max_bytes`.
@@ -177,28 +240,6 @@ pub(crate) async fn fetch_exact_bytes(
         label,
         &[],
         None,
-    )
-    .await
-}
-
-/// Fetch `url` with streaming size limit and throttled progress callbacks.
-pub(crate) async fn fetch_bounded_with_progress<F>(
-    url: &str,
-    max_bytes: usize,
-    timeout: Duration,
-    label: &str,
-    on_progress: F,
-) -> Result<Vec<u8>, String>
-where
-    F: FnMut(u64, Option<u64>),
-{
-    fetch_stream_bytes(
-        url,
-        StreamSizeRule::Max(max_bytes),
-        timeout,
-        label,
-        &[],
-        Some(on_progress),
     )
     .await
 }

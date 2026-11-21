@@ -114,6 +114,7 @@ pub(crate) struct CoreDownloadRequest {
 #[derive(Debug)]
 pub(crate) struct CoreDownloadResult {
     pub(crate) request_id: ariadeck_ui::RequestId,
+    pub(crate) registry: ariadeck_ui::CoreRegistryView,
     pub(crate) installed: Option<CoreInstallationView>,
     pub(crate) result: Result<(), String>,
 }
@@ -217,9 +218,17 @@ pub(crate) async fn run_core_download(
     core_store: CoreStore,
     request: CoreDownloadRequest,
 ) -> CoreDownloadResult {
+    let map_registry_blocking = |store: CoreStore| async move {
+        tokio::task::spawn_blocking(move || super::mapping::map_core_registry(&store))
+            .await
+            .unwrap_or_default()
+    };
+
     let Some(entry) = catalog_entry_for_host() else {
+        let registry = map_registry_blocking(core_store).await;
         return CoreDownloadResult {
             request_id: request.request_id,
+            registry,
             installed: None,
             result: Err(
                 "No verified aria2 download is published for this platform. Install aria2 with your package manager, then use Browse."
@@ -231,8 +240,10 @@ pub(crate) async fn run_core_download(
     let archive = match fetch_archive(entry).await {
         Ok(archive) => archive,
         Err(error) => {
+            let registry = map_registry_blocking(core_store).await;
             return CoreDownloadResult {
                 request_id: request.request_id,
+                registry,
                 installed: None,
                 result: Err(error),
             };
@@ -240,29 +251,39 @@ pub(crate) async fn run_core_download(
     };
 
     // Hashing, unzipping, copying and `--version` probing are all blocking.
-    let installed = tokio::task::spawn_blocking(move || {
-        verify_archive(entry, &archive)?;
-        let staging = tempfile::Builder::new()
-            .prefix("ariadeck-core-")
-            .tempdir()
-            .map_err(|error| format!("Failed to create a staging directory: {error}"))?;
-        let executable = extract_member(entry, &archive, staging.path())?;
-        core_store
-            .install_downloaded_executable(&executable)
-            .map_err(|error| error.to_string())
+    let (installed, registry) = tokio::task::spawn_blocking(move || {
+        let outcome = (|| -> Result<CoreInstallationView, String> {
+            verify_archive(entry, &archive)?;
+            let staging = tempfile::Builder::new()
+                .prefix("ariadeck-core-")
+                .tempdir()
+                .map_err(|error| format!("Failed to create a staging directory: {error}"))?;
+            let executable = extract_member(entry, &archive, staging.path())?;
+            core_store
+                .install_downloaded_executable(&executable)
+                .map_err(|error| error.to_string())
+        })();
+        let registry = super::mapping::map_core_registry(&core_store);
+        (outcome, registry)
     })
     .await
-    .map_err(|error| format!("aria2 install task failed: {error}"))
-    .and_then(|result| result);
+    .unwrap_or_else(|error| {
+        (
+            Err(format!("aria2 install task failed: {error}")),
+            ariadeck_ui::CoreRegistryView::default(),
+        )
+    });
 
     match installed {
         Ok(view) => CoreDownloadResult {
             request_id: request.request_id,
+            registry,
             installed: Some(view),
             result: Ok(()),
         },
         Err(error) => CoreDownloadResult {
             request_id: request.request_id,
+            registry,
             installed: None,
             result: Err(error),
         },
@@ -274,7 +295,7 @@ pub(crate) fn spawn_core_download_bridge(
     core_store: CoreStore,
     mut requests: mpsc::UnboundedReceiver<CoreDownloadRequest>,
     results: mpsc::UnboundedSender<CoreDownloadResult>,
-) {
+) -> tokio::task::JoinHandle<()> {
     // Needs a reactor for the HTTP fetch and `spawn_blocking`, so it lives on the
     // Tokio runtime rather than the GPUI executor (same reason as tracker_list).
     runtime.spawn(async move {
@@ -284,7 +305,7 @@ pub(crate) fn spawn_core_download_bridge(
                 break;
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]

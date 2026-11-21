@@ -57,6 +57,7 @@ pub struct StorePatch {
     pub global_stat_changed: bool,
     pub stale_changed: bool,
     pub session_changed: bool,
+    pub category_changed: bool,
 }
 
 impl StorePatch {
@@ -71,6 +72,7 @@ impl StorePatch {
             global_stat_changed: false,
             stale_changed: false,
             session_changed: false,
+            category_changed: false,
         }
     }
 
@@ -83,6 +85,7 @@ impl StorePatch {
             && !self.global_stat_changed
             && !self.stale_changed
             && !self.session_changed
+            && !self.category_changed
     }
 
     fn record_order(&mut self, collection: TaskCollection) {
@@ -216,7 +219,7 @@ impl DownloadStore {
             if *offset > expected {
                 return expected;
             }
-            expected = expected.saturating_add(page.len());
+            expected = expected.max(offset.saturating_add(page.len()));
         }
         expected
     }
@@ -282,6 +285,20 @@ impl DownloadStore {
         if changed {
             self.revision = self.revision.saturating_add(1);
         }
+    }
+
+    pub fn set_task_category_affiliation_patch(
+        &mut self,
+        generation: SessionGeneration,
+        gid: Gid,
+        category_id: Option<String>,
+    ) -> Result<StorePatch, StoreError> {
+        self.ensure_generation(generation)?;
+        let prev_revision = self.revision;
+        self.set_task_category_affiliation(gid, category_id);
+        let mut patch = StorePatch::new(generation, self.revision);
+        patch.category_changed = self.revision != prev_revision;
+        Ok(patch)
     }
 
     #[must_use]
@@ -470,9 +487,13 @@ impl DownloadStore {
         }
 
         for gid in old_live.difference(&new_live).copied() {
-            if !self.stopped_set.contains(&gid) && self.tasks.remove(&gid).is_some() {
+            if !self.stopped_set.contains(&gid)
+                && !self.history_only.contains(&gid)
+                && self.tasks.remove(&gid).is_some()
+            {
                 self.search_index.remove(&gid);
                 self.seeding_started_at.remove(&gid);
+                self.category_by_gid.remove(&gid);
                 patch.removed.push(gid);
             }
         }
@@ -537,6 +558,41 @@ impl DownloadStore {
             patch.record_order(TaskCollection::Stopped);
         }
 
+        Ok(self.finish_patch(patch))
+    }
+
+    /// Removes cached tasks that are no longer referenced by live queues, loaded
+    /// stopped pages, or durable history after a full stopped-page sweep.
+    pub fn prune_unreferenced_tasks(
+        &mut self,
+        generation: SessionGeneration,
+    ) -> Result<StorePatch, StoreError> {
+        self.ensure_generation(generation)?;
+        let live: HashSet<Gid> = self
+            .active_order
+            .iter()
+            .chain(&self.waiting_order)
+            .copied()
+            .collect();
+        let stale_gids: Vec<Gid> = self
+            .tasks
+            .keys()
+            .copied()
+            .filter(|gid| {
+                !live.contains(gid)
+                    && !self.stopped_set.contains(gid)
+                    && !self.history_only.contains(gid)
+            })
+            .collect();
+        let mut patch = StorePatch::new(generation, self.revision);
+        for gid in stale_gids {
+            if self.tasks.remove(&gid).is_some() {
+                self.search_index.remove(&gid);
+                self.seeding_started_at.remove(&gid);
+                self.category_by_gid.remove(&gid);
+                patch.removed.push(gid);
+            }
+        }
         Ok(self.finish_patch(patch))
     }
 
@@ -1368,5 +1424,52 @@ mod tests {
             .remove_tasks(generation(), &[gid_b])
             .expect("remove gid_b");
         assert!(store.task_category_id(gid_b).is_none());
+    }
+
+    #[test]
+    fn prune_unreferenced_tasks_clears_evicted_stopped_entries_and_overlapping_offsets() {
+        let mut store = store();
+        store
+            .apply_stopped_page(
+                generation(),
+                0,
+                Some(3),
+                vec![
+                    task(1, DownloadStatus::Complete, "one"),
+                    task(2, DownloadStatus::Complete, "two"),
+                ],
+            )
+            .expect("page 0");
+        store
+            .apply_stopped_page(
+                generation(),
+                1,
+                Some(3),
+                vec![
+                    task(2, DownloadStatus::Complete, "two"),
+                    task(3, DownloadStatus::Complete, "three"),
+                ],
+            )
+            .expect("overlapping page 1");
+        assert_eq!(store.next_stopped_offset(), 3);
+
+        store.set_task_category_affiliation(Gid::from_u64(1), Some("cat-docs".into()));
+        // Evict gid 1 after sweep finishes with total=1 containing only gid 2.
+        store
+            .apply_stopped_page(
+                generation(),
+                0,
+                Some(1),
+                vec![task(2, DownloadStatus::Complete, "two")],
+            )
+            .expect("truncated page");
+        let patch = store
+            .prune_unreferenced_tasks(generation())
+            .expect("prune evicted stopped entries");
+        assert!(patch.removed.contains(&Gid::from_u64(1)));
+        assert!(patch.removed.contains(&Gid::from_u64(3)));
+        assert!(store.task(Gid::from_u64(1)).is_none());
+        assert!(store.task_category_id(Gid::from_u64(1)).is_none());
+        assert!(store.task(Gid::from_u64(2)).is_some());
     }
 }

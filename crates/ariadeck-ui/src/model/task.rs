@@ -165,12 +165,6 @@ impl TaskStatusView {
         )
     }
 
-    /// Per-task connection policy uses the same live-task changeOption surface.
-    #[must_use]
-    pub const fn can_set_connection_policy(self) -> bool {
-        self.can_set_speed_limit()
-    }
-
     #[must_use]
     pub const fn uses_active_connections(self) -> bool {
         matches!(self, Self::Active | Self::Seeding)

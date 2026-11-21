@@ -1937,3 +1937,72 @@ fn unsupported_platform_capabilities_block_keep_awake_and_bridge_toggles(
         assert!(notice.message.contains("systemctl exited 1"));
     });
 }
+
+#[gpui::test]
+fn draft_category_ids_stay_unique_after_delete_and_path_pick_tracks_category_id(
+    cx: &mut gpui::TestAppContext,
+) {
+    let initial = SettingsView {
+        download_directory: "C:/Downloads".into(),
+        categories: vec![crate::DownloadCategoryView {
+            id: "00000000-0000-4000-8000-000000000001".into(),
+            name: "General".into(),
+            directory: "C:/Downloads".into(),
+            extensions: String::new(),
+            is_fallback: true,
+        }],
+        ..SettingsView::default()
+    };
+    let (view, cx) =
+        cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_settings(&OpenSettings, window, cx);
+        let panel = shell.settings_panel().expect("settings panel open").clone();
+        panel.update(cx, |panel, cx| {
+            panel.add_download_category(window, cx);
+            panel.add_download_category(window, cx);
+            assert_eq!(panel.settings_page.draft_categories.len(), 3);
+            let first_added_id = panel.settings_page.draft_categories[1].id.clone();
+            let second_added_id = panel.settings_page.draft_categories[2].id.clone();
+            assert_ne!(first_added_id, second_added_id);
+
+            // Delete the first added category and add another: IDs must remain strictly unique.
+            panel.remove_download_category(1, cx);
+            panel.add_download_category(window, cx);
+            let third_added_id = panel.settings_page.draft_categories[2].id.clone();
+            assert_ne!(third_added_id, first_added_id);
+            assert_ne!(third_added_id, second_added_id);
+
+            // Simulate the folder picker returning for `third_added_id` even after deleting
+            // an earlier category (`index 1` = `second_added_id`), shifting `third_added_id` down.
+            panel.select_category_editor(2, window, cx);
+            panel.remove_download_category(1, cx);
+            assert_eq!(panel.settings_page.draft_categories.len(), 2);
+            assert_eq!(panel.settings_page.draft_categories[1].id, third_added_id);
+            panel.select_category_editor(1, window, cx);
+            panel.apply_picked_path(
+                PathPickTarget::CategoryDirectory {
+                    category_id: third_added_id.clone(),
+                },
+                std::path::PathBuf::from("D:/CustomPicked"),
+                window,
+                cx,
+            );
+            assert_eq!(
+                panel.settings_page.draft_categories[1].directory,
+                "D:/CustomPicked"
+            );
+            assert_eq!(
+                panel.settings_inputs.directory.read(cx).value(),
+                "D:/CustomPicked"
+            );
+
+            // General (fallback) must remain untouched.
+            assert_eq!(
+                panel.settings_page.draft_categories[0].directory,
+                "C:/Downloads"
+            );
+        });
+    });
+}

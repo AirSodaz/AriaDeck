@@ -13,13 +13,13 @@ use ariadeck_application::{
     AddDownloadAdvancedOptions, AddDownloadRequest, AddDownloadSource, AppCommand,
     ApplicationError, ApplicationErrorCode, CommandItem, CommandOutcome, DownloadDestinationFile,
     DownloadDestinationGateway, DownloadDestinationRequest, FileConflictPolicy, ItemFailure,
-    MoveTaskInQueueRequest, QueueMove, RemoveTasksRequest, SetTaskConnectionPolicyRequest,
-    SetTaskOptionsRequest, SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, SyncHandle,
-    TaskFileGateway, TaskFileRemovalRequest, TaskOpenRequest, TaskOpenTarget, TaskRemovalScope,
+    MoveTaskInQueueRequest, QueueMove, RemoveTasksRequest, SetTaskOptionsRequest,
+    SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, SyncHandle, TaskFileGateway,
+    TaskFileRemovalRequest, TaskOpenRequest, TaskOpenTarget, TaskRemovalScope,
 };
 use ariadeck_domain::{
     ByteRate, ConnectionState, DownloadStatus, DownloadTask, EnginePath, EngineSession, Gid,
-    ProfileId, TaskConnectionPolicy, TaskDetails, TaskIdentity as DomainTaskIdentity,
+    ProfileId, TaskDetails, TaskIdentity as DomainTaskIdentity,
 };
 use ariadeck_engine::CoreStore;
 use ariadeck_ui::{
@@ -1306,18 +1306,6 @@ pub(crate) async fn execute_task_command(
                     task,
                     download_limit: ByteRate::new(*download_limit),
                     upload_limit: ByteRate::new(*upload_limit),
-                }),
-                TaskCommandView::SetConnectionPolicy {
-                    max_connection_per_server,
-                    split,
-                    min_split_size,
-                } => AppCommand::SetTaskConnectionPolicy(SetTaskConnectionPolicyRequest {
-                    task,
-                    policy: TaskConnectionPolicy {
-                        max_connection_per_server: *max_connection_per_server,
-                        split: *split,
-                        min_split_size: *min_split_size,
-                    },
                 }),
                 TaskCommandView::SetOptions {
                     seed_ratio,

@@ -109,7 +109,13 @@ impl LocalEngineProcess {
             }
         })?;
 
-        let child = spawn_child(config, port, &config_path, &session_path, &log_path)?;
+        let child = match spawn_child(config, port, &config_path, &session_path, &log_path) {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = fs::remove_file(&config_path);
+                return Err(error);
+            }
+        };
         if let Some(hook) = on_child_spawned.as_ref() {
             hook(child.id());
         }

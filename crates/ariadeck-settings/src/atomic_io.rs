@@ -53,5 +53,9 @@ pub(crate) fn write_atomic_json(
     temp_file
         .persist(path)
         .map(|_| ())
-        .map_err(|error| io_error(replace_op, path, error.error))
+        .map_err(|error| io_error(replace_op, path, error.error))?;
+    if let Ok(dir) = fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
 }

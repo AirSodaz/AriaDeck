@@ -546,6 +546,18 @@ impl CommandService {
             } else {
                 TaskRemovalTarget::LiveTask
             };
+            if context.is_history_only
+                && matches!(
+                    operation,
+                    TaskOperation::Remove(TaskRemovalScope::TaskOnly)
+                        | TaskOperation::ForceRemove(TaskRemovalScope::TaskOnly)
+                )
+            {
+                // Durable history-only rows no longer exist in aria2 memory; mark
+                // succeeded so sync removes them from SQLite and the local store.
+                succeeded.push(item);
+                continue;
+            }
             let required = match operation {
                 TaskOperation::Pause => "aria2.pause",
                 TaskOperation::ForcePause => "aria2.forcePause",
@@ -666,6 +678,17 @@ impl CommandService {
                 });
                 continue;
             };
+            if source == ariadeck_domain::REDACTED_SOURCE_PLACEHOLDER {
+                failed.push(ItemFailure {
+                    item: Some(item),
+                    error: ApplicationError::new(
+                        ApplicationErrorCode::Unsupported,
+                        "The task source URI was redacted and cannot be retried without re-adding the download.",
+                        false,
+                    ),
+                });
+                continue;
+            }
             let request = AddDownloadRequest {
                 source: AddDownloadSource::Uris(vec![source]),
                 destination: context.metadata.directory.clone(),
@@ -674,6 +697,13 @@ impl CommandService {
                 advanced: Default::default(),
                 options: Vec::new(),
             };
+            if let Err(error) = request.validate() {
+                failed.push(ItemFailure {
+                    item: Some(item),
+                    error,
+                });
+                continue;
+            }
             match self.gateway.retry_download(identity.gid, &request).await {
                 Ok(gid) => {
                     succeeded.push(CommandItem::Task(TaskIdentity::new(self.profile_id, gid)))

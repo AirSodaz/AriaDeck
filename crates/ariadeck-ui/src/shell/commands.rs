@@ -823,9 +823,7 @@ impl AppShell {
             {
                 Some("notice-queue-positioning-unsupported")
             }
-            TaskCommandView::SetSpeedLimit { .. }
-            | TaskCommandView::SetConnectionPolicy { .. }
-            | TaskCommandView::SetOptions { .. }
+            TaskCommandView::SetSpeedLimit { .. } | TaskCommandView::SetOptions { .. }
                 if !self.snapshot.capabilities.change_option =>
             {
                 Some("notice-change-option-unsupported")
@@ -848,7 +846,6 @@ impl AppShell {
             TaskCommandView::Retry => task.status.can_retry(),
             TaskCommandView::SetOutputName { .. } => task.can_set_output_name(),
             TaskCommandView::SetSpeedLimit { .. } => task.status.can_set_speed_limit(),
-            TaskCommandView::SetConnectionPolicy { .. } => task.status.can_set_connection_policy(),
             TaskCommandView::SetOptions { .. } => task.status.can_set_speed_limit(),
             TaskCommandView::RemoveTask
             | TaskCommandView::ForceRemoveTask
@@ -1213,7 +1210,6 @@ const fn task_command_label_key(command: &TaskCommandView) -> &'static str {
         TaskCommandView::Retry => "action-retry",
         TaskCommandView::SetOutputName { .. } => "action-change-output-name",
         TaskCommandView::SetSpeedLimit { .. } => "action-set-speed-limits",
-        TaskCommandView::SetConnectionPolicy { .. } => "action-set-connection-policy",
         TaskCommandView::SetOptions { .. } => "action-edit-task-options",
         TaskCommandView::RemoveTask => "action-remove",
         TaskCommandView::ForceRemoveTask => "action-force-remove",

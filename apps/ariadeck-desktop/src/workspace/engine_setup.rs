@@ -172,16 +172,91 @@ pub(crate) fn rpc_secret_store() -> SystemProxyCredentialStore {
 }
 
 /// Persist Set/Clear secret mutations against the keyring, keyed strictly by `ProfileId`.
-pub(crate) fn apply_profile_secret_updates(
+pub(crate) enum ProfileSecretBackup {
+    DeleteOnRollback(ProxyCredentialRef),
+    Restore(ProxyCredentialRef, SecretString),
+}
+
+pub(crate) fn capture_profile_secret_backups(
+    store: &dyn ProxyCredentialStore,
     catalog: &ProfileCatalog,
     secret_updates: &HashMap<ProfileId, ProfileRpcSecretUpdateView>,
     previous: &ProfileCatalog,
-) -> Result<(), String> {
-    if secret_updates.is_empty() {
-        return Ok(());
+) -> Vec<ProfileSecretBackup> {
+    let mut backups = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for (profile_id, update) in secret_updates {
+        if matches!(update, ProfileRpcSecretUpdateView::Unchanged) {
+            continue;
+        }
+        let old_ref = previous
+            .get(*profile_id)
+            .and_then(|profile| profile.secret_ref);
+        let new_ref = catalog
+            .get(*profile_id)
+            .and_then(|profile| profile.secret_ref);
+
+        if let Some(secret_ref) = old_ref {
+            let credential = ProxyCredentialRef::from_uuid(secret_ref.as_uuid());
+            if seen.insert(credential.as_uuid()) {
+                match store.load(credential) {
+                    Ok(Some(secret)) => {
+                        backups.push(ProfileSecretBackup::Restore(credential, secret));
+                    }
+                    Ok(None) => {
+                        backups.push(ProfileSecretBackup::DeleteOnRollback(credential));
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            profile_id = %profile_id,
+                            %error,
+                            "failed to snapshot previous RPC secret before catalog save"
+                        );
+                    }
+                }
+            }
+        }
+
+        if let Some(secret_ref) = new_ref
+            && Some(secret_ref) != old_ref
+        {
+            let credential = ProxyCredentialRef::from_uuid(secret_ref.as_uuid());
+            if seen.insert(credential.as_uuid()) {
+                backups.push(ProfileSecretBackup::DeleteOnRollback(credential));
+            }
+        }
     }
-    let store = rpc_secret_store();
-    apply_profile_secret_updates_with_store(&store, catalog, secret_updates, previous)
+
+    backups
+}
+
+pub(crate) fn restore_profile_secrets(
+    store: &dyn ProxyCredentialStore,
+    backups: &[ProfileSecretBackup],
+) {
+    for backup in backups {
+        match backup {
+            ProfileSecretBackup::DeleteOnRollback(credential) => {
+                if let Err(error) = store.delete(*credential) {
+                    tracing::warn!(
+                        credential = %credential.as_uuid(),
+                        %error,
+                        "failed to delete newly stored RPC secret during rollback"
+                    );
+                }
+            }
+            ProfileSecretBackup::Restore(credential, secret) => {
+                if let Err(error) = store.save(*credential, secret) {
+                    tracing::warn!(
+                        credential = %credential.as_uuid(),
+                        %error,
+                        "failed to restore previous RPC secret during rollback"
+                    );
+                }
+            }
+        }
+    }
 }
 
 pub(crate) fn apply_profile_secret_updates_with_store(
@@ -236,6 +311,50 @@ pub(crate) fn cleanup_removed_profile_environments(
     for profile in &previous.profiles {
         if !remaining.contains(&profile.profile_id) {
             store.remove(profile.profile_id.as_uuid());
+        }
+    }
+}
+
+pub(crate) fn cleanup_removed_profile_history(
+    history_path: &Path,
+    previous: &ProfileCatalog,
+    next: &ProfileCatalog,
+) {
+    use ariadeck_application::TaskHistoryStore as _;
+
+    let remaining: std::collections::HashSet<_> = next
+        .profiles
+        .iter()
+        .map(|profile| profile.profile_id)
+        .collect();
+    let removed: Vec<_> = previous
+        .profiles
+        .iter()
+        .map(|profile| profile.profile_id)
+        .filter(|id| !remaining.contains(id))
+        .collect();
+    if removed.is_empty() || !history_path.exists() {
+        return;
+    }
+
+    match SqliteHistoryStore::open(history_path) {
+        Ok(store) => {
+            for profile_id in removed {
+                if let Err(error) = store.remove_profile(profile_id) {
+                    tracing::warn!(
+                        profile_id = %profile_id,
+                        %error,
+                        "failed to remove SQLite history for deleted profile"
+                    );
+                }
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                path = %history_path.display(),
+                %error,
+                "failed to open SQLite history while cleaning up deleted profiles"
+            );
         }
     }
 }

@@ -25,8 +25,9 @@ use tokio::{runtime::Runtime, sync::mpsc, task::JoinHandle};
 use super::{
     SettingsPersistenceRequest, SettingsPersistenceResult,
     engine_setup::{
-        apply_profile_secret_updates, cleanup_removed_profile_environments,
-        cleanup_removed_profile_secrets,
+        apply_profile_secret_updates_with_store, capture_profile_secret_backups,
+        cleanup_removed_profile_environments, cleanup_removed_profile_history,
+        cleanup_removed_profile_secrets, restore_profile_secrets, rpc_secret_store,
     },
     settings_bridge::{
         CredentialMutation, apply_credential_update, load_proxy_password, map_bt_tracker_list,
@@ -139,8 +140,8 @@ pub(crate) fn spawn_persistence_worker(
                     let result = match deps.settings_store.as_ref() {
                         Some(store) => {
                             let mut request_with_profile = request.clone();
-                            if request_with_profile.active_profile_id.is_none() {
-                                request_with_profile.active_profile_id = active_profile_id;
+                            if let Some(worker_profile_id) = active_profile_id {
+                                request_with_profile.active_profile_id = Some(worker_profile_id);
                             }
                             persist_settings_request(
                                 store.clone(),
@@ -310,9 +311,16 @@ pub(crate) async fn persist_settings_request(
 
     if !any_engine_change {
         let settings = request.settings;
+        let previous_settings = request.previous_settings;
         let profile_id = request.active_profile_id;
         return tokio::task::spawn_blocking(move || {
-            save_settings_and_profile_env(&store, &profile_env_store, profile_id, &settings)
+            save_settings_and_profile_env(
+                &store,
+                &profile_env_store,
+                profile_id,
+                &settings,
+                Some(&previous_settings),
+            )
         })
         .await
         .map_err(|error| format!("settings persistence task failed: {error}"))?;
@@ -476,11 +484,18 @@ pub(crate) async fn persist_settings_request(
     }
 
     let settings_to_save = request.settings.clone();
+    let previous_for_save = request.previous_settings.clone();
     let save_store = store.clone();
     let env_store = profile_env_store.clone();
     let profile_id = request.active_profile_id;
     let save_result = tokio::task::spawn_blocking(move || {
-        save_settings_and_profile_env(&save_store, &env_store, profile_id, &settings_to_save)
+        save_settings_and_profile_env(
+            &save_store,
+            &env_store,
+            profile_id,
+            &settings_to_save,
+            Some(&previous_for_save),
+        )
     })
     .await
     .map_err(|error| format!("settings persistence task failed: {error}"))?;
@@ -511,13 +526,22 @@ pub(crate) fn save_settings_and_profile_env(
     profile_env_store: &ProfileEnvironmentStore,
     profile_id: Option<ProfileId>,
     settings: &AppSettings,
+    previous_settings: Option<&AppSettings>,
 ) -> Result<(), String> {
     store.save(settings).map_err(|error| error.to_string())?;
     if let Some(profile_id) = profile_id {
         let env = ProfileEnvironment::from_settings(settings);
-        profile_env_store
-            .save(profile_id.as_uuid(), &env)
-            .map_err(|error| error.to_string())?;
+        if let Err(error) = profile_env_store.save(profile_id.as_uuid(), &env) {
+            if let Some(prev) = previous_settings
+                && let Err(rollback_error) = store.save(prev)
+            {
+                tracing::warn!(
+                    %rollback_error,
+                    "failed to roll back settings.json after profile environment save failure"
+                );
+            }
+            return Err(error.to_string());
+        }
     }
     Ok(())
 }
@@ -546,7 +570,8 @@ pub(crate) async fn commit_tracker_refresh(
     let next_list = commit.next_list;
 
     let saved = tokio::task::spawn_blocking(move || -> Result<AppSettings, String> {
-        let mut settings = store.load().map_err(|error| error.to_string())?;
+        let previous = store.load().map_err(|error| error.to_string())?;
+        let mut settings = previous.clone();
         if let Some(draft) = draft {
             settings.tracker_list.enabled = draft.enabled;
             settings.tracker_list.source = draft.source;
@@ -555,7 +580,13 @@ pub(crate) async fn commit_tracker_refresh(
         }
         settings.tracker_list.list_text = next_list.list_text;
         settings.tracker_list.last_refreshed_at = next_list.last_refreshed_at;
-        save_settings_and_profile_env(&store, &env_store, active_profile_id, &settings)?;
+        save_settings_and_profile_env(
+            &store,
+            &env_store,
+            active_profile_id,
+            &settings,
+            Some(&previous),
+        )?;
         Ok(settings)
     })
     .await
@@ -746,6 +777,73 @@ fn switch_profile_blocking(
     }
 }
 
+fn execute_profile_catalog_save_blocking(
+    profile_store: &JsonProfileStore,
+    profile_env_store: &ProfileEnvironmentStore,
+    secret_store: &dyn ProxyCredentialStore,
+    job: ProfileCatalogSaveJob,
+) -> ProfileCatalogSaveResult {
+    let backups = capture_profile_secret_backups(
+        secret_store,
+        &job.next_catalog,
+        &job.secret_updates,
+        &job.previous_catalog,
+    );
+    if let Err(error) = apply_profile_secret_updates_with_store(
+        secret_store,
+        &job.next_catalog,
+        &job.secret_updates,
+        &job.previous_catalog,
+    ) {
+        restore_profile_secrets(secret_store, &backups);
+        return ProfileCatalogSaveResult {
+            request_id: job.request_id,
+            request_catalog: job.request_catalog,
+            catalog: None,
+            result: Err(error),
+        };
+    }
+    if let Err(error) = profile_store.save_catalog(&job.next_catalog) {
+        restore_profile_secrets(secret_store, &backups);
+        return ProfileCatalogSaveResult {
+            request_id: job.request_id,
+            request_catalog: job.request_catalog,
+            catalog: None,
+            result: Err(format!("Failed to save profiles: {error}")),
+        };
+    }
+    cleanup_removed_profile_secrets(&job.previous_catalog, &job.next_catalog);
+    cleanup_removed_profile_environments(
+        profile_env_store,
+        &job.previous_catalog,
+        &job.next_catalog,
+    );
+    if let Some(data_dir) = profile_store.path().parent() {
+        cleanup_removed_profile_history(
+            &data_dir.join("history.sqlite"),
+            &job.previous_catalog,
+            &job.next_catalog,
+        );
+    }
+    for entry in &job.next_catalog.profiles {
+        if let Err(error) =
+            profile_env_store.load_or_initialize(entry.profile_id.as_uuid(), &job.current_settings)
+        {
+            tracing::warn!(
+                profile_id = %entry.profile_id,
+                %error,
+                "failed to initialize profile environment after saving profile catalog"
+            );
+        }
+    }
+    ProfileCatalogSaveResult {
+        request_id: job.request_id,
+        request_catalog: job.request_catalog,
+        catalog: Some(job.next_catalog),
+        result: Ok(()),
+    }
+}
+
 async fn execute_profile_catalog_save(
     profile_store: JsonProfileStore,
     profile_env_store: ProfileEnvironmentStore,
@@ -754,42 +852,13 @@ async fn execute_profile_catalog_save(
     let request_id = job.request_id;
     let request_catalog = job.request_catalog.clone();
     let outcome = tokio::task::spawn_blocking(move || {
-        if let Err(error) = apply_profile_secret_updates(
-            &job.next_catalog,
-            &job.secret_updates,
-            &job.previous_catalog,
-        ) {
-            return ProfileCatalogSaveResult {
-                request_id: job.request_id,
-                request_catalog: job.request_catalog,
-                catalog: None,
-                result: Err(error),
-            };
-        }
-        if let Err(error) = profile_store.save_catalog(&job.next_catalog) {
-            return ProfileCatalogSaveResult {
-                request_id: job.request_id,
-                request_catalog: job.request_catalog,
-                catalog: None,
-                result: Err(format!("Failed to save profiles: {error}")),
-            };
-        }
-        cleanup_removed_profile_secrets(&job.previous_catalog, &job.next_catalog);
-        cleanup_removed_profile_environments(
+        let secret_store = rpc_secret_store();
+        execute_profile_catalog_save_blocking(
+            &profile_store,
             &profile_env_store,
-            &job.previous_catalog,
-            &job.next_catalog,
-        );
-        for entry in &job.next_catalog.profiles {
-            let _ = profile_env_store
-                .load_or_initialize(entry.profile_id.as_uuid(), &job.current_settings);
-        }
-        ProfileCatalogSaveResult {
-            request_id: job.request_id,
-            request_catalog: job.request_catalog,
-            catalog: Some(job.next_catalog),
-            result: Ok(()),
-        }
+            &secret_store,
+            job,
+        )
     })
     .await;
 
@@ -1021,5 +1090,116 @@ mod tests {
             1_111,
             "persisted settings.json must roll back to profile A"
         );
+    }
+
+    #[test]
+    fn profile_catalog_save_rolls_back_secrets_on_disk_failure_and_deletes_removed_history() {
+        use ariadeck_application::{HistoryRecord, TaskHistoryStore as _};
+        use ariadeck_domain::{DownloadStatus, Gid, TaskSnapshot};
+        use ariadeck_engine::RpcSecretRef;
+        use ariadeck_history::SqliteHistoryStore;
+        use secrecy::ExposeSecret as _;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let profile_store = JsonProfileStore::new(root.path().join("profiles.json"));
+        let env_store = ProfileEnvironmentStore::new(root.path());
+        let secret_store = MemoryCredentialStore::default();
+        let settings = AppSettings::new(root.path().join("dl"));
+
+        let remote_id = ProfileId::new();
+        let remote_secret_ref = RpcSecretRef::new();
+        let old_cred = ProxyCredentialRef::from_uuid(remote_secret_ref.as_uuid());
+        secret_store
+            .save(old_cred, &SecretString::new("old-secret".into()))
+            .expect("seed old secret");
+        let remote = ProfileEntry::remote_rpc(
+            remote_id,
+            "Remote",
+            "wss://example.com/jsonrpc",
+            root.path().join("dl-remote"),
+            Some(remote_secret_ref),
+        )
+        .expect("remote profile");
+
+        let doomed_id = ProfileId::new();
+        let doomed = ProfileEntry::local_managed(
+            doomed_id,
+            "Doomed",
+            std::path::PathBuf::from("aria2c"),
+            root.path().to_path_buf(),
+            root.path().join("dl-doomed"),
+        );
+
+        let initial_catalog = ProfileCatalog {
+            schema_version: PROFILE_CATALOG_SCHEMA_VERSION,
+            active_profile_id: remote_id,
+            profiles: vec![remote.clone(), doomed],
+        };
+        profile_store
+            .save_catalog(&initial_catalog)
+            .expect("save initial catalog");
+
+        let history_store =
+            SqliteHistoryStore::open(root.path().join("history.sqlite")).expect("open history");
+        let doomed_task = TaskSnapshot::new(Gid::from_u64(1), DownloadStatus::Complete, "old.iso");
+        let doomed_record =
+            HistoryRecord::from_snapshot(doomed_id, &doomed_task, 1_700_000_000_000)
+                .expect("record");
+        history_store.upsert(&doomed_record).expect("seed history");
+        assert_eq!(history_store.count(doomed_id).expect("count"), 1);
+
+        // 1. Force `save_catalog` to fail by replacing `profiles.json` with a directory:
+        //    secret updates must roll back to `old-secret`.
+        let blocked_store = JsonProfileStore::new(root.path().join("blocked-profiles.json"));
+        std::fs::create_dir_all(blocked_store.path()).expect("block save_catalog");
+        let mut secret_updates = HashMap::new();
+        secret_updates.insert(
+            remote_id,
+            ProfileRpcSecretUpdateView::Set(ariadeck_ui::SecretStringView::new("new-secret")),
+        );
+        let failed = execute_profile_catalog_save_blocking(
+            &blocked_store,
+            &env_store,
+            &secret_store,
+            ProfileCatalogSaveJob {
+                request_id: RequestId::from_u64(1),
+                request_catalog: ProfileCatalogView::default(),
+                next_catalog: ProfileCatalog {
+                    schema_version: PROFILE_CATALOG_SCHEMA_VERSION,
+                    active_profile_id: remote_id,
+                    profiles: vec![remote.clone()],
+                },
+                secret_updates,
+                previous_catalog: initial_catalog.clone(),
+                current_settings: settings.clone(),
+            },
+        );
+        assert!(failed.result.is_err());
+        let restored = secret_store
+            .load(old_cred)
+            .expect("load restored secret")
+            .expect("old secret should remain");
+        assert_eq!(restored.expose_secret(), "old-secret");
+
+        // 2. Successful catalog save removing `doomed_id` deletes its SQLite history rows.
+        let succeeded = execute_profile_catalog_save_blocking(
+            &profile_store,
+            &env_store,
+            &secret_store,
+            ProfileCatalogSaveJob {
+                request_id: RequestId::from_u64(2),
+                request_catalog: ProfileCatalogView::default(),
+                next_catalog: ProfileCatalog {
+                    schema_version: PROFILE_CATALOG_SCHEMA_VERSION,
+                    active_profile_id: remote_id,
+                    profiles: vec![remote],
+                },
+                secret_updates: HashMap::new(),
+                previous_catalog: initial_catalog,
+                current_settings: settings,
+            },
+        );
+        assert!(succeeded.result.is_ok(), "{:?}", succeeded.result);
+        assert_eq!(history_store.count(doomed_id).expect("count after"), 0);
     }
 }

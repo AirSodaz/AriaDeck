@@ -6,10 +6,10 @@ impl AppShell {
     pub(crate) fn render_task_header(
         &mut self,
         layout: TaskLayoutMode,
+        selected_count: usize,
         cx: &mut Context<Self>,
     ) -> Div {
         let colors = self.theme.colors;
-        let selected_count = self.visible_selected_task_count();
         let selection_state = if selected_count == 0 {
             Toggled::False
         } else if selected_count == self.snapshot.tasks.len() {
@@ -234,9 +234,9 @@ impl AppShell {
                             })
                             .child(self.render_list_controls(cx)),
                     )
-                    .child(self.render_task_toolbar(cx)),
+                    .child(self.render_task_toolbar(selected_count, cx)),
             )
-            .child(self.render_task_header(layout, cx))
+            .child(self.render_task_header(layout, selected_count, cx))
             .child(div().flex_1().min_w_0().min_h_0().child(content));
 
         let pane = div()
@@ -668,13 +668,16 @@ impl AppShell {
         menu
     }
 
-    pub(crate) fn render_task_toolbar(&mut self, cx: &mut Context<Self>) -> Div {
-        let visible_selected_count = self.visible_selected_task_count();
+    pub(crate) fn render_task_toolbar(
+        &mut self,
+        visible_selected_count: usize,
+        cx: &mut Context<Self>,
+    ) -> Div {
         if visible_selected_count > 1 {
             return self.render_batch_task_toolbar(cx);
         }
         if !self.selected_tasks.is_empty() && self.selected_tasks.len() > visible_selected_count {
-            return self.render_hidden_selection_toolbar(cx);
+            return self.render_hidden_selection_toolbar(visible_selected_count, cx);
         }
         let colors = self.theme.colors;
         let Some(task) = self.selected_task_view(cx) else {
@@ -1121,9 +1124,12 @@ impl AppShell {
             )
     }
 
-    pub(crate) fn render_hidden_selection_toolbar(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn render_hidden_selection_toolbar(
+        &mut self,
+        visible: usize,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let colors = self.theme.colors;
-        let visible = self.visible_selected_task_count();
         let hidden = self.selected_tasks.len().saturating_sub(visible);
         div()
             .flex()

@@ -277,6 +277,7 @@ impl SettingsPanelView {
             draft_browser_bridge: settings.browser_bridge,
             draft_categories: settings.categories.clone(),
             draft_category_edit_index: None,
+            next_draft_category_seq: 0,
             draft_tracker_enabled: settings.tracker_list.enabled,
             draft_tracker_source: settings.tracker_list.source,
             draft_tracker_auto_refresh: settings.tracker_list.auto_refresh,
@@ -653,7 +654,7 @@ impl SettingsPanelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (files, directories, prompt) = match target {
+        let (files, directories, prompt) = match &target {
             PathPickTarget::CategoryDirectory { .. } => {
                 (false, true, self.t("settings-pick-download-directory"))
             }
@@ -712,14 +713,21 @@ impl SettingsPanelView {
     ) {
         let display = path.to_string_lossy().into_owned();
         match target {
-            PathPickTarget::CategoryDirectory { index } => {
-                if let Some(category) = self.settings_page.draft_categories.get_mut(index) {
-                    category.directory = display.clone();
-                }
-                if self.settings_page.draft_category_edit_index == Some(index) {
-                    self.settings_inputs.directory.update(cx, |input, cx| {
-                        input.set_value(display, window, cx);
-                    });
+            PathPickTarget::CategoryDirectory { category_id } => {
+                if let Some(index) = self
+                    .settings_page
+                    .draft_categories
+                    .iter()
+                    .position(|category| category.id == category_id)
+                {
+                    if let Some(category) = self.settings_page.draft_categories.get_mut(index) {
+                        category.directory = display.clone();
+                    }
+                    if self.settings_page.draft_category_edit_index == Some(index) {
+                        self.settings_inputs.directory.update(cx, |input, cx| {
+                            input.set_value(display, window, cx);
+                        });
+                    }
                 }
             }
             PathPickTarget::ProfileExecutable => {
@@ -753,7 +761,7 @@ impl SettingsPanelView {
                     .label(browse_label)
                     .accessibility_label(browse_aria)
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.pick_path_for_field(target, window, cx);
+                        this.pick_path_for_field(target.clone(), window, cx);
                     })),
             )
     }

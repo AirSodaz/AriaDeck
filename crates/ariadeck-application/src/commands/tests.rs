@@ -261,6 +261,7 @@ fn batch_command_reports_partial_success_and_deduplicates() {
             TaskCommandContext {
                 status: DownloadStatus::Active,
                 metadata: TaskMetadata::default(),
+                is_history_only: false,
             },
         ),
         (
@@ -268,6 +269,7 @@ fn batch_command_reports_partial_success_and_deduplicates() {
             TaskCommandContext {
                 status: DownloadStatus::Active,
                 metadata: TaskMetadata::default(),
+                is_history_only: false,
             },
         ),
     ]);
@@ -302,6 +304,7 @@ fn batch_command_skips_ineligible_tasks_without_calling_the_gateway() {
             TaskCommandContext {
                 status: DownloadStatus::Active,
                 metadata: TaskMetadata::default(),
+                is_history_only: false,
             },
         ),
         (
@@ -309,6 +312,7 @@ fn batch_command_skips_ineligible_tasks_without_calling_the_gateway() {
             TaskCommandContext {
                 status: DownloadStatus::Complete,
                 metadata: TaskMetadata::default(),
+                is_history_only: false,
             },
         ),
     ]);
@@ -589,6 +593,7 @@ fn removal_targets_live_tasks_and_terminal_results_separately() {
             TaskCommandContext {
                 status: DownloadStatus::Active,
                 metadata: TaskMetadata::default(),
+                is_history_only: false,
             },
         ),
         (
@@ -596,6 +601,7 @@ fn removal_targets_live_tasks_and_terminal_results_separately() {
             TaskCommandContext {
                 status: DownloadStatus::Complete,
                 metadata: TaskMetadata::default(),
+                is_history_only: false,
             },
         ),
         (
@@ -603,6 +609,7 @@ fn removal_targets_live_tasks_and_terminal_results_separately() {
             TaskCommandContext {
                 status: DownloadStatus::Removed,
                 metadata: TaskMetadata::default(),
+                is_history_only: false,
             },
         ),
     ]);
@@ -639,6 +646,7 @@ fn queue_move_dispatches_to_the_gateway_for_a_live_task() {
         TaskCommandContext {
             status: DownloadStatus::Waiting,
             metadata: TaskMetadata::default(),
+            is_history_only: false,
         },
     )]);
 
@@ -676,6 +684,7 @@ fn queue_move_is_rejected_for_terminal_tasks_before_the_gateway() {
         TaskCommandContext {
             status: DownloadStatus::Complete,
             metadata: TaskMetadata::default(),
+            is_history_only: false,
         },
     )]);
 
@@ -715,6 +724,7 @@ fn retry_creates_a_new_task_from_the_known_source_and_destination() {
                 primary_uri: Some("https://example.test/archive.iso".into()),
                 ..TaskMetadata::default()
             },
+            is_history_only: false,
         },
     )]);
 
@@ -762,6 +772,7 @@ fn direct_uri_output_name_change_is_validated_and_forwarded() {
                 source_kind: TaskSourceKind::DirectUri,
                 ..TaskMetadata::default()
             },
+            is_history_only: false,
         },
     )]);
 
@@ -802,6 +813,7 @@ fn output_name_change_rejects_paths_and_non_uri_tasks() {
                 source_kind: TaskSourceKind::BitTorrent,
                 ..TaskMetadata::default()
             },
+            is_history_only: false,
         },
     )]);
 
@@ -835,6 +847,7 @@ fn task_speed_limit_forwards_typed_change_options_for_a_live_task() {
         TaskCommandContext {
             status: DownloadStatus::Active,
             metadata: TaskMetadata::default(),
+            is_history_only: false,
         },
     )]);
 
@@ -879,6 +892,7 @@ fn task_speed_limit_rejects_terminal_tasks_before_the_gateway() {
         TaskCommandContext {
             status: DownloadStatus::Complete,
             metadata: TaskMetadata::default(),
+            is_history_only: false,
         },
     )]);
 
@@ -939,6 +953,7 @@ fn task_connection_policy_forwards_typed_change_options_for_a_live_task() {
         TaskCommandContext {
             status: DownloadStatus::Active,
             metadata: TaskMetadata::default(),
+            is_history_only: false,
         },
     )]);
 
@@ -987,6 +1002,7 @@ fn task_connection_policy_rejects_terminal_and_out_of_range_values() {
         TaskCommandContext {
             status: DownloadStatus::Error,
             metadata: TaskMetadata::default(),
+            is_history_only: false,
         },
     )]);
 
@@ -1069,6 +1085,7 @@ fn retry_rejects_non_failed_or_unreplayable_tasks_before_the_gateway() {
             TaskCommandContext {
                 status: DownloadStatus::Active,
                 metadata: TaskMetadata::default(),
+                is_history_only: false,
             },
         ),
         (
@@ -1076,6 +1093,7 @@ fn retry_rejects_non_failed_or_unreplayable_tasks_before_the_gateway() {
             TaskCommandContext {
                 status: DownloadStatus::Error,
                 metadata: TaskMetadata::default(),
+                is_history_only: false,
             },
         ),
     ]);
@@ -1110,6 +1128,7 @@ fn force_pause_and_force_remove_forward_to_the_gateway() {
         TaskCommandContext {
             status: DownloadStatus::Active,
             metadata: TaskMetadata::default(),
+            is_history_only: false,
         },
     )]);
 
@@ -1161,6 +1180,7 @@ fn set_task_options_maps_typed_seed_and_file_selection_fields() {
                 source_kind: TaskSourceKind::BitTorrent,
                 ..TaskMetadata::default()
             },
+            is_history_only: false,
         },
     )]);
 
@@ -1210,6 +1230,7 @@ fn set_task_options_rejects_seed_rules_for_direct_uri_tasks() {
                 source_kind: TaskSourceKind::DirectUri,
                 ..TaskMetadata::default()
             },
+            is_history_only: false,
         },
     )]);
 
@@ -1381,6 +1402,7 @@ fn force_pause_is_rejected_before_the_gateway_when_list_methods_omits_it() {
         TaskCommandContext {
             status: DownloadStatus::Active,
             metadata: TaskMetadata::default(),
+            is_history_only: false,
         },
     )]);
 
@@ -1443,6 +1465,7 @@ fn terminal_remove_gates_on_remove_download_result_not_remove() {
         TaskCommandContext {
             status: DownloadStatus::Complete,
             metadata: TaskMetadata::default(),
+            is_history_only: false,
         },
     );
     let outcome = block_on(service.execute(
@@ -1478,4 +1501,97 @@ fn magnet_uris_reject_advanced_http_options_and_debug_redacts_secrets() {
     assert!(!debug_text.contains("supersecret"));
     assert!(!debug_text.contains("topsecret"));
     assert!(!debug_text.contains("secret:pass"));
+}
+
+#[test]
+fn history_only_removal_succeeds_without_calling_engine_and_redacted_retry_fails_cleanly() {
+    let profile_id = ProfileId::new();
+    let gateway = Arc::new(FakeGateway::default());
+    let service = CommandService::new_unprobed(profile_id, gateway.clone());
+    let history_task = TaskIdentity::new(profile_id, Gid::from_u64(0x70));
+    let redacted_failed = TaskIdentity::new(profile_id, Gid::from_u64(0x71));
+    let contexts = HashMap::from([
+        (
+            history_task,
+            TaskCommandContext {
+                status: DownloadStatus::Complete,
+                metadata: TaskMetadata::default(),
+                is_history_only: true,
+            },
+        ),
+        (
+            redacted_failed,
+            TaskCommandContext {
+                status: DownloadStatus::Error,
+                metadata: TaskMetadata {
+                    primary_uri: Some(ariadeck_domain::REDACTED_SOURCE_PLACEHOLDER.into()),
+                    ..TaskMetadata::default()
+                },
+                is_history_only: true,
+            },
+        ),
+    ]);
+
+    let remove_outcome = block_on(service.execute(
+        AppCommand::RemoveTasks(RemoveTasksRequest {
+            tasks: vec![history_task],
+            scope: TaskRemovalScope::TaskOnly,
+        }),
+        &contexts,
+    ));
+    assert_eq!(
+        remove_outcome,
+        CommandOutcome::Success {
+            succeeded: vec![CommandItem::Task(history_task)],
+        }
+    );
+    assert!(
+        gateway
+            .removals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty(),
+        "history-only remove must not call aria2.removeDownloadResult"
+    );
+
+    let retry_outcome =
+        block_on(service.execute(AppCommand::RetryTasks(vec![redacted_failed]), &contexts));
+    let CommandOutcome::Failure { failed } = retry_outcome else {
+        panic!("redacted placeholder retry must fail cleanly");
+    };
+    assert_eq!(failed[0].error.code, ApplicationErrorCode::Unsupported);
+    assert!(
+        gateway
+            .retries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty()
+    );
+}
+
+#[test]
+fn download_proxy_debug_redacts_credentials_and_validate_rejects_whitespace_and_crlf() {
+    let proxy = DownloadProxyConfig {
+        mode: DownloadProxyMode::Manual,
+        all_proxy: Some("http://alice:hunter2@proxy.example:8080/path?token=abc".into()),
+        ..DownloadProxyConfig::default()
+    };
+    let debug = format!("{proxy:?}");
+    assert!(!debug.contains("hunter2"));
+    assert!(!debug.contains("alice"));
+    assert!(!debug.contains("token=abc"));
+
+    let blank = DownloadProxyConfig {
+        mode: DownloadProxyMode::Manual,
+        all_proxy: Some("   ".into()),
+        ..DownloadProxyConfig::default()
+    };
+    assert!(blank.validate().is_err());
+
+    let crlf = DownloadProxyConfig {
+        mode: DownloadProxyMode::Manual,
+        http_proxy: Some("http://proxy.example:8080\r\nInjected".into()),
+        ..DownloadProxyConfig::default()
+    };
+    assert!(crlf.validate().is_err());
 }

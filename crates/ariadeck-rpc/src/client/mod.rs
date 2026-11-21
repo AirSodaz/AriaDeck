@@ -21,7 +21,7 @@ use self::{
         decode_servers, decode_tasks, decode_validated_option_map, is_gid_not_found,
         is_no_uri_data, next_batch_result, next_multicall_result, task_keys,
     },
-    options::request_options,
+    options::{pairs_to_option_map, request_options},
 };
 
 const WAITING_PAGE_SIZE: u32 = 1_000;
@@ -44,6 +44,7 @@ pub(crate) struct LiveRpcSnapshot {
     pub waiting: Vec<TaskSnapshot>,
 }
 
+#[derive(Debug)]
 pub(super) enum RetryRpcError {
     Query(RpcError),
     Mutation(RpcError),
@@ -179,10 +180,15 @@ where
         gid: Gid,
         fallback: &AddDownloadRequest,
     ) -> Result<Gid, RetryRpcError> {
-        let mut options = self.get_options(gid).await.map_err(RetryRpcError::Query)?;
+        let mut options = match self.get_options(gid).await {
+            Ok(options) => options,
+            Err(RpcError::Remote { message, .. }) if is_gid_not_found(&message) => Map::new(),
+            Err(error) => return Err(RetryRpcError::Query(error)),
+        };
         let discovered_uris = match self.get_uris(gid).await {
             Ok(uris) => uris,
             Err(error) if is_no_uri_data(&error) => Vec::new(),
+            Err(RpcError::Remote { message, .. }) if is_gid_not_found(&message) => Vec::new(),
             Err(error) => return Err(RetryRpcError::Query(error)),
         };
         let uris = if discovered_uris.is_empty() {
@@ -302,11 +308,7 @@ where
         gid: Gid,
         options: &[(String, String)],
     ) -> Result<(), RpcError> {
-        let options = options
-            .iter()
-            .cloned()
-            .map(|(key, value)| (key, Value::String(value)))
-            .collect::<Map<_, _>>();
+        let options = pairs_to_option_map(options);
         self.call_ok(
             "aria2.changeOption",
             vec![json!(gid.to_string()), Value::Object(options)],
@@ -318,11 +320,7 @@ where
         &self,
         options: &[(String, String)],
     ) -> Result<(), RpcError> {
-        let options = options
-            .iter()
-            .cloned()
-            .map(|(key, value)| (key, Value::String(value)))
-            .collect::<Map<_, _>>();
+        let options = pairs_to_option_map(options);
         self.call_ok("aria2.changeGlobalOption", vec![Value::Object(options)])
             .await
     }

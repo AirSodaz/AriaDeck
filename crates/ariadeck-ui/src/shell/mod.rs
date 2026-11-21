@@ -378,6 +378,8 @@ pub(crate) struct SettingsPage {
     draft_categories: Vec<crate::DownloadCategoryView>,
     /// Which draft category row is bound to the shared name/extensions fields.
     draft_category_edit_index: Option<usize>,
+    /// Monotonic counter so newly added draft categories always get unique IDs.
+    next_draft_category_seq: u64,
     /// Tracker list drafts (D1); saved with Transfers.
     draft_tracker_enabled: bool,
     draft_tracker_source: crate::TrackerListSourceView,
@@ -399,12 +401,12 @@ pub(crate) struct PendingProfileDelete {
     name: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PathPickTarget {
     ProfileExecutable,
-    /// Browse path for a draft category by index.
+    /// Browse path for a draft category by its stable category ID.
     CategoryDirectory {
-        index: usize,
+        category_id: String,
     },
 }
 
@@ -1307,7 +1309,6 @@ impl AppShell {
                     TaskCommandView::SetSpeedLimit { .. } => {
                         self.close_task_speed_limit(window, cx);
                     }
-                    TaskCommandView::SetConnectionPolicy { .. } => {}
                     TaskCommandView::SetOptions { .. } => {
                         self.close_task_options(window, cx);
                     }
