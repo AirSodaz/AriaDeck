@@ -9,9 +9,20 @@ struct SpeedChartPoint {
     upload_rate: f64,
 }
 
+const WINDOW_CONTROL_BUTTON_WIDTH: f32 = 46.0;
+
 impl AppShell {
-    pub(crate) fn render_header(&mut self, window: &Window, cx: &mut Context<Self>) -> TitleBar {
+    pub(crate) fn render_header(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let colors = self.theme.colors;
+        let is_linux = cfg!(target_os = "linux");
+        let is_macos = cfg!(target_os = "macos");
+        let is_windows = cfg!(target_os = "windows");
+        let is_windows_or_linux = is_windows || is_linux;
+
         let (search_left, search_right) =
             centered_search_bounds(f32::from(window.viewport_size().width));
         let search_width = search_right - search_left;
@@ -28,20 +39,12 @@ impl AppShell {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(self.t("ui-app-name")),
             );
-        // TitleBar wraps its children in `WindowControlArea::Drag`, so Windows
-        // routes clicks through `WM_NCLBUTTONDOWN(HTCAPTION)` and falls back to
-        // a native window move (swallowing `WM_NCLBUTTONUP`) whenever GPUI leaves
-        // `MouseDown` propagating. Stop propagation in the bubble phase around
-        // interactive titlebar controls so their own `on_click` / clear button
-        // handlers receive the full press-and-release sequence.
         let actions = div()
             .flex_none()
             .flex()
             .items_center()
             .justify_end()
-            .gap_2()
-            .when(cfg!(target_os = "windows"), |element| element.pr_2())
-            .when(!cfg!(target_os = "windows"), |element| element.pr_3())
+            .when(!is_windows_or_linux, |element| element.pr_4())
             .child(
                 div()
                     .debug_selector(|| "titlebar-add-download".to_string())
@@ -49,52 +52,230 @@ impl AppShell {
                     .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(self.render_add_button(cx)),
             )
-            .when(cfg!(target_os = "windows"), |element| {
-                element.child(Separator::vertical().h(px(16.0)))
+            .when(is_windows_or_linux, |element| {
+                element.child(
+                    div()
+                        .flex_none()
+                        .px_2()
+                        .child(Separator::vertical().h(px(16.0))),
+                )
             });
 
-        TitleBar::new()
+        let window_controls = if is_windows_or_linux {
+            let is_maximized = window.is_maximized();
+            div()
+                .id("window-controls")
+                .flex()
+                .flex_row()
+                .items_center()
+                .flex_shrink_0()
+                .h_full()
+                .child(
+                    div()
+                        .id("minimize")
+                        .flex()
+                        .w(px(WINDOW_CONTROL_BUTTON_WIDTH))
+                        .h_full()
+                        .flex_shrink_0()
+                        .justify_center()
+                        .items_center()
+                        .text_color(colors.text_primary)
+                        .hover(|style| {
+                            style
+                                .bg(colors.surface_hover)
+                                .text_color(colors.text_primary)
+                        })
+                        .active(|style| {
+                            style
+                                .bg(colors.surface_active)
+                                .text_color(colors.text_primary)
+                        })
+                        .when(is_windows, |this| {
+                            this.window_control_area(WindowControlArea::Min)
+                        })
+                        .when(is_linux, |this| {
+                            this.on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            })
+                            .on_click(|_, window, cx| {
+                                cx.stop_propagation();
+                                window.minimize_window();
+                            })
+                        })
+                        .child(Icon::new(IconName::WindowMinimize).size(IconSize::Small)),
+                )
+                .child(
+                    div()
+                        .id(if is_maximized { "restore" } else { "maximize" })
+                        .flex()
+                        .w(px(WINDOW_CONTROL_BUTTON_WIDTH))
+                        .h_full()
+                        .flex_shrink_0()
+                        .justify_center()
+                        .items_center()
+                        .text_color(colors.text_primary)
+                        .hover(|style| {
+                            style
+                                .bg(colors.surface_hover)
+                                .text_color(colors.text_primary)
+                        })
+                        .active(|style| {
+                            style
+                                .bg(colors.surface_active)
+                                .text_color(colors.text_primary)
+                        })
+                        .when(is_windows, |this| {
+                            this.window_control_area(WindowControlArea::Max)
+                        })
+                        .when(is_linux, |this| {
+                            this.on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            })
+                            .on_click(|_, window, cx| {
+                                cx.stop_propagation();
+                                window.zoom_window();
+                            })
+                        })
+                        .child(
+                            Icon::new(if is_maximized {
+                                IconName::WindowRestore
+                            } else {
+                                IconName::WindowMaximize
+                            })
+                            .size(IconSize::Small),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("close")
+                        .flex()
+                        .w(px(WINDOW_CONTROL_BUTTON_WIDTH))
+                        .h_full()
+                        .flex_shrink_0()
+                        .justify_center()
+                        .items_center()
+                        .text_color(colors.text_primary)
+                        .hover(|style| style.bg(colors.danger).text_color(colors.text_inverse))
+                        .active(|style| style.bg(colors.danger).text_color(colors.text_inverse))
+                        .when(is_windows, |this| {
+                            this.window_control_area(WindowControlArea::Close)
+                        })
+                        .when(is_linux, |this| {
+                            this.on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            })
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    if this.handle_window_close_request(cx) {
+                                        window.remove_window();
+                                    }
+                                },
+                            ))
+                        })
+                        .child(Icon::new(IconName::WindowClose).size(IconSize::Small)),
+                )
+        } else {
+            div().id("window-controls")
+        };
+
+        let titlebar_left_padding = if is_macos { px(80.0) } else { px(12.0) };
+
+        div()
+            .id("title-bar")
+            .flex_shrink_0()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
             .h(px(TITLEBAR_HEIGHT))
-            .bg(colors.toolbar_surface)
+            .pl(titlebar_left_padding)
+            .border_b_1()
             .border_color(colors.border)
-            .on_close_window(cx.listener(|this, _, window, cx| {
-                if this.handle_window_close_request(cx) {
-                    window.remove_window();
-                }
-            }))
-            .child(brand)
+            .bg(colors.toolbar_surface)
+            .when(is_linux, |this| {
+                this.on_double_click(|_, window, _| window.zoom_window())
+            })
+            .when(is_macos, |this| {
+                this.on_double_click(|_, window, _| window.titlebar_double_click())
+            })
+            .when(!is_windows, |this| {
+                this.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, _| {
+                        this.titlebar_drag_pending = true;
+                    }),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, _| {
+                        this.titlebar_drag_pending = false;
+                    }),
+                )
+                .on_mouse_move(cx.listener(|this, _, window, _| {
+                    if this.titlebar_drag_pending {
+                        this.titlebar_drag_pending = false;
+                        window.start_window_move();
+                    }
+                }))
+            })
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
+                    .id("bar")
                     .h_full()
-                    .px_3()
+                    .flex_1()
                     .flex()
+                    .flex_row()
                     .items_center()
-                    .justify_center()
+                    .justify_between()
+                    .when(is_windows, |this| {
+                        this.window_control_area(WindowControlArea::Drag)
+                    })
+                    .child(brand)
                     .child(
                         div()
-                            .w(px(search_width))
-                            .flex_none()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                            .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .px_3()
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .child(
-                                Input::new(&self.search_input)
-                                    .cleanable(true)
-                                    .prefix(Icon::new(IconName::Search)),
+                                div()
+                                    .w(px(search_width))
+                                    .flex_none()
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .on_mouse_up(MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .on_mouse_down(MouseButton::Right, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .on_mouse_up(MouseButton::Right, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .child(
+                                        Input::new(&self.search_input)
+                                            .cleanable(true)
+                                            .prefix(Icon::new(IconName::Search)),
+                                    ),
                             ),
-                    ),
+                    )
+                    .child(actions),
             )
-            .child(actions)
+            .child(window_controls)
     }
 
     pub(crate) fn render_add_button(&self, cx: &mut Context<Self>) -> KitButton {
         let enabled = self.snapshot.commands_available() && self.add_dialog_view().is_none();
         KitButton::new("open-add-download")
             .primary()
-            .small()
             .icon(gpui_kit::component::Icon::new(IconName::Plus))
             .label(self.t("action-add-download"))
             .accessibility_label(if enabled {

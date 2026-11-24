@@ -109,6 +109,7 @@ fn main() {
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             {
                 window_options.icon = window_icon();
+                window_options.window_decorations = Some(gpui::WindowDecorations::Client);
             }
             let open_result = gpui_kit::open_window(window_options, cx, {
                 let runtime = app_runtime.clone();

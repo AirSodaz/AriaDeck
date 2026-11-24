@@ -12,10 +12,11 @@ use gpui::{
     DragMoveEvent, ElementId, Entity, ExternalPaths, FocusHandle, Focusable, FontFeatures,
     FontWeight, Hsla, IntoElement, MouseButton, MouseDownEvent, PathPromptOptions, Pixels, Render,
     Role, ScrollHandle, ScrollStrategy, SharedString, Stateful, Subscription, Toggled,
-    UniformListScrollHandle, WeakFocusHandle, Window, div, img, prelude::*, px, uniform_list,
+    UniformListScrollHandle, WeakFocusHandle, Window, WindowControlArea, div, img, prelude::*, px,
+    uniform_list,
 };
 use gpui_kit::component::{
-    Disableable as _, Selectable as _, Sizable as _, TitleBar, WindowExt as _,
+    Disableable as _, InteractiveElementExt as _, Selectable as _, Sizable as _, WindowExt as _,
     alert::Alert,
     button::{Button as KitButton, ButtonVariants as _},
     chart::AreaChart,
@@ -613,6 +614,7 @@ pub struct AppShell {
     /// consulted when cookies *and* auto-submit are both on, which D-045 §6 makes
     /// the one configuration that never gets a fully silent path.
     bridge_auto_submit_unlocked: bool,
+    pub(crate) titlebar_drag_pending: bool,
     pending_settings_save: Option<PendingSettingsSave>,
     pending_tracker_refresh: Option<RequestId>,
     pending_task_command: Option<PendingTaskCommand>,
@@ -757,6 +759,7 @@ impl AppShell {
             pending_update_check: None,
             pending_update_download: None,
             bridge_auto_submit_unlocked: false,
+            titlebar_drag_pending: false,
             pending_settings_save: None,
             pending_tracker_refresh: None,
             pending_task_command: None,
