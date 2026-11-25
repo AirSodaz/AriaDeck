@@ -44,13 +44,16 @@ function Find-InnoCompiler {
     $command = Get-Command iscc -ErrorAction SilentlyContinue
     if ($command) { return $command.Source }
     foreach ($candidate in @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 7\ISCC.exe"),
+        (Join-Path $env:ProgramFiles "Inno Setup 7\ISCC.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 7\ISCC.exe"),
         (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
         (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
         (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe")
     )) {
         if ($candidate -and (Test-Path $candidate)) { return $candidate }
     }
-    throw "Inno Setup 6 compiler not found. Set ARIADECK_INNO_SETUP to ISCC.exe."
+    throw "Inno Setup 6+ compiler not found. Set ARIADECK_INNO_SETUP to ISCC.exe."
 }
 
 function Find-WixTool {
@@ -88,6 +91,14 @@ if (-not $SkipInno) {
     $compiler = Find-InnoCompiler
     $definitions = @("/DMyAppVersion=$Version", "/DAppArch=$Arch")
 
+    $buildSubdir = if ($Arch -eq "arm64") { "target\aarch64-pc-windows-msvc\release\build" } else { "target\release\build" }
+    $iconFile = Get-Item (Join-Path $Root "$buildSubdir\ariadeck-desktop-*\out\icon.ico") -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($iconFile) {
+        $definitions += "/DSetupIconFile=$($iconFile.FullName)"
+    }
+
     # Browser bridge (D-045). Without a pinned extension ID the installer omits the
     # opt-in task entirely rather than offering a registration that would accept any
     # extension. Validated here so a typo fails the build, not a user's trust model.
@@ -102,12 +113,24 @@ if (-not $SkipInno) {
         Write-Host "ARIADECK_EXTENSION_ID not set - installer omits the browser bridge task"
     }
 
-    & $compiler @definitions (Join-Path $Root "packaging\windows\AriaDeck.iss")
-    if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed (exit $LASTEXITCODE)" }
-
     $setup = Join-Path $Root "dist\AriaDeck_${Version}_${Arch}-setup.exe"
+    $signContext = New-AriaDeckSignContext -Sign:$Sign -ContextLabel $setup
+    try {
+        $compilerArgs = @() + $definitions
+        if ($signContext) {
+            $signCmd = Format-AriaDeckInnoSignToolCommand -Context $signContext
+            $compilerArgs += "/DSignedInstall=1"
+            $compilerArgs += "/Sariadeck=$signCmd"
+        }
+        $compilerArgs += (Join-Path $Root "packaging\windows\AriaDeck.iss")
+
+        & $compiler @compilerArgs
+        if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed (exit $LASTEXITCODE)" }
+    } finally {
+        Remove-AriaDeckSignContext -Context $signContext
+    }
+
     if (-not (Test-Path $setup)) { throw "Missing setup executable: $setup" }
-    Invoke-AriaDeckOptionalSign -Path $setup -Sign:$Sign
     Write-Host "Installer ready: $setup"
 }
 
