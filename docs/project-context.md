@@ -1,8 +1,8 @@
 # AriaDeck — Project Context
 
 **Status:** Product-ready core (MVP + download-manager surface). Landed: ACCESS-001, I18N-001 (en/zh-CN), SEC-001, PERF-001, RELEASE-001 (Windows/macOS/Linux).  
-**Last updated:** 2026-11-18
-**Stack:** Rust 1.99.1 (MSRV 1.96) · GPUI via `gpui-kit` 0.9.0 · aria2 JSON-RPC (WebSocket) · Tokio  
+**Last updated:** 2026-11-25
+**Stack:** Rust 1.100.0 (MSRV 1.96) · GPUI via `gpui-kit` 0.11.0 · aria2 JSON-RPC (WebSocket) · Tokio  
 
 Single source of truth for intent, architecture, contracts, and residual work. Prefer code when it diverges; update this file when scope or boundaries change.  
 **Next work:** [`docs/roadmap.md`](roadmap.md) · **Release:** [`docs/release.md`](release.md) · **i18n:** [`docs/i18n.md`](i18n.md) · **Browser bridge:** [`docs/browser-bridge.md`](browser-bridge.md)
@@ -208,7 +208,7 @@ Automatic / silent aria2 package channels (D-046 is explicit and user-initiated;
 | ADR | Decision |
 | --- | --- |
 | 001 | Application owns use cases/store (no GPUI/RPC/SQLite) |
-| 002 | Consume GPUI via pinned `gpui-kit` 0.9.0; keep GPUI confined to `ariadeck-ui` / `ariadeck-desktop` |
+| 002 | Consume GPUI via pinned `gpui-kit` 0.11.0; keep GPUI confined to `ariadeck-ui` / `ariadeck-desktop` |
 | 003 | Process path before networked core installer |
 | 004 | Mutable state scoped to engine session generation |
 | 005 | One actor per WebSocket; auth as transport decorator |

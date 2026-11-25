@@ -288,7 +288,7 @@ pub(crate) fn apply_profile_secret_updates_with_store(
                     )
                 })?;
                 let credential = ProxyCredentialRef::from_uuid(secret_ref.as_uuid());
-                let secret = SecretString::new(password.clone().into_inner());
+                let secret = SecretString::from(password.clone().into_inner());
                 store
                     .save(credential, &secret)
                     .map_err(|error| format!("Failed to store RPC secret: {error}"))?;

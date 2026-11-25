@@ -695,7 +695,7 @@ pub(crate) fn map_settings_request(
             if password.is_empty() {
                 return Err("Proxy password must not be empty.".into());
             }
-            ProxyPasswordUpdate::Set(SecretString::new(password))
+            ProxyPasswordUpdate::Set(SecretString::from(password))
         }
     };
     let credential = match &password {

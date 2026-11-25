@@ -24,46 +24,46 @@ license = "MIT"
 
 [workspace.dependencies]
 async-trait = "0.1.89"
-base64 = "0.22.1"
+base64 = "0.23.1"
 bitflags = { version = "2.10.0", features = ["serde"] }
 data-encoding = "2.11.0"
-rust-embed = "8.11.0"
+rust-embed = "8.14.0"
 fluent-bundle = "0.16.0"
 fluent-syntax = "0.12.0"
 futures = "0.3.31"
 futures-util = "0.3.31"
-gpui-kit = { version = "0.9.0", default-features = true }
+gpui-kit = { version = "0.11.0", default-features = true }
 image = { version = "0.25.10", default-features = false }
-interprocess = { version = "2.4.2", features = ["tokio"] }
+interprocess = { version = "2.4.9", features = ["tokio"] }
 keyring = "4.1.5"
 lava_torrent = "0.11.1"
 minisign-verify = "0.3.0"
-notify-rust = "4.18.0"
-quick-xml = "0.41.0"
-reqwest = { version = "0.12.23", default-features = false, features = ["rustls-tls-native-roots"] }
-rusqlite = { version = "0.37.0", features = ["bundled"] }
+notify-rust = "4.19.0"
+quick-xml = "0.42.0"
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots"] }
+rusqlite = { version = "0.43.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
-secrecy = "0.8.0"
+secrecy = "0.10.3"
 semver = "1.0.27"
 sha2 = "0.11.0"
 sys-locale = "0.3.2"
-sysinfo = "0.31.4"
+sysinfo = "0.40.4"
 tempfile = "3.23.0"
 thiserror = "2.0.17"
 tokio = { version = "1.54.1", features = ["macros", "net", "process", "rt-multi-thread", "sync", "time"] }
-tokio-tungstenite = { version = "0.28.0", default-features = false, features = ["connect", "handshake", "rustls-tls-native-roots"] }
-trash = "5.2.3"
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "handshake", "rustls-tls-native-roots"] }
+trash = "5.4.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
-tray-icon = { version = "0.24.1", default-features = false, features = ["gtk"] }
-url = { version = "2.5.7", features = ["serde"] }
+tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"] }
+url = { version = "2.5.9", features = ["serde"] }
 unic-langid = { version = "0.9.6", features = ["macros"] }
-uuid = { version = "1.18.1", features = ["serde", "v4"] }
-winreg = "0.55"
+uuid = { version = "1.29.3", features = ["serde", "v4"] }
+winreg = "0.56.0"
 # `deflate` is required to read upstream aria2 release archives (B4). The
 # diagnostic export still writes `Stored` entries only.
-zip = { version = "9.4.1", default-features = false, features = ["deflate"] }
+zip = { version = "9.8.2", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

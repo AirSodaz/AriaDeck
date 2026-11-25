@@ -78,7 +78,7 @@ impl ProxyCredentialStore for SystemProxyCredentialStore {
         credential: ProxyCredentialRef,
     ) -> Result<Option<SecretString>, ProxyCredentialError> {
         match self.entry(credential)?.get_password() {
-            Ok(password) => Ok(Some(SecretString::new(password))),
+            Ok(password) => Ok(Some(SecretString::from(password))),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(error) => Err(ProxyCredentialError {
                 operation: "reading an entry",

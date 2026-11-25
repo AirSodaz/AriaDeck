@@ -12,7 +12,7 @@ pub struct RpcSecret(Arc<SecretString>);
 impl RpcSecret {
     #[must_use]
     pub fn new(value: impl Into<String>) -> Self {
-        Self(Arc::new(SecretString::new(value.into())))
+        Self(Arc::new(SecretString::from(value.into())))
     }
 
     fn token(&self) -> String {

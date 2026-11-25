@@ -305,9 +305,13 @@ fn is_windows_reparse_point(_metadata: &fs::Metadata) -> bool {
 }
 
 fn available_space(directory: &Path) -> Result<u64, GatewayError> {
-    let disks = Disks::new_with_refreshed_list();
+    let disks = Disks::new_with_refreshed_list().map_err(|error| {
+        filesystem_gateway_error(
+            format!("could not enumerate storage devices: {error}"),
+            true,
+        )
+    })?;
     disks
-        .list()
         .iter()
         .filter(|disk| {
             fs::canonicalize(disk.mount_point())

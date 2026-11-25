@@ -129,8 +129,8 @@ pub(super) fn download_proxy_options(config: &DownloadProxyConfig) -> Vec<(Strin
             .password
             .as_ref()
             .map(ExposeSecret::expose_secret)
-            .cloned()
             .unwrap_or_default()
+            .to_owned()
     } else {
         String::new()
     };

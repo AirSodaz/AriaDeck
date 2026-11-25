@@ -20,7 +20,7 @@ fn proxy_config_debug_output_redacts_the_password() {
         mode: DownloadProxyMode::Manual,
         all_proxy: Some("proxy.example:8080".into()),
         username: Some("proxy-user".into()),
-        password: Some(SecretString::new("never-log-this".into())),
+        password: Some(SecretString::from("never-log-this")),
         ..DownloadProxyConfig::default()
     };
 
@@ -1274,9 +1274,9 @@ fn advanced_options_flatten_headers_cookie_auth_and_checksum() {
         referer: Some("https://example.test/page".into()),
         user_agent: Some("AriaDeck/test".into()),
         headers: vec!["X-Token: abc".into(), "Accept: */*".into()],
-        cookie: Some(SecretString::new("session=secret".into())),
+        cookie: Some(SecretString::from("session=secret")),
         http_user: Some("alice".into()),
-        http_passwd: Some(SecretString::new("s3cret".into())),
+        http_passwd: Some(SecretString::from("s3cret")),
         checksum: Some(format!("sha-256={}", "ab".repeat(32))),
     };
     assert!(advanced.validate().is_ok());
@@ -1320,7 +1320,7 @@ fn advanced_options_reject_secret_headers_and_bad_checksums() {
     assert!(bad_checksum.validate().is_err());
 
     let password_without_user = AddDownloadAdvancedOptions {
-        http_passwd: Some(SecretString::new("x".into())),
+        http_passwd: Some(SecretString::from("x")),
         ..AddDownloadAdvancedOptions::default()
     };
     assert!(password_without_user.validate().is_err());
@@ -1334,7 +1334,7 @@ fn add_download_forwards_typed_advanced_options_only_for_direct_uris() {
     let advanced = AddDownloadAdvancedOptions {
         referer: Some("https://cdn.example/ref".into()),
         headers: vec!["X-Request-Id: 1".into()],
-        cookie: Some(SecretString::new("k=v".into())),
+        cookie: Some(SecretString::from("k=v")),
         checksum: Some(format!("sha-256={}", "cd".repeat(32))),
         ..AddDownloadAdvancedOptions::default()
     };
@@ -1486,7 +1486,7 @@ fn magnet_uris_reject_advanced_http_options_and_debug_redacts_secrets() {
         ]),
         advanced: AddDownloadAdvancedOptions {
             referer: Some("https://example.com".into()),
-            cookie: Some(SecretString::new("sid=supersecret".into())),
+            cookie: Some(SecretString::from("sid=supersecret")),
             ..AddDownloadAdvancedOptions::default()
         },
         options: vec![

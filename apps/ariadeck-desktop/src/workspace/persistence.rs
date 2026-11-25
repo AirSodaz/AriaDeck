@@ -927,7 +927,7 @@ mod tests {
                 request_id: RequestId::from_u64(1),
                 settings: next,
                 previous_settings: previous.clone(),
-                proxy_password: ProxyPasswordUpdate::Set(SecretString::new("s3cr3t".into())),
+                proxy_password: ProxyPasswordUpdate::Set(SecretString::from("s3cr3t")),
                 apply_proxy: true,
                 apply_speed_limit: true,
                 apply_transfer_policy: true,
@@ -1110,7 +1110,7 @@ mod tests {
         let remote_secret_ref = RpcSecretRef::new();
         let old_cred = ProxyCredentialRef::from_uuid(remote_secret_ref.as_uuid());
         secret_store
-            .save(old_cred, &SecretString::new("old-secret".into()))
+            .save(old_cred, &SecretString::from("old-secret"))
             .expect("seed old secret");
         let remote = ProfileEntry::remote_rpc(
             remote_id,

@@ -37,7 +37,7 @@ impl ProxyCredentialStore for MemoryProxyCredentialStore {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&credential)
             .cloned()
-            .map(SecretString::new))
+            .map(SecretString::from))
     }
 
     fn save(

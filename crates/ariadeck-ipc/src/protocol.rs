@@ -202,7 +202,7 @@ pub(crate) fn decode_request(request: WireRequest) -> io::Result<LaunchRequest> 
                 url: download.url,
                 referer: download.referer,
                 user_agent: download.user_agent,
-                cookie: download.cookie.map(SecretString::new),
+                cookie: download.cookie.map(SecretString::from),
                 filename: download.filename,
                 file_size: download.file_size,
             };
@@ -262,10 +262,7 @@ fn validate_download(download: &BridgeDownload, error_kind: io::ErrorKind) -> io
         &invalid,
     )?;
     check_header_field(
-        download
-            .cookie
-            .as_ref()
-            .map(|cookie| cookie.expose_secret().as_str()),
+        download.cookie.as_ref().map(ExposeSecret::expose_secret),
         MAX_COOKIE_BYTES,
         "cookie",
         &invalid,
@@ -347,7 +344,7 @@ pub(crate) mod tests {
             url: "https://example.test/file.bin".into(),
             referer: Some("https://example.test/page".into()),
             user_agent: Some("Mozilla/5.0".into()),
-            cookie: Some(SecretString::new("session=secret".into())),
+            cookie: Some(SecretString::from("session=secret")),
             filename: Some("file.bin".into()),
             file_size: Some(1024),
         }
@@ -391,7 +388,7 @@ pub(crate) mod tests {
             decoded.downloads[0]
                 .cookie
                 .as_ref()
-                .map(|cookie| cookie.expose_secret().as_str()),
+                .map(ExposeSecret::expose_secret),
             Some("session=secret")
         );
     }
@@ -405,7 +402,7 @@ pub(crate) mod tests {
                 url: "https://example.test/下载/文件%20one.bin?q=示例".into(),
                 referer: Some("https://example.test/页面".into()),
                 user_agent: Some("Mozilla/5.0 (Ünïcodé)".into()),
-                cookie: Some(SecretString::new("会话=秘密".into())),
+                cookie: Some(SecretString::from("会话=秘密")),
                 filename: Some("示例 file.bin".into()),
                 file_size: Some(u64::MAX),
             }],
@@ -498,7 +495,7 @@ pub(crate) mod tests {
             ..base.clone()
         };
         let crlf_cookie = BridgeDownload {
-            cookie: Some(SecretString::new("a=b\r\nX-Injected: 1".into())),
+            cookie: Some(SecretString::from("a=b\r\nX-Injected: 1")),
             ..base.clone()
         };
         let path_filename = BridgeDownload {
@@ -570,7 +567,7 @@ pub(crate) mod tests {
             ..sample_download()
         };
         let oversized_cookie = BridgeDownload {
-            cookie: Some(SecretString::new("x".repeat(MAX_COOKIE_BYTES + 1))),
+            cookie: Some(SecretString::from("x".repeat(MAX_COOKIE_BYTES + 1))),
             ..sample_download()
         };
         for download in [oversized_url, oversized_cookie] {

@@ -86,44 +86,38 @@ fn parse_metalink(content: &[u8]) -> Result<Vec<MetadataPreviewFile>, String> {
             .read_event()
             .map_err(|error| format!("Invalid Metalink XML: {error}"))?
         {
-            Event::Start(element) if element.local_name().as_ref() == b"file" => {
+            Event::Start(element) if element.local_name().as_ref() == "file" => {
                 if current.is_some() {
                     return Err(
                         "Invalid Metalink XML: nested file elements are unsupported.".into(),
                     );
                 }
                 current = Some(MetalinkFile {
-                    path: metalink_file_name(&reader, &element)?,
+                    path: metalink_file_name(&element)?,
                     size: None,
                     size_text: String::new(),
                 });
             }
-            Event::Empty(element) if element.local_name().as_ref() == b"file" => {
-                let path = metalink_file_name(&reader, &element)?;
+            Event::Empty(element) if element.local_name().as_ref() == "file" => {
+                let path = metalink_file_name(&element)?;
                 files.push(preview_file(files.len(), path, None)?);
             }
             Event::Start(element)
-                if current.is_some() && element.local_name().as_ref() == b"size" =>
+                if current.is_some() && element.local_name().as_ref() == "size" =>
             {
                 reading_size = true;
             }
             Event::Text(text) if reading_size => {
-                let value = text
-                    .decode()
-                    .map_err(|error| format!("Invalid Metalink size text: {error}"))?;
                 if let Some(file) = &mut current {
-                    file.size_text.push_str(&value);
+                    file.size_text.push_str(&text);
                 }
             }
             Event::CData(text) if reading_size => {
-                let value = text
-                    .decode()
-                    .map_err(|error| format!("Invalid Metalink size text: {error}"))?;
                 if let Some(file) = &mut current {
-                    file.size_text.push_str(&value);
+                    file.size_text.push_str(&text);
                 }
             }
-            Event::End(element) if element.local_name().as_ref() == b"size" => {
+            Event::End(element) if element.local_name().as_ref() == "size" => {
                 reading_size = false;
                 if let Some(file) = &mut current {
                     let value = file.size_text.trim();
@@ -134,7 +128,7 @@ fn parse_metalink(content: &[u8]) -> Result<Vec<MetadataPreviewFile>, String> {
                     }
                 }
             }
-            Event::End(element) if element.local_name().as_ref() == b"file" => {
+            Event::End(element) if element.local_name().as_ref() == "file" => {
                 let file = current.take().ok_or_else(|| {
                     "Invalid Metalink XML: file closing tag has no opening tag.".to_owned()
                 })?;
@@ -161,16 +155,13 @@ struct MetalinkFile {
     size_text: String,
 }
 
-fn metalink_file_name(
-    reader: &Reader<&[u8]>,
-    element: &quick_xml::events::BytesStart<'_>,
-) -> Result<String, String> {
+fn metalink_file_name(element: &quick_xml::events::BytesStart<'_>) -> Result<String, String> {
     for attribute in element.attributes() {
         let attribute =
             attribute.map_err(|error| format!("Invalid Metalink attribute: {error}"))?;
-        if attribute.key.local_name().as_ref() == b"name" {
+        if attribute.key.local_name().as_ref() == "name" {
             let value = attribute
-                .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                .normalized_value(XmlVersion::Implicit1_0)
                 .map_err(|error| format!("Invalid Metalink file name: {error}"))?;
             return normalize_relative_path(Path::new(value.as_ref()));
         }

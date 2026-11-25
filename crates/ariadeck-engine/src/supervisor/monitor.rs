@@ -126,7 +126,7 @@ impl LocalEngineSupervisor {
     ) -> Result<Self, EngineError> {
         let process = LocalEngineProcess::spawn_with_child_hook(config, on_child_spawned)?;
         let endpoint = process.endpoint().clone();
-        let secret = SecretString::new(process.secret().to_owned());
+        let secret = SecretString::from(process.secret().to_owned());
         let profile_id = process.config().profile_id;
         let shared = Arc::new(SupervisorShared {
             process: Mutex::new(process),

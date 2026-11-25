@@ -189,7 +189,10 @@ pub fn decode_items(body: &[u8], allow_cookies: bool) -> Result<Vec<BridgeDownlo
             url: item.url,
             referer: item.referer,
             user_agent: item.user_agent,
-            cookie: item.cookie.filter(|_| allow_cookies).map(SecretString::new),
+            cookie: item
+                .cookie
+                .filter(|_| allow_cookies)
+                .map(SecretString::from),
             filename: item.filename,
             file_size: item.file_size,
         })
@@ -331,10 +334,7 @@ mod tests {
         assert!(denied[0].cookie.is_none());
         let allowed = decode_items(sample("session=secret").as_bytes(), true).expect("decodes");
         assert_eq!(
-            allowed[0]
-                .cookie
-                .as_ref()
-                .map(|cookie| cookie.expose_secret().as_str()),
+            allowed[0].cookie.as_ref().map(ExposeSecret::expose_secret),
             Some("session=secret")
         );
     }

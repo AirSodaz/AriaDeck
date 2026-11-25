@@ -880,9 +880,8 @@ fn system_proxy_mode_ignores_persisted_manual_fields_and_credentials() {
         },
         ..AppSettings::new("downloads")
     };
-    let config =
-        map_download_proxy_config(&settings, Some(SecretString::new("stale-secret".into())))
-            .expect("resolve system proxy");
+    let config = map_download_proxy_config(&settings, Some(SecretString::from("stale-secret")))
+        .expect("resolve system proxy");
     assert!(
         matches!(
             config.mode,
@@ -2092,7 +2091,7 @@ fn credential_detach_keeps_the_keychain_entry_untouched() {
     previous.download_proxy.username = Some("proxy-user".into());
     previous.download_proxy.credential = Some(credential);
     credentials
-        .save(credential, &SecretString::new("local-secret".into()))
+        .save(credential, &SecretString::from("local-secret"))
         .expect("seed credential");
     let mut next = previous.clone();
     next.download_proxy.credential = None;
@@ -2130,7 +2129,7 @@ fn credential_update_can_restore_the_previous_password() {
     previous.download_proxy.username = Some("proxy-user".into());
     previous.download_proxy.credential = Some(credential);
     credentials
-        .save(credential, &SecretString::new("old-secret".into()))
+        .save(credential, &SecretString::from("old-secret"))
         .expect("seed credential");
     let next = previous.clone();
     let previous_password =
@@ -2140,15 +2139,13 @@ fn credential_update_can_restore_the_previous_password() {
         &credentials,
         &previous,
         &next,
-        &ProxyPasswordUpdate::Set(SecretString::new("new-secret".into())),
+        &ProxyPasswordUpdate::Set(SecretString::from("new-secret")),
         previous_password,
     )
     .expect("replace credential");
 
     assert_eq!(
-        password
-            .as_ref()
-            .map(|password| password.expose_secret().as_str()),
+        password.as_ref().map(|password| password.expose_secret()),
         Some("new-secret")
     );
     assert_eq!(
@@ -2156,7 +2153,7 @@ fn credential_update_can_restore_the_previous_password() {
             .load(credential)
             .expect("load replacement")
             .as_ref()
-            .map(|password| password.expose_secret().as_str()),
+            .map(|password| password.expose_secret()),
         Some("new-secret")
     );
 

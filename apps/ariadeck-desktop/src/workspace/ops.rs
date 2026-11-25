@@ -249,11 +249,11 @@ pub(crate) fn map_add_advanced_options(
         headers,
         cookie: advanced
             .cookie
-            .map(|value| SecretString::new(value.into_inner())),
+            .map(|value| SecretString::from(value.into_inner())),
         http_user: nonempty_optional(advanced.http_user),
         http_passwd: advanced
             .http_passwd
-            .map(|value| SecretString::new(value.into_inner())),
+            .map(|value| SecretString::from(value.into_inner())),
         checksum: nonempty_optional(advanced.checksum),
     };
     mapped.validate()?;

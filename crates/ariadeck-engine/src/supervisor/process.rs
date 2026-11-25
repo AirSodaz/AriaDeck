@@ -123,7 +123,7 @@ impl LocalEngineProcess {
         Ok(Self {
             child: Some(child),
             endpoint,
-            secret: SecretString::new(secret),
+            secret: SecretString::from(secret),
             config: config.clone(),
             profile_dir,
             config_path,

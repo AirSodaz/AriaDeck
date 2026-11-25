@@ -664,16 +664,14 @@ fn is_portable_install() -> bool {
 }
 
 pub(crate) fn is_read_only_update_install() -> bool {
-    if is_portable_install() {
-        return true;
-    }
     #[cfg(target_os = "linux")]
     {
-        if std::env::var_os("APPIMAGE").is_none() {
-            return true;
-        }
+        is_portable_install() || std::env::var_os("APPIMAGE").is_none()
     }
-    false
+    #[cfg(not(target_os = "linux"))]
+    {
+        is_portable_install()
+    }
 }
 
 #[cfg(target_os = "windows")]

@@ -137,7 +137,7 @@ fn cookie_crosses_the_socket_only_after_an_explicit_opt_in() {
         allowed.downloads[0]
             .cookie
             .as_ref()
-            .map(|cookie| cookie.expose_secret().as_str()),
+            .map(ExposeSecret::expose_secret),
         Some("session=e2e-secret")
     );
 }
@@ -321,7 +321,7 @@ fn settings_json_allow_cookies_contract_matches_ariadeck_settings() {
         allowed.downloads[0]
             .cookie
             .as_ref()
-            .map(|cookie| cookie.expose_secret().as_str()),
+            .map(ExposeSecret::expose_secret),
         Some("session=contract-secret"),
         "bridge must forward cookie when real settings.json has allow_cookies=true"
     );

@@ -167,8 +167,10 @@ pub(crate) fn process_appears_alive(pid: u32) -> bool {
     // sysinfo is already a dependency for disk checks. Refresh only the target
     // pid so startup stays cheap.
     use sysinfo::{Pid, ProcessesToUpdate, System};
-    let mut system = System::new();
-    system.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]));
+    let Ok(mut system) = System::new() else {
+        return false;
+    };
+    system.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
     system.process(Pid::from_u32(pid)).is_some()
 }
 

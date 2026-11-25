@@ -467,7 +467,7 @@ async fn download_proxy_uses_global_options_and_clears_unspecified_values() {
         https_proxy: Some("secure-proxy.example:8443".into()),
         no_proxy: vec!["localhost".into(), "10.0.0.0/8".into()],
         username: Some("proxy-user".into()),
-        password: Some(secrecy::SecretString::new("secret-value".into())),
+        password: Some(secrecy::SecretString::from("secret-value")),
         ..DownloadProxyConfig::default()
     };
 
@@ -584,7 +584,7 @@ async fn disabled_download_proxy_explicitly_clears_endpoints_and_credentials() {
         mode: DownloadProxyMode::Disabled,
         all_proxy: Some("http://stale.example:8080".into()),
         username: Some("stale-user".into()),
-        password: Some(secrecy::SecretString::new("stale-secret".into())),
+        password: Some(secrecy::SecretString::from("stale-secret")),
         ..DownloadProxyConfig::default()
     };
 

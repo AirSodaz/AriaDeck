@@ -1103,7 +1103,7 @@ async fn download_proxy_routes_bypasses_and_disables_live_traffic() -> Result<()
                 mode: DownloadProxyMode::Manual,
                 all_proxy: Some(proxy_endpoint),
                 username: Some("proxy-user".into()),
-                password: Some(SecretString::new("proxy-pass".into())),
+                password: Some(SecretString::from("proxy-pass")),
                 ..DownloadProxyConfig::default()
             },
         )

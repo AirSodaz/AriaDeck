@@ -165,10 +165,9 @@ pub fn show_os_notification(title: &str, body: &str) {
 /// Free space for the download directory mount, when discoverable.
 pub fn available_disk_space(directory: &std::path::Path) -> Option<u64> {
     use sysinfo::Disks;
-    let disks = Disks::new_with_refreshed_list();
+    let disks = Disks::new_with_refreshed_list().ok()?;
     let canonical = std::fs::canonicalize(directory).ok();
     disks
-        .list()
         .iter()
         .filter(|disk| {
             let mount = disk.mount_point();
