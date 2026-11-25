@@ -162,9 +162,12 @@ jobs:
       - name: Package installer and MSI
         shell: pwsh
         run: |
-          $packageArgs = @("-Arch", "${{ matrix.arch }}", "-SkipStage")
+          $packageArgs = @{
+            Arch      = "${{ matrix.arch }}"
+            SkipStage = $true
+          }
           if ("${{ inputs.sign_windows }}" -eq "true" -and ($env:ARIADECK_SIGN_CERT_THUMBPRINT -or $env:ARIADECK_SIGN_PFX)) {
-            $packageArgs += "-Sign"
+            $packageArgs.Sign = $true
           }
           ./scripts/package-windows-installer.ps1 @packageArgs
         env:

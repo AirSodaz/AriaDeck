@@ -70,9 +70,12 @@ function Find-WixTool {
 $Version = Get-AriaDeckWorkspaceVersion -WorkspaceRoot $Root
 $Stage = Join-Path $Root "dist\AriaDeck_${Version}_windows-${Arch}-portable"
 if (-not $SkipStage) {
-    $arguments = @("-Arch", $Arch, "-SkipZip")
-    if ($SkipBuild) { $arguments += "-SkipBuild" }
-    if ($Sign) { $arguments += "-Sign" }
+    $arguments = @{
+        Arch    = $Arch
+        SkipZip = $true
+    }
+    if ($SkipBuild) { $arguments.SkipBuild = $true }
+    if ($Sign) { $arguments.Sign = $true }
     & (Join-Path $PSScriptRoot "package-windows-portable.ps1") @arguments
 }
 foreach ($name in @("ariadeck-desktop.exe", "ariadeck-bridge.exe")) {
