@@ -26,8 +26,26 @@ binary="$root/target/release/ariadeck-desktop"
 actual_arch="$(lipo -archs "$binary")"
 [[ "$actual_arch" == "$arch" ]] || { echo "expected $arch binary, got $actual_arch" >&2; exit 1; }
 
-icns_source="$(ls -t "$root"/target/release/build/ariadeck-desktop-*/out/icon.icns 2>/dev/null | head -n 1 || true)"
-[[ -f "$icns_source" ]] || { echo "generated icon.icns is missing under target/release/build/ariadeck-desktop-*/out/" >&2; exit 1; }
+# Cargo 1.100+ places build-script outputs under build/<pkg>/<hash>/out/, while
+# older Cargo releases used build/<pkg>-<hash>/out/.
+shopt -s nullglob
+icns_candidates=(
+  "$root"/target/release/build/ariadeck-desktop/*/out/icon.icns
+  "$root"/target/release/build/ariadeck-desktop-*/out/icon.icns
+)
+shopt -u nullglob
+icns_source=""
+if (( ${#icns_candidates[@]} > 0 )); then
+  for candidate in "${icns_candidates[@]}"; do
+    if [[ -f "$candidate" && ( -z "$icns_source" || "$candidate" -nt "$icns_source" ) ]]; then
+      icns_source="$candidate"
+    fi
+  done
+fi
+[[ -f "$icns_source" ]] || {
+  echo "generated icon.icns is missing under target/release/build/ariadeck-desktop/*/out/ (or legacy ariadeck-desktop-*/out/)" >&2
+  exit 1
+}
 
 dist="$root/dist"
 mkdir -p "$dist"
