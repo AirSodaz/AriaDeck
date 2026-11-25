@@ -46,14 +46,23 @@ impl AppShell {
                     .aria_toggled(selection_state)
                     .focusable()
                     .tab_stop(true)
-                    .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
+                    .border_1()
+                    .border_color(gpui::transparent_black())
+                    .focus_visible(|style| style.border_color(colors.focus_ring))
                     .size(px(20.0))
+                    .rounded_sm()
                     .flex_none()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .cursor_pointer()
                     .hover(|style| style.bg(colors.surface_hover))
+                    .active(|style| style.bg(colors.surface_active))
+                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                        if is_activation_key(event) {
+                            cx.stop_propagation();
+                            this.toggle_select_all(window, cx);
+                        }
+                    }))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.toggle_select_all(window, cx);
                     }))
@@ -1197,6 +1206,7 @@ impl AppShell {
                 &[("name", FluentValue::from(display.display_name.as_str()))],
             )
         };
+        let task_for_double_click = task.clone();
         let row = div()
             .id(("task-row", task_key))
             .role(Role::ListItem)
@@ -1205,6 +1215,7 @@ impl AppShell {
             .aria_position_in_set(index + 1)
             .aria_size_of_set(task_count)
             .when(focused, |row| row.aria_active_descendant())
+            .relative()
             .h(px(TASK_ROW_HEIGHT))
             .w_full()
             .flex_none()
@@ -1212,18 +1223,30 @@ impl AppShell {
             .items_center()
             .gap_3()
             .px_3()
-            .border_b_1()
-            .border_color(colors.border)
+            .border_1()
+            .border_color(if focused {
+                with_alpha(colors.accent, 0.72)
+            } else {
+                gpui::transparent_black()
+            })
             .bg(if selected {
                 with_alpha(colors.accent, 0.07)
             } else {
                 colors.background
             })
-            .when(focused, |row| {
-                row.border_1().border_color(with_alpha(colors.accent, 0.72))
-            })
             .hover(|style| style.bg(colors.surface_hover))
-            .cursor_pointer()
+            .active(|style| style.bg(colors.surface_active))
+            .when(!focused, |row| {
+                row.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .h(px(1.0))
+                        .bg(colors.border),
+                )
+            })
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 if !event.standard_click() {
                     return;
@@ -1236,6 +1259,9 @@ impl AppShell {
                     window,
                     cx,
                 );
+                if event.click_count() == 2 && !modifiers.shift && !modifiers.secondary(cx) {
+                    this.open_details_for(task_for_double_click.clone(), cx);
+                }
             }))
             .child(
                 div()
@@ -1281,6 +1307,20 @@ impl AppShell {
         let shell = cx.entity().downgrade();
         let identity = task.identity.clone();
         row.context_menu(move |menu, window, cx| {
+            let menu_entity = cx.entity();
+            let dismiss_shell = shell.clone();
+            window
+                .subscribe(
+                    &menu_entity,
+                    cx,
+                    move |_, _: &gpui::DismissEvent, window, cx| {
+                        let shell = dismiss_shell.clone();
+                        window.defer(cx, move |_, cx| {
+                            let _ = shell.update(cx, |this, cx| this.close_task_context_menu(cx));
+                        });
+                    },
+                )
+                .detach();
             let target = shell
                 .update(cx, |this, cx| {
                     this.prepare_task_context_menu(&identity, window, cx)

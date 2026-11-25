@@ -1138,16 +1138,48 @@ impl AppShell {
         }
     }
 
+    pub(crate) fn open_status_popover(
+        &mut self,
+        popover: StatusBarPopover,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let previous = window.focused(cx).map(|focus| focus.downgrade());
+        match popover {
+            StatusBarPopover::Speed => self.speed_popover_previous_focus = previous,
+            StatusBarPopover::Power => self.power_popover_previous_focus = previous,
+            StatusBarPopover::Activity => self.activity_popover_previous_focus = previous,
+        }
+        self.context_menu_target = None;
+        self.active_status_popover = Some(popover);
+        cx.notify();
+    }
+
+    pub(crate) fn restore_popover_focus(
+        &mut self,
+        popover: StatusBarPopover,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let slot = match popover {
+            StatusBarPopover::Speed => &mut self.speed_popover_previous_focus,
+            StatusBarPopover::Power => &mut self.power_popover_previous_focus,
+            StatusBarPopover::Activity => &mut self.activity_popover_previous_focus,
+        };
+        if let Some(focus) = slot.take().and_then(|focus| focus.upgrade()) {
+            window.focus(&focus, cx);
+        } else {
+            window.focus(&self.focus_handle, cx);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn toggle_speed_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_status_popover == Some(StatusBarPopover::Speed) {
             self.close_speed_popover(window, cx);
             return;
         }
-        self.speed_popover_previous_focus = window.focused(cx).map(|focus| focus.downgrade());
-        self.context_menu_target = None;
-        self.active_status_popover = Some(StatusBarPopover::Speed);
-        cx.notify();
+        self.open_status_popover(StatusBarPopover::Speed, window, cx);
     }
 
     pub(crate) fn close_speed_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1155,13 +1187,7 @@ impl AppShell {
             return;
         }
         self.active_status_popover = None;
-        if let Some(focus) = self
-            .speed_popover_previous_focus
-            .take()
-            .and_then(|focus| focus.upgrade())
-        {
-            window.focus(&focus, cx);
-        }
+        self.restore_popover_focus(StatusBarPopover::Speed, window, cx);
         cx.notify();
     }
 

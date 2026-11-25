@@ -372,6 +372,7 @@ impl CoreSetupPanelView {
                                 &[("version", FluentValue::from(offer.version.as_str()))],
                             ))
                             .disabled(downloading)
+                            .loading(downloading)
                             .on_click(cx.listener(|_this, _, _, cx| {
                                 cx.emit(CoreSetupPanelEvent::Download);
                             })),

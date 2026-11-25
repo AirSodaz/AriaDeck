@@ -625,11 +625,34 @@ impl Render for TaskDetailsPanelView {
         };
 
         let body = match presentation {
-            TaskDetailsPresentation::Loading => drawer_message(
-                self.t("dialog-details-loading"),
-                self.t("ui-requesting-details"),
-                colors,
-            ),
+            TaskDetailsPresentation::Loading => div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .px_5()
+                .text_center()
+                .child(
+                    crate::LoadingIndicator::new(colors.accent)
+                        .size(IconSize::Large)
+                        .label(self.t("dialog-details-loading")),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(self.t("dialog-details-loading")),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(colors.text_muted)
+                        .child(self.t("ui-requesting-details")),
+                )
+                .into_any_element(),
             TaskDetailsPresentation::Failed(summary) => div()
                 .flex_1()
                 .min_h_0()

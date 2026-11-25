@@ -45,11 +45,11 @@ impl AppShell {
             .items_center()
             .justify_end()
             .when(!is_windows_or_linux, |element| element.pr_4())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
                     .debug_selector(|| "titlebar-add-download".to_string())
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(self.render_add_button(cx)),
             )
             .when(is_windows_or_linux, |element| {
@@ -215,10 +215,12 @@ impl AppShell {
                         this.titlebar_drag_pending = false;
                     }),
                 )
-                .on_mouse_move(cx.listener(|this, _, window, _| {
+                .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, window, _| {
                     if this.titlebar_drag_pending {
                         this.titlebar_drag_pending = false;
-                        window.start_window_move();
+                        if event.pressed_button == Some(MouseButton::Left) {
+                            window.start_window_move();
+                        }
                     }
                 }))
             })
@@ -651,8 +653,17 @@ impl AppShell {
                 element
                     .focusable()
                     .tab_stop(true)
-                    .cursor_pointer()
+                    .border_1()
+                    .border_color(gpui::transparent_black())
+                    .focus_visible(|style| style.border_color(colors.focus_ring))
                     .hover(|style| style.bg(colors.surface_hover))
+                    .active(|style| style.bg(colors.surface_active))
+                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                        if is_activation_key(event) {
+                            cx.stop_propagation();
+                            this.request_retry(cx);
+                        }
+                    }))
                     .on_click(cx.listener(|this, _, _, cx| this.request_retry(cx)))
             });
 
@@ -730,8 +741,17 @@ impl AppShell {
                     element
                         .focusable()
                         .tab_stop(true)
-                        .cursor_pointer()
+                        .border_1()
+                        .border_color(gpui::transparent_black())
+                        .focus_visible(|style| style.border_color(colors.focus_ring))
                         .hover(|style| style.bg(colors.surface_hover))
+                        .active(|style| style.bg(colors.surface_active))
+                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                            if is_activation_key(event) {
+                                cx.stop_propagation();
+                                this.request_load_more_stopped(cx);
+                            }
+                        }))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.request_load_more_stopped(cx);
                         }))
@@ -774,13 +794,12 @@ impl AppShell {
             let shell_content = cx.entity().downgrade();
             Popover::new("activity-panel")
                 .anchor(Anchor::BottomRight)
+                .track_focus(&self.activity_popover_focus)
                 .open(activity_open)
                 .on_open_change(move |next_open, window, cx| {
                     let _ = shell_change.update(cx, |this, cx| {
                         if *next_open {
-                            this.context_menu_target = None;
-                            this.active_status_popover = Some(StatusBarPopover::Activity);
-                            cx.notify();
+                            this.open_status_popover(StatusBarPopover::Activity, window, cx);
                         } else {
                             this.close_activity_panel(window, cx);
                         }
@@ -840,15 +859,12 @@ impl AppShell {
             Popover::new("speed-popover")
                 .anchor(Anchor::BottomRight)
                 .appearance(false)
+                .track_focus(&self.speed_popover_focus)
                 .open(speed_open)
                 .on_open_change(move |next_open, window, cx| {
                     let _ = shell_change.update(cx, |this, cx| {
                         if *next_open {
-                            this.speed_popover_previous_focus =
-                                window.focused(cx).map(|focus| focus.downgrade());
-                            this.context_menu_target = None;
-                            this.active_status_popover = Some(StatusBarPopover::Speed);
-                            cx.notify();
+                            this.open_status_popover(StatusBarPopover::Speed, window, cx);
                         } else {
                             this.close_speed_popover(window, cx);
                         }
@@ -1078,6 +1094,13 @@ impl AppShell {
 
     pub(crate) fn render_empty_state(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = self.theme.colors;
+        let is_connecting = matches!(
+            &self.snapshot.connection,
+            ConnectionView::Connecting
+                | ConnectionView::Authenticating
+                | ConnectionView::Synchronizing
+                | ConnectionView::Reconnecting { .. }
+        ) && self.snapshot.tasks.is_empty();
         let (icon, title, show_clear) = match &self.snapshot.connection {
             ConnectionView::Connecting
             | ConnectionView::Authenticating
@@ -1116,6 +1139,18 @@ impl AppShell {
             && self.snapshot.commands_available()
             && self.add_dialog_view().is_none();
 
+        let media_glyph = if is_connecting {
+            crate::LoadingIndicator::new(colors.accent)
+                .size(IconSize::Large)
+                .label(title.clone())
+                .into_any_element()
+        } else {
+            Icon::new(icon)
+                .size(IconSize::Large)
+                .color(colors.accent)
+                .into_any_element()
+        };
+
         let mut header = EmptyHeader::new()
             .media(
                 EmptyMedia::new()
@@ -1126,7 +1161,7 @@ impl AppShell {
                     .border_color(colors.border)
                     .bg(colors.surface)
                     .shadow_xs()
-                    .child(Icon::new(icon).size(IconSize::Large).color(colors.accent)),
+                    .child(media_glyph),
             )
             .title(EmptyTitle::new().child(title));
         if show_add {

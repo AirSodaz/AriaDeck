@@ -626,7 +626,12 @@ pub struct AppShell {
     details_drawer_width: f32,
     details_sheet_open: bool,
     active_status_popover: Option<StatusBarPopover>,
+    speed_popover_focus: FocusHandle,
+    power_popover_focus: FocusHandle,
+    activity_popover_focus: FocusHandle,
     speed_popover_previous_focus: Option<WeakFocusHandle>,
+    power_popover_previous_focus: Option<WeakFocusHandle>,
+    activity_popover_previous_focus: Option<WeakFocusHandle>,
     context_menu_target: Option<TaskIdentity>,
     power_had_active_tasks: bool,
     power_countdown_generation: u64,
@@ -771,7 +776,12 @@ impl AppShell {
             details_drawer_width: DETAILS_DRAWER_WIDTH,
             details_sheet_open: false,
             active_status_popover: None,
+            speed_popover_focus: cx.focus_handle(),
+            power_popover_focus: cx.focus_handle(),
+            activity_popover_focus: cx.focus_handle(),
             speed_popover_previous_focus: None,
+            power_popover_previous_focus: None,
+            activity_popover_previous_focus: None,
             context_menu_target: None,
             power_had_active_tasks: false,
             power_countdown_generation: 0,
@@ -1991,7 +2001,7 @@ impl AppShell {
             match popover {
                 StatusBarPopover::Activity => self.close_activity_panel(window, cx),
                 StatusBarPopover::Speed => self.close_speed_popover(window, cx),
-                StatusBarPopover::Power => self.close_power_popover(cx),
+                StatusBarPopover::Power => self.close_power_popover_with_window(window, cx),
             }
         } else if matches!(self.active_modal, Some(ActiveModal::OutputName { .. })) {
             self.close_task_output_name(window, cx);

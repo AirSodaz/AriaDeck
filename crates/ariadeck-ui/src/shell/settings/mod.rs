@@ -14,6 +14,7 @@ mod transfers;
 mod updates;
 
 pub(super) enum SettingsPanelEvent {
+    Close,
     SelectColorScheme(ColorSchemeView),
     SelectLanguage(LanguagePreferenceView),
     SaveSettings {
@@ -62,12 +63,20 @@ pub(crate) struct SettingsPanelView {
     pub(crate) settings_inputs: SettingsInputs,
     pub(crate) settings_scroll: ScrollHandle,
     pub(crate) core_setup_panel: Entity<CoreSetupPanelView>,
+    focus_handle: FocusHandle,
+    nav_focus_handles: [FocusHandle; 8],
     next_draft_profile_seq: u64,
     _core_setup_sub: Subscription,
     _input_subs: Vec<Subscription>,
 }
 
 impl gpui::EventEmitter<SettingsPanelEvent> for SettingsPanelView {}
+
+impl Focusable for SettingsPanelView {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
 
 pub(super) struct SettingsPanelContext<'a> {
     pub(super) theme: Theme,
@@ -330,6 +339,8 @@ impl SettingsPanelView {
             },
             settings_scroll: ScrollHandle::new(),
             core_setup_panel,
+            focus_handle: cx.focus_handle(),
+            nav_focus_handles: std::array::from_fn(|_| cx.focus_handle()),
             next_draft_profile_seq: 1,
             _core_setup_sub: core_setup_sub,
             _input_subs: input_subs,
@@ -783,32 +794,42 @@ impl SettingsPanelView {
             .py_4()
             .role(Role::TabList)
             .aria_label(self.t("settings-nav-aria"));
-        for category in SettingsCategory::ALL {
+        for (index, category) in SettingsCategory::ALL.into_iter().enumerate() {
             let is_active = category == active;
+            let prev_index = (index + SettingsCategory::ALL.len() - 1) % SettingsCategory::ALL.len();
+            let next_index = (index + 1) % SettingsCategory::ALL.len();
+            let prev_category = SettingsCategory::ALL[prev_index];
+            let next_category = SettingsCategory::ALL[next_index];
             let item = div()
                 .id(SharedString::from(format!("nav-{}", category.label())))
                 .role(Role::Tab)
                 .aria_label(self.t(category.message_key()))
                 .aria_selected(is_active)
-                .focusable()
+                .track_focus(&self.nav_focus_handles[index])
                 .tab_stop(true)
-                .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
+                .border_1()
+                .border_color(gpui::transparent_black())
+                .focus_visible(|style| style.border_color(colors.focus_ring))
                 .flex()
                 .items_center()
                 .gap_3()
-                .px_4()
+                .mx_2()
+                .px_2p5()
                 .py_2()
+                .rounded_md()
                 .text_sm()
-                .cursor_pointer()
                 .text_color(if is_active {
                     colors.text_primary
                 } else {
                     colors.text_secondary
                 })
                 .when(is_active, |el| {
-                    el.bg(with_alpha(colors.accent, 0.08))
-                        .border_l_2()
-                        .border_color(colors.accent)
+                    el.font_weight(FontWeight::MEDIUM)
+                        .bg(with_alpha(colors.accent, 0.12))
+                })
+                .when(!is_active, |el| {
+                    el.hover(|style| style.bg(colors.surface_hover))
+                        .active(|style| style.bg(colors.surface_active))
                 })
                 .child(
                     Icon::new(category.icon())
@@ -820,6 +841,22 @@ impl SettingsPanelView {
                         }),
                 )
                 .child(div().child(self.t(category.message_key())))
+                .on_key_down(
+                    cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                        if is_activation_key(event) {
+                            cx.stop_propagation();
+                            this.select_settings_category(category, cx);
+                        } else if event.keystroke.key == "up" {
+                            cx.stop_propagation();
+                            this.select_settings_category(prev_category, cx);
+                            window.focus(&this.nav_focus_handles[prev_index], cx);
+                        } else if event.keystroke.key == "down" {
+                            cx.stop_propagation();
+                            this.select_settings_category(next_category, cx);
+                            window.focus(&this.nav_focus_handles[next_index], cx);
+                        }
+                    }),
+                )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.select_settings_category(category, cx);
                 }));
@@ -883,10 +920,6 @@ impl SettingsPanelView {
             }
         };
 
-        if !dirty && !saving && error.is_none() {
-            return div().into_any_element();
-        }
-
         div()
             .flex_none()
             .border_t_1()
@@ -943,6 +976,13 @@ impl Render for SettingsPanelView {
         div()
             .id("settings-page")
             .key_context("SettingsPage")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|_this, _: &CloseSettings, _window, cx| {
+                cx.emit(SettingsPanelEvent::Close);
+            }))
+            .on_action(cx.listener(|this, _: &SaveSettings, _window, cx| {
+                this.submit_active_settings_category(cx);
+            }))
             .role(Role::Main)
             .aria_label(self.t("settings-title"))
             .flex_1()
@@ -1276,11 +1316,12 @@ impl AppShell {
     ) {
         if self.page == AppPage::Settings {
             if let Some(panel) = self.settings_panel_entity() {
-                panel.update(cx, |panel, cx| {
+                let focus = panel.update(cx, |panel, cx| {
                     panel.select_settings_category(category, cx);
+                    panel.focus_handle(cx)
                 });
+                window.focus(&focus, cx);
             }
-            window.focus(&self.focus_handle, cx);
             cx.notify();
             return;
         }
@@ -1299,6 +1340,9 @@ impl AppShell {
             &panel,
             window,
             |this, _panel, event: &SettingsPanelEvent, window, cx| match event {
+                SettingsPanelEvent::Close => {
+                    this.close_settings(window, cx);
+                }
                 SettingsPanelEvent::SelectColorScheme(scheme) => {
                     this.select_color_scheme(*scheme, window, cx);
                 }
@@ -1353,11 +1397,13 @@ impl AppShell {
                 }
             },
         );
+        let panel_focus = panel.read(cx).focus_handle(cx);
         self.page = AppPage::Settings;
         self.settings_panel = Some((panel, sub));
         self.clear_details_panel();
         self.sync_details_sheet(window, cx);
         self.active_status_popover = None;
+        window.focus(&panel_focus, cx);
         cx.notify();
     }
 

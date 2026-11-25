@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use ariadeck_i18n::FluentValue;
-use gpui::{Anchor, Context, Div, FontWeight, Role, SharedString, div, prelude::*, px};
+use gpui::{Anchor, Context, Div, FontWeight, Role, SharedString, Window, div, prelude::*, px};
 use gpui_kit::component::{
     Disableable as _, Sizable as _,
     button::{Button as KitButton, ButtonVariants as _},
@@ -11,7 +11,7 @@ use gpui_kit::component::{
 
 use super::{
     ActiveModal, AppShell, AppShellEvent, ProxyPasswordUpdateView, SettingsSaveSource,
-    StatusBarPopover,
+    StatusBarPopover, is_activation_key,
 };
 use crate::{CompletionPowerActionView, Icon, IconName, IconSize};
 
@@ -277,11 +277,26 @@ impl AppShell {
         cx.notify();
     }
 
+    #[cfg(test)]
     pub(crate) fn close_power_popover(&mut self, cx: &mut Context<Self>) {
         if self.active_status_popover == Some(StatusBarPopover::Power) {
             self.active_status_popover = None;
+            self.power_popover_previous_focus = None;
             cx.notify();
         }
+    }
+
+    pub(crate) fn close_power_popover_with_window(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_status_popover != Some(StatusBarPopover::Power) {
+            return;
+        }
+        self.active_status_popover = None;
+        self.restore_popover_focus(StatusBarPopover::Power, window, cx);
+        cx.notify();
     }
 
     pub(crate) fn action_verb_label(&self, action: CompletionPowerActionView) -> String {
@@ -335,16 +350,15 @@ impl AppShell {
         div().h_full().flex().items_center().child(
             Popover::new("power-popover")
                 .anchor(Anchor::BottomRight)
+                .track_focus(&self.power_popover_focus)
                 .open(open)
-                .on_open_change(move |next_open, _, cx| {
+                .on_open_change(move |next_open, window, cx| {
                     let _ = shell_change.update(cx, |this, cx| {
                         if *next_open {
-                            this.context_menu_target = None;
-                            this.active_status_popover = Some(StatusBarPopover::Power);
-                        } else if this.active_status_popover == Some(StatusBarPopover::Power) {
-                            this.active_status_popover = None;
+                            this.open_status_popover(StatusBarPopover::Power, window, cx);
+                        } else {
+                            this.close_power_popover_with_window(window, cx);
                         }
-                        cx.notify();
                     });
                 })
                 .trigger(trigger)
@@ -379,6 +393,7 @@ impl AppShell {
                 for action in CompletionPowerActionView::ALL {
                     let is_selected = current_action == action;
                     let shell = cx.entity().downgrade();
+                    let key_shell = shell.clone();
                     let action_label = self.t(action.message_key());
                     options_col = options_col.child(
                         div()
@@ -390,6 +405,9 @@ impl AppShell {
                             .tab_stop(true)
                             .role(Role::Button)
                             .aria_selected(is_selected)
+                            .border_1()
+                            .border_color(gpui::transparent_black())
+                            .focus_visible(|style| style.border_color(colors.focus_ring))
                             .flex()
                             .items_center()
                             .justify_between()
@@ -402,8 +420,18 @@ impl AppShell {
                             } else {
                                 colors.text_secondary
                             })
-                            .cursor_pointer()
                             .hover(|style| style.bg(colors.surface_hover))
+                            .active(|style| style.bg(colors.surface_active))
+                            .on_key_down(move |event, _, cx| {
+                                if !pending && is_activation_key(event) {
+                                    cx.stop_propagation();
+                                    key_shell
+                                        .update(cx, |this, cx| {
+                                            this.select_completion_action(action, cx);
+                                        })
+                                        .ok();
+                                }
+                            })
                             .on_click(move |_, _, cx| {
                                 if !pending {
                                     shell

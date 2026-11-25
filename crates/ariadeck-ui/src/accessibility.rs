@@ -6,6 +6,32 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static REDUCED_MOTION_OVERRIDE: AtomicBool = AtomicBool::new(false);
 static HAS_OVERRIDE: AtomicBool = AtomicBool::new(false);
 
+/// Whether the user explicitly configured a reduced-motion preference via
+/// test override or `ARIADECK_REDUCED_MOTION`. Returns `None` when unset so
+/// the platform/GPUI default is preserved.
+#[must_use]
+pub(crate) fn explicit_reduced_motion_preference() -> Option<bool> {
+    if HAS_OVERRIDE.load(Ordering::Relaxed) {
+        return Some(REDUCED_MOTION_OVERRIDE.load(Ordering::Relaxed));
+    }
+    if let Ok(value) = std::env::var("ARIADECK_REDUCED_MOTION") {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("1")
+            || value.eq_ignore_ascii_case("true")
+            || value.eq_ignore_ascii_case("yes")
+        {
+            return Some(true);
+        }
+        if value.eq_ignore_ascii_case("0")
+            || value.eq_ignore_ascii_case("false")
+            || value.eq_ignore_ascii_case("no")
+        {
+            return Some(false);
+        }
+    }
+    None
+}
+
 /// Whether the user prefers reduced motion.
 ///
 /// Order of precedence:
@@ -17,25 +43,7 @@ static HAS_OVERRIDE: AtomicBool = AtomicBool::new(false);
 /// forbids `unsafe`. Desktop can set the override at bootstrap later if needed.
 #[must_use]
 pub fn prefers_reduced_motion() -> bool {
-    if HAS_OVERRIDE.load(Ordering::Relaxed) {
-        return REDUCED_MOTION_OVERRIDE.load(Ordering::Relaxed);
-    }
-    if let Ok(value) = std::env::var("ARIADECK_REDUCED_MOTION") {
-        let value = value.trim();
-        if value.eq_ignore_ascii_case("1")
-            || value.eq_ignore_ascii_case("true")
-            || value.eq_ignore_ascii_case("yes")
-        {
-            return true;
-        }
-        if value.eq_ignore_ascii_case("0")
-            || value.eq_ignore_ascii_case("false")
-            || value.eq_ignore_ascii_case("no")
-        {
-            return false;
-        }
-    }
-    false
+    explicit_reduced_motion_preference().unwrap_or(false)
 }
 
 /// Force reduced-motion preference for tests. Pass `None` to clear the override.

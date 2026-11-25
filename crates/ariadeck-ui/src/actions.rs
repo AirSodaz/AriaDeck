@@ -38,6 +38,9 @@ actions!(
 
 pub fn init(cx: &mut App) {
     gpui_kit::init(cx);
+    if let Some(reduced) = crate::accessibility::explicit_reduced_motion_preference() {
+        cx.set_reduce_motion(reduced);
+    }
     let is_mac = cx.platform_info().os == OperatingSystem::Mac;
     let pick = |mac: &'static str, other: &'static str| if is_mac { mac } else { other };
     let bindings = [
@@ -53,7 +56,6 @@ pub fn init(cx: &mut App) {
             Some("DownloadWorkspace"),
         ),
         KeyBinding::new("escape", CloseAddDownload, Some("AddDownloadDialog")),
-        KeyBinding::new("enter", SubmitAddDownload, Some("AddDownloadDialog")),
         KeyBinding::new(
             pick("cmd-enter", "ctrl-enter"),
             SubmitAddDownload,

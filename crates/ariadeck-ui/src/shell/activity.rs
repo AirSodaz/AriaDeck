@@ -2,6 +2,8 @@
 
 use super::*;
 
+struct NoticeToastId;
+
 impl AppShell {
     pub(crate) fn show_notice(
         &mut self,
@@ -72,7 +74,9 @@ impl AppShell {
             });
         }
         let note = if is_error {
+            let key = stable_id("notice-error", &message);
             Notification::error(message)
+                .id1::<NoticeToastId>(key)
                 .autohide(false)
                 .placement(Anchor::BottomRight)
         } else {
@@ -267,10 +271,7 @@ impl AppShell {
             self.close_activity_panel(window, cx);
             return;
         }
-        self.context_menu_target = None;
-        self.active_status_popover = Some(StatusBarPopover::Activity);
-        cx.notify();
-        let _ = window;
+        self.open_status_popover(StatusBarPopover::Activity, window, cx);
     }
 
     pub(crate) fn close_activity_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -278,7 +279,7 @@ impl AppShell {
             return;
         }
         self.active_status_popover = None;
-        window.focus(&self.focus_handle, cx);
+        self.restore_popover_focus(StatusBarPopover::Activity, window, cx);
         cx.notify();
     }
 

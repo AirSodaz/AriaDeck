@@ -294,10 +294,8 @@ impl AddDownloadDialogView {
     pub(super) fn dialog_width(&self) -> f32 {
         if self.input_mode == AddDownloadInputModeView::MetadataFiles {
             720.0
-        } else if self.advanced_open {
-            640.0
         } else {
-            560.0
+            600.0
         }
     }
 
@@ -598,7 +596,6 @@ impl AddDownloadDialogView {
             .aria_expanded(open)
             .focusable()
             .tab_stop(true)
-            .cursor_pointer()
             .flex()
             .items_center()
             .justify_between()
@@ -606,10 +603,18 @@ impl AddDownloadDialogView {
             .rounded_md()
             .border_1()
             .border_color(colors.border)
+            .focus_visible(|style| style.border_color(colors.focus_ring))
             .bg(colors.elevated_surface)
             .px_3()
             .py_2()
             .hover(|style| style.bg(colors.surface_hover))
+            .active(|style| style.bg(colors.surface_active))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if is_activation_key(event) {
+                    cx.stop_propagation();
+                    this.toggle_advanced(cx);
+                }
+            }))
             .on_click(cx.listener(|this, _, _, cx| this.toggle_advanced(cx)))
             .child(
                 div()
@@ -794,13 +799,27 @@ impl AddDownloadDialogView {
                                     })
                                     .focusable()
                                     .tab_stop(!pending)
-                                    .focus_visible(|style| {
-                                        style.border_1().border_color(colors.focus_ring)
-                                    })
+                                    .border_1()
+                                    .border_color(gpui::transparent_black())
+                                    .focus_visible(|style| style.border_color(colors.focus_ring))
+                                    .rounded_sm()
+                                    .px_1p5()
+                                    .py_0p5()
                                     .flex()
                                     .items_center()
                                     .gap_2()
-                                    .cursor_pointer()
+                                    .hover(|style| style.bg(colors.surface_hover))
+                                    .active(|style| style.bg(colors.surface_active))
+                                    .on_key_down(cx.listener(
+                                        move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                            if is_activation_key(event)
+                                                && let Some(index) = active_index
+                                            {
+                                                cx.stop_propagation();
+                                                this.toggle_all_metadata_file_entries(index, cx);
+                                            }
+                                        },
+                                    ))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         if let Some(index) = active_index {
                                             this.toggle_all_metadata_file_entries(index, cx);
@@ -941,21 +960,32 @@ impl AddDownloadDialogView {
             .aria_label(row_aria)
             .focusable()
             .tab_stop(!pending)
-            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
+            .border_1()
+            .border_color(if active {
+                colors.accent
+            } else {
+                colors.border
+            })
+            .focus_visible(|style| style.border_color(colors.focus_ring))
             .h(px(48.0))
             .flex_none()
             .flex()
             .items_center()
             .gap_2()
             .px_2()
-            .border_b_1()
-            .border_color(if active { colors.accent } else { colors.border })
             .bg(if active {
                 colors.surface_active
             } else {
                 colors.surface
             })
-            .cursor_pointer()
+            .hover(|style| style.bg(colors.surface_hover))
+            .active(|style| style.bg(colors.surface_active))
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                if is_activation_key(event) {
+                    cx.stop_propagation();
+                    this.select_metadata_file(index, cx);
+                }
+            }))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.select_metadata_file(index, cx);
             }))
@@ -1107,7 +1137,10 @@ impl AddDownloadDialogView {
             .aria_label(row_aria)
             .focusable()
             .tab_stop(!pending)
-            .focus_visible(|style| style.border_1().border_color(colors.focus_ring))
+            .relative()
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .focus_visible(|style| style.border_color(colors.focus_ring))
             .h(px(40.0))
             .w_full()
             .flex_none()
@@ -1115,12 +1148,26 @@ impl AddDownloadDialogView {
             .items_center()
             .gap_2()
             .px_3()
-            .border_b_1()
-            .border_color(colors.border)
-            .cursor_pointer()
+            .hover(|style| style.bg(colors.surface_hover))
+            .active(|style| style.bg(colors.surface_active))
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                if is_activation_key(event) {
+                    cx.stop_propagation();
+                    this.toggle_metadata_file_entry(preview_index, file_index, cx);
+                }
+            }))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_metadata_file_entry(preview_index, file_index, cx);
             }))
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(1.0))
+                    .bg(colors.border),
+            )
             .child(
                 div()
                     .flex_none()

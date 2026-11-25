@@ -850,6 +850,14 @@ pub(crate) fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
     color
 }
 
+pub(crate) fn is_activation_key(event: &gpui::KeyDownEvent) -> bool {
+    let modifiers = &event.keystroke.modifiers;
+    if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function {
+        return false;
+    }
+    matches!(event.keystroke.key.as_str(), "enter" | "space")
+}
+
 /// Owned-string variant of [`settings_row`] for translated labels.
 pub(crate) fn settings_row_owned(
     label: impl Into<SharedString>,
