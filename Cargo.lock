@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-application"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ariadeck-domain",
  "async-trait",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-bridge"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ariadeck-ipc",
  "ariadeck-settings",
@@ -282,7 +282,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-desktop"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ariadeck-application",
  "ariadeck-domain",
@@ -325,7 +325,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-domain"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bitflags 2.13.2",
  "data-encoding",
@@ -337,7 +337,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-engine"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ariadeck-application",
  "ariadeck-domain",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-history"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ariadeck-application",
  "ariadeck-domain",
@@ -369,7 +369,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-i18n"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "fluent-bundle",
  "fluent-syntax",
@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-ipc"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ariadeck-domain",
  "data-encoding",
@@ -397,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-rpc"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ariadeck-application",
  "ariadeck-domain",
@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-settings"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ariadeck-domain",
  "keyring",
@@ -437,14 +437,14 @@ dependencies = [
 
 [[package]]
 name = "ariadeck-telemetry"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "ariadeck-ui"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ariadeck-domain",
  "ariadeck-i18n",

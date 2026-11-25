@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <?ifndef AppVersion ?>
-    <?define AppVersion = "0.2.1" ?>
+    <?define AppVersion = "0.2.2" ?>
   <?endif ?>
   <?ifndef Platform ?>
     <?define Platform = "x64" ?>
