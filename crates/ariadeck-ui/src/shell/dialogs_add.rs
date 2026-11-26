@@ -120,6 +120,7 @@ pub(super) struct AddDownloadDialogView {
     pub(super) error: Option<OperationErrorView>,
     pub(super) results: Vec<AddDownloadItemResultView>,
     pub(super) links_input_height: f32,
+    resize_drag_origin: Option<(Pixels, f32)>,
     metadata_file_scroll: UniformListScrollHandle,
     metadata_source_scroll: ScrollHandle,
     results_scroll: ScrollHandle,
@@ -233,6 +234,7 @@ impl AddDownloadDialogView {
             error: None,
             results: Vec::new(),
             links_input_height,
+            resize_drag_origin: None,
             metadata_file_scroll: UniformListScrollHandle::new(),
             metadata_source_scroll: ScrollHandle::new(),
             results_scroll: ScrollHandle::new(),
@@ -1422,7 +1424,8 @@ impl Render for AddDownloadDialogView {
         let dialog = cx.entity().downgrade();
         let input_dialog = dialog.clone();
         let mode_dialog = dialog.clone();
-        let conflict_dialog = dialog;
+        let conflict_dialog = dialog.clone();
+        let resize_drag_dialog = dialog;
         let input_mode_control = SegmentedControl::new(
             "add-download-input-mode",
             [
@@ -1516,6 +1519,7 @@ impl Render for AddDownloadDialogView {
                     .child(
                         div()
                             .id("links-input-container")
+                            .debug_selector(|| "links-input-container".to_string())
                             .relative()
                             .w_full()
                             .child(
@@ -1525,12 +1529,14 @@ impl Render for AddDownloadDialogView {
                             )
                             .child(
                                 resize_handle("links-input-resize-grip", Axis::Vertical)
+                                    .debug_selector(|| "links-input-resize-grip".to_string())
                                     .inside(HandleEdge::Trailing)
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(
                                             move |this, e: &MouseDownEvent, _window, cx| {
                                                 if e.click_count == 2 {
+                                                    this.resize_drag_origin = None;
                                                     this.links_input_height =
                                                         DEFAULT_LINKS_INPUT_HEIGHT;
                                                     cx.emit(
@@ -1539,19 +1545,27 @@ impl Render for AddDownloadDialogView {
                                                         ),
                                                     );
                                                     cx.notify();
+                                                } else {
+                                                    this.resize_drag_origin = Some((
+                                                        e.position.y,
+                                                        this.links_input_height,
+                                                    ));
                                                 }
                                             },
                                         ),
                                     )
                                     .on_drag(
-                                        ResizeLinkInput {
-                                            origin_y: Pixels::ZERO,
-                                            origin_h: links_input_height,
-                                        },
-                                        |drag, _, window, cx| {
-                                            let mut state = drag.clone();
-                                            state.origin_y = window.mouse_position().y;
-                                            cx.new(|_| state)
+                                        ResizeLinkInput,
+                                        move |drag, _, window, cx| {
+                                            let _ = resize_drag_dialog.update(cx, |this, _| {
+                                                if this.resize_drag_origin.is_none() {
+                                                    this.resize_drag_origin = Some((
+                                                        window.mouse_position().y,
+                                                        this.links_input_height,
+                                                    ));
+                                                }
+                                            });
+                                            cx.new(|_| drag.clone())
                                         },
                                     ),
                             ),
@@ -1630,11 +1644,13 @@ impl Render for AddDownloadDialogView {
             .gap_2()
             .on_drag_move(
                 cx.listener(|this, e: &DragMoveEvent<ResizeLinkInput>, _window, cx| {
-                    let origin = e.drag(cx);
-                    let delta: f32 = (e.event.position.y - origin.origin_y).into();
-                    let new_h = (origin.origin_h + delta)
-                        .clamp(MIN_LINKS_INPUT_HEIGHT, MAX_LINKS_INPUT_HEIGHT);
-                    if (new_h - this.links_input_height).abs() > 0.5 {
+                    let Some((origin_y, origin_h)) = this.resize_drag_origin else {
+                        return;
+                    };
+                    let delta: f32 = (e.event.position.y - origin_y).into();
+                    let new_h =
+                        (origin_h + delta).clamp(MIN_LINKS_INPUT_HEIGHT, MAX_LINKS_INPUT_HEIGHT);
+                    if (new_h - this.links_input_height).abs() > 0.01 {
                         this.links_input_height = new_h;
                         cx.emit(AddDownloadDialogEvent::LinksInputHeightChanged(new_h));
                         cx.notify();

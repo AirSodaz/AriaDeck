@@ -2034,3 +2034,69 @@ fn settings_category_switch_resets_scroll_offset(cx: &mut TestAppContext) {
         });
     });
 }
+
+#[gpui::test]
+fn sidebar_settings_button_toggles_settings_page(cx: &mut TestAppContext) {
+    let (shell, mut visual_cx) =
+        open_test_shell(cx, |window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    let settings_item_bounds = visual_cx
+        .debug_bounds("sidebar-settings-item")
+        .expect("sidebar settings item must be painted");
+    assert_eq!(
+        settings_item_bounds.size.height,
+        px(28.0),
+        "sidebar settings item must match SidebarMenuItem height (28px)"
+    );
+    assert_eq!(
+        settings_item_bounds.origin.x,
+        px(12.0),
+        "sidebar settings item must align with sidebar inner menu items (12px inset)"
+    );
+    let settings_btn_center = settings_item_bounds.center();
+
+    // First click opens Settings and highlights with sidebar_accent.
+    visual_cx.simulate_click(settings_btn_center, gpui::Modifiers::none());
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+    shell.read_with(&visual_cx, |shell, _| {
+        assert_eq!(shell.page, AppPage::Settings);
+        assert!(shell.settings_panel().is_some());
+    });
+    let accent = shell.read_with(&visual_cx, |shell, _| shell.theme.colors.accent);
+    let scale = visual_cx.update(|window, _| window.scale_factor());
+    let expected_left = f32::from(settings_item_bounds.origin.x) * scale;
+    let expected_top = f32::from(settings_item_bounds.origin.y) * scale;
+    let expected_width = f32::from(settings_item_bounds.size.width) * scale;
+    let expected_height = f32::from(settings_item_bounds.size.height) * scale;
+    let has_sidebar_accent_quad = visual_cx.update(|window, _| {
+        window.painted_quads().into_iter().any(|quad| {
+            (quad.bounds.origin.x.0 - expected_left).abs() < 1.5
+                && (quad.bounds.origin.y.0 - expected_top).abs() < 1.5
+                && (quad.bounds.size.width.0 - expected_width).abs() < 1.5
+                && (quad.bounds.size.height.0 - expected_height).abs() < 1.5
+                && quad.background.as_solid().is_some_and(|bg| {
+                    (bg.h - accent.h).abs() < 0.02
+                        && (bg.s - accent.s).abs() < 0.02
+                        && (bg.l - accent.l).abs() < 0.02
+                        && (bg.a - 0.10).abs() < 0.02
+                })
+        })
+    });
+    assert!(
+        has_sidebar_accent_quad,
+        "active sidebar settings item must use sidebar_accent background color"
+    );
+
+    // Second click closes Settings and returns to Downloads.
+    visual_cx.simulate_click(settings_btn_center, gpui::Modifiers::none());
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+    shell.read_with(&visual_cx, |shell, _| {
+        assert_eq!(shell.page, AppPage::Downloads);
+        assert!(shell.settings_panel().is_none());
+    });
+}

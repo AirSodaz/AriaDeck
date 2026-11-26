@@ -63,123 +63,133 @@ impl AppShell {
 
         let window_controls = if is_windows_or_linux {
             let is_maximized = window.is_maximized();
-            div()
-                .id("window-controls")
-                .flex()
-                .flex_row()
-                .items_center()
-                .flex_shrink_0()
-                .h_full()
-                .child(
-                    div()
-                        .id("minimize")
-                        .flex()
-                        .w(px(WINDOW_CONTROL_BUTTON_WIDTH))
-                        .h_full()
-                        .flex_shrink_0()
-                        .justify_center()
-                        .items_center()
-                        .text_color(colors.text_primary)
-                        .hover(|style| {
-                            style
-                                .bg(colors.surface_hover)
-                                .text_color(colors.text_primary)
-                        })
-                        .active(|style| {
-                            style
-                                .bg(colors.surface_active)
-                                .text_color(colors.text_primary)
-                        })
-                        .when(is_windows, |this| {
-                            this.window_control_area(WindowControlArea::Min)
-                        })
-                        .when(is_linux, |this| {
-                            this.on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                window.prevent_default();
-                                cx.stop_propagation();
+            gpui::deferred(
+                div()
+                    .id("window-controls")
+                    .occlude()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .flex_shrink_0()
+                    .h_full()
+                    .child(
+                        div()
+                            .id("minimize")
+                            .debug_selector(|| "window-control-minimize".to_string())
+                            .flex()
+                            .w(px(WINDOW_CONTROL_BUTTON_WIDTH))
+                            .h_full()
+                            .flex_shrink_0()
+                            .justify_center()
+                            .items_center()
+                            .text_color(colors.text_primary)
+                            .hover(|style| {
+                                style
+                                    .bg(colors.surface_hover)
+                                    .text_color(colors.text_primary)
                             })
-                            .on_click(|_, window, cx| {
-                                cx.stop_propagation();
-                                window.minimize_window();
+                            .active(|style| {
+                                style
+                                    .bg(colors.surface_active)
+                                    .text_color(colors.text_primary)
                             })
-                        })
-                        .child(Icon::new(IconName::WindowMinimize).size(IconSize::Small)),
-                )
-                .child(
-                    div()
-                        .id(if is_maximized { "restore" } else { "maximize" })
-                        .flex()
-                        .w(px(WINDOW_CONTROL_BUTTON_WIDTH))
-                        .h_full()
-                        .flex_shrink_0()
-                        .justify_center()
-                        .items_center()
-                        .text_color(colors.text_primary)
-                        .hover(|style| {
-                            style
-                                .bg(colors.surface_hover)
-                                .text_color(colors.text_primary)
-                        })
-                        .active(|style| {
-                            style
-                                .bg(colors.surface_active)
-                                .text_color(colors.text_primary)
-                        })
-                        .when(is_windows, |this| {
-                            this.window_control_area(WindowControlArea::Max)
-                        })
-                        .when(is_linux, |this| {
-                            this.on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                window.prevent_default();
-                                cx.stop_propagation();
+                            .when(is_windows, |this| {
+                                this.window_control_area(WindowControlArea::Min)
                             })
-                            .on_click(|_, window, cx| {
-                                cx.stop_propagation();
-                                window.zoom_window();
-                            })
-                        })
-                        .child(
-                            Icon::new(if is_maximized {
-                                IconName::WindowRestore
-                            } else {
-                                IconName::WindowMaximize
-                            })
-                            .size(IconSize::Small),
-                        ),
-                )
-                .child(
-                    div()
-                        .id("close")
-                        .flex()
-                        .w(px(WINDOW_CONTROL_BUTTON_WIDTH))
-                        .h_full()
-                        .flex_shrink_0()
-                        .justify_center()
-                        .items_center()
-                        .text_color(colors.text_primary)
-                        .hover(|style| style.bg(colors.danger).text_color(colors.text_inverse))
-                        .active(|style| style.bg(colors.danger).text_color(colors.text_inverse))
-                        .when(is_windows, |this| {
-                            this.window_control_area(WindowControlArea::Close)
-                        })
-                        .when(is_linux, |this| {
-                            this.on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                window.prevent_default();
-                                cx.stop_propagation();
-                            })
-                            .on_click(cx.listener(
-                                |this, _, window, cx| {
+                            .when(is_linux, |this| {
+                                this.on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                    window.prevent_default();
                                     cx.stop_propagation();
-                                    if this.handle_window_close_request(cx) {
-                                        window.remove_window();
-                                    }
-                                },
-                            ))
-                        })
-                        .child(Icon::new(IconName::WindowClose).size(IconSize::Small)),
-                )
+                                })
+                                .on_click(|_, window, cx| {
+                                    cx.stop_propagation();
+                                    window.minimize_window();
+                                })
+                            })
+                            .child(Icon::new(IconName::WindowMinimize).size(IconSize::Small)),
+                    )
+                    .child(
+                        div()
+                            .id(if is_maximized { "restore" } else { "maximize" })
+                            .debug_selector(|| "window-control-maximize".to_string())
+                            .flex()
+                            .w(px(WINDOW_CONTROL_BUTTON_WIDTH))
+                            .h_full()
+                            .flex_shrink_0()
+                            .justify_center()
+                            .items_center()
+                            .text_color(colors.text_primary)
+                            .hover(|style| {
+                                style
+                                    .bg(colors.surface_hover)
+                                    .text_color(colors.text_primary)
+                            })
+                            .active(|style| {
+                                style
+                                    .bg(colors.surface_active)
+                                    .text_color(colors.text_primary)
+                            })
+                            .when(is_windows, |this| {
+                                this.window_control_area(WindowControlArea::Max)
+                            })
+                            .when(is_linux, |this| {
+                                this.on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                })
+                                .on_click(|_, window, cx| {
+                                    cx.stop_propagation();
+                                    window.zoom_window();
+                                })
+                            })
+                            .child(
+                                Icon::new(if is_maximized {
+                                    IconName::WindowRestore
+                                } else {
+                                    IconName::WindowMaximize
+                                })
+                                .size(IconSize::Small),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("close")
+                            .debug_selector(|| "window-control-close".to_string())
+                            .flex()
+                            .w(px(WINDOW_CONTROL_BUTTON_WIDTH))
+                            .h_full()
+                            .flex_shrink_0()
+                            .justify_center()
+                            .items_center()
+                            .text_color(colors.text_primary)
+                            .hover(|style| style.bg(colors.danger).text_color(colors.text_inverse))
+                            .active(|style| style.bg(colors.danger).text_color(colors.text_inverse))
+                            .when(is_windows, |this| {
+                                this.window_control_area(WindowControlArea::Close)
+                            })
+                            .when(is_linux, |this| {
+                                this.on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                })
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        if this.handle_window_close_request(cx) {
+                                            window.remove_window();
+                                        }
+                                    },
+                                ))
+                            })
+                            .child(Icon::new(IconName::WindowClose).size(IconSize::Small)),
+                    ),
+            )
+            // Keep the three window control buttons above Root's modal dialog
+            // backdrop (priority 10+) while staying below popups and tooltips.
+            .with_priority(90)
+            .into_any_element()
         } else {
-            div().id("window-controls")
+            div().id("window-controls").into_any_element()
         };
 
         let titlebar_left_padding = if is_macos { px(80.0) } else { px(12.0) };
@@ -301,6 +311,7 @@ impl AppShell {
     pub(crate) fn render_sidebar(
         &mut self,
         sidebar_width: f32,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Sidebar<SidebarGroup<SidebarMenu>> {
         let colors = self.theme.colors;
@@ -428,18 +439,19 @@ impl AppShell {
             .border_color(colors.border)
             .debug_selector(|| "sidebar-settings-footer".to_string())
             .child(
-                KitButton::new("open-settings")
-                    .ghost()
-                    .small()
+                div()
+                    .debug_selector(|| "sidebar-settings-item".to_string())
                     .w_full()
-                    .justify_start()
-                    .selected(self.page == AppPage::Settings)
-                    .icon(gpui_kit::component::Icon::new(IconName::Settings))
-                    .label(self.t("settings-label"))
-                    .accessibility_label(self.t("action-open-settings"))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_settings(&OpenSettings, window, cx);
-                    })),
+                    .child(
+                        SidebarMenuItem::new(self.t("settings-label"))
+                            .icon(gpui_kit::component::Icon::new(IconName::Settings))
+                            .accessibility_label(self.t("action-open-settings"))
+                            .active(self.page == AppPage::Settings)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_settings(window, cx);
+                            }))
+                            .render("open-settings", window, cx),
+                    ),
             );
 
         let transfers_group = SidebarGroup::new(self.t("settings-nav-transfers"))

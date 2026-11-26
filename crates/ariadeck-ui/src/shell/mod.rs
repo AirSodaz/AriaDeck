@@ -16,8 +16,7 @@ use gpui::{
     uniform_list,
 };
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, InteractiveElementExt as _, Selectable as _, Sizable as _,
-    WindowExt as _,
+    ActiveTheme as _, Disableable as _, InteractiveElementExt as _, Sizable as _, WindowExt as _,
     alert::Alert,
     button::{Button as KitButton, ButtonVariants as _},
     chart::AreaChart,
@@ -34,7 +33,9 @@ use gpui_kit::component::{
     resizable::{HandleEdge, resize_handle},
     scroll::ScrollableElement as _,
     separator::Separator,
-    sidebar::{Sidebar, SidebarCollapsible, SidebarGroup, SidebarMenu, SidebarMenuItem},
+    sidebar::{
+        Sidebar, SidebarCollapsible, SidebarGroup, SidebarItem as _, SidebarMenu, SidebarMenuItem,
+    },
     status_bar::StatusBar,
 };
 
@@ -325,10 +326,7 @@ pub(crate) const MIN_LINKS_INPUT_HEIGHT: f32 = 80.0;
 pub(crate) const MAX_LINKS_INPUT_HEIGHT: f32 = 360.0;
 
 #[derive(Clone)]
-pub(crate) struct ResizeLinkInput {
-    pub(crate) origin_y: Pixels,
-    pub(crate) origin_h: f32,
-}
+pub(crate) struct ResizeLinkInput;
 
 impl Render for ResizeLinkInput {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -2490,7 +2488,7 @@ impl Render for AppShell {
                     .min_h_0()
                     .min_w_0()
                     .flex()
-                    .child(self.render_sidebar(shell_layout.sidebar_width, cx))
+                    .child(self.render_sidebar(shell_layout.sidebar_width, window, cx))
                     .child(match self.page {
                         AppPage::Downloads => self
                             .render_main(

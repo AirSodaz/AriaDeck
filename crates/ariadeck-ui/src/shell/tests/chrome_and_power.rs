@@ -613,3 +613,68 @@ fn status_bar_popovers_dismiss_on_escape_and_command_toasts_coalesce(cx: &mut Te
         );
     });
 }
+
+#[gpui::test]
+fn window_controls_remain_hittable_when_add_download_dialog_is_open(cx: &mut TestAppContext) {
+    let (shell, mut visual_cx) =
+        open_test_shell_sized(cx, gpui::size(px(1_280.0), px(720.0)), |window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell
+        });
+
+    visual_cx.update(|_, cx| cx.set_reduce_motion(true));
+    shell.update_in(&mut visual_cx, |shell, window, cx| {
+        shell.open_add_download(&OpenAddDownload, window, cx);
+    });
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    if cfg!(target_os = "macos") {
+        return;
+    }
+
+    let danger = shell.read_with(&visual_cx, |shell, _| shell.theme.colors.danger);
+    let hover = shell.read_with(&visual_cx, |shell, _| shell.theme.colors.surface_hover);
+
+    for (selector, expected_bg) in [
+        ("window-control-minimize", hover),
+        ("window-control-maximize", hover),
+        ("window-control-close", danger),
+    ] {
+        let bounds = visual_cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} must be painted"));
+        assert!(
+            bounds.size.width > px(0.0) && bounds.size.height > px(0.0),
+            "{selector} must have positive bounds: {bounds:?}"
+        );
+
+        visual_cx.simulate_mouse_move(bounds.center(), None, gpui::Modifiers::none());
+        let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+        let scale = visual_cx.update(|window, _| window.scale_factor());
+        let expected_left = f32::from(bounds.origin.x) * scale;
+        let expected_top = f32::from(bounds.origin.y) * scale;
+        let expected_width = f32::from(bounds.size.width) * scale;
+        let expected_height = f32::from(bounds.size.height) * scale;
+        let has_hover_quad = visual_cx.update(|window, _| {
+            window.painted_quads().into_iter().any(|quad| {
+                (quad.bounds.origin.x.0 - expected_left).abs() < 1.5
+                    && (quad.bounds.origin.y.0 - expected_top).abs() < 1.5
+                    && (quad.bounds.size.width.0 - expected_width).abs() < 1.5
+                    && (quad.bounds.size.height.0 - expected_height).abs() < 1.5
+                    && quad.background.as_solid().is_some_and(|bg| {
+                        (bg.h - expected_bg.h).abs() < 0.02
+                            && (bg.s - expected_bg.s).abs() < 0.02
+                            && (bg.l - expected_bg.l).abs() < 0.02
+                            && bg.a > 0.5
+                    })
+            })
+        });
+        assert!(
+            has_hover_quad,
+            "{selector} must receive hover above the open Add Download dialog overlay"
+        );
+    }
+}

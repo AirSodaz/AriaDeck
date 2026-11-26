@@ -436,7 +436,7 @@ impl AppShell {
                         .title(title.clone())
                         .width(px(width))
                         .entrance(DialogEntrance::FadeSlide)
-                        .overlay_closable(false)
+                        .overlay_closable(true)
                         .close_button(true)
                         .keyboard(true)
                         .child(body.clone())

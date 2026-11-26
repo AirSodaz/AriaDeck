@@ -1318,6 +1318,14 @@ impl AppShell {
         cx.notify();
     }
 
+    pub(crate) fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page == AppPage::Settings {
+            self.close_settings(window, cx);
+        } else {
+            self.open_settings(&OpenSettings, window, cx);
+        }
+    }
+
     pub(crate) fn open_settings(
         &mut self,
         _: &OpenSettings,

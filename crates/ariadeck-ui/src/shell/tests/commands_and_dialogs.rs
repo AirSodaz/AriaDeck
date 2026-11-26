@@ -1497,3 +1497,234 @@ fn add_download_dialog_skips_motion_when_reduced_motion_enabled(cx: &mut TestApp
 
     assert_eq!(frame1_y, settled_y);
 }
+
+#[gpui::test]
+fn add_download_links_input_drag_resizes_incrementally_and_double_click_resets(
+    cx: &mut TestAppContext,
+) {
+    let (shell, mut visual_cx) =
+        open_test_shell_sized(cx, gpui::size(px(1_280.0), px(800.0)), |window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell
+        });
+
+    visual_cx.update(|_, cx| cx.set_reduce_motion(true));
+    shell.update_in(&mut visual_cx, |shell, window, cx| {
+        shell.open_add_download(&OpenAddDownload, window, cx);
+    });
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    let grip_bounds = visual_cx
+        .debug_bounds("links-input-resize-grip")
+        .expect("links input resize grip must be painted");
+    let initial_container_h = f32::from(
+        visual_cx
+            .debug_bounds("links-input-container")
+            .expect("links input container must be painted")
+            .size
+            .height,
+    );
+    assert!(
+        (initial_container_h - DEFAULT_LINKS_INPUT_HEIGHT).abs() < 1.0,
+        "initial container height must match default (120px), got {initial_container_h}"
+    );
+    let start = grip_bounds.center();
+
+    // Drag down by 40px: first move past DRAG_THRESHOLD starts the drag,
+    // subsequent moves update height incrementally rather than jumping to max.
+    visual_cx.simulate_event(gpui::MouseDownEvent {
+        position: start,
+        modifiers: gpui::Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 1,
+        first_mouse: false,
+    });
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    visual_cx.simulate_mouse_move(
+        gpui::point(start.x, start.y + px(4.0)),
+        Some(MouseButton::Left),
+        gpui::Modifiers::none(),
+    );
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    let expand_pos = gpui::point(start.x, start.y + px(40.0));
+    visual_cx.simulate_mouse_move(expand_pos, Some(MouseButton::Left), gpui::Modifiers::none());
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    shell.read_with(&visual_cx, |shell, cx| {
+        let h = shell
+            .add_dialog_entity()
+            .expect("dialog open")
+            .read(cx)
+            .links_input_height;
+        assert!(
+            (h - 160.0).abs() < 1.0,
+            "dragging down 40px from 120px must resize to ~160px, got {h}"
+        );
+    });
+    let expanded_container_h = f32::from(
+        visual_cx
+            .debug_bounds("links-input-container")
+            .expect("expanded container bounds")
+            .size
+            .height,
+    );
+    assert!(
+        (expanded_container_h - 160.0).abs() < 1.0,
+        "rendered textarea container height must match ~160px, got {expanded_container_h}"
+    );
+
+    // Drag back up past origin by 25px from start (total -65px from expand_pos): shrinks to ~95px.
+    let shrink_pos = gpui::point(start.x, start.y - px(25.0));
+    visual_cx.simulate_mouse_move(shrink_pos, Some(MouseButton::Left), gpui::Modifiers::none());
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    shell.read_with(&visual_cx, |shell, cx| {
+        let h = shell
+            .add_dialog_entity()
+            .expect("dialog open")
+            .read(cx)
+            .links_input_height;
+        assert!(
+            (h - 95.0).abs() < 1.0,
+            "dragging up 25px from 120px origin must shrink to ~95px, got {h}"
+        );
+    });
+
+    // Drag far up: clamps at MIN_LINKS_INPUT_HEIGHT (80px).
+    visual_cx.simulate_mouse_move(
+        gpui::point(start.x, px(10.0)),
+        Some(MouseButton::Left),
+        gpui::Modifiers::none(),
+    );
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+    shell.read_with(&visual_cx, |shell, cx| {
+        let h = shell
+            .add_dialog_entity()
+            .expect("dialog open")
+            .read(cx)
+            .links_input_height;
+        assert_eq!(h, MIN_LINKS_INPUT_HEIGHT);
+    });
+
+    // Drag far down: clamps at MAX_LINKS_INPUT_HEIGHT (360px).
+    visual_cx.simulate_mouse_move(
+        gpui::point(start.x, px(750.0)),
+        Some(MouseButton::Left),
+        gpui::Modifiers::none(),
+    );
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+    shell.read_with(&visual_cx, |shell, cx| {
+        let h = shell
+            .add_dialog_entity()
+            .expect("dialog open")
+            .read(cx)
+            .links_input_height;
+        assert_eq!(h, MAX_LINKS_INPUT_HEIGHT);
+    });
+
+    visual_cx.simulate_event(gpui::MouseUpEvent {
+        position: gpui::point(start.x, px(750.0)),
+        modifiers: gpui::Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 1,
+    });
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    // Double-click grip (at its updated bottom position) resets to DEFAULT_LINKS_INPUT_HEIGHT.
+    let updated_grip = visual_cx
+        .debug_bounds("links-input-resize-grip")
+        .expect("updated grip bounds")
+        .center();
+    visual_cx.simulate_event(gpui::MouseDownEvent {
+        position: updated_grip,
+        modifiers: gpui::Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 2,
+        first_mouse: false,
+    });
+    visual_cx.simulate_event(gpui::MouseUpEvent {
+        position: updated_grip,
+        modifiers: gpui::Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 2,
+    });
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+    shell.read_with(&visual_cx, |shell, cx| {
+        let h = shell
+            .add_dialog_entity()
+            .expect("dialog open")
+            .read(cx)
+            .links_input_height;
+        assert_eq!(h, DEFAULT_LINKS_INPUT_HEIGHT);
+    });
+}
+
+#[gpui::test]
+fn add_download_dialog_closes_when_clicking_outside_unless_busy(cx: &mut TestAppContext) {
+    let (shell, mut visual_cx) =
+        open_test_shell_sized(cx, gpui::size(px(1_280.0), px(800.0)), |window, cx| {
+            let mut shell = AppShell::new(Theme::dark(), window, cx);
+            shell.snapshot = snapshot(1);
+            shell
+        });
+
+    visual_cx.update(|_, cx| cx.set_reduce_motion(true));
+    shell.update_in(&mut visual_cx, |shell, window, cx| {
+        shell.open_add_download(&OpenAddDownload, window, cx);
+    });
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    // Click on the dimmed backdrop outside the centered 600px dialog surface.
+    let outside = gpui::point(px(40.0), px(240.0));
+    visual_cx.simulate_click(outside, gpui::Modifiers::none());
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    shell.read_with(&visual_cx, |shell, _| {
+        assert!(
+            shell.add_dialog_entity().is_none(),
+            "clicking outside Add Download dialog must close it"
+        );
+    });
+    assert!(!visual_cx.update(|window, cx| window.has_active_dialog(cx)));
+
+    // Reopen and mark dialog busy: clicking outside must not dismiss while submitting.
+    shell.update_in(&mut visual_cx, |shell, window, cx| {
+        shell.open_add_download(&OpenAddDownload, window, cx);
+        let dialog = shell.add_dialog_entity().expect("dialog reopened").clone();
+        dialog.update(cx, |dialog, cx| {
+            dialog.pending = Some(PendingAddDownload {
+                request_id: RequestId::from_u64(1),
+                session: snapshot(1)
+                    .engine_session()
+                    .expect("connected snapshot has session"),
+            });
+            cx.notify();
+        });
+    });
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    visual_cx.simulate_click(outside, gpui::Modifiers::none());
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    shell.read_with(&visual_cx, |shell, _| {
+        assert!(
+            shell.add_dialog_entity().is_some(),
+            "busy Add Download dialog must stay open when clicking outside"
+        );
+    });
+    assert!(visual_cx.update(|window, cx| window.has_active_dialog(cx)));
+}
