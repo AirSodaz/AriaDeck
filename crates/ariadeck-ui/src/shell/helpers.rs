@@ -1,5 +1,7 @@
 //! Free functions and small UI helpers used by AppShell render/logic paths.
 
+use gpui::AnimationExt as _;
+
 use super::*;
 // Re-exported via parent `use helpers::*` for AppShell and tests.
 
@@ -522,6 +524,7 @@ pub(crate) fn detail_line_with_action(
     label: impl Into<SharedString>,
     value: impl Into<SharedString>,
     action: impl IntoElement,
+    mono_font_family: SharedString,
     colors: crate::ThemeColors,
 ) -> Div {
     let label = label.into();
@@ -542,7 +545,7 @@ pub(crate) fn detail_line_with_action(
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .font_family("monospace")
+                .font_family(mono_font_family)
                 .text_xs()
                 .text_color(colors.text_secondary)
                 .child(value.into()),
@@ -605,6 +608,7 @@ pub(crate) fn detail_collection_row(
     primary: impl Into<SharedString>,
     secondary: impl Into<SharedString>,
     badge: Option<String>,
+    mono_font_family: SharedString,
     colors: crate::ThemeColors,
 ) -> AnyElement {
     div()
@@ -627,7 +631,7 @@ pub(crate) fn detail_collection_row(
                     div()
                         .text_xs()
                         .text_color(colors.text_secondary)
-                        .font_family("monospace")
+                        .font_family(mono_font_family)
                         .child(primary.into()),
                 )
                 .child(
@@ -747,6 +751,78 @@ pub(crate) fn tabular_numbers() -> FontFeatures {
     static TNUM: std::sync::OnceLock<FontFeatures> = std::sync::OnceLock::new();
     TNUM.get_or_init(|| FontFeatures(Arc::new(vec![("tnum".into(), 1)])))
         .clone()
+}
+
+/// Smooth modern deceleration curve matching `Theme::sync_to_kit` enter easing.
+pub(crate) fn modern_ease_out(delta: f32) -> f32 {
+    gpui_kit::base::animation::cubic_bezier(0.22, 1.0, 0.36, 1.0)(delta)
+}
+
+/// Applies a restrained vertical fade-and-settle entrance transition when
+/// reduced motion is off, leaving the element unmodified otherwise.
+pub(crate) fn animate_fade_settle(
+    element: Stateful<Div>,
+    anim_id: impl Into<ElementId>,
+    offset_y: Pixels,
+    duration_ms: u64,
+    reduced_motion: bool,
+) -> AnyElement {
+    if reduced_motion {
+        return element.into_any_element();
+    }
+    element
+        .with_animation(
+            anim_id,
+            gpui::Animation::new(Duration::from_millis(duration_ms)).with_easing(modern_ease_out),
+            move |el, delta| {
+                let remaining = (1.0 - delta).max(0.0);
+                el.relative()
+                    .top(px(f32::from(offset_y) * remaining))
+                    .opacity(0.08 + 0.92 * delta)
+            },
+        )
+        .into_any_element()
+}
+
+/// Applies a restrained horizontal fade-and-slide entrance transition for
+/// side panels (such as the inline task details drawer).
+pub(crate) fn animate_fade_slide_x(
+    element: Stateful<Div>,
+    anim_id: impl Into<ElementId>,
+    offset_x: Pixels,
+    duration_ms: u64,
+    reduced_motion: bool,
+) -> AnyElement {
+    if reduced_motion {
+        return element.into_any_element();
+    }
+    element
+        .with_animation(
+            anim_id,
+            gpui::Animation::new(Duration::from_millis(duration_ms)).with_easing(modern_ease_out),
+            move |el, delta| {
+                let remaining = (1.0 - delta).max(0.0);
+                el.relative()
+                    .left(px(f32::from(offset_x) * remaining))
+                    .opacity(0.08 + 0.92 * delta)
+            },
+        )
+        .into_any_element()
+}
+
+/// Shared elevated surface framing for status-bar popovers (`rounded_md`,
+/// crisp border, shadow), keeping `speed`, `activity`, and `power` visually unified.
+pub(crate) fn status_popover_card(
+    element: Stateful<Div>,
+    colors: crate::ThemeColors,
+) -> Stateful<Div> {
+    element
+        .p_3()
+        .rounded_md()
+        .border_1()
+        .border_color(colors.border_strong)
+        .bg(colors.elevated_surface)
+        .shadow_lg()
 }
 
 pub(crate) fn connection_color(connection: &ConnectionView, colors: crate::ThemeColors) -> Hsla {

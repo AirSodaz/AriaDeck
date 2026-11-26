@@ -1497,28 +1497,12 @@ impl Render for AddDownloadDialogView {
         });
         let category_picker = self.render_category_picker(&sources, cx);
         let links_input_height = self.links_input_height;
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .on_drag_move(
-                cx.listener(|this, e: &DragMoveEvent<ResizeLinkInput>, _window, cx| {
-                    let origin = e.drag(cx);
-                    let delta: f32 = (e.event.position.y - origin.origin_y).into();
-                    let new_h = (origin.origin_h + delta)
-                        .clamp(MIN_LINKS_INPUT_HEIGHT, MAX_LINKS_INPUT_HEIGHT);
-                    if (new_h - this.links_input_height).abs() > 0.5 {
-                        this.links_input_height = new_h;
-                        cx.emit(AddDownloadDialogEvent::LinksInputHeightChanged(new_h));
-                        cx.notify();
-                    }
-                }),
-            )
-            .child(input_mode_control)
-            .child(category_picker)
-            .child(match input_mode {
-                AddDownloadInputModeView::Links => div()
+        let mono_font_family = cx.theme().mono_font_family.clone();
+        let reduced_motion = crate::accessibility::is_reduced_motion(cx);
+        let mode_section = match input_mode {
+            AddDownloadInputModeView::Links => animate_fade_settle(
+                div()
+                    .id("add-download-mode-links")
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -1537,7 +1521,7 @@ impl Render for AddDownloadDialogView {
                             .child(
                                 Textarea::new(&self.add_input)
                                     .h(px(links_input_height))
-                                    .font_family("monospace"),
+                                    .font_family(mono_font_family),
                             )
                             .child(
                                 resize_handle("links-input-resize-grip", Axis::Vertical)
@@ -1608,23 +1592,68 @@ impl Render for AddDownloadDialogView {
                     .when(
                         file_conflict == FileConflictPolicyView::Overwrite,
                         |element| {
-                            element.child(
-                                Alert::warning(
-                                    "add-download-overwrite-warning",
-                                    self.t("ui-overwrite-warning"),
-                                )
-                                .xsmall(),
-                            )
+                            element.child(animate_fade_settle(
+                                div().id("add-download-overwrite-warning-wrap").child(
+                                    Alert::warning(
+                                        "add-download-overwrite-warning",
+                                        self.t("ui-overwrite-warning"),
+                                    )
+                                    .xsmall(),
+                                ),
+                                "add-download-overwrite-warning-enter",
+                                px(4.0),
+                                140,
+                                reduced_motion,
+                            ))
                         },
                     )
-                    .child(self.render_advanced_section(pending, colors, cx))
-                    .into_any_element(),
-                AddDownloadInputModeView::MetadataFiles => {
-                    self.render_metadata_file_picker(pending, preview_pending, cx)
-                }
-            })
+                    .child(self.render_advanced_section(pending, colors, cx)),
+                "add-download-mode-links-enter",
+                px(4.0),
+                140,
+                reduced_motion,
+            ),
+            AddDownloadInputModeView::MetadataFiles => animate_fade_settle(
+                div()
+                    .id("add-download-mode-metadata")
+                    .child(self.render_metadata_file_picker(pending, preview_pending, cx)),
+                "add-download-mode-metadata-enter",
+                px(4.0),
+                140,
+                reduced_motion,
+            ),
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .on_drag_move(
+                cx.listener(|this, e: &DragMoveEvent<ResizeLinkInput>, _window, cx| {
+                    let origin = e.drag(cx);
+                    let delta: f32 = (e.event.position.y - origin.origin_y).into();
+                    let new_h = (origin.origin_h + delta)
+                        .clamp(MIN_LINKS_INPUT_HEIGHT, MAX_LINKS_INPUT_HEIGHT);
+                    if (new_h - this.links_input_height).abs() > 0.5 {
+                        this.links_input_height = new_h;
+                        cx.emit(AddDownloadDialogEvent::LinksInputHeightChanged(new_h));
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(input_mode_control)
+            .child(category_picker)
+            .child(mode_section)
             .when(!self.results.is_empty(), |element| {
-                element.child(self.render_result_list(colors))
+                element.child(animate_fade_settle(
+                    div()
+                        .id("add-download-results-wrap")
+                        .child(self.render_result_list(colors)),
+                    "add-download-results-enter",
+                    px(4.0),
+                    150,
+                    reduced_motion,
+                ))
             })
             .when_some(error, |element, error| {
                 let message = self.te(&error);

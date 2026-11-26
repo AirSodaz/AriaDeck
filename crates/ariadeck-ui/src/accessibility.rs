@@ -46,6 +46,12 @@ pub fn prefers_reduced_motion() -> bool {
     explicit_reduced_motion_preference().unwrap_or(false)
 }
 
+/// Whether reduced motion is active via app/test override or GPUI window settings.
+#[must_use]
+pub(crate) fn is_reduced_motion(cx: &gpui::App) -> bool {
+    prefers_reduced_motion() || cx.reduce_motion()
+}
+
 /// Force reduced-motion preference for tests. Pass `None` to clear the override.
 pub fn set_prefers_reduced_motion_override(value: Option<bool>) {
     match value {

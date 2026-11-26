@@ -812,6 +812,7 @@ impl AppShell {
             let shell_content = cx.entity().downgrade();
             Popover::new("activity-panel")
                 .anchor(Anchor::BottomRight)
+                .appearance(false)
                 .track_focus(&self.activity_popover_focus)
                 .open(activity_open)
                 .on_open_change(move |next_open, window, cx| {
@@ -826,7 +827,23 @@ impl AppShell {
                 .trigger(trigger)
                 .content(move |_, _, cx| {
                     shell_content
-                        .update(cx, |this, cx| this.render_activity_panel_content(cx))
+                        .update(cx, |this, cx| {
+                            let colors = this.theme.colors;
+                            let reduced_motion = crate::accessibility::is_reduced_motion(cx);
+                            let card = status_popover_card(
+                                div()
+                                    .id("activity-popover-card")
+                                    .child(this.render_activity_panel_content(cx)),
+                                colors,
+                            );
+                            animate_fade_settle(
+                                card,
+                                "activity-popover-enter",
+                                px(6.0),
+                                150,
+                                reduced_motion,
+                            )
+                        })
                         .unwrap_or_else(|_| div().into_any_element())
                 })
         };
@@ -891,7 +908,16 @@ impl AppShell {
                 .trigger(trigger)
                 .content(move |_, _, cx| {
                     shell_content
-                        .read_with(cx, |this, _| this.render_speed_chart().into_any_element())
+                        .read_with(cx, |this, cx| {
+                            let reduced_motion = crate::accessibility::is_reduced_motion(cx);
+                            animate_fade_settle(
+                                this.render_speed_chart(),
+                                "speed-popover-enter",
+                                px(6.0),
+                                150,
+                                reduced_motion,
+                            )
+                        })
                         .unwrap_or_else(|_| div().into_any_element())
                 })
         };
@@ -1232,6 +1258,24 @@ impl AppShell {
             empty = empty.content(actions);
         }
 
-        empty.into_any_element()
+        let empty_key = match &self.snapshot.connection {
+            ConnectionView::Connecting if self.snapshot.tasks.is_empty() => "connecting",
+            ConnectionView::Failed { .. } => "failed",
+            ConnectionView::Disconnected if self.snapshot.tasks.is_empty() => "disconnected",
+            _ if !self.query.search.trim().is_empty() => "search",
+            _ if self.query.filter != WorkspaceFilter::All => "filter",
+            _ => "default",
+        };
+        let reduced_motion = crate::accessibility::is_reduced_motion(cx);
+        animate_fade_settle(
+            div()
+                .id(SharedString::from(format!("empty-state-wrap:{empty_key}")))
+                .size_full()
+                .child(empty),
+            SharedString::from(format!("empty-state-enter:{empty_key}")),
+            px(6.0),
+            160,
+            reduced_motion,
+        )
     }
 }

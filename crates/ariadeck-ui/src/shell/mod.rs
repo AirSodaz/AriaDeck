@@ -16,7 +16,8 @@ use gpui::{
     uniform_list,
 };
 use gpui_kit::component::{
-    Disableable as _, InteractiveElementExt as _, Selectable as _, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, InteractiveElementExt as _, Selectable as _, Sizable as _,
+    WindowExt as _,
     alert::Alert,
     button::{Button as KitButton, ButtonVariants as _},
     chart::AreaChart,
@@ -448,6 +449,19 @@ impl SettingsCategory {
         Self::System,
         Self::About,
     ];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::General => "general",
+            Self::Profiles => "profiles",
+            Self::Engine => "engine",
+            Self::Network => "network",
+            Self::Transfers => "transfers",
+            Self::Notifications => "notifications",
+            Self::System => "system",
+            Self::About => "about",
+        }
+    }
 
     const fn label(self) -> &'static str {
         match self {

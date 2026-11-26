@@ -480,7 +480,7 @@ impl LoadingIndicator {
 
 impl RenderOnce for LoadingIndicator {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        if self.reduced_motion || cx.reduce_motion() {
+        if self.reduced_motion || crate::accessibility::is_reduced_motion(cx) {
             Icon::new(IconName::Clock3)
                 .size(self.size)
                 .color(self.color)

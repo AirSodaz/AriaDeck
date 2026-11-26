@@ -16,7 +16,10 @@ use gpui::{
     AnyElement, Context, Entity, IntoElement, Render, Role, SharedString, Subscription, Window,
     div, px,
 };
-use gpui_kit::component::{button::Button as KitButton, dialog::DialogFooter};
+use gpui_kit::component::{
+    button::Button as KitButton,
+    dialog::{DialogEntrance, DialogFooter},
+};
 
 use super::*;
 
@@ -432,6 +435,7 @@ impl AppShell {
                     dialog
                         .title(title.clone())
                         .width(px(width))
+                        .entrance(DialogEntrance::FadeSlide)
                         .overlay_closable(false)
                         .close_button(true)
                         .keyboard(true)
@@ -480,6 +484,7 @@ impl AppShell {
                         .title(title.clone())
                         .width(px(520.0))
                         .centered()
+                        .entrance(DialogEntrance::FadeSlide)
                         .overlay_closable(false)
                         .close_button(true)
                         .keyboard(true)
@@ -533,6 +538,7 @@ impl AppShell {
                         .title(title.clone())
                         .width(px(520.0))
                         .centered()
+                        .entrance(DialogEntrance::FadeSlide)
                         .overlay_closable(false)
                         .close_button(true)
                         .keyboard(true)
@@ -590,6 +596,7 @@ impl AppShell {
                         .title(title.clone())
                         .width(px(520.0))
                         .centered()
+                        .entrance(DialogEntrance::FadeSlide)
                         .overlay_closable(false)
                         .close_button(true)
                         .keyboard(true)
@@ -634,6 +641,7 @@ impl AppShell {
                         )
                         .width(px(460.0))
                         .centered()
+                        .entrance(DialogEntrance::FadeSlide)
                         .keyboard(true)
                         .child(body.clone())
                         .footer(footer.clone())
@@ -681,6 +689,7 @@ impl AppShell {
                         )
                         .width(px(440.0))
                         .centered()
+                        .entrance(DialogEntrance::FadeSlide)
                         .keyboard(true)
                         .child(body.clone())
                         .footer(footer.clone())
@@ -724,6 +733,7 @@ impl AppShell {
                         )
                         .width(px(560.0))
                         .centered()
+                        .entrance(DialogEntrance::FadeSlide)
                         .keyboard(true)
                         .child(body.clone())
                         .footer(footer.clone())
@@ -767,6 +777,7 @@ impl AppShell {
                         .title(title.clone())
                         .width(px(560.0))
                         .centered()
+                        .entrance(DialogEntrance::FadeSlide)
                         .overlay_closable(false)
                         .close_button(true)
                         .keyboard(true)

@@ -984,6 +984,46 @@ impl Render for SettingsPanelView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = self.theme.colors;
         let active_category = self.settings_page.active_category;
+        let reduced_motion = crate::accessibility::is_reduced_motion(cx);
+        let category_body = animate_fade_settle(
+            div()
+                .id(SharedString::from(format!(
+                    "settings-category-{}",
+                    active_category.as_str()
+                )))
+                .w_full()
+                .max_w(px(760.0))
+                .flex()
+                .flex_col()
+                .gap_6()
+                .child(match active_category {
+                    SettingsCategory::General => {
+                        self.render_settings_general(cx).into_any_element()
+                    }
+                    SettingsCategory::Profiles => {
+                        self.render_settings_profiles(cx).into_any_element()
+                    }
+                    SettingsCategory::Engine => self.render_settings_engine(cx).into_any_element(),
+                    SettingsCategory::Network => {
+                        self.render_settings_network(cx).into_any_element()
+                    }
+                    SettingsCategory::Transfers => {
+                        self.render_settings_transfers(cx).into_any_element()
+                    }
+                    SettingsCategory::Notifications => {
+                        self.render_settings_notifications(cx).into_any_element()
+                    }
+                    SettingsCategory::System => self.render_settings_system(cx).into_any_element(),
+                    SettingsCategory::About => self.render_settings_about(cx).into_any_element(),
+                }),
+            SharedString::from(format!(
+                "settings-category-enter:{}",
+                active_category.as_str()
+            )),
+            px(6.0),
+            150,
+            reduced_motion,
+        );
         div()
             .id("settings-page")
             .key_context("SettingsPage")
@@ -1020,8 +1060,9 @@ impl Render for SettingsPanelView {
                             .child(self.t("ui-settings-title")),
                     ),
             )
-            .child(
+            .child(animate_fade_settle(
                 div()
+                    .id("settings-page-body")
                     .flex_1()
                     .min_w_0()
                     .min_h_0()
@@ -1052,46 +1093,17 @@ impl Render for SettingsPanelView {
                                             .py_6()
                                             .overflow_y_scroll()
                                             .track_scroll(&self.settings_scroll)
-                                            .child(
-                                                div()
-                                                    .w_full()
-                                                    .max_w(px(760.0))
-                                                    .flex()
-                                                    .flex_col()
-                                                    .gap_6()
-                                                    .child(match active_category {
-                                                        SettingsCategory::General => self
-                                                            .render_settings_general(cx)
-                                                            .into_any_element(),
-                                                        SettingsCategory::Profiles => self
-                                                            .render_settings_profiles(cx)
-                                                            .into_any_element(),
-                                                        SettingsCategory::Engine => self
-                                                            .render_settings_engine(cx)
-                                                            .into_any_element(),
-                                                        SettingsCategory::Network => self
-                                                            .render_settings_network(cx)
-                                                            .into_any_element(),
-                                                        SettingsCategory::Transfers => self
-                                                            .render_settings_transfers(cx)
-                                                            .into_any_element(),
-                                                        SettingsCategory::Notifications => self
-                                                            .render_settings_notifications(cx)
-                                                            .into_any_element(),
-                                                        SettingsCategory::System => self
-                                                            .render_settings_system(cx)
-                                                            .into_any_element(),
-                                                        SettingsCategory::About => self
-                                                            .render_settings_about(cx)
-                                                            .into_any_element(),
-                                                    }),
-                                            ),
+                                            .child(category_body),
                                     )
                                     .vertical_scrollbar(&self.settings_scroll),
                             )
                             .child(self.render_settings_footer(cx)),
                     ),
-            )
+                "settings-page-enter",
+                px(4.0),
+                150,
+                reduced_motion,
+            ))
     }
 }
 

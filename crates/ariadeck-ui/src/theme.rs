@@ -212,6 +212,14 @@ impl Theme {
             kit.scrollbar_mode = gpui_kit::component::scroll::ScrollbarMode::Always;
             kit.sheet.margin_top = gpui::px(TITLEBAR_HEIGHT);
             kit.notification.margins.bottom = gpui::px(STATUSBAR_HEIGHT + 12.0);
+            kit.motion.duration_fast = std::time::Duration::from_millis(120);
+            kit.motion.duration_normal = std::time::Duration::from_millis(210);
+            kit.motion.duration_slow = std::time::Duration::from_millis(280);
+            kit.motion.distance_short = gpui::rems(0.625);
+            kit.motion.distance_medium = gpui::rems(1.0);
+            if let Ok(enter) = gpui_kit::base::Easing::cubic_bezier(0.22, 1.0, 0.36, 1.0) {
+                kit.motion.easing_enter = enter;
+            }
             kit.background = self.colors.background;
             kit.foreground = self.colors.text_primary;
             kit.secondary = self.colors.surface;
@@ -454,6 +462,14 @@ mod tests {
             assert_eq!(kit.danger, light.colors.danger);
             assert_eq!(kit.primary, light.colors.accent);
             assert_eq!(kit.tokens.button_primary, light.colors.accent.into());
+            assert_eq!(
+                kit.motion.duration_normal,
+                std::time::Duration::from_millis(210)
+            );
+            assert_eq!(kit.motion.distance_short, gpui::rems(0.625));
+            assert!(kit.motion.distance_short.0 < kit.motion.distance_medium.0);
+            assert!(!kit.mono_font_family.is_empty());
+            assert_ne!(kit.mono_font_family.as_ref(), "monospace");
         });
     }
 }

@@ -350,6 +350,7 @@ impl AppShell {
         div().h_full().flex().items_center().child(
             Popover::new("power-popover")
                 .anchor(Anchor::BottomRight)
+                .appearance(false)
                 .track_focus(&self.power_popover_focus)
                 .open(open)
                 .on_open_change(move |next_open, window, cx| {
@@ -378,120 +379,125 @@ impl AppShell {
         let pending = self.pending_settings_save.is_some();
         let current_action = self.settings.platform.action_after_done;
         let keep_awake = self.settings.platform.keep_awake_while_active;
+        let reduced_motion = crate::accessibility::is_reduced_motion(cx);
 
-        div()
-            .id("power-popover-body")
-            .track_focus(&self.power_popover_focus)
-            .w(px(240.0))
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(colors.text_primary)
-                    .child(self.t("power-popover-title")),
-            )
-            .child({
-                let mut options_col = div().flex().flex_col().gap_1();
-                for action in CompletionPowerActionView::ALL {
-                    let is_selected = current_action == action;
-                    let shell = cx.entity().downgrade();
-                    let key_shell = shell.clone();
-                    let action_label = self.t(action.message_key());
-                    options_col = options_col.child(
-                        div()
-                            .id(SharedString::from(format!(
-                                "power-popover-action-{}",
-                                action.as_str()
-                            )))
-                            .focusable()
-                            .tab_stop(true)
-                            .role(Role::Button)
-                            .aria_selected(is_selected)
-                            .border_1()
-                            .border_color(gpui::transparent_black())
-                            .focus_visible(|style| style.border_color(colors.focus_ring))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .text_xs()
-                            .text_color(if is_selected {
-                                colors.text_primary
-                            } else {
-                                colors.text_secondary
-                            })
-                            .hover(|style| style.bg(colors.surface_hover))
-                            .active(|style| style.bg(colors.surface_active))
-                            .on_key_down(move |event, _, cx| {
-                                if !pending && is_activation_key(event) {
-                                    cx.stop_propagation();
-                                    key_shell
-                                        .update(cx, |this, cx| {
-                                            this.select_completion_action(action, cx);
-                                        })
-                                        .ok();
-                                }
-                            })
-                            .on_click(move |_, _, cx| {
-                                if !pending {
-                                    shell
-                                        .update(cx, |this, cx| {
-                                            this.select_completion_action(action, cx);
-                                        })
-                                        .ok();
-                                }
-                            })
-                            .child(action_label)
-                            .when(is_selected, |el| {
-                                el.child(
-                                    Icon::new(IconName::CircleCheck)
-                                        .size(IconSize::Small)
-                                        .color(colors.accent),
-                                )
-                            }),
-                    );
-                }
-                options_col
-            })
-            .child(div().h(px(1.0)).bg(colors.border).my_1())
-            .child({
-                let shell_toggle = cx.entity().downgrade();
-                let keep_awake_supported = self.platform_capabilities.keep_awake_supported;
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px_2()
-                    .py_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(if keep_awake_supported {
-                                colors.text_primary
-                            } else {
-                                colors.text_muted
-                            })
-                            .child(self.t("power-keep-awake")),
-                    )
-                    .child(
-                        Switch::new("power-popover-keep-awake")
-                            .checked(keep_awake_supported && keep_awake)
-                            .accessibility_label(self.t("power-keep-awake"))
-                            .disabled(pending || !keep_awake_supported)
-                            .on_change(move |_, _, cx| {
-                                shell_toggle
+        let card = super::status_popover_card(
+            div()
+                .id("power-popover-body")
+                .track_focus(&self.power_popover_focus)
+                .w(px(264.0))
+                .flex()
+                .flex_col()
+                .gap_2(),
+            colors,
+        )
+        .child(
+            div()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors.text_primary)
+                .child(self.t("power-popover-title")),
+        )
+        .child({
+            let mut options_col = div().flex().flex_col().gap_1();
+            for action in CompletionPowerActionView::ALL {
+                let is_selected = current_action == action;
+                let shell = cx.entity().downgrade();
+                let key_shell = shell.clone();
+                let action_label = self.t(action.message_key());
+                options_col = options_col.child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "power-popover-action-{}",
+                            action.as_str()
+                        )))
+                        .focusable()
+                        .tab_stop(true)
+                        .role(Role::Button)
+                        .aria_selected(is_selected)
+                        .border_1()
+                        .border_color(gpui::transparent_black())
+                        .focus_visible(|style| style.border_color(colors.focus_ring))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .text_xs()
+                        .text_color(if is_selected {
+                            colors.text_primary
+                        } else {
+                            colors.text_secondary
+                        })
+                        .hover(|style| style.bg(colors.surface_hover))
+                        .active(|style| style.bg(colors.surface_active))
+                        .on_key_down(move |event, _, cx| {
+                            if !pending && is_activation_key(event) {
+                                cx.stop_propagation();
+                                key_shell
                                     .update(cx, |this, cx| {
-                                        this.toggle_keep_awake(cx);
+                                        this.select_completion_action(action, cx);
                                     })
                                     .ok();
-                            }),
-                    )
-            })
-            .into_any_element()
+                            }
+                        })
+                        .on_click(move |_, _, cx| {
+                            if !pending {
+                                shell
+                                    .update(cx, |this, cx| {
+                                        this.select_completion_action(action, cx);
+                                    })
+                                    .ok();
+                            }
+                        })
+                        .child(action_label)
+                        .when(is_selected, |el| {
+                            el.child(
+                                Icon::new(IconName::CircleCheck)
+                                    .size(IconSize::Small)
+                                    .color(colors.accent),
+                            )
+                        }),
+                );
+            }
+            options_col
+        })
+        .child(div().h(px(1.0)).bg(colors.border).my_1())
+        .child({
+            let shell_toggle = cx.entity().downgrade();
+            let keep_awake_supported = self.platform_capabilities.keep_awake_supported;
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .px_2()
+                .py_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(if keep_awake_supported {
+                            colors.text_primary
+                        } else {
+                            colors.text_muted
+                        })
+                        .child(self.t("power-keep-awake")),
+                )
+                .child(
+                    Switch::new("power-popover-keep-awake")
+                        .checked(keep_awake_supported && keep_awake)
+                        .accessibility_label(self.t("power-keep-awake"))
+                        .disabled(pending || !keep_awake_supported)
+                        .on_change(move |_, _, cx| {
+                            shell_toggle
+                                .update(cx, |this, cx| {
+                                    this.toggle_keep_awake(cx);
+                                })
+                                .ok();
+                        }),
+                )
+        });
+
+        super::animate_fade_settle(card, "power-popover-enter", px(6.0), 150, reduced_motion)
     }
 }

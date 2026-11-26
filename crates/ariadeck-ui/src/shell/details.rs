@@ -201,6 +201,7 @@ impl TaskDetailsPanelView {
         };
         let info_scroll = self.info_scroll.clone();
 
+        let mono_font_family = cx.theme().mono_font_family.clone();
         div()
             .relative()
             .flex_1()
@@ -237,6 +238,7 @@ impl TaskDetailsPanelView {
                                     });
                                 })
                         },
+                        mono_font_family,
                         colors,
                     ))
                     .child(detail_line(
@@ -466,8 +468,9 @@ impl TaskDetailsPanelView {
             .into_any_element()
     }
 
-    fn render_network_tab(&self, details: &TaskDetailsView) -> AnyElement {
+    fn render_network_tab(&self, details: &TaskDetailsView, cx: &App) -> AnyElement {
         let colors = self.theme.colors;
+        let mono_font_family = cx.theme().mono_font_family.clone();
         let network_scroll = self.network_scroll.clone();
         div()
             .relative()
@@ -495,7 +498,13 @@ impl TaskDetailsPanelView {
                             .iter()
                             .map(|source| {
                                 let status = self.t(source.status.message_key());
-                                detail_collection_row(source.uri.clone(), status, None, colors)
+                                detail_collection_row(
+                                    source.uri.clone(),
+                                    status,
+                                    None,
+                                    mono_font_family.clone(),
+                                    colors,
+                                )
                             })
                             .collect(),
                         colors,
@@ -511,7 +520,13 @@ impl TaskDetailsPanelView {
                                     "dialog-details-tracker-tier",
                                     &[("tier", FluentValue::from(tracker.tier))],
                                 );
-                                detail_collection_row(tracker.uri.clone(), tier, None, colors)
+                                detail_collection_row(
+                                    tracker.uri.clone(),
+                                    tier,
+                                    None,
+                                    mono_font_family.clone(),
+                                    colors,
+                                )
                             })
                             .collect(),
                         colors,
@@ -548,7 +563,13 @@ impl TaskDetailsPanelView {
                                             ],
                                         )
                                     };
-                                detail_collection_row(current_uri, secondary, None, colors)
+                                detail_collection_row(
+                                    current_uri,
+                                    secondary,
+                                    None,
+                                    mono_font_family.clone(),
+                                    colors,
+                                )
                             })
                             .collect(),
                         colors,
@@ -579,7 +600,13 @@ impl TaskDetailsPanelView {
                                     ],
                                 );
                                 let badge = peer.seeder.then(|| self.t("dialog-details-peer-seed"));
-                                detail_collection_row(address, rates, badge, colors)
+                                detail_collection_row(
+                                    address,
+                                    rates,
+                                    badge,
+                                    mono_font_family.clone(),
+                                    colors,
+                                )
                             })
                             .collect(),
                         colors,
@@ -589,8 +616,9 @@ impl TaskDetailsPanelView {
             .into_any_element()
     }
 
-    fn render_options_tab(&self, options: &[TaskOptionView]) -> AnyElement {
+    fn render_options_tab(&self, options: &[TaskOptionView], cx: &App) -> AnyElement {
         let colors = self.theme.colors;
+        let mono_font_family = cx.theme().mono_font_family.clone();
         let options_scroll = self.options_scroll.clone();
         div()
             .relative()
@@ -615,7 +643,13 @@ impl TaskDetailsPanelView {
                             let badge = option
                                 .redacted
                                 .then(|| self.t("dialog-details-option-sensitive"));
-                            detail_collection_row(option.key.clone(), value, badge, colors)
+                            detail_collection_row(
+                                option.key.clone(),
+                                value,
+                                badge,
+                                mono_font_family.clone(),
+                                colors,
+                            )
                         })
                         .collect(),
                     colors,
@@ -636,6 +670,7 @@ impl TaskDetailsPanelView {
 impl Render for TaskDetailsPanelView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = self.theme.colors;
+        let reduced_motion = crate::accessibility::is_reduced_motion(cx);
         let inline = shell_layout(f32::from(window.viewport_size().width)).details_presentation
             == DetailsPresentation::Inline;
         let display_name = task_display_name(&self.overview, &self.translator);
@@ -654,34 +689,40 @@ impl Render for TaskDetailsPanelView {
         };
 
         let body = match presentation {
-            TaskDetailsPresentation::Loading => div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .px_5()
-                .text_center()
-                .child(
-                    crate::LoadingIndicator::new(colors.accent)
-                        .size(IconSize::Large)
-                        .label(self.t("dialog-details-loading")),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(self.t("dialog-details-loading")),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(colors.text_muted)
-                        .child(self.t("ui-requesting-details")),
-                )
-                .into_any_element(),
+            TaskDetailsPresentation::Loading => animate_fade_settle(
+                div()
+                    .id("task-details-state-loading")
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap_2()
+                    .px_5()
+                    .text_center()
+                    .child(
+                        crate::LoadingIndicator::new(colors.accent)
+                            .size(IconSize::Large)
+                            .label(self.t("dialog-details-loading")),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(self.t("dialog-details-loading")),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(self.t("ui-requesting-details")),
+                    ),
+                "task-details-state-loading-enter",
+                px(4.0),
+                140,
+                reduced_motion,
+            ),
             TaskDetailsPresentation::Failed(summary) => div()
                 .flex_1()
                 .min_h_0()
@@ -789,16 +830,37 @@ impl Render for TaskDetailsPanelView {
                     });
                 });
 
-                let content = match self.tab {
-                    TaskDetailsTab::Info => self.render_info_tab(
-                        &details,
-                        path_actions_available && !path_open_pending,
-                        cx,
+                let (tab_key, content) = match self.tab {
+                    TaskDetailsTab::Info => (
+                        "info",
+                        self.render_info_tab(
+                            &details,
+                            path_actions_available && !path_open_pending,
+                            cx,
+                        ),
                     ),
-                    TaskDetailsTab::Files => self.render_files_tab(details.files.len(), cx),
-                    TaskDetailsTab::Network => self.render_network_tab(&details),
-                    TaskDetailsTab::Options => self.render_options_tab(&details.options),
+                    TaskDetailsTab::Files => {
+                        ("files", self.render_files_tab(details.files.len(), cx))
+                    }
+                    TaskDetailsTab::Network => ("network", self.render_network_tab(&details, cx)),
+                    TaskDetailsTab::Options => {
+                        ("options", self.render_options_tab(&details.options, cx))
+                    }
                 };
+                let animated_content = animate_fade_settle(
+                    div()
+                        .id(SharedString::from(format!("task-details-tab-{tab_key}")))
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .child(content),
+                    SharedString::from(format!("task-details-tab-enter:{tab_key}")),
+                    px(4.0),
+                    140,
+                    reduced_motion,
+                );
 
                 div()
                     .flex_1()
@@ -815,12 +877,12 @@ impl Render for TaskDetailsPanelView {
                             .bg(colors.toolbar_surface)
                             .child(tabs),
                     )
-                    .child(content)
+                    .child(animated_content)
                     .into_any_element()
             }
         };
 
-        div()
+        let drawer = div()
             .id("task-details-drawer")
             .role(Role::Complementary)
             .aria_label(self.t_args(
@@ -929,7 +991,19 @@ impl Render for TaskDetailsPanelView {
                 &self.translator,
                 colors,
             ))
-            .child(body)
+            .child(body);
+
+        if inline {
+            animate_fade_slide_x(
+                drawer,
+                "task-details-drawer-enter",
+                px(14.0),
+                160,
+                reduced_motion,
+            )
+        } else {
+            drawer.into_any_element()
+        }
     }
 }
 

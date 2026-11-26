@@ -1396,3 +1396,104 @@ fn force_pause_is_blocked_when_capabilities_omit_the_method(cx: &mut TestAppCont
         assert_eq!(notice.message, shell.t("notice-force-pause-unsupported"));
     });
 }
+
+#[gpui::test]
+fn add_download_dialog_plays_fade_slide_entrance_on_first_open(cx: &mut TestAppContext) {
+    let (shell, mut visual_cx) = open_test_shell(cx, |window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(1);
+        shell
+    });
+    visual_cx.update(|window, cx| {
+        cx.set_reduce_motion(false);
+        window.draw(cx).clear(cx);
+    });
+
+    shell.update_in(&mut visual_cx, |shell, window, cx| {
+        shell.open_add_download(&OpenAddDownload, window, cx);
+    });
+    visual_cx.run_until_parked();
+    visual_cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let frame1_y = visual_cx
+        .debug_bounds("dialog-0")
+        .expect("dialog layer 0 painted on frame 1")
+        .origin
+        .y;
+
+    visual_cx
+        .background_executor
+        .advance_clock(std::time::Duration::from_millis(70));
+    visual_cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    let mid_y = visual_cx
+        .debug_bounds("dialog-0")
+        .expect("dialog layer 0 painted mid-entrance")
+        .origin
+        .y;
+
+    visual_cx
+        .background_executor
+        .advance_clock(std::time::Duration::from_millis(250));
+    visual_cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    let settled_y = visual_cx
+        .debug_bounds("dialog-0")
+        .expect("dialog layer 0 painted at rest")
+        .origin
+        .y;
+
+    // Frame 1 starts slightly above resting y (~10px / 0.625 rem) and settles down smoothly,
+    // rather than dropping from window y = 0 or skipping straight to final resting position.
+    assert!(
+        frame1_y > px(30.0) && frame1_y < settled_y,
+        "expected gentle elevated start below top edge and above rest: frame1={frame1_y:?}, settled={settled_y:?}"
+    );
+    assert!(
+        mid_y > frame1_y && mid_y <= settled_y,
+        "expected smooth progression between frame 1 and rest: frame1={frame1_y:?}, mid={mid_y:?}, settled={settled_y:?}"
+    );
+}
+
+#[gpui::test]
+fn add_download_dialog_skips_motion_when_reduced_motion_enabled(cx: &mut TestAppContext) {
+    let (shell, mut visual_cx) = open_test_shell(cx, |window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(1);
+        shell
+    });
+    visual_cx.update(|window, cx| {
+        cx.set_reduce_motion(true);
+        window.draw(cx).clear(cx);
+    });
+
+    shell.update_in(&mut visual_cx, |shell, window, cx| {
+        shell.open_add_download(&OpenAddDownload, window, cx);
+    });
+    visual_cx.run_until_parked();
+    visual_cx.update(|window, cx| window.draw(cx).clear(cx));
+    let frame1_y = visual_cx
+        .debug_bounds("dialog-0")
+        .expect("dialog layer 0 painted")
+        .origin
+        .y;
+
+    visual_cx
+        .background_executor
+        .advance_clock(std::time::Duration::from_millis(250));
+    visual_cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    let settled_y = visual_cx
+        .debug_bounds("dialog-0")
+        .expect("dialog layer 0 painted at rest")
+        .origin
+        .y;
+
+    assert_eq!(frame1_y, settled_y);
+}
