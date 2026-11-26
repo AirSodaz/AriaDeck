@@ -2006,3 +2006,31 @@ fn draft_category_ids_stay_unique_after_delete_and_path_pick_tracks_category_id(
         });
     });
 }
+
+#[gpui::test]
+fn settings_category_switch_resets_scroll_offset(cx: &mut TestAppContext) {
+    let (shell, mut visual_cx) =
+        open_test_shell(cx, |window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    shell.update_in(&mut visual_cx, |shell, window, cx| {
+        shell.open_settings(&OpenSettings, window, cx);
+    });
+    visual_cx.run_until_parked();
+    let _ = visual_cx.update(|window, cx| window.draw(cx));
+
+    shell.update(&mut visual_cx, |shell, cx| {
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| {
+            panel
+                .settings_scroll
+                .set_offset(gpui::Point::new(px(0.0), px(-120.0)));
+            assert_ne!(panel.settings_scroll.offset().y, px(0.0));
+            panel.select_settings_category(SettingsCategory::Network, cx);
+            assert_eq!(
+                panel.settings_scroll.offset().y,
+                px(0.0),
+                "switching settings category must reset scroll position to top"
+            );
+        });
+    });
+}

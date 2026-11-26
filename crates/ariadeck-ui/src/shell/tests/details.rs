@@ -527,3 +527,35 @@ fn details_drawer_transitions_between_sheet_and_inline_across_breakpoint(cx: &mu
         .advance_clock(Duration::from_millis(200));
     visual_cx.run_until_parked();
 }
+
+#[gpui::test]
+fn details_drawer_preserves_active_tab_when_switching_selected_task(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(3);
+        shell.select_at_with_modifiers(0, false, false, window, cx);
+        shell.open_details_for(task(0), cx);
+        shell
+    });
+
+    view.update(cx, |shell, cx| {
+        let panel = shell.details_panel().expect("details open").clone();
+        panel.update(cx, |panel, _| {
+            panel.tab = TaskDetailsTab::Network;
+        });
+    });
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.select_at_with_modifiers(1, false, false, window, cx);
+    });
+
+    view.read_with(cx, |shell, cx| {
+        let drawer = shell.details_panel().expect("details still open").read(cx);
+        assert_eq!(drawer.identity, task(1).identity);
+        assert_eq!(
+            drawer.tab,
+            TaskDetailsTab::Network,
+            "active details tab must stay selected when browsing tasks"
+        );
+    });
+}

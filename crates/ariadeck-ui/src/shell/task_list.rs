@@ -254,17 +254,6 @@ impl AppShell {
             .min_w_0()
             .min_h_0()
             .flex()
-            .on_drag_move(cx.listener(
-                |this, e: &DragMoveEvent<ResizeDetailsDrawer>, window, cx| {
-                    let width = f32::from(window.viewport_size().width - e.event.position.x)
-                        .clamp(DETAILS_DRAWER_MIN_WIDTH, DETAILS_DRAWER_MAX_WIDTH);
-                    if (width - this.details_drawer_width).abs() > 0.5 {
-                        this.details_drawer_width = width;
-                        this.sync_details_panel_context(cx);
-                        cx.notify();
-                    }
-                },
-            ))
             .child(center);
 
         match (self.details_panel.as_ref(), details_presentation) {
@@ -1270,6 +1259,7 @@ impl AppShell {
                     .child(
                         Checkbox::new(("task-select", task_key))
                             .checked(selected)
+                            .tab_stop(false)
                             .accessibility_label(checkbox_aria)
                             .on_change(cx.listener(move |this, _, window, cx| {
                                 this.select_at_with_modifiers(index, false, true, window, cx);

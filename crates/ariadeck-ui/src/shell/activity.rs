@@ -80,9 +80,14 @@ impl AppShell {
                 .autohide(false)
                 .placement(Anchor::BottomRight)
         } else {
-            Notification::success(message)
+            let mut note = Notification::success(message)
                 .autohide(true)
-                .placement(Anchor::BottomRight)
+                .placement(Anchor::BottomRight);
+            if !automatic {
+                // Coalesce rapid user-triggered command progress and completion toasts.
+                note = note.id1::<NoticeToastId>("notice-command");
+            }
+            note
         };
         let handle = self.window_handle;
         cx.defer(move |cx| {

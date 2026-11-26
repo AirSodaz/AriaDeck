@@ -85,6 +85,35 @@ impl TaskDetailsPanelView {
         cx.notify();
     }
 
+    pub(crate) fn switch_task(
+        &mut self,
+        task: DownloadRowView,
+        session: EngineSessionView,
+        panel_cx: TaskDetailsPanelContext,
+        cx: &mut Context<Self>,
+    ) {
+        if self.identity == task.identity {
+            self.overview = task;
+            self.session = session;
+            self.sync_context(panel_cx, cx);
+            return;
+        }
+        self.identity = task.identity.clone();
+        self.overview = task;
+        self.session = session;
+        self.state = TaskDetailsLoadState::Stale;
+        self.pending = None;
+        self.open_pending = None;
+        self.rendered_file_range = 0..0;
+        self.last_ready_refresh_at = None;
+        self.refresh_coalesced = false;
+        self.file_scroll = UniformListScrollHandle::new();
+        self.info_scroll = ScrollHandle::new();
+        self.network_scroll = ScrollHandle::new();
+        self.options_scroll = ScrollHandle::new();
+        self.sync_context(panel_cx, cx);
+    }
+
     fn t(&self, id: &str) -> String {
         self.translator.t(id)
     }
@@ -957,6 +986,20 @@ impl AppShell {
                 generation: self.snapshot.generation,
             });
         let panel_cx = self.details_panel_context();
+        if let Some(panel) = self.details_panel.clone() {
+            let same_task = panel.read(cx).identity == task.identity;
+            let has_ready_details =
+                matches!(panel.read(cx).state, TaskDetailsLoadState::Ready { .. });
+            panel.update(cx, |panel, cx| {
+                panel.switch_task(task, session, panel_cx, cx);
+            });
+            if self.snapshot.commands_available() && (!same_task || !has_ready_details) {
+                self.request_current_details(false, cx);
+            }
+            self.sync_details_sheet_deferred(cx);
+            cx.notify();
+            return;
+        }
         let panel = cx.new(|_| TaskDetailsPanelView::new(task, session, panel_cx));
         let sub = cx.subscribe(&panel, |this, _, event, cx| match event {
             TaskDetailsPanelEvent::Close => {
@@ -1159,7 +1202,6 @@ impl AppShell {
                     .p_0()
                     .overlay(true)
                     .overlay_closable(true)
-                    .resizable(true)
                     .child(panel.clone())
                     .on_close(move |_, _, cx| {
                         let _ = shell_close.update(cx, |this, cx| {

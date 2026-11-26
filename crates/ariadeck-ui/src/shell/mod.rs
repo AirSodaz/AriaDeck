@@ -52,7 +52,8 @@ use crate::{
     CoreDownloadOfferView, CoreDownloadResultView, CoreRegistryView, DiagnosticExportOutcomeView,
     DiagnosticExportRequestView, DiagnosticExportResultView, DiscoveredCoreView,
     DownloadProxySettingsView, DownloadRowView, EngineHealthView, EngineSessionView,
-    FileAllocationView, FileConflictPolicyView, FocusSearch, GlobalTaskCommandRequestView,
+    ExtendSelectNextTask, ExtendSelectPreviousTask, FileAllocationView, FileConflictPolicyView,
+    FocusSearch, GlobalTaskCommandRequestView,
     GlobalTaskCommandResultView, GlobalTaskCommandView, Icon, IconName, IconSize,
     LanguagePreferenceView, Link, LocaleId, MoveTaskDownInQueue, MoveTaskToQueueBottom,
     MoveTaskToQueueTop, MoveTaskUpInQueue, NotificationSettingsView, NotificationVolumeView,
@@ -62,7 +63,8 @@ use crate::{
     ProxyModeView, ProxyPasswordUpdateView, RemoveSelectedTask, RequestId, ResumeSelectedTask,
     RetrySelectedTask, SaveProfileCatalogOutcomeView, SaveProfileCatalogRequestView,
     SaveProfileCatalogResultView, SaveSettings, SecretStringView, Segment, SegmentedControl,
-    SelectAllTasks, SelectNextTask, SelectPreviousTask, SettingsExportOutcomeView,
+    SelectAllTasks, SelectFirstTask, SelectLastTask, SelectNextTask, SelectPageDownTask,
+    SelectPageUpTask, SelectPreviousTask, SettingsExportOutcomeView,
     SettingsExportRequestView, SettingsExportResultView, SettingsImportOutcomeView,
     SettingsImportRequestView, SettingsImportResultView, SettingsSaveOutcomeView,
     SettingsSaveRequestView, SettingsSaveResultView, SettingsView, SpeedLimitSettingsView,
@@ -323,7 +325,10 @@ pub(crate) const MIN_LINKS_INPUT_HEIGHT: f32 = 80.0;
 pub(crate) const MAX_LINKS_INPUT_HEIGHT: f32 = 360.0;
 
 #[derive(Clone)]
-pub(crate) struct ResizeLinkInput;
+pub(crate) struct ResizeLinkInput {
+    pub(crate) origin_y: Pixels,
+    pub(crate) origin_h: f32,
+}
 
 impl Render for ResizeLinkInput {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -2026,15 +2031,32 @@ impl AppShell {
         }
     }
 
-    fn select_next(&mut self, _: &SelectNextTask, window: &mut Window, cx: &mut Context<Self>) {
-        if self.snapshot.tasks.is_empty() {
+    fn task_page_step(&self) -> usize {
+        self.rendered_range.len().saturating_sub(1).clamp(1, 50)
+    }
+
+    fn navigate_task_list(
+        &mut self,
+        extend_range: bool,
+        target_for_current: impl FnOnce(Option<usize>, usize) -> usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let len = self.snapshot.tasks.len();
+        if len == 0 {
             return;
         }
-        let next = match self.selected_index() {
-            Some(current) => (current + 1).min(self.snapshot.tasks.len() - 1),
-            None => 0,
-        };
-        self.select_at(next, window, cx);
+        let target = target_for_current(self.selected_index(), len).min(len - 1);
+        self.select_at_with_modifiers(target, extend_range, false, window, cx);
+    }
+
+    fn select_next(&mut self, _: &SelectNextTask, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_task_list(
+            false,
+            |current, len| current.map_or(0, |idx| (idx + 1).min(len - 1)),
+            window,
+            cx,
+        );
     }
 
     fn select_previous(
@@ -2043,18 +2065,78 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.snapshot.tasks.is_empty() {
-            return;
-        }
-        let previous = match self.selected_index() {
-            Some(current) => current.saturating_sub(1),
-            None => self.snapshot.tasks.len() - 1,
-        };
-        self.select_at(previous, window, cx);
+        self.navigate_task_list(
+            false,
+            |current, len| current.map_or(len - 1, |idx| idx.saturating_sub(1)),
+            window,
+            cx,
+        );
     }
 
-    fn select_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.select_at_with_modifiers(index, false, false, window, cx);
+    fn select_first(&mut self, _: &SelectFirstTask, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_task_list(false, |_, _| 0, window, cx);
+    }
+
+    fn select_last(&mut self, _: &SelectLastTask, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_task_list(false, |_, len| len - 1, window, cx);
+    }
+
+    fn select_page_up(
+        &mut self,
+        _: &SelectPageUpTask,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let step = self.task_page_step();
+        self.navigate_task_list(
+            false,
+            |current, len| current.map_or(len - 1, |idx| idx.saturating_sub(step)),
+            window,
+            cx,
+        );
+    }
+
+    fn select_page_down(
+        &mut self,
+        _: &SelectPageDownTask,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let step = self.task_page_step();
+        self.navigate_task_list(
+            false,
+            |current, len| current.map_or(0, |idx| (idx + step).min(len - 1)),
+            window,
+            cx,
+        );
+    }
+
+    fn extend_select_next(
+        &mut self,
+        _: &ExtendSelectNextTask,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.navigate_task_list(
+            true,
+            |current, len| current.map_or(0, |idx| (idx + 1).min(len - 1)),
+            window,
+            cx,
+        );
+    }
+
+    fn extend_select_previous(
+        &mut self,
+        _: &ExtendSelectPreviousTask,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.navigate_task_list(
+            true,
+            |current, len| current.map_or(len - 1, |idx| idx.saturating_sub(1)),
+            window,
+            cx,
+        );
     }
 
     fn select_at_with_modifiers(
@@ -2332,6 +2414,12 @@ impl Render for AppShell {
             .on_action(cx.listener(Self::clear_search))
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_previous))
+            .on_action(cx.listener(Self::select_first))
+            .on_action(cx.listener(Self::select_last))
+            .on_action(cx.listener(Self::select_page_up))
+            .on_action(cx.listener(Self::select_page_down))
+            .on_action(cx.listener(Self::extend_select_next))
+            .on_action(cx.listener(Self::extend_select_previous))
             .on_action(cx.listener(Self::open_add_download))
             .on_action(cx.listener(Self::close_add_download_action))
             .on_action(cx.listener(Self::submit_add_download_action))
@@ -2357,6 +2445,17 @@ impl Render for AppShell {
             .on_action(cx.listener(Self::close_batch_failure_details_action))
             .on_action(cx.listener(Self::close_core_setup_onboarding_action))
             .on_action(cx.listener(Self::remove_selected))
+            .on_drag_move(cx.listener(
+                |this, e: &DragMoveEvent<ResizeDetailsDrawer>, window, cx| {
+                    let width = f32::from(window.viewport_size().width - e.event.position.x)
+                        .clamp(DETAILS_DRAWER_MIN_WIDTH, DETAILS_DRAWER_MAX_WIDTH);
+                    if (width - this.details_drawer_width).abs() > 0.5 {
+                        this.details_drawer_width = width;
+                        this.sync_details_panel_context(cx);
+                        cx.notify();
+                    }
+                },
+            ))
             .can_drop(move |value, _window, _cx| {
                 value.downcast_ref::<ExternalPaths>().is_some_and(|paths| {
                     can_accept_metadata_drop(metadata_drop_enabled, paths.paths())

@@ -548,3 +548,68 @@ fn notices_push_into_root_notifications_and_stack(cx: &mut TestAppContext) {
         assert_eq!(notifications.len(), 2);
     });
 }
+
+#[gpui::test]
+fn status_bar_popovers_dismiss_on_escape_and_command_toasts_coalesce(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let (shell, mut cx) =
+        open_test_shell(cx, |window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    shell.update_in(&mut cx, |shell, window, cx| {
+        shell.toggle_speed_popover(window, cx);
+        assert_eq!(shell.active_status_popover, Some(StatusBarPopover::Speed));
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    shell.read_with(&cx, |shell, _| {
+        assert_eq!(
+            shell.active_status_popover, None,
+            "Escape should dismiss speed popover"
+        );
+    });
+
+    shell.update_in(&mut cx, |shell, window, cx| {
+        shell.open_status_popover(StatusBarPopover::Power, window, cx);
+        assert_eq!(shell.active_status_popover, Some(StatusBarPopover::Power));
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    shell.read_with(&cx, |shell, _| {
+        assert_eq!(
+            shell.active_status_popover, None,
+            "Escape should dismiss power popover"
+        );
+    });
+
+    shell.update_in(&mut cx, |shell, window, cx| {
+        shell.toggle_activity_panel(window, cx);
+        assert_eq!(
+            shell.active_status_popover,
+            Some(StatusBarPopover::Activity)
+        );
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    shell.read_with(&cx, |shell, _| {
+        assert_eq!(
+            shell.active_status_popover, None,
+            "Escape should dismiss activity popover"
+        );
+    });
+
+    shell.update(&mut cx, |shell, cx| {
+        shell.show_notice("Pausing downloads...", false, cx);
+        shell.show_notice("Paused 1 download.", false, cx);
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert_eq!(
+            window.notifications(cx).len(),
+            1,
+            "consecutive user command notices must replace in place"
+        );
+    });
+}

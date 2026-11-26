@@ -432,7 +432,6 @@ impl AppShell {
                     dialog
                         .title(title.clone())
                         .width(px(width))
-                        .centered()
                         .overlay_closable(false)
                         .close_button(true)
                         .keyboard(true)

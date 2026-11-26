@@ -683,3 +683,54 @@ fn task_context_menu_populates_items_for_selected_task(cx: &mut TestAppContext) 
         assert!(!menu.read(cx).is_empty());
     });
 }
+
+#[gpui::test]
+fn task_list_keyboard_navigation_supports_home_end_page_and_shift_range(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(25);
+        window.focus(&shell.focus_handle, cx);
+        shell
+    });
+
+    cx.simulate_keystrokes("end");
+    view.read_with(cx, |shell, _| {
+        assert_eq!(shell.selected, Some(task(24).identity));
+    });
+
+    cx.simulate_keystrokes("home");
+    view.read_with(cx, |shell, _| {
+        assert_eq!(shell.selected, Some(task(0).identity));
+    });
+
+    cx.simulate_keystrokes("pagedown");
+    view.read_with(cx, |shell, _| {
+        let idx = shell.selected_index().expect("task selected after pagedown");
+        assert!(idx > 0 && idx <= 24);
+    });
+
+    cx.simulate_keystrokes("pageup");
+    view.read_with(cx, |shell, _| {
+        assert_eq!(shell.selected, Some(task(0).identity));
+    });
+
+    cx.simulate_keystrokes("shift-down");
+    cx.simulate_keystrokes("shift-down");
+    view.read_with(cx, |shell, _| {
+        assert_eq!(shell.selected, Some(task(2).identity));
+        assert_eq!(
+            shell.selected_tasks,
+            HashSet::from([task(0).identity, task(1).identity, task(2).identity])
+        );
+    });
+
+    cx.simulate_keystrokes("shift-up");
+    view.read_with(cx, |shell, _| {
+        assert_eq!(shell.selected, Some(task(1).identity));
+        assert_eq!(
+            shell.selected_tasks,
+            HashSet::from([task(0).identity, task(1).identity])
+        );
+    });
+}

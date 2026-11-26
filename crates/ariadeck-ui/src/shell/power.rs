@@ -365,18 +365,23 @@ impl AppShell {
                 .content(move |_, _, cx| {
                     shell_content
                         .update(cx, |this, cx| this.render_power_popover_content(cx))
-                        .unwrap_or_else(|_| div())
+                        .unwrap_or_else(|_| div().into_any_element())
                 }),
         )
     }
 
-    pub(crate) fn render_power_popover_content(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn render_power_popover_content(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let colors = self.theme.colors;
         let pending = self.pending_settings_save.is_some();
         let current_action = self.settings.platform.action_after_done;
         let keep_awake = self.settings.platform.keep_awake_while_active;
 
         div()
+            .id("power-popover-body")
+            .track_focus(&self.power_popover_focus)
             .w(px(240.0))
             .flex()
             .flex_col()
@@ -487,5 +492,6 @@ impl AppShell {
                             }),
                     )
             })
+            .into_any_element()
     }
 }

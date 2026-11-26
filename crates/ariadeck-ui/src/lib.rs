@@ -20,12 +20,13 @@ pub use ariadeck_i18n::{LanguagePreference, LocaleId, Translator};
 pub use actions::init;
 pub use actions::{
     ClearSearch, CloseAddDownload, CloseBatchFailures, CloseCoreSetup, CloseSettings,
-    CloseTaskOptions, CloseTaskOutputName, CloseTaskSpeedLimit, FocusSearch, MoveTaskDownInQueue,
-    MoveTaskToQueueBottom, MoveTaskToQueueTop, MoveTaskUpInQueue, OpenAddDownload, OpenSettings,
-    OpenTaskDetails, OpenTaskOutputName, OpenTaskSpeedLimit, PauseSelectedTask, RemoveSelectedTask,
-    ResumeSelectedTask, RetrySelectedTask, SaveSettings, SelectAllTasks, SelectNextTask,
-    SelectPreviousTask, SubmitAddDownload, SubmitTaskOptions, SubmitTaskOutputName,
-    SubmitTaskSpeedLimit,
+    CloseTaskOptions, CloseTaskOutputName, CloseTaskSpeedLimit, ExtendSelectNextTask,
+    ExtendSelectPreviousTask, FocusSearch, MoveTaskDownInQueue, MoveTaskToQueueBottom,
+    MoveTaskToQueueTop, MoveTaskUpInQueue, OpenAddDownload, OpenSettings, OpenTaskDetails,
+    OpenTaskOutputName, OpenTaskSpeedLimit, PauseSelectedTask, RemoveSelectedTask,
+    ResumeSelectedTask, RetrySelectedTask, SaveSettings, SelectAllTasks, SelectFirstTask,
+    SelectLastTask, SelectNextTask, SelectPageDownTask, SelectPageUpTask, SelectPreviousTask,
+    SubmitAddDownload, SubmitTaskOptions, SubmitTaskOutputName, SubmitTaskSpeedLimit,
 };
 pub use app_assets::Assets;
 pub use components::{

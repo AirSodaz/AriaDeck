@@ -579,8 +579,11 @@ impl SettingsPanelView {
         category: SettingsCategory,
         cx: &mut Context<Self>,
     ) {
-        self.settings_page.active_category = category;
-        cx.notify();
+        if self.settings_page.active_category != category {
+            self.settings_page.active_category = category;
+            self.settings_scroll.set_offset(gpui::Point::default());
+            cx.notify();
+        }
     }
 
     pub(crate) fn submit_active_settings_category(&mut self, cx: &mut Context<Self>) {
@@ -798,15 +801,13 @@ impl SettingsPanelView {
             let is_active = category == active;
             let prev_index = (index + SettingsCategory::ALL.len() - 1) % SettingsCategory::ALL.len();
             let next_index = (index + 1) % SettingsCategory::ALL.len();
-            let prev_category = SettingsCategory::ALL[prev_index];
-            let next_category = SettingsCategory::ALL[next_index];
             let item = div()
                 .id(SharedString::from(format!("nav-{}", category.label())))
                 .role(Role::Tab)
                 .aria_label(self.t(category.message_key()))
                 .aria_selected(is_active)
                 .track_focus(&self.nav_focus_handles[index])
-                .tab_stop(true)
+                .tab_stop(is_active)
                 .border_1()
                 .border_color(gpui::transparent_black())
                 .focus_visible(|style| style.border_color(colors.focus_ring))
@@ -846,19 +847,28 @@ impl SettingsPanelView {
                         if is_activation_key(event) {
                             cx.stop_propagation();
                             this.select_settings_category(category, cx);
-                        } else if event.keystroke.key == "up" {
-                            cx.stop_propagation();
-                            this.select_settings_category(prev_category, cx);
-                            window.focus(&this.nav_focus_handles[prev_index], cx);
-                        } else if event.keystroke.key == "down" {
-                            cx.stop_propagation();
-                            this.select_settings_category(next_category, cx);
-                            window.focus(&this.nav_focus_handles[next_index], cx);
+                        } else {
+                            let target_index = match event.keystroke.key.as_str() {
+                                "up" => Some(prev_index),
+                                "down" => Some(next_index),
+                                "home" => Some(0),
+                                "end" => Some(SettingsCategory::ALL.len() - 1),
+                                _ => None,
+                            };
+                            if let Some(target_index) = target_index {
+                                cx.stop_propagation();
+                                this.select_settings_category(
+                                    SettingsCategory::ALL[target_index],
+                                    cx,
+                                );
+                                window.focus(&this.nav_focus_handles[target_index], cx);
+                            }
                         }
                     }),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
                     this.select_settings_category(category, cx);
+                    window.focus(&this.nav_focus_handles[index], cx);
                 }));
             nav = nav.child(item);
         }

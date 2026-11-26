@@ -120,8 +120,9 @@ pub(super) struct AddDownloadDialogView {
     pub(super) error: Option<OperationErrorView>,
     pub(super) results: Vec<AddDownloadItemResultView>,
     pub(super) links_input_height: f32,
-    links_input_drag_origin: Option<(Pixels, f32)>,
     metadata_file_scroll: UniformListScrollHandle,
+    metadata_source_scroll: ScrollHandle,
+    results_scroll: ScrollHandle,
     _input_subs: Vec<Subscription>,
 }
 
@@ -232,8 +233,9 @@ impl AddDownloadDialogView {
             error: None,
             results: Vec::new(),
             links_input_height,
-            links_input_drag_origin: None,
             metadata_file_scroll: UniformListScrollHandle::new(),
+            metadata_source_scroll: ScrollHandle::new(),
+            results_scroll: ScrollHandle::new(),
             _input_subs: input_subs,
         }
     }
@@ -766,16 +768,26 @@ impl AddDownloadDialogView {
             .gap_2()
             .child(self.render_metadata_drop_target(count, pending, preview_pending, colors, cx))
             .when(!rows.is_empty(), |element| {
+                let metadata_source_scroll = self.metadata_source_scroll.clone();
                 element.child(
                     div()
-                        .id("metadata-file-list")
-                        .role(Role::List)
-                        .aria_label(self.t("dialog-add-selected-files-aria"))
+                        .relative()
                         .max_h(px(112.0))
+                        .overflow_hidden()
                         .border_1()
                         .border_color(colors.border)
                         .rounded_md()
-                        .children(rows),
+                        .child(
+                            div()
+                                .id("metadata-file-list")
+                                .role(Role::List)
+                                .aria_label(self.t("dialog-add-selected-files-aria"))
+                                .max_h(px(112.0))
+                                .overflow_y_scroll()
+                                .track_scroll(&metadata_source_scroll)
+                                .children(rows),
+                        )
+                        .vertical_scrollbar(&metadata_source_scroll),
                 )
             })
             .when_some(active_summary, |element, summary| {
@@ -1302,7 +1314,7 @@ impl AddDownloadDialogView {
         }
     }
 
-    fn render_result_list(&self, colors: crate::ThemeColors) -> Stateful<Div> {
+    fn render_result_list(&self, colors: crate::ThemeColors) -> Div {
         let rows = self
             .results
             .iter()
@@ -1374,19 +1386,29 @@ impl AddDownloadDialogView {
                     )
             })
             .collect::<Vec<_>>();
+        let results_scroll = self.results_scroll.clone();
         div()
-            .id("add-download-results")
-            .role(Role::List)
-            .aria_label(self.t("dialog-add-results-aria"))
+            .relative()
             .max_h(px(220.0))
-            .flex()
-            .flex_col()
-            .gap_2()
-            .p_2()
+            .overflow_hidden()
             .border_1()
             .border_color(colors.border)
             .rounded_md()
-            .children(rows)
+            .child(
+                div()
+                    .id("add-download-results")
+                    .role(Role::List)
+                    .aria_label(self.t("dialog-add-results-aria"))
+                    .max_h(px(220.0))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .p_2()
+                    .overflow_y_scroll()
+                    .track_scroll(&results_scroll)
+                    .children(rows),
+            )
+            .vertical_scrollbar(&results_scroll)
     }
 }
 
@@ -1486,22 +1508,15 @@ impl Render for AddDownloadDialogView {
             .gap_2()
             .on_drag_move(
                 cx.listener(|this, e: &DragMoveEvent<ResizeLinkInput>, _window, cx| {
-                    if let Some((origin_y, origin_h)) = this.links_input_drag_origin {
-                        let delta: f32 = (e.event.position.y - origin_y).into();
-                        let new_h = (origin_h + delta)
-                            .clamp(MIN_LINKS_INPUT_HEIGHT, MAX_LINKS_INPUT_HEIGHT);
-                        if (new_h - this.links_input_height).abs() > 0.5 {
-                            this.links_input_height = new_h;
-                            cx.emit(AddDownloadDialogEvent::LinksInputHeightChanged(new_h));
-                            cx.notify();
-                        }
+                    let origin = e.drag(cx);
+                    let delta: f32 = (e.event.position.y - origin.origin_y).into();
+                    let new_h = (origin.origin_h + delta)
+                        .clamp(MIN_LINKS_INPUT_HEIGHT, MAX_LINKS_INPUT_HEIGHT);
+                    if (new_h - this.links_input_height).abs() > 0.5 {
+                        this.links_input_height = new_h;
+                        cx.emit(AddDownloadDialogEvent::LinksInputHeightChanged(new_h));
+                        cx.notify();
                     }
-                }),
-            )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, _| {
-                    this.links_input_drag_origin = None;
                 }),
             )
             .child(input_mode_control)
@@ -1538,23 +1553,27 @@ impl Render for AddDownloadDialogView {
                                                 if e.click_count == 2 {
                                                     this.links_input_height =
                                                         DEFAULT_LINKS_INPUT_HEIGHT;
-                                                    this.links_input_drag_origin = None;
                                                     cx.emit(
                                                         AddDownloadDialogEvent::LinksInputHeightChanged(
                                                             DEFAULT_LINKS_INPUT_HEIGHT,
                                                         ),
                                                     );
                                                     cx.notify();
-                                                    return;
                                                 }
-                                                this.links_input_drag_origin =
-                                                    Some((e.position.y, this.links_input_height));
                                             },
                                         ),
                                     )
-                                    .on_drag(ResizeLinkInput, |drag, _, _, cx| {
-                                        cx.new(|_| drag.clone())
-                                    }),
+                                    .on_drag(
+                                        ResizeLinkInput {
+                                            origin_y: Pixels::ZERO,
+                                            origin_h: links_input_height,
+                                        },
+                                        |drag, _, window, cx| {
+                                            let mut state = drag.clone();
+                                            state.origin_y = window.mouse_position().y;
+                                            cx.new(|_| state)
+                                        },
+                                    ),
                             ),
                     )
                     .child(

@@ -546,6 +546,7 @@ impl AppShell {
 
         div()
             .id("speed-history-chart")
+            .track_focus(&self.speed_popover_focus)
             .role(Role::Group)
             .aria_label(self.t_args(
                 "speed-chart-aria",
@@ -572,6 +573,7 @@ impl AppShell {
             .border_1()
             .border_color(colors.border_strong)
             .bg(colors.elevated_surface)
+            .shadow_lg()
             .child(
                 div()
                     .flex()
@@ -667,6 +669,33 @@ impl AppShell {
                     .on_click(cx.listener(|this, _, _, cx| this.request_retry(cx)))
             });
 
+        let engine_indicator = match &self.engine_health {
+            EngineHealthView::Restarting { .. } => div()
+                .flex()
+                .items_center()
+                .child(
+                    crate::LoadingIndicator::new(engine_health_color(&self.engine_health, colors))
+                        .size(IconSize::XSmall)
+                        .label(self.t(self.engine_health.message_key())),
+                )
+                .into_any_element(),
+            EngineHealthView::Failed { .. } => {
+                StatusIndicator::new(engine_health_color(&self.engine_health, colors))
+                    .icon(IconName::CircleAlert)
+                    .into_any_element()
+            }
+            EngineHealthView::Running { restarts } if *restarts > 0 => {
+                StatusIndicator::new(engine_health_color(&self.engine_health, colors))
+                    .icon(IconName::TriangleAlert)
+                    .into_any_element()
+            }
+            EngineHealthView::External | EngineHealthView::Running { .. } => {
+                StatusIndicator::new(engine_health_color(&self.engine_health, colors))
+                    .icon(IconName::Activity)
+                    .into_any_element()
+            }
+        };
+
         let engine_status = div()
             .id("engine-status")
             .role(Role::Status)
@@ -678,20 +707,7 @@ impl AppShell {
             .gap_1()
             .text_xs()
             .text_color(colors.text_secondary)
-            .child(
-                StatusIndicator::new(engine_health_color(&self.engine_health, colors)).icon(
-                    match &self.engine_health {
-                        EngineHealthView::Failed { .. } => IconName::CircleAlert,
-                        EngineHealthView::Restarting { .. } => IconName::RefreshCw,
-                        EngineHealthView::Running { restarts } if *restarts > 0 => {
-                            IconName::TriangleAlert
-                        }
-                        EngineHealthView::External | EngineHealthView::Running { .. } => {
-                            IconName::Activity
-                        }
-                    },
-                ),
-            )
+            .child(engine_indicator)
             .child(self.t(self.engine_health.message_key()));
 
         let stale_status = self.snapshot.stale.then(|| {
@@ -879,7 +895,7 @@ impl AppShell {
         };
 
         StatusBar::new()
-            .h(px(28.0))
+            .h(px(crate::theme::STATUSBAR_HEIGHT))
             .flex_none()
             .py_0()
             .left(status_button)
@@ -903,6 +919,7 @@ impl AppShell {
         let entries = self.activity_log.clone();
         div()
             .id("activity-panel-body")
+            .track_focus(&self.activity_popover_focus)
             .w(px(ACTIVITY_PANEL_WIDTH))
             .max_h(px(420.0))
             .flex()

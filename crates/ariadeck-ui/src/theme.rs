@@ -4,6 +4,9 @@ use gpui::{App, Hsla, Window, WindowAppearance, rgb};
 /// `gpui-kit` overlay sheet top margins.
 pub(crate) const TITLEBAR_HEIGHT: f32 = 52.0;
 
+/// Height of the bottom status bar, shared between chrome layout and toast bottom margins.
+pub(crate) const STATUSBAR_HEIGHT: f32 = 28.0;
+
 /// User-facing color scheme selection.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ThemeMode {
@@ -208,6 +211,7 @@ impl Theme {
         gpui_kit::component::Theme::update(cx, |kit| {
             kit.scrollbar_mode = gpui_kit::component::scroll::ScrollbarMode::Always;
             kit.sheet.margin_top = gpui::px(TITLEBAR_HEIGHT);
+            kit.notification.margins.bottom = gpui::px(STATUSBAR_HEIGHT + 12.0);
             kit.background = self.colors.background;
             kit.foreground = self.colors.text_primary;
             kit.secondary = self.colors.surface;
