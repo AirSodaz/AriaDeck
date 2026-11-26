@@ -706,7 +706,9 @@ fn task_list_keyboard_navigation_supports_home_end_page_and_shift_range(cx: &mut
 
     cx.simulate_keystrokes("pagedown");
     view.read_with(cx, |shell, _| {
-        let idx = shell.selected_index().expect("task selected after pagedown");
+        let idx = shell
+            .selected_index()
+            .expect("task selected after pagedown");
         assert!(idx > 0 && idx <= 24);
     });
 

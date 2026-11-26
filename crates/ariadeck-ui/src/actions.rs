@@ -75,7 +75,11 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("end", SelectLastTask, Some("DownloadWorkspace")),
         KeyBinding::new("pageup", SelectPageUpTask, Some("DownloadWorkspace")),
         KeyBinding::new("pagedown", SelectPageDownTask, Some("DownloadWorkspace")),
-        KeyBinding::new("shift-down", ExtendSelectNextTask, Some("DownloadWorkspace")),
+        KeyBinding::new(
+            "shift-down",
+            ExtendSelectNextTask,
+            Some("DownloadWorkspace"),
+        ),
         KeyBinding::new(
             "shift-up",
             ExtendSelectPreviousTask,

@@ -799,7 +799,8 @@ impl SettingsPanelView {
             .aria_label(self.t("settings-nav-aria"));
         for (index, category) in SettingsCategory::ALL.into_iter().enumerate() {
             let is_active = category == active;
-            let prev_index = (index + SettingsCategory::ALL.len() - 1) % SettingsCategory::ALL.len();
+            let prev_index =
+                (index + SettingsCategory::ALL.len() - 1) % SettingsCategory::ALL.len();
             let next_index = (index + 1) % SettingsCategory::ALL.len();
             let item = div()
                 .id(SharedString::from(format!("nav-{}", category.label())))

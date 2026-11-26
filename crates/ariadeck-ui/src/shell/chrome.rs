@@ -215,14 +215,16 @@ impl AppShell {
                         this.titlebar_drag_pending = false;
                     }),
                 )
-                .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, window, _| {
-                    if this.titlebar_drag_pending {
-                        this.titlebar_drag_pending = false;
-                        if event.pressed_button == Some(MouseButton::Left) {
-                            window.start_window_move();
+                .on_mouse_move(cx.listener(
+                    |this, event: &gpui::MouseMoveEvent, window, _| {
+                        if this.titlebar_drag_pending {
+                            this.titlebar_drag_pending = false;
+                            if event.pressed_button == Some(MouseButton::Left) {
+                                window.start_window_move();
+                            }
                         }
-                    }
-                }))
+                    },
+                ))
             })
             .child(
                 div()

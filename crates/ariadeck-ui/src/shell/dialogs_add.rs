@@ -973,11 +973,7 @@ impl AddDownloadDialogView {
             .focusable()
             .tab_stop(!pending)
             .border_1()
-            .border_color(if active {
-                colors.accent
-            } else {
-                colors.border
-            })
+            .border_color(if active { colors.accent } else { colors.border })
             .focus_visible(|style| style.border_color(colors.focus_ring))
             .h(px(48.0))
             .flex_none()
