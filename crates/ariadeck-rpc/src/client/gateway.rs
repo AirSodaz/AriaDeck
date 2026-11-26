@@ -4,7 +4,8 @@ use ariadeck_application::{
     TaskRemovalTarget,
 };
 use ariadeck_domain::{
-    Gid, SpeedLimitConfig, TaskConnectionDetails, TaskDetails, TransferPolicyConfig,
+    EnginePath, Gid, SpeedLimitConfig, TaskConnectionDetails, TaskDetails, TaskEditableState,
+    TransferPolicyConfig,
 };
 use async_trait::async_trait;
 
@@ -132,6 +133,49 @@ where
             .map_err(map_mutation_error)
     }
 
+    async fn get_uris(&self, gid: Gid) -> Result<Vec<String>, GatewayError> {
+        match Aria2Client::get_uris(self, gid).await {
+            Ok(uris) => Ok(uris),
+            Err(error) if super::decode::is_no_uri_data(&error) => Ok(Vec::new()),
+            Err(error) => Err(map_query_error(error)),
+        }
+    }
+
+    async fn change_uri(
+        &self,
+        gid: Gid,
+        file_index: u32,
+        del_uris: &[String],
+        add_uris: &[String],
+        position: Option<u32>,
+    ) -> Result<(u32, u32), GatewayError> {
+        Aria2Client::change_uri(self, gid, file_index, del_uris, add_uris, position)
+            .await
+            .map_err(map_mutation_error)
+    }
+
+    async fn relink_error_download(
+        &self,
+        gid: Gid,
+        new_uris: &[String],
+        override_options: &[(String, String)],
+        fallback_dir: Option<&EnginePath>,
+    ) -> Result<Gid, GatewayError> {
+        match Aria2Client::relink_error_download(
+            self,
+            gid,
+            new_uris,
+            override_options,
+            fallback_dir,
+        )
+        .await
+        {
+            Ok(new_gid) => Ok(new_gid),
+            Err(RetryRpcError::Query(error)) => Err(map_query_error(error)),
+            Err(RetryRpcError::Mutation(error)) => Err(map_mutation_error(error)),
+        }
+    }
+
     async fn apply_download_proxy(&self, config: &DownloadProxyConfig) -> Result<(), GatewayError> {
         self.change_global_options(&download_proxy_options(config))
             .await
@@ -192,6 +236,12 @@ where
         is_bittorrent: bool,
     ) -> Result<TaskConnectionDetails, GatewayError> {
         Aria2Client::connection_details(self, gid, active, is_bittorrent)
+            .await
+            .map_err(map_query_error)
+    }
+
+    async fn editable_state(&self, gid: Gid) -> Result<TaskEditableState, GatewayError> {
+        Aria2Client::editable_state(self, gid)
             .await
             .map_err(map_query_error)
     }

@@ -3,14 +3,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use ariadeck_domain::DomainHeaderPreset;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     AppSettings, BrowserBridgeSettings, CURRENT_SETTINGS_SCHEMA_VERSION, ColorScheme,
     CompletionPowerAction, DownloadCategory, DownloadProxyMode, DownloadProxySettings,
-    LanguagePreference, NotificationSettings, PlatformSettings, SETTINGS_EXPORT_FORMAT_VERSION,
-    SettingsError, SpeedLimitSettings, TrackerListSettings, TransferPolicySettings, UiPreferences,
-    atomic_io, error::io_error,
+    LanguagePreference, MirrorRewriteSettings, NotificationSettings, PlatformSettings,
+    SETTINGS_EXPORT_FORMAT_VERSION, SettingsError, SpeedLimitSettings, TrackerListSettings,
+    TransferPolicySettings, UiPreferences, atomic_io, error::io_error,
 };
 
 /// Portable settings representation used by explicit export/import actions.
@@ -37,6 +38,10 @@ struct SettingsExportDocument {
     ui: UiPreferences,
     categories: Vec<DownloadCategory>,
     tracker_list: TrackerListSettings,
+    #[serde(default)]
+    header_presets: Vec<DomainHeaderPreset>,
+    #[serde(default)]
+    mirror_rules: MirrorRewriteSettings,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -108,6 +113,8 @@ impl SettingsExportDocument {
             ui: settings.ui,
             categories: settings.categories.clone(),
             tracker_list: settings.tracker_list.clone(),
+            header_presets: settings.header_presets.clone(),
+            mirror_rules: settings.mirror_rules.clone(),
         }
     }
 
@@ -168,6 +175,8 @@ impl SettingsExportDocument {
             ui: self.ui,
             categories: self.categories,
             tracker_list: self.tracker_list,
+            header_presets: self.header_presets,
+            mirror_rules: self.mirror_rules,
         };
         crate::sync_download_directory_from_fallback(&mut settings);
         settings.validate()?;

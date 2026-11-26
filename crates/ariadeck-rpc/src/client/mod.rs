@@ -6,7 +6,10 @@ mod options;
 mod tests;
 
 use ariadeck_application::{AddDownloadRequest, AddDownloadSource, QueueMove};
-use ariadeck_domain::{Gid, GlobalStat, TaskConnectionDetails, TaskDetails, TaskSnapshot};
+use ariadeck_domain::{
+    EnginePath, Gid, GlobalStat, TaskConnectionDetails, TaskDetails, TaskEditableState,
+    TaskSnapshot,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Map, Value, json};
 
@@ -314,6 +317,90 @@ where
             vec![json!(gid.to_string()), Value::Object(options)],
         )
         .await
+    }
+
+    pub async fn change_uri(
+        &self,
+        gid: Gid,
+        file_index: u32,
+        del_uris: &[String],
+        add_uris: &[String],
+        position: Option<u32>,
+    ) -> Result<(u32, u32), RpcError> {
+        const METHOD: &str = "aria2.changeUri";
+        let mut params = vec![
+            json!(gid.to_string()),
+            json!(file_index),
+            json!(del_uris),
+            json!(add_uris),
+        ];
+        if let Some(position) = position {
+            params.push(json!(position));
+        }
+        let value = self.transport.call(METHOD, params).await?;
+        let counts = decode::<Vec<u32>>(METHOD, value)?;
+        if counts.len() != 2 {
+            return Err(RpcError::InvalidData {
+                method: METHOD.into(),
+                field: "result".into(),
+                message: "expected [deleted, added] array of length 2".into(),
+            });
+        }
+        Ok((counts[0], counts[1]))
+    }
+
+    pub(super) async fn relink_error_download(
+        &self,
+        gid: Gid,
+        new_uris: &[String],
+        override_options: &[(String, String)],
+        fallback_dir: Option<&EnginePath>,
+    ) -> Result<Gid, RetryRpcError> {
+        let mut options = match self.get_options(gid).await {
+            Ok(options) => options,
+            Err(RpcError::Remote { message, .. }) if is_gid_not_found(&message) => Map::new(),
+            Err(error) => return Err(RetryRpcError::Query(error)),
+        };
+        options.remove("gid");
+        options.remove("pause");
+        options.insert("continue".into(), Value::String("true".into()));
+        let overrides = pairs_to_option_map(override_options);
+        for (key, value) in overrides {
+            if value.as_str().is_some_and(str::is_empty) {
+                options.remove(&key);
+            } else {
+                options.insert(key, value);
+            }
+        }
+        if !options.contains_key("dir")
+            && let Some(dir) = fallback_dir
+        {
+            options.insert("dir".into(), Value::String(dir.as_str().to_owned()));
+        }
+        self.add_uri_with_options(new_uris, options)
+            .await
+            .map_err(RetryRpcError::Mutation)
+    }
+
+    pub async fn editable_state(&self, gid: Gid) -> Result<TaskEditableState, RpcError> {
+        let gid_param = json!(gid.to_string());
+        let calls = vec![
+            crate::RpcCall::new("aria2.getUris", vec![gid_param.clone()]),
+            crate::RpcCall::new("aria2.getOption", vec![gid_param]),
+        ];
+        let results = self.multicall(calls).await?;
+        let mut results = results.into_iter();
+        let uris = match next_multicall_result(&mut results, "aria2.getUris") {
+            Ok(value) => decode_detail_uris(value)?
+                .into_iter()
+                .map(|entry| entry.uri)
+                .collect(),
+            Err(error) if is_no_uri_data(&error) => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        let options_value = next_multicall_result(&mut results, "aria2.getOption")?;
+        let options = decode_validated_option_map("aria2.getOption", options_value)?;
+        Ok(build_editable_state(uris, &options))
     }
 
     pub async fn change_global_options(
@@ -685,4 +772,65 @@ where
             message: "expected the string OK".into(),
         })
     }
+}
+
+fn build_editable_state(uris: Vec<String>, options: &Map<String, Value>) -> TaskEditableState {
+    let str_opt = |key: &str| {
+        options
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+    };
+    let mut headers = Vec::new();
+    if let Some(raw) = options.get("header") {
+        let push_safe_header = |line: &str, out: &mut Vec<String>| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return;
+            }
+            if let Some((name, _)) = trimmed.split_once(':') {
+                let lower = name.trim().to_ascii_lowercase();
+                if matches!(
+                    lower.as_str(),
+                    "cookie" | "authorization" | "proxy-authorization"
+                ) {
+                    return;
+                }
+            }
+            out.push(trimmed.to_owned());
+        };
+        match raw {
+            Value::String(line) => push_safe_header(line, &mut headers),
+            Value::Array(lines) => {
+                for line in lines.iter().filter_map(Value::as_str) {
+                    push_safe_header(line, &mut headers);
+                }
+            }
+            _ => {}
+        }
+    }
+    let proxy = str_opt("all-proxy").map(|raw| strip_proxy_credentials(&raw));
+    TaskEditableState {
+        uris,
+        referer: str_opt("referer"),
+        user_agent: str_opt("user-agent"),
+        headers,
+        proxy,
+        max_download_limit: str_opt("max-download-limit"),
+        max_connection_per_server: str_opt("max-connection-per-server"),
+        split: str_opt("split"),
+        out: str_opt("out"),
+        dir: str_opt("dir"),
+    }
+}
+
+fn strip_proxy_credentials(raw: &str) -> String {
+    if let Ok(mut parsed) = url::Url::parse(raw) {
+        let _ = parsed.set_username("");
+        let _ = parsed.set_password(None);
+        return parsed.to_string();
+    }
+    raw.to_owned()
 }

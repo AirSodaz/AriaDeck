@@ -12,14 +12,16 @@ use std::{
 use ariadeck_application::{
     AddDownloadAdvancedOptions, AddDownloadRequest, AddDownloadSource, AppCommand,
     ApplicationError, ApplicationErrorCode, CommandItem, CommandOutcome, DownloadDestinationFile,
-    DownloadDestinationGateway, DownloadDestinationRequest, FileConflictPolicy, ItemFailure,
+    DownloadDestinationGateway, DownloadDestinationRequest, DownloadProxyConfig,
+    EditTaskDynamicOptions, EditTaskRequest, FileConflictPolicy, ItemFailure,
     MoveTaskInQueueRequest, QueueMove, RemoveTasksRequest, SetTaskOptionsRequest,
     SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, SyncHandle, TaskFileGateway,
     TaskFileRemovalRequest, TaskOpenRequest, TaskOpenTarget, TaskRemovalScope,
 };
 use ariadeck_domain::{
     ByteRate, ConnectionState, DownloadStatus, DownloadTask, EnginePath, EngineSession, Gid,
-    ProfileId, TaskDetails, TaskIdentity as DomainTaskIdentity,
+    MirrorRewriteRule, ProfileId, TaskDetails, TaskIdentity as DomainTaskIdentity,
+    rewrite_uri_with_rules,
 };
 use ariadeck_engine::CoreStore;
 use ariadeck_ui::{
@@ -29,12 +31,15 @@ use ariadeck_ui::{
     AddDownloadMetadataPreviewResultView, AddDownloadMetadataPreviewView, AddDownloadModeView,
     AddDownloadRequestView, AddDownloadResultView, AddDownloadSourceView, BatchCommandOutcomeView,
     BatchTaskCommandRequestView, BatchTaskCommandResultView, BatchTaskCommandView,
-    BatchTaskFailureView, CommandOutcomeView, CoreCommandView, FileConflictPolicyView,
-    GlobalTaskCommandRequestView, GlobalTaskCommandResultView, GlobalTaskCommandView,
-    OperationErrorView, TaskCommandRequestView, TaskCommandResultView, TaskCommandView,
-    TaskDetailsOutcomeView, TaskDetailsRequestView, TaskDetailsResultView, TaskIdentity,
-    TaskOpenOutcomeView, TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView,
-    TaskPathValidationView,
+    BatchTaskFailureView, CommandOutcomeView, CoreCommandView, FileChecksumRequestView,
+    FileChecksumResultView, FileConflictPolicyView, GlobalTaskCommandRequestView,
+    GlobalTaskCommandResultView, GlobalTaskCommandView, OperationErrorView,
+    PrepareEditTaskRequestView, PrepareEditTaskResultView, ProbeDownloadUrlRequestView,
+    ProbeDownloadUrlResultView, ProbedDownloadMetadataView, RelinkEditOutcomeView,
+    RelinkEditTaskRequestView, RelinkEditTaskResultView, SpeedLimitSettingsView,
+    TaskCommandRequestView, TaskCommandResultView, TaskCommandView, TaskDetailsOutcomeView,
+    TaskDetailsRequestView, TaskDetailsResultView, TaskIdentity, TaskOpenOutcomeView,
+    TaskOpenRequestView, TaskOpenResultView, TaskOpenTargetView, TaskPathValidationView,
 };
 use secrecy::SecretString;
 use url::Url;
@@ -1129,13 +1134,41 @@ pub(crate) fn find_new_matching_add_task<'a>(
         .find(|task| !known_gids.contains(&task.gid) && task_matches_add_sources(task, sources))
 }
 
+#[cfg(test)]
 pub(crate) fn find_matching_add_task<'a>(
     tasks: &'a [DownloadTask],
     sources: &[AddDownloadSourceView],
 ) -> Option<&'a DownloadTask> {
-    tasks
-        .iter()
-        .find(|task| task_matches_add_sources(task, sources))
+    find_matching_add_task_with_mirrors(tasks, sources, &[])
+}
+
+pub(crate) fn find_matching_add_task_with_mirrors<'a>(
+    tasks: &'a [DownloadTask],
+    sources: &[AddDownloadSourceView],
+    mirror_rules: &[MirrorRewriteRule],
+) -> Option<&'a DownloadTask> {
+    tasks.iter().find(|task| {
+        if task_matches_add_sources(task, sources) {
+            return true;
+        }
+        if mirror_rules.is_empty() {
+            return false;
+        }
+        if let Some(primary_uri) = task.metadata.primary_uri.as_deref() {
+            let rewritten_task = rewrite_uri_with_rules(primary_uri, mirror_rules);
+            sources.iter().any(|source| match source {
+                AddDownloadSourceView::Uri { uri, .. } => {
+                    let rewritten_source = rewrite_uri_with_rules(uri, mirror_rules);
+                    add_uris_equal(&rewritten_task.rewritten, uri)
+                        || add_uris_equal(primary_uri, &rewritten_source.rewritten)
+                        || add_uris_equal(&rewritten_task.rewritten, &rewritten_source.rewritten)
+                }
+                AddDownloadSourceView::MetadataFile { .. } => false,
+            })
+        } else {
+            false
+        }
+    })
 }
 
 pub(crate) fn task_matches_add_sources(
@@ -1538,11 +1571,22 @@ pub(crate) fn execute_core_command_on_store(
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn execute_add_download(
     runtime: tokio::runtime::Handle,
     sync: Option<SyncHandle>,
     destination_gateway: Option<Arc<dyn DownloadDestinationGateway>>,
     request: AddDownloadRequestView,
+) -> AddDownloadResultView {
+    execute_add_download_with_mirrors(runtime, sync, destination_gateway, request, Vec::new()).await
+}
+
+pub(crate) async fn execute_add_download_with_mirrors(
+    runtime: tokio::runtime::Handle,
+    sync: Option<SyncHandle>,
+    destination_gateway: Option<Arc<dyn DownloadDestinationGateway>>,
+    request: AddDownloadRequestView,
+    mirror_rules: Vec<MirrorRewriteRule>,
 ) -> AddDownloadResultView {
     let AddDownloadRequestView {
         request_id,
@@ -1610,7 +1654,9 @@ pub(crate) async fn execute_add_download(
             .then(|| {
                 known_tasks
                     .as_deref()
-                    .and_then(|tasks| find_matching_add_task(tasks, &group))
+                    .and_then(|tasks| {
+                        find_matching_add_task_with_mirrors(tasks, &group, &mirror_rules)
+                    })
                     .map(|task| TaskIdentity {
                         profile_id: session.profile_id.clone(),
                         gid: task.gid.to_string(),
@@ -1751,5 +1797,318 @@ pub(crate) async fn execute_add_download(
         request_id,
         session,
         items,
+    }
+}
+
+fn collect_probe_headers(referer: &str, user_agent: &str, headers: &str) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    let referer = referer.trim();
+    if !referer.is_empty() {
+        pairs.push(("Referer".to_owned(), referer.to_owned()));
+    }
+    let user_agent = user_agent.trim();
+    if !user_agent.is_empty() {
+        pairs.push(("User-Agent".to_owned(), user_agent.to_owned()));
+    }
+    for line in headers.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((name, value)) = trimmed.split_once(':') {
+            let name = name.trim();
+            if !name.is_empty()
+                && !name.eq_ignore_ascii_case("cookie")
+                && !name.eq_ignore_ascii_case("authorization")
+                && !name.eq_ignore_ascii_case("proxy-authorization")
+            {
+                pairs.push((name.to_owned(), value.trim().to_owned()));
+            }
+        }
+    }
+    pairs
+}
+
+pub(crate) async fn execute_probe_download_url(
+    request: ProbeDownloadUrlRequestView,
+    proxy: Option<DownloadProxyConfig>,
+) -> ProbeDownloadUrlResultView {
+    let headers = collect_probe_headers(&request.referer, &request.user_agent, &request.headers);
+    let outcome = match super::http::probe_download_url(
+        &request.url,
+        &headers,
+        proxy.as_ref(),
+        std::time::Duration::from_secs(8),
+    )
+    .await
+    {
+        Ok(probed) => Ok(ProbedDownloadMetadataView {
+            final_url: probed.final_url,
+            resolved_filename: probed.file_name,
+            total_bytes: probed.total_bytes,
+            etag: probed.etag,
+            accept_ranges: probed.accept_ranges,
+        }),
+        Err(summary) => Err(OperationErrorView {
+            code: "network.probe_failed".into(),
+            summary,
+            retryable: true,
+        }),
+    };
+    ProbeDownloadUrlResultView {
+        request_id: request.request_id,
+        url: request.url,
+        outcome,
+    }
+}
+
+pub(crate) async fn execute_prepare_edit_task(
+    sync: Option<SyncHandle>,
+    request: PrepareEditTaskRequestView,
+) -> PrepareEditTaskResultView {
+    let mapped = map_engine_session(&request.session)
+        .and_then(|session| map_task_identity(&request.identity).map(|task| (session, task)));
+    let outcome = match (sync, mapped) {
+        (Some(handle), Ok((session, task))) => match handle.editable_state(session, task).await {
+            Ok(state) => Ok(super::mapping::map_task_editable_state(state)),
+            Err(error) => Err(map_application_error(error)),
+        },
+        (None, _) => Err(unavailable_operation_error()),
+        (Some(_), Err(error)) => Err(map_application_error(error)),
+    };
+    PrepareEditTaskResultView {
+        request_id: request.request_id,
+        identity: request.identity,
+        outcome,
+    }
+}
+
+fn check_relink_probe_mismatch(
+    request: &RelinkEditTaskRequestView,
+    probed: &super::http::UrlProbeResult,
+) -> Option<String> {
+    if let Some(expected_bytes) = request.expected_total_bytes.filter(|&b| b > 0) {
+        match probed.total_bytes {
+            Some(probed_bytes) if probed_bytes != expected_bytes => {
+                return Some(format!(
+                    "Replacement URL size ({probed_bytes} B) differs from current task size ({expected_bytes} B)."
+                ));
+            }
+            None => {
+                return Some(format!(
+                    "Replacement URL did not report file size to match current task ({expected_bytes} B)."
+                ));
+            }
+            _ => {}
+        }
+    }
+    if let (Some(expected_name), Some(probed_name)) = (
+        request
+            .expected_filename
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
+        probed
+            .file_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
+    ) && !probed_name.eq_ignore_ascii_case(expected_name)
+    {
+        return Some(format!(
+            "Replacement URL filename \"{probed_name}\" differs from current file \"{expected_name}\"."
+        ));
+    }
+    None
+}
+
+pub(crate) async fn execute_relink_edit_task(
+    sync: Option<SyncHandle>,
+    proxy: Option<DownloadProxyConfig>,
+    request: RelinkEditTaskRequestView,
+) -> RelinkEditTaskResultView {
+    let mapped = map_engine_session(&request.session)
+        .and_then(|session| map_task_identity(&request.identity).map(|task| (session, task)));
+    let outcome = match (sync, mapped) {
+        (Some(handle), Ok((engine_session, task))) => {
+            let mut mismatch_warning: Option<RelinkEditOutcomeView> = None;
+            if let Some(next_url) = request.new_url.as_deref().map(str::trim)
+                && !request.force_mismatch
+                && let Ok(parsed) = Url::parse(next_url)
+                && matches!(parsed.scheme(), "http" | "https")
+            {
+                let probe_headers = collect_probe_headers(
+                    request.referer.as_deref().unwrap_or(""),
+                    request.user_agent.as_deref().unwrap_or(""),
+                    request.headers.as_deref().unwrap_or(""),
+                );
+                match super::http::probe_download_url(
+                    next_url,
+                    &probe_headers,
+                    proxy.as_ref(),
+                    std::time::Duration::from_secs(8),
+                )
+                .await
+                {
+                    Ok(probed) => {
+                        if let Some(warning_message) =
+                            check_relink_probe_mismatch(&request, &probed)
+                        {
+                            mismatch_warning =
+                                Some(RelinkEditOutcomeView::NeedsMismatchConfirmation {
+                                    warning_message,
+                                    probed_filename: probed.file_name,
+                                    probed_total_bytes: probed.total_bytes,
+                                });
+                        }
+                    }
+                    Err(error) => {
+                        mismatch_warning = Some(RelinkEditOutcomeView::NeedsMismatchConfirmation {
+                            warning_message: format!(
+                                "Could not verify replacement URL before relink: {error}"
+                            ),
+                            probed_filename: None,
+                            probed_total_bytes: None,
+                        });
+                    }
+                }
+            }
+
+            if let Some(warning) = mismatch_warning {
+                warning
+            } else {
+                let parsed_limit = match request.max_download_limit.as_deref() {
+                    Some(raw) => {
+                        let draft = SpeedLimitSettingsView {
+                            download_limit: raw.to_owned(),
+                            upload_limit: String::new(),
+                        };
+                        match draft.parse_download_limit() {
+                            Some(bytes) => Ok(Some(ByteRate::new(bytes))),
+                            None => Err(format!("Invalid max download limit: {}", raw.trim())),
+                        }
+                    }
+                    None => Ok(None),
+                };
+                let parsed_conn = match request.max_connection_per_server.as_deref().map(str::trim)
+                {
+                    None => Ok(None),
+                    Some("") => Err("Connections per server must be between 1 and 16.".to_owned()),
+                    Some(raw) => raw
+                        .parse::<u32>()
+                        .map(Some)
+                        .map_err(|_| format!("Invalid connections per server: {raw}")),
+                };
+                let parsed_split = match request.split.as_deref().map(str::trim) {
+                    None => Ok(None),
+                    Some("") => Err("Split count must be between 1 and 64.".to_owned()),
+                    Some(raw) => raw
+                        .parse::<u32>()
+                        .map(Some)
+                        .map_err(|_| format!("Invalid split count: {raw}")),
+                };
+                match (parsed_limit, parsed_conn, parsed_split) {
+                    (Ok(max_download_limit), Ok(max_connection_per_server), Ok(split)) => {
+                        let headers = request.headers.as_deref().map(|raw| {
+                            raw.lines()
+                                .map(str::trim)
+                                .filter(|line| !line.is_empty())
+                                .map(ToOwned::to_owned)
+                                .collect::<Vec<_>>()
+                        });
+                        let edit_request = EditTaskRequest {
+                            task,
+                            new_uris: request.new_url.map(|u| vec![u]),
+                            options: EditTaskDynamicOptions {
+                                referer: request.referer,
+                                user_agent: request.user_agent,
+                                headers,
+                                proxy: request.proxy,
+                                max_download_limit,
+                                max_connection_per_server,
+                                split,
+                                out: request.out,
+                            },
+                            allow_error_relink_resume: request.allow_error_relink_resume,
+                        };
+                        let outcome = handle
+                            .execute(engine_session, AppCommand::EditTask(edit_request))
+                            .await;
+                        if outcome.has_successes() {
+                            handle.force_refresh().await;
+                        }
+                        RelinkEditOutcomeView::Succeeded(map_command_outcome(outcome))
+                    }
+                    (Err(msg), _, _) | (_, Err(msg), _) | (_, _, Err(msg)) => {
+                        RelinkEditOutcomeView::Succeeded(CommandOutcomeView::Failure(
+                            map_application_error(ApplicationError::new(
+                                ApplicationErrorCode::Validation,
+                                msg,
+                                false,
+                            )),
+                        ))
+                    }
+                }
+            }
+        }
+        (None, _) => RelinkEditOutcomeView::Succeeded(CommandOutcomeView::Failure(
+            unavailable_operation_error(),
+        )),
+        (Some(_), Err(error)) => RelinkEditOutcomeView::Succeeded(CommandOutcomeView::Failure(
+            map_application_error(error),
+        )),
+    };
+    RelinkEditTaskResultView {
+        request_id: request.request_id,
+        session: request.session,
+        identity: request.identity,
+        outcome,
+    }
+}
+
+pub(crate) async fn execute_file_checksum(
+    task_file_gateway: Option<Arc<dyn TaskFileGateway>>,
+    cancel: tokio::sync::watch::Receiver<bool>,
+    request: FileChecksumRequestView,
+    progress_tx: tokio::sync::mpsc::UnboundedSender<(u64, u64)>,
+) -> FileChecksumResultView {
+    let outcome = match task_file_gateway {
+        None => Err(unavailable_operation_error()),
+        Some(gateway) => {
+            let dir = EnginePath::new(&request.directory);
+            let file = EnginePath::new(&request.file_path);
+            let resolved = gateway
+                .resolve_existing_file(&dir, &file)
+                .await
+                .map_err(|err| map_application_error(err.into()));
+            match resolved {
+                Err(error) => Err(error),
+                Ok(path) => {
+                    match super::checksum::compute_file_checksum(
+                        path,
+                        request.algorithm,
+                        cancel,
+                        move |processed, total| {
+                            let _ = progress_tx.send((processed, total));
+                        },
+                    )
+                    .await
+                    {
+                        Ok(hex) => Ok(hex),
+                        Err(summary) => Err(OperationErrorView {
+                            code: "checksum.failed".into(),
+                            summary,
+                            retryable: true,
+                        }),
+                    }
+                }
+            }
+        }
+    };
+    FileChecksumResultView {
+        request_id: request.request_id,
+        identity: request.identity,
+        algorithm: request.algorithm,
+        outcome,
     }
 }

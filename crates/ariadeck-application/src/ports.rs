@@ -1,6 +1,6 @@
 use ariadeck_domain::{
     ByteCount, DownloadStatus, EnginePath, Gid, ProfileId, SpeedLimitConfig, TaskConnectionDetails,
-    TaskDetails, TaskError, TaskSnapshot, TaskSourceKind, TransferPolicyConfig,
+    TaskDetails, TaskEditableState, TaskError, TaskSnapshot, TaskSourceKind, TransferPolicyConfig,
 };
 use async_trait::async_trait;
 use thiserror::Error;
@@ -59,6 +59,40 @@ pub trait DownloadEngineGateway: Send + Sync {
         gid: Gid,
         options: &[(String, String)],
     ) -> Result<(), GatewayError>;
+    async fn get_uris(&self, _gid: Gid) -> Result<Vec<String>, GatewayError> {
+        Err(GatewayError::new(
+            GatewayErrorKind::Unsupported,
+            "The connected engine does not expose task URI queries.",
+            false,
+        ))
+    }
+    async fn change_uri(
+        &self,
+        _gid: Gid,
+        _file_index: u32,
+        _del_uris: &[String],
+        _add_uris: &[String],
+        _position: Option<u32>,
+    ) -> Result<(u32, u32), GatewayError> {
+        Err(GatewayError::new(
+            GatewayErrorKind::Unsupported,
+            "The connected engine does not expose task URI replacement.",
+            false,
+        ))
+    }
+    async fn relink_error_download(
+        &self,
+        _gid: Gid,
+        _new_uris: &[String],
+        _override_options: &[(String, String)],
+        _fallback_dir: Option<&EnginePath>,
+    ) -> Result<Gid, GatewayError> {
+        Err(GatewayError::new(
+            GatewayErrorKind::Unsupported,
+            "The connected engine does not expose error-task relink resume.",
+            false,
+        ))
+    }
     async fn apply_download_proxy(
         &self,
         _config: &DownloadProxyConfig,
@@ -198,6 +232,18 @@ pub trait TaskFileGateway: Send + Sync {
             false,
         ))
     }
+
+    async fn resolve_existing_file(
+        &self,
+        _directory: &EnginePath,
+        _file: &EnginePath,
+    ) -> Result<std::path::PathBuf, GatewayError> {
+        Err(GatewayError::new(
+            GatewayErrorKind::Unsupported,
+            "Local file verification is unavailable for this engine profile.",
+            false,
+        ))
+    }
 }
 
 /// On-demand, potentially expensive task data kept outside list refreshes.
@@ -221,6 +267,14 @@ pub trait TaskConnectionDetailsGateway: Send + Sync {
         Err(GatewayError::new(
             GatewayErrorKind::Unsupported,
             "The connected engine does not expose connection detail projections.",
+            false,
+        ))
+    }
+
+    async fn editable_state(&self, _gid: Gid) -> Result<TaskEditableState, GatewayError> {
+        Err(GatewayError::new(
+            GatewayErrorKind::Unsupported,
+            "The connected engine does not expose editable task state.",
             false,
         ))
     }

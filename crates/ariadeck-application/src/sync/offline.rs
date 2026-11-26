@@ -113,6 +113,12 @@ pub(super) async fn handle_unavailable_control(
             )));
             UnavailableControlDisposition::Continue
         }
+        Some(Control::EditableState { sender, .. }) => {
+            let _ = sender.send(Err(unavailable_error(
+                "Editable task options are unavailable until aria2 is connected and synchronized.",
+            )));
+            UnavailableControlDisposition::Continue
+        }
         None => UnavailableControlDisposition::Stop,
     }
 }

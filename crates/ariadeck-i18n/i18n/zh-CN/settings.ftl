@@ -307,3 +307,28 @@ settings-category-name-placeholder = 常规
 # 平台能力提示
 settings-keep-awake-unsupported-desc = 下载时阻止休眠目前仅在 Windows 平台支持。
 settings-bridge-unsupported-desc = 原生浏览器桥接打包与注册目前仅在 Windows 平台支持。
+
+# 网络 — 域名请求头预设与 URL 镜像重写规则
+settings-network-header-presets = 域名请求头预设
+settings-header-presets-desc = 当下载链接匹配指定域名时，自动填充 Referer、User-Agent 与自定义请求头（出于安全边界不包含 Cookie 或 Authorization）。
+settings-header-presets-empty = 暂无域名请求头预设。
+settings-header-preset-add = 添加预设
+settings-header-preset-name = 预设名称
+settings-header-preset-name-placeholder = 例如：网盘 Referer 预设
+settings-header-preset-domains = 匹配域名（逗号分隔，支持 *.example.com）
+settings-header-preset-no-domains = 未配置域名规则
+settings-network-mirrors = URL 镜像改写规则与探测
+settings-auto-probe-on-add = 添加单个 HTTP(S) 链接时自动探测
+settings-auto-probe-on-add-desc = 输入单个链接后自动发送轻量 HEAD/Range 请求，提前获取真实文件名、大小并触发分类路由。
+settings-mirror-keep-original = 保留原始链接作为备用镜像
+settings-mirror-keep-original-desc = 开启后会将改写后的镜像链与原始链接一并传给 aria2 作为多源镜像。
+settings-mirror-templates = 快捷模板：
+settings-mirror-rules-empty = 暂无镜像改写规则。
+settings-mirror-rule-add = 添加镜像规则
+settings-mirror-rule-match-kind = 匹配方式
+settings-mirror-kind-prefix = 前缀
+settings-mirror-kind-host = 域名
+settings-mirror-rule-name = 规则名称
+settings-mirror-rule-name-placeholder = 例如：GitHub Release 加速
+settings-mirror-rule-pattern = 匹配模式
+settings-mirror-rule-replacement = 镜像替换前缀/域名

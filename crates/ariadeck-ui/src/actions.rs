@@ -34,6 +34,9 @@ actions!(
         OpenTaskSpeedLimit,
         CloseTaskSpeedLimit,
         SubmitTaskSpeedLimit,
+        OpenEditTask,
+        CloseEditTask,
+        SubmitEditTask,
         CloseTaskOptions,
         SubmitTaskOptions,
         CloseBatchFailures,
@@ -143,6 +146,12 @@ pub fn init(cx: &mut App) {
             pick("cmd-enter", "ctrl-enter"),
             SubmitTaskOptions,
             Some("TaskOptionsDialog"),
+        ),
+        KeyBinding::new("escape", CloseEditTask, Some("EditTaskDialog")),
+        KeyBinding::new(
+            pick("cmd-enter", "ctrl-enter"),
+            SubmitEditTask,
+            Some("EditTaskDialog"),
         ),
         KeyBinding::new("escape", CloseBatchFailures, Some("BatchFailureDialog")),
         // Escape dismisses the first-run guide, which counts as "you were asked".

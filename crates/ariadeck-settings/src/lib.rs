@@ -8,6 +8,7 @@ mod export;
 mod platform;
 mod profile_env;
 mod proxy;
+mod rules;
 mod store;
 mod system_proxy;
 mod tracker;
@@ -38,6 +39,7 @@ pub use proxy::{
     DownloadProxyMode, DownloadProxySettings, ProxyCredentialError, ProxyCredentialRef,
     ProxyCredentialStore, SystemProxyCredentialStore,
 };
+pub use rules::MirrorRewriteSettings;
 pub use store::{
     AppSettings, JsonSettingsStore, LoadedSettings, SettingsRecovery,
     sync_download_directory_from_fallback,

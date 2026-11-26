@@ -10,10 +10,10 @@ mod view;
 pub use commands::{
     AddDownloadAdvancedOptions, AddDownloadRequest, AddDownloadSource, AppCommand,
     ApplicationError, ApplicationErrorCode, CommandItem, CommandOutcome, CommandService,
-    DownloadProxyConfig, DownloadProxyMode, FileConflictPolicy, ItemFailure,
-    MoveTaskInQueueRequest, QueueMove, RemoveTasksRequest, SetTaskConnectionPolicyRequest,
-    SetTaskOptionsRequest, SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, TaskCommandContext,
-    TaskRemovalScope, format_selected_file_indices,
+    DownloadProxyConfig, DownloadProxyMode, EditTaskDynamicOptions, EditTaskRequest,
+    FileConflictPolicy, ItemFailure, MoveTaskInQueueRequest, QueueMove, RemoveTasksRequest,
+    SetTaskConnectionPolicyRequest, SetTaskOptionsRequest, SetTaskOutputNameRequest,
+    SetTaskSpeedLimitRequest, TaskCommandContext, TaskRemovalScope, format_selected_file_indices,
 };
 pub use history::{DEFAULT_SPEED_HISTORY_CAPACITY, SpeedHistory, SpeedHistoryError, SpeedSample};
 pub use ports::{

@@ -562,6 +562,72 @@ pub struct DownloadCategoryView {
     pub is_fallback: bool,
 }
 
+/// Client-wide domain-matched HTTP request header preset (cookie-free).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DomainHeaderPresetView {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    /// Comma-separated domain patterns (`example.com, *.cdn.example`).
+    pub domains: String,
+    pub referer: String,
+    pub user_agent: String,
+    /// Newline-separated `Name: value` headers.
+    pub headers: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MirrorMatchKindView {
+    #[default]
+    Prefix,
+    Host,
+}
+
+impl MirrorMatchKindView {
+    pub const ALL: [Self; 2] = [Self::Prefix, Self::Host];
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Prefix => 0,
+            Self::Host => 1,
+        }
+    }
+
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::Prefix => "settings-mirror-kind-prefix",
+            Self::Host => "settings-mirror-kind-host",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MirrorRewriteRuleView {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub match_kind: MirrorMatchKindView,
+    pub pattern: String,
+    pub replacement: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MirrorRewriteSettingsView {
+    pub keep_original_as_mirror: bool,
+    pub rules: Vec<MirrorRewriteRuleView>,
+}
+
+impl Default for MirrorRewriteSettingsView {
+    fn default() -> Self {
+        Self {
+            keep_original_as_mirror: true,
+            rules: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SettingsView {
     pub color_scheme: ColorSchemeView,
@@ -576,6 +642,9 @@ pub struct SettingsView {
     pub browser_bridge: BrowserBridgeSettingsView,
     pub categories: Vec<DownloadCategoryView>,
     pub tracker_list: TrackerListSettingsView,
+    pub header_presets: Vec<DomainHeaderPresetView>,
+    pub mirror_rules: MirrorRewriteSettingsView,
+    pub auto_probe_on_add: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

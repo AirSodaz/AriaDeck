@@ -501,6 +501,28 @@ impl TaskFileGateway for LocalTaskFileGateway {
         })
         .await
     }
+
+    async fn resolve_existing_file(
+        &self,
+        directory: &ariadeck_domain::EnginePath,
+        file: &ariadeck_domain::EnginePath,
+    ) -> Result<PathBuf, GatewayError> {
+        let roots = self.download_roots.clone();
+        let directory = directory.clone();
+        let file = file.clone();
+        run_blocking(move || {
+            let (root, raw_task_dir, task_dir) =
+                resolve_authorized_task_directory(&roots, &directory)?;
+            let raw_path = resolve_engine_path(&raw_task_dir, file.as_str())?;
+            safe_existing_file(&raw_path, &root, &task_dir)?.ok_or_else(|| {
+                filesystem_gateway_error(
+                    format!("downloaded file does not exist: {}", raw_path.display()),
+                    false,
+                )
+            })
+        })
+        .await
+    }
 }
 
 /// Run blocking filesystem work without requiring a current Tokio runtime.

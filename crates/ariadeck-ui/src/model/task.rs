@@ -228,6 +228,17 @@ impl DownloadRowView {
             )
     }
 
+    #[must_use]
+    pub const fn can_relink_url(&self) -> bool {
+        matches!(self.source_kind, TaskSourceKindView::DirectUri)
+            && (!self.status.is_terminal() || matches!(self.status, TaskStatusView::Failed))
+    }
+
+    #[must_use]
+    pub const fn can_edit_or_relink(&self) -> bool {
+        self.status.can_set_speed_limit() || self.can_relink_url()
+    }
+
     /// Share ratio as fixed thousandths (1.000 == 1000), without floating
     /// point rounding in the underlying byte calculation.
     #[must_use]
@@ -400,6 +411,7 @@ pub struct EngineCapabilitiesView {
     pub force_remove: bool,
     pub queue_positioning: bool,
     pub change_option: bool,
+    pub change_uri: bool,
     pub change_global_option: bool,
     pub get_peers: bool,
     pub get_servers: bool,
@@ -418,6 +430,7 @@ impl EngineCapabilitiesView {
             force_remove: true,
             queue_positioning: true,
             change_option: true,
+            change_uri: true,
             change_global_option: true,
             get_peers: true,
             get_servers: true,
@@ -448,6 +461,11 @@ impl EngineCapabilitiesView {
     #[must_use]
     pub fn unsupported_change_option_message(&self) -> &'static str {
         "This aria2 build does not expose per-task option changes."
+    }
+
+    #[must_use]
+    pub fn unsupported_change_uri_message(&self) -> &'static str {
+        "This aria2 build does not expose per-task URI replacement."
     }
 }
 

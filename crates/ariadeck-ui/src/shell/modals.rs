@@ -29,6 +29,7 @@ pub(crate) enum ModalKind {
     TaskOutputName,
     TaskSpeedLimit,
     TaskOptions,
+    EditTask,
     RemoveConfirmation,
     PowerCountdown,
     BatchFailureDetails,
@@ -62,6 +63,19 @@ pub(super) enum ActiveModal {
         seed_time_input: Entity<InputState>,
         _subs: [Subscription; 2],
     },
+    EditTask {
+        dialog: Box<EditTaskDialog>,
+        url_input: Entity<InputState>,
+        referer_input: Entity<InputState>,
+        user_agent_input: Entity<InputState>,
+        headers_input: Entity<TextareaState>,
+        proxy_input: Entity<InputState>,
+        speed_limit_input: Entity<InputState>,
+        connections_input: Entity<InputState>,
+        split_input: Entity<InputState>,
+        out_input: Entity<InputState>,
+        _subs: Vec<Subscription>,
+    },
     RemoveConfirmation(RemoveConfirmation),
     BatchFailureDetails(BatchFailureDetails),
     PowerCountdown(PowerCountdownState),
@@ -78,6 +92,7 @@ impl ActiveModal {
             Self::OutputName { .. } => ModalKind::TaskOutputName,
             Self::TaskSpeedLimit { .. } => ModalKind::TaskSpeedLimit,
             Self::TaskOptions { .. } => ModalKind::TaskOptions,
+            Self::EditTask { .. } => ModalKind::EditTask,
             Self::RemoveConfirmation(_) => ModalKind::RemoveConfirmation,
             Self::BatchFailureDetails(_) => ModalKind::BatchFailureDetails,
             Self::PowerCountdown(_) => ModalKind::PowerCountdown,
@@ -176,6 +191,23 @@ impl Render for ShellModalBody {
                     move |action: &SubmitTaskOptions, window, cx| {
                         shell.update(cx, |this, cx| {
                             this.submit_task_options_action(action, window, cx);
+                        });
+                    }
+                })
+                .into_any_element(),
+            ModalKind::EditTask => container
+                .id("edit-task-dialog")
+                .key_context("EditTaskDialog")
+                .on_action(move |action: &CloseEditTask, window, cx| {
+                    shell.update(cx, |this, cx| {
+                        this.close_edit_task_action(action, window, cx);
+                    });
+                })
+                .on_action({
+                    let shell = self.shell.clone();
+                    move |action: &SubmitEditTask, window, cx| {
+                        shell.update(cx, |this, cx| {
+                            this.submit_edit_task_action(action, window, cx);
                         });
                     }
                 })
@@ -313,12 +345,18 @@ impl AppShell {
                 let translator = self.translator.clone();
                 let categories = self.settings.categories.clone();
                 let download_directory = self.settings.download_directory.clone();
+                let header_presets = self.settings.header_presets.clone();
+                let mirror_rules = self.settings.mirror_rules.clone();
+                let auto_probe_on_add = self.settings.auto_probe_on_add;
                 view.update(cx, |dialog, cx| {
                     dialog.sync_context(
                         theme,
                         translator,
                         categories,
                         download_directory,
+                        header_presets,
+                        mirror_rules,
+                        auto_probe_on_add,
                         window,
                         cx,
                     );
@@ -359,6 +397,7 @@ impl AppShell {
             }
             Some(
                 ActiveModal::OutputName { .. }
+                | ActiveModal::EditTask { .. }
                 | ActiveModal::RemoveConfirmation(_)
                 | ActiveModal::BatchFailureDetails(_)
                 | ActiveModal::PowerCountdown(_),
@@ -622,6 +661,67 @@ impl AppShell {
                         })
                 });
             }
+            ModalKind::EditTask => {
+                let title = self.t("dialog-edit-task-title");
+                let initial_focus = Cell::new(true);
+                let shell_focus = shell.downgrade();
+                let shell_ok = shell.downgrade();
+                let shell_cancel = shell.downgrade();
+                let shell_close = shell.downgrade();
+                window.open_dialog(cx, move |dialog, window, cx| {
+                    if initial_focus.replace(false)
+                        && let Some(focus) = shell_focus
+                            .read_with(cx, |this, cx| match &this.active_modal {
+                                Some(ActiveModal::EditTask {
+                                    dialog,
+                                    url_input,
+                                    referer_input,
+                                    ..
+                                }) => Some(if dialog.can_relink_url {
+                                    url_input.focus_handle(cx)
+                                } else {
+                                    referer_input.focus_handle(cx)
+                                }),
+                                _ => None,
+                            })
+                            .ok()
+                            .flatten()
+                    {
+                        focus.focus(window, cx);
+                    }
+                    let shell_ok = shell_ok.clone();
+                    let shell_cancel = shell_cancel.clone();
+                    let shell_close = shell_close.clone();
+                    dialog
+                        .title(title.clone())
+                        .width(px(580.0))
+                        .centered()
+                        .entrance(DialogEntrance::FadeSlide)
+                        .overlay_closable(false)
+                        .close_button(true)
+                        .keyboard(true)
+                        .child(body.clone())
+                        .footer(footer.clone())
+                        .on_ok(move |_, _, cx| {
+                            let _ = shell_ok.update(cx, |this, cx| {
+                                this.submit_edit_task(cx);
+                            });
+                            false
+                        })
+                        .on_cancel(move |_, window, cx| {
+                            shell_cancel
+                                .update(cx, |this, cx| {
+                                    this.try_cancel_kit_modal(ModalKind::EditTask, window, cx)
+                                })
+                                .unwrap_or(true)
+                        })
+                        .on_close(move |_, _, cx| {
+                            let _ = shell_close.update(cx, |this, cx| {
+                                this.on_kit_modal_closed(ModalKind::EditTask, cx);
+                            });
+                        })
+                });
+            }
             ModalKind::RemoveConfirmation => {
                 let title = self.t("dialog-remove-title");
                 let danger = self.theme.colors.danger;
@@ -856,6 +956,15 @@ impl AppShell {
                 }
                 self.active_modal = None;
             }
+            ModalKind::EditTask => {
+                if matches!(
+                    &self.active_modal,
+                    Some(ActiveModal::EditTask { dialog, .. }) if dialog.submit_request.is_some()
+                ) {
+                    return false;
+                }
+                self.active_modal = None;
+            }
             ModalKind::RemoveConfirmation | ModalKind::BatchFailureDetails => {
                 self.active_modal = None;
             }
@@ -896,6 +1005,7 @@ impl AppShell {
             ModalKind::TaskOutputName
             | ModalKind::TaskSpeedLimit
             | ModalKind::TaskOptions
+            | ModalKind::EditTask
             | ModalKind::RemoveConfirmation
             | ModalKind::BatchFailureDetails => {
                 self.active_modal = None;
@@ -921,6 +1031,7 @@ impl AppShell {
             ModalKind::TaskOutputName => self.render_task_output_name_body(cx),
             ModalKind::TaskSpeedLimit => self.render_task_speed_limit_body(cx),
             ModalKind::TaskOptions => self.render_task_options_body(cx),
+            ModalKind::EditTask => self.render_edit_task_body(cx),
             ModalKind::RemoveConfirmation => self.render_remove_confirmation_body(cx),
             ModalKind::PowerCountdown => self.render_power_countdown_body(cx),
             ModalKind::BatchFailureDetails => self.render_batch_failure_details_body(cx),
@@ -934,6 +1045,7 @@ impl AppShell {
             ModalKind::TaskOutputName => self.render_task_output_name_footer(cx),
             ModalKind::TaskSpeedLimit => self.render_task_speed_limit_footer(cx),
             ModalKind::TaskOptions => self.render_task_options_footer(cx),
+            ModalKind::EditTask => self.render_edit_task_footer(cx),
             ModalKind::RemoveConfirmation => self.render_remove_confirmation_footer(cx),
             ModalKind::PowerCountdown => self.render_power_countdown_footer(cx),
             ModalKind::BatchFailureDetails => self.render_batch_failure_details_footer(cx),
@@ -1676,6 +1788,233 @@ impl AppShell {
                 element.child(
                     div()
                         .id("task-options-error")
+                        .role(Role::Alert)
+                        .aria_label(self.te(&error))
+                        .text_xs()
+                        .text_color(colors.danger)
+                        .child(self.te(&error)),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn render_edit_task_footer(&mut self, cx: &mut Context<Self>) -> DialogFooter {
+        let (loading, submitting, has_mismatch) = match &self.active_modal {
+            Some(ActiveModal::EditTask { dialog, .. }) => (
+                dialog.loading_request.is_some(),
+                dialog.submit_request.is_some(),
+                dialog.mismatch_warning.is_some(),
+            ),
+            _ => (false, false, false),
+        };
+        DialogFooter::new()
+            .child(
+                KitButton::new("cancel-edit-task")
+                    .label(self.t("button-cancel"))
+                    .accessibility_label(self.t("dialog-edit-task-cancel-aria"))
+                    .disabled(submitting)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.close_edit_task(window, cx);
+                    })),
+            )
+            .child(
+                KitButton::new("submit-edit-task")
+                    .primary()
+                    .label(if submitting {
+                        self.t("dialog-edit-task-saving")
+                    } else if has_mismatch {
+                        self.t("dialog-edit-task-confirm-relink")
+                    } else {
+                        self.t("button-save")
+                    })
+                    .accessibility_label(self.t("dialog-edit-task-save"))
+                    .disabled(loading)
+                    .loading(submitting)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.submit_edit_task(cx);
+                    })),
+            )
+    }
+
+    fn render_edit_task_body(&mut self, _cx: &mut Context<Self>) -> AnyElement {
+        let colors = self.theme.colors;
+        let Some(ActiveModal::EditTask {
+            dialog,
+            url_input,
+            referer_input,
+            user_agent_input,
+            headers_input,
+            proxy_input,
+            speed_limit_input,
+            connections_input,
+            split_input,
+            out_input,
+            ..
+        }) = &self.active_modal
+        else {
+            return div().into_any_element();
+        };
+        let display_name = dialog.display_name.clone();
+        let can_relink_url = dialog.can_relink_url;
+        let is_error_resume = dialog.is_error_resume;
+        let can_edit_out = dialog.can_edit_out;
+        let loading = dialog.loading_request.is_some();
+        let mismatch_warning = dialog.mismatch_warning.clone();
+        let error = dialog.error.clone();
+        let url_input = url_input.clone();
+        let referer_input = referer_input.clone();
+        let user_agent_input = user_agent_input.clone();
+        let headers_input = headers_input.clone();
+        let proxy_input = proxy_input.clone();
+        let speed_limit_input = speed_limit_input.clone();
+        let connections_input = connections_input.clone();
+        let split_input = split_input.clone();
+        let out_input = out_input.clone();
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(colors.text_secondary)
+                    .child(self.t_args(
+                        "dialog-edit-task-description",
+                        &[("name", FluentValue::from(display_name))],
+                    )),
+            )
+            .when(loading, |element| {
+                element.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_xs()
+                        .text_color(colors.text_muted)
+                        .child(crate::LoadingIndicator::new(colors.accent).size(IconSize::XSmall))
+                        .child(self.t("dialog-edit-task-loading")),
+                )
+            })
+            .when(is_error_resume, |element| {
+                element.child(
+                    Alert::info(
+                        "edit-task-error-resume-hint",
+                        self.t("dialog-edit-task-error-resume-hint"),
+                    )
+                    .xsmall(),
+                )
+            })
+            .when(can_relink_url, |element| {
+                element.child(settings_labeled_input(
+                    self.t("dialog-edit-task-url"),
+                    &url_input,
+                    colors,
+                ))
+            })
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .child(
+                        settings_labeled_input(
+                            self.t("dialog-add-referer"),
+                            &referer_input,
+                            colors,
+                        )
+                        .flex_1()
+                        .min_w_0(),
+                    )
+                    .child(
+                        settings_labeled_input(
+                            self.t("dialog-add-user-agent"),
+                            &user_agent_input,
+                            colors,
+                        )
+                        .flex_1()
+                        .min_w_0(),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(colors.text_secondary)
+                            .child(self.t("dialog-add-custom-headers")),
+                    )
+                    .child(Textarea::new(&headers_input).h(px(64.0))),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .child(
+                        settings_labeled_input(
+                            self.t("dialog-edit-task-proxy"),
+                            &proxy_input,
+                            colors,
+                        )
+                        .flex_1()
+                        .min_w_0(),
+                    )
+                    .when(can_edit_out, |row| {
+                        row.child(
+                            settings_labeled_input(
+                                self.t("dialog-output-name-filename"),
+                                &out_input,
+                                colors,
+                            )
+                            .flex_1()
+                            .min_w_0(),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .child(
+                        settings_labeled_input(
+                            self.t("dialog-speed-limit-download"),
+                            &speed_limit_input,
+                            colors,
+                        )
+                        .flex_1()
+                        .min_w_0(),
+                    )
+                    .child(
+                        settings_labeled_input(
+                            self.t("settings-connections-per-server"),
+                            &connections_input,
+                            colors,
+                        )
+                        .flex_1()
+                        .min_w_0(),
+                    )
+                    .child(
+                        settings_labeled_input(self.t("settings-split"), &split_input, colors)
+                            .flex_1()
+                            .min_w_0(),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(self.t("dialog-edit-task-dir-note")),
+            )
+            .when_some(mismatch_warning, |element, (warning, _, _)| {
+                element.child(Alert::warning("edit-task-relink-mismatch", warning).xsmall())
+            })
+            .when_some(error, |element, error| {
+                element.child(
+                    div()
+                        .id("edit-task-error")
                         .role(Role::Alert)
                         .aria_label(self.te(&error))
                         .text_xs()

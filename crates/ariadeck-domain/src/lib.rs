@@ -4,8 +4,11 @@
 //! JSON-RPC wire models.
 
 mod category_route;
+mod checksum;
 mod engine;
+mod header_preset;
 mod ids;
+mod mirror_rule;
 mod privacy;
 mod rpc_endpoint;
 mod task;
@@ -15,12 +18,26 @@ mod transfer;
 pub use category_route::{
     extension_from_filename, filename_hint_from_source, normalize_extension, resolve_category_id,
 };
+pub use checksum::{
+    ChecksumAlgorithm, ChecksumComparison, ParsedExpectedChecksum, compare_checksum,
+    parse_expected_checksum,
+};
 pub use engine::{
     ConnectionFailure, ConnectionState, EngineSession, EngineSource, ProcessOwnership,
+};
+pub use header_preset::{
+    DomainHeaderPreset, HeaderPresetValidationError, MAX_HEADER_PRESETS, MAX_PRESET_DOMAINS,
+    MAX_PRESET_HEADERS, MatchedHeaderPreset, match_header_presets, normalize_domain_pattern,
+    validate_header_preset, validate_header_presets, validate_preset_header_line,
 };
 pub use ids::{
     CoreInstallationId, CredentialId, EngineSessionId, Gid, GidParseError, ProfileId,
     SessionGeneration, TaskIdentity,
+};
+pub use mirror_rule::{
+    MAX_MIRROR_RULES, MirrorMatchKind, MirrorRewriteResult, MirrorRewriteRule,
+    MirrorRuleValidationError, builtin_mirror_templates, rewrite_uri_with_rules,
+    validate_mirror_rule, validate_mirror_rules,
 };
 pub use privacy::{
     DiagnosticSnapshot, REDACTED_SOURCE_PLACEHOLDER, magnet_info_hash, redact_endpoint_url,
@@ -32,9 +49,9 @@ pub use rpc_endpoint::{
 };
 pub use task::{
     DownloadFilter, DownloadSort, DownloadStatus, DownloadTask, EnginePath, SortDirection, SortKey,
-    TaskConnectionDetails, TaskDetails, TaskError, TaskFields, TaskFile, TaskMetadata,
-    TaskNameState, TaskOptionEntry, TaskPeer, TaskServer, TaskSnapshot, TaskSourceKind,
-    TaskTracker, TaskUpdateError, TaskUri, TaskUriStatus,
+    TaskConnectionDetails, TaskDetails, TaskEditableState, TaskError, TaskFields, TaskFile,
+    TaskMetadata, TaskNameState, TaskOptionEntry, TaskPeer, TaskServer, TaskSnapshot,
+    TaskSourceKind, TaskTracker, TaskUpdateError, TaskUri, TaskUriStatus,
 };
 pub use tracker_list::{
     MAX_TRACKER_LIST_BODY_BYTES, MAX_TRACKER_LIST_ENTRIES, MAX_TRACKER_URI_LEN,

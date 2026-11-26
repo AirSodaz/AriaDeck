@@ -208,6 +208,23 @@ pub struct TaskConnectionDetails {
     pub options: Vec<TaskOptionEntry>,
 }
 
+/// Non-secret task source URIs and dynamic options fetched when opening the
+/// Edit / Relink dialog. Sensitive headers (`Cookie`, `Authorization`) and proxy
+/// passwords are never populated here (SEC-001).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TaskEditableState {
+    pub uris: Vec<String>,
+    pub referer: Option<String>,
+    pub user_agent: Option<String>,
+    pub headers: Vec<String>,
+    pub proxy: Option<String>,
+    pub max_download_limit: Option<String>,
+    pub max_connection_per_server: Option<String>,
+    pub split: Option<String>,
+    pub out: Option<String>,
+    pub dir: Option<String>,
+}
+
 impl TaskConnectionDetails {
     #[must_use]
     pub fn new(gid: Gid) -> Self {

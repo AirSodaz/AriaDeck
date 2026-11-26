@@ -192,3 +192,44 @@ input-download-limit-placeholder = 不限速（例如 2M、512K）
 input-upload-limit-placeholder = 不限速（例如 1M、256K）
 dialog-task-options-seed-ratio-placeholder = 例如 1.0，设为 0 则禁用
 dialog-task-options-seed-time-placeholder = 分钟（例如 60）
+
+# 添加前 Probe、域名预设与镜像改写提示
+dialog-add-probe = 探测信息
+dialog-add-probing = 探测中…
+dialog-add-probe-unknown-name = 未知文件名
+dialog-add-preset-matched = 已匹配预设：{ $name }
+dialog-add-mirror-enable = 启用镜像重写
+dialog-add-mirror-summary = { $rule } -> { $target }
+
+# 编辑 / 更换下载链接弹窗
+dialog-edit-task-title = 编辑与更换下载链接
+dialog-edit-task-description = 修改“{ $name }”的下载链接或动态传输参数。
+dialog-edit-task-loading = 正在读取任务选项…
+dialog-edit-task-url = 下载链接
+dialog-edit-task-proxy = 代理地址
+dialog-edit-task-save = 应用更改
+dialog-edit-task-confirm-relink = 确认更换链接
+dialog-edit-task-saving = 正在应用…
+dialog-edit-task-cancel-aria = 关闭编辑任务弹窗
+dialog-edit-task-no-changes = 未检测到任何更改。
+dialog-edit-task-dir-note = 为保留已有分片进度和 .aria2 控制文件，不支持在线更改保存目录。
+dialog-edit-task-error-resume-hint = 对已失败的直链任务更换链接，会在同目录下创建续传任务并复用已有 .aria2 进度。
+
+# 任务详情校验（Verify）页签
+dialog-details-verify = 校验
+dialog-details-verify-unavailable = 当前任务不支持本地文件校验。
+dialog-details-verify-remote-desc = 文件校验和计算仅对本地托管引擎且位于本机的可见文件开放。
+dialog-details-verify-file = 目标文件
+dialog-details-verify-select-file = 选择文件
+dialog-details-verify-algorithm = 哈希算法
+dialog-details-verify-algo-aria = 选择校验和算法
+dialog-details-verify-calculate = 计算校验和
+dialog-details-verify-computed = { $algo } 计算结果
+dialog-details-verify-copy-tooltip = 复制校验和
+dialog-details-verify-copy-aria = 复制计算得到的校验和
+dialog-details-verify-expected = 预期校验值
+dialog-details-verify-expected-placeholder = 粘贴官方哈希串或 sha-256=<hex>
+dialog-details-verify-match = 校验一致，文件完整无误。
+dialog-details-verify-mismatch = 校验不一致！文件可能已损坏或被修改。
+dialog-details-verify-algo-mismatch = 算法不匹配：预期为 { $expected }，当前计算为 { $actual }。
+dialog-details-verify-invalid-expected = 预期校验值格式无效。

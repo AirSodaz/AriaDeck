@@ -6,7 +6,17 @@ pub(super) enum TaskDetailsPanelEvent {
     Close,
     RetryDetails,
     OpenTask(TaskOpenTargetView),
-    Notice { message: String, is_error: bool },
+    EditTask,
+    ComputeChecksum {
+        directory: String,
+        file_path: String,
+        algorithm: ariadeck_domain::ChecksumAlgorithm,
+    },
+    CancelChecksum(RequestId),
+    Notice {
+        message: String,
+        is_error: bool,
+    },
 }
 
 pub(super) struct TaskDetailsPanelView {
@@ -21,14 +31,27 @@ pub(super) struct TaskDetailsPanelView {
     pub(super) info_scroll: ScrollHandle,
     pub(super) network_scroll: ScrollHandle,
     pub(super) options_scroll: ScrollHandle,
+    pub(super) verify_scroll: ScrollHandle,
     pub(super) rendered_file_range: Range<usize>,
     /// Last time a ready→ready details RPC was emitted (coalesce rapid revisions).
     pub(super) last_ready_refresh_at: Option<Instant>,
     /// True when a revision-driven refresh was deferred by the min interval.
     pub(super) refresh_coalesced: bool,
+    pub(super) checksum_algorithm: ariadeck_domain::ChecksumAlgorithm,
+    pub(super) checksum_file_index: usize,
+    pub(super) checksum_expected_input: Option<Entity<InputState>>,
+    pub(super) checksum_expected_pending_value: Option<String>,
+    pub(super) checksum_prefilled_from_task: bool,
+    pub(super) checksum_pending: Option<(RequestId, u64, u64)>,
+    pub(super) checksum_result: Option<(
+        ariadeck_domain::ChecksumAlgorithm,
+        Result<String, OperationErrorView>,
+    )>,
+    _checksum_sub: Option<Subscription>,
     theme: Theme,
     translator: Translator,
     commands_available: bool,
+    change_option_available: bool,
     local_path_actions_available: bool,
     drawer_width: f32,
 }
@@ -39,6 +62,7 @@ pub(super) struct TaskDetailsPanelContext {
     pub(super) theme: Theme,
     pub(super) translator: Translator,
     pub(super) commands_available: bool,
+    pub(super) change_option_available: bool,
     pub(super) local_path_actions_available: bool,
     pub(super) drawer_width: f32,
 }
@@ -61,12 +85,22 @@ impl TaskDetailsPanelView {
             info_scroll: ScrollHandle::new(),
             network_scroll: ScrollHandle::new(),
             options_scroll: ScrollHandle::new(),
+            verify_scroll: ScrollHandle::new(),
             rendered_file_range: 0..0,
             last_ready_refresh_at: None,
             refresh_coalesced: false,
+            checksum_algorithm: ariadeck_domain::ChecksumAlgorithm::Sha256,
+            checksum_file_index: 0,
+            checksum_expected_input: None,
+            checksum_expected_pending_value: None,
+            checksum_prefilled_from_task: false,
+            checksum_pending: None,
+            checksum_result: None,
+            _checksum_sub: None,
             theme: panel_cx.theme,
             translator: panel_cx.translator,
             commands_available: panel_cx.commands_available,
+            change_option_available: panel_cx.change_option_available,
             local_path_actions_available: panel_cx.local_path_actions_available,
             drawer_width: panel_cx.drawer_width,
         }
@@ -80,6 +114,7 @@ impl TaskDetailsPanelView {
         self.theme = panel_cx.theme;
         self.translator = panel_cx.translator;
         self.commands_available = panel_cx.commands_available;
+        self.change_option_available = panel_cx.change_option_available;
         self.local_path_actions_available = panel_cx.local_path_actions_available;
         self.drawer_width = panel_cx.drawer_width;
         cx.notify();
@@ -111,7 +146,65 @@ impl TaskDetailsPanelView {
         self.info_scroll = ScrollHandle::new();
         self.network_scroll = ScrollHandle::new();
         self.options_scroll = ScrollHandle::new();
+        self.verify_scroll = ScrollHandle::new();
+        self.checksum_file_index = 0;
+        self.checksum_pending = None;
+        self.checksum_result = None;
+        self.checksum_prefilled_from_task = false;
+        self.checksum_expected_pending_value = Some(String::new());
         self.sync_context(panel_cx, cx);
+    }
+
+    pub(crate) fn prefill_checksum_from_options(&mut self, options: &[TaskOptionView], cx: &App) {
+        if self.checksum_prefilled_from_task {
+            return;
+        }
+        let Some(raw) = options
+            .iter()
+            .find(|opt| opt.key.eq_ignore_ascii_case("checksum") && !opt.redacted)
+            .map(|opt| opt.value.trim())
+            .filter(|v| !v.is_empty())
+        else {
+            return;
+        };
+        let input_empty = self.checksum_expected_pending_value.is_some()
+            || self
+                .checksum_expected_input
+                .as_ref()
+                .is_none_or(|input| input.read(cx).value().trim().is_empty());
+        if !input_empty {
+            self.checksum_prefilled_from_task = true;
+            return;
+        }
+        if let Ok(parsed) = ariadeck_domain::parse_expected_checksum(raw)
+            && let Some(algo) = parsed.algorithm
+        {
+            self.checksum_algorithm = algo;
+        }
+        self.checksum_expected_pending_value = Some(raw.to_owned());
+        self.checksum_prefilled_from_task = true;
+    }
+
+    fn ensure_checksum_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.checksum_expected_input.is_none() {
+            let placeholder = self.t("dialog-details-verify-expected-placeholder");
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+            let sub = cx.subscribe(&input, |_this, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            });
+            self.checksum_expected_input = Some(input);
+            self._checksum_sub = Some(sub);
+        }
+        if let (Some(pending_val), Some(input)) = (
+            self.checksum_expected_pending_value.take(),
+            self.checksum_expected_input.as_ref(),
+        ) {
+            input.update(cx, |input, cx| {
+                input.set_value(pending_val, window, cx);
+            });
+        }
     }
 
     fn t(&self, id: &str) -> String {
@@ -180,6 +273,9 @@ impl TaskDetailsPanelView {
     ) -> AnyElement {
         let colors = self.theme.colors;
         let gid = self.identity.gid.clone();
+        let edit_task_enabled = self.commands_available
+            && self.overview.can_edit_or_relink()
+            && (self.overview.status == TaskStatusView::Failed || self.change_option_available);
         let is_bittorrent = matches!(
             self.overview.source_kind,
             crate::TaskSourceKindView::Magnet | crate::TaskSourceKindView::BitTorrent
@@ -339,6 +435,27 @@ impl TaskDetailsPanelView {
                                         cx.emit(TaskDetailsPanelEvent::OpenTask(
                                             TaskOpenTargetView::Folder,
                                         ));
+                                    },
+                                )),
+                            )
+                            .child(
+                                toolbar_icon_button(
+                                    "edit-task-from-details",
+                                    IconName::Pencil,
+                                    self.t("action-edit-task"),
+                                    if edit_task_enabled {
+                                        ToolbarButtonState::Enabled
+                                    } else {
+                                        ToolbarButtonState::Disabled
+                                    },
+                                    false,
+                                    None,
+                                    colors,
+                                    &self.translator,
+                                )
+                                .on_click(cx.listener(
+                                    |_this, _, _, cx| {
+                                        cx.emit(TaskDetailsPanelEvent::EditTask);
                                     },
                                 )),
                             ),
@@ -665,10 +782,349 @@ impl TaskDetailsPanelView {
             .vertical_scrollbar(&options_scroll)
             .into_any_element()
     }
+
+    fn render_verify_tab(&self, details: &TaskDetailsView, cx: &mut Context<Self>) -> AnyElement {
+        let colors = self.theme.colors;
+        if !self.local_path_actions_available {
+            return drawer_message(
+                self.t("dialog-details-verify-unavailable"),
+                self.t("dialog-details-verify-remote-desc"),
+                colors,
+            );
+        }
+        let selectable_files: Vec<(usize, &TaskFileView)> = details
+            .files
+            .iter()
+            .enumerate()
+            .filter(|(_, file)| !file.path.trim().is_empty())
+            .collect();
+        if selectable_files.is_empty() {
+            return drawer_message(
+                self.t("dialog-details-no-files"),
+                self.t("dialog-details-no-files-detail"),
+                colors,
+            );
+        }
+
+        let directory = details.directory.as_deref().unwrap_or("").trim().to_owned();
+        let selected_pos = selectable_files
+            .iter()
+            .position(|(idx, _)| *idx == self.checksum_file_index)
+            .unwrap_or(0);
+        let (_, selected_file) = selectable_files[selected_pos];
+        let selected_file_path = selected_file.path.clone();
+        let selected_file_name = std::path::Path::new(&selected_file.path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&selected_file.path)
+            .to_owned();
+        let can_compute = !directory.is_empty()
+            && !selected_file_path.is_empty()
+            && self.checksum_pending.is_none();
+
+        let algo_index = ariadeck_domain::ChecksumAlgorithm::ALL
+            .iter()
+            .position(|algo| *algo == self.checksum_algorithm)
+            .unwrap_or(2);
+        let panel_algo = cx.entity().downgrade();
+        let algo_control = SegmentedControl::new(
+            "task-details-checksum-algo",
+            ariadeck_domain::ChecksumAlgorithm::ALL.map(|algo| Segment::new(algo.label())),
+            algo_index,
+            self.theme,
+        )
+        .aria_label(self.t("dialog-details-verify-algo-aria"))
+        .disabled(self.checksum_pending.is_some())
+        .on_select(move |index, _window, cx| {
+            let algo = ariadeck_domain::ChecksumAlgorithm::ALL
+                .get(index)
+                .copied()
+                .unwrap_or(ariadeck_domain::ChecksumAlgorithm::Sha256);
+            let _ = panel_algo.update(cx, |this, cx| {
+                this.checksum_algorithm = algo;
+                cx.notify();
+            });
+        });
+
+        let mono_font_family = cx.theme().mono_font_family.clone();
+        let verify_scroll = self.verify_scroll.clone();
+        let expected_value = self
+            .checksum_expected_input
+            .as_ref()
+            .map(|input| input.read(cx).value().to_string())
+            .unwrap_or_default();
+
+        let panel_file_nav = cx.entity().downgrade();
+        let file_count = selectable_files.len();
+        let file_list = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .children(selectable_files.iter().map(|(raw_idx, file)| {
+                let is_selected = *raw_idx == selectable_files[selected_pos].0;
+                let idx_val = *raw_idx;
+                let panel_pick = panel_file_nav.clone();
+                let label = std::path::Path::new(&file.path)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&file.path)
+                    .to_owned();
+                div()
+                    .id(SharedString::from(format!("verify-file-{idx_val}")))
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(if is_selected {
+                        colors.accent
+                    } else {
+                        colors.border
+                    })
+                    .bg(if is_selected {
+                        colors.elevated_surface
+                    } else {
+                        colors.surface
+                    })
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .text_xs()
+                    .child(div().truncate().flex_1().child(label))
+                    .child(
+                        div()
+                            .text_color(colors.text_muted)
+                            .child(format_bytes(file.length)),
+                    )
+                    .on_click(move |_, _, cx| {
+                        let _ = panel_pick.update(cx, |this, cx| {
+                            if this.checksum_file_index != idx_val {
+                                this.checksum_file_index = idx_val;
+                                this.checksum_result = None;
+                                cx.notify();
+                            }
+                        });
+                    })
+            }));
+
+        let dir_for_compute = directory.clone();
+        let path_for_compute = selected_file_path.clone();
+        let algo_for_compute = self.checksum_algorithm;
+        let pending_state = self.checksum_pending;
+        let result_state = self.checksum_result.clone();
+        let comparison_banner = match (&result_state, expected_value.trim()) {
+            (Some((computed_algo, Ok(hex))), expected) if !expected.is_empty() => {
+                match ariadeck_domain::compare_checksum(hex, expected, *computed_algo) {
+                    ariadeck_domain::ChecksumComparison::Empty => None,
+                    ariadeck_domain::ChecksumComparison::Match => {
+                        Some((colors.success, self.t("dialog-details-verify-match")))
+                    }
+                    ariadeck_domain::ChecksumComparison::Mismatch => {
+                        Some((colors.danger, self.t("dialog-details-verify-mismatch")))
+                    }
+                    ariadeck_domain::ChecksumComparison::AlgorithmMismatch { expected, actual } => {
+                        Some((
+                            colors.warning,
+                            self.t_args(
+                                "dialog-details-verify-algo-mismatch",
+                                &[
+                                    ("expected", FluentValue::from(expected.label())),
+                                    ("actual", FluentValue::from(actual.label())),
+                                ],
+                            ),
+                        ))
+                    }
+                    ariadeck_domain::ChecksumComparison::InvalidExpected => Some((
+                        colors.warning,
+                        self.t("dialog-details-verify-invalid-expected"),
+                    )),
+                }
+            }
+            _ => None,
+        };
+
+        div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
+            .child(
+                div()
+                    .id("task-details-verify-scroll")
+                    .size_full()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&verify_scroll)
+                    .p_4()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(detail_line(
+                        self.t("dialog-details-verify-file"),
+                        selected_file_name,
+                        colors,
+                    ))
+                    .when(file_count > 1, |element| {
+                        element.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(colors.text_muted)
+                                        .child(self.t("dialog-details-verify-select-file")),
+                                )
+                                .child(file_list),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(colors.text_muted)
+                                    .child(self.t("dialog-details-verify-algorithm")),
+                            )
+                            .child(algo_control),
+                    )
+                    .child(div().flex().items_center().gap_2().child(
+                        if let Some((pending_req, _, _)) = pending_state {
+                            KitButton::new("cancel-checksum-btn")
+                                .secondary()
+                                .small()
+                                .label(self.t("button-cancel"))
+                                .on_click(cx.listener(move |_this, _, _, cx| {
+                                    cx.emit(TaskDetailsPanelEvent::CancelChecksum(pending_req));
+                                }))
+                                .into_any_element()
+                        } else {
+                            KitButton::new("compute-checksum-btn")
+                                .primary()
+                                .small()
+                                .label(self.t("dialog-details-verify-calculate"))
+                                .disabled(!can_compute)
+                                .on_click(cx.listener(move |_this, _, _, cx| {
+                                    cx.emit(TaskDetailsPanelEvent::ComputeChecksum {
+                                        directory: dir_for_compute.clone(),
+                                        file_path: path_for_compute.clone(),
+                                        algorithm: algo_for_compute,
+                                    });
+                                }))
+                                .into_any_element()
+                        },
+                    ))
+                    .when_some(pending_state, |element, (_, processed, total)| {
+                        let percent = if total > 0 {
+                            ((processed as f32 / total as f32).clamp(0.0, 1.0)) * 100.0
+                        } else {
+                            0.0
+                        };
+                        element.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    KitProgress::new("checksum-progress")
+                                        .value(percent)
+                                        .xsmall()
+                                        .color(colors.progress_download),
+                                )
+                                .child(div().text_xs().text_color(colors.text_muted).child(
+                                    format!(
+                                        "{} / {}",
+                                        format_bytes(processed),
+                                        format_bytes(total)
+                                    ),
+                                )),
+                        )
+                    })
+                    .when_some(result_state, |element, (algo, outcome)| match outcome {
+                        Ok(hex) => {
+                            let panel_copy = cx.entity().downgrade();
+                            element.child(detail_line_with_action(
+                                self.t_args(
+                                    "dialog-details-verify-computed",
+                                    &[("algo", FluentValue::from(algo.label()))],
+                                ),
+                                hex.clone(),
+                                Clipboard::new("copy-computed-checksum")
+                                    .value(hex)
+                                    .tooltip(self.t("dialog-details-verify-copy-tooltip"))
+                                    .accessibility_label(self.t("dialog-details-verify-copy-aria"))
+                                    .on_copied(move |_, _, cx| {
+                                        let _ = panel_copy.update(cx, |this, cx| {
+                                            cx.emit(TaskDetailsPanelEvent::Notice {
+                                                message: this.t("notice-checksum-copied"),
+                                                is_error: false,
+                                            });
+                                        });
+                                    }),
+                                mono_font_family.clone(),
+                                colors,
+                            ))
+                        }
+                        Err(error) => element.child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(colors.danger)
+                                .text_xs()
+                                .text_color(colors.danger)
+                                .child(self.te(&error)),
+                        ),
+                    })
+                    .when_some(self.checksum_expected_input.as_ref(), |element, input| {
+                        element.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(colors.text_muted)
+                                        .child(self.t("dialog-details-verify-expected")),
+                                )
+                                .child(Input::new(input).small()),
+                        )
+                    })
+                    .when_some(comparison_banner, |element, (border_color, text)| {
+                        element.child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(border_color)
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(border_color)
+                                .child(text),
+                        )
+                    }),
+            )
+            .vertical_scrollbar(&verify_scroll)
+            .into_any_element()
+    }
 }
 
 impl Render for TaskDetailsPanelView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_checksum_input(window, cx);
         let colors = self.theme.colors;
         let reduced_motion = crate::accessibility::is_reduced_motion(cx);
         let inline = shell_layout(f32::from(window.viewport_size().width)).details_presentation
@@ -807,12 +1263,14 @@ impl Render for TaskDetailsPanelView {
                         Segment::new(self.t("ui-files")),
                         Segment::new(self.t("dialog-details-network")),
                         Segment::new(self.t("dialog-details-options")),
+                        Segment::new(self.t("dialog-details-verify")),
                     ],
                     match self.tab {
                         TaskDetailsTab::Info => 0,
                         TaskDetailsTab::Files => 1,
                         TaskDetailsTab::Network => 2,
                         TaskDetailsTab::Options => 3,
+                        TaskDetailsTab::Verify => 4,
                     },
                     self.theme,
                 )
@@ -822,6 +1280,7 @@ impl Render for TaskDetailsPanelView {
                         1 => TaskDetailsTab::Files,
                         2 => TaskDetailsTab::Network,
                         3 => TaskDetailsTab::Options,
+                        4 => TaskDetailsTab::Verify,
                         _ => TaskDetailsTab::Info,
                     };
                     let _ = panel.update(cx, |this, cx| {
@@ -846,6 +1305,7 @@ impl Render for TaskDetailsPanelView {
                     TaskDetailsTab::Options => {
                         ("options", self.render_options_tab(&details.options, cx))
                     }
+                    TaskDetailsTab::Verify => ("verify", self.render_verify_tab(&details, cx)),
                 };
                 let animated_content = animate_fade_settle(
                     div()
@@ -1018,11 +1478,22 @@ impl AppShell {
         self._details_panel_sub = None;
     }
 
+    fn cancel_active_checksum(&mut self, cx: &mut Context<Self>) {
+        if let Some((request_id, _, _)) = self
+            .details_panel
+            .as_ref()
+            .and_then(|panel| panel.read(cx).checksum_pending)
+        {
+            cx.emit(AppShellEvent::FileChecksumCancelled(request_id));
+        }
+    }
+
     fn details_panel_context(&self) -> TaskDetailsPanelContext {
         TaskDetailsPanelContext {
             theme: self.theme,
             translator: self.translator.clone(),
             commands_available: self.snapshot.commands_available(),
+            change_option_available: self.snapshot.capabilities.change_option,
             local_path_actions_available: self.snapshot.local_path_actions_available,
             drawer_width: self.details_drawer_width,
         }
@@ -1062,6 +1533,9 @@ impl AppShell {
         let panel_cx = self.details_panel_context();
         if let Some(panel) = self.details_panel.clone() {
             let same_task = panel.read(cx).identity == task.identity;
+            if !same_task {
+                self.cancel_active_checksum(cx);
+            }
             let has_ready_details =
                 matches!(panel.read(cx).state, TaskDetailsLoadState::Ready { .. });
             panel.update(cx, |panel, cx| {
@@ -1075,7 +1549,7 @@ impl AppShell {
             return;
         }
         let panel = cx.new(|_| TaskDetailsPanelView::new(task, session, panel_cx));
-        let sub = cx.subscribe(&panel, |this, _, event, cx| match event {
+        let sub = cx.subscribe(&panel, |this, panel, event, cx| match event {
             TaskDetailsPanelEvent::Close => {
                 this.close_task_details_deferred(cx);
             }
@@ -1084,6 +1558,28 @@ impl AppShell {
             }
             TaskDetailsPanelEvent::OpenTask(target) => {
                 this.request_task_open(*target, cx);
+            }
+            TaskDetailsPanelEvent::EditTask => {
+                let target = panel.read(cx).overview.clone();
+                let shell = cx.entity().downgrade();
+                let handle = this.window_handle;
+                cx.defer(move |cx| {
+                    let _ = handle.update(cx, |_, window, cx| {
+                        let _ = shell.update(cx, |this, cx| {
+                            this.open_edit_task_for(target, window, cx);
+                        });
+                    });
+                });
+            }
+            TaskDetailsPanelEvent::ComputeChecksum {
+                directory,
+                file_path,
+                algorithm,
+            } => {
+                this.request_file_checksum(directory.clone(), file_path.clone(), *algorithm, cx);
+            }
+            TaskDetailsPanelEvent::CancelChecksum(request_id) => {
+                this.cancel_file_checksum(*request_id, cx);
             }
             TaskDetailsPanelEvent::Notice { message, is_error } => {
                 this.show_notice(message.clone(), *is_error, cx);
@@ -1102,6 +1598,7 @@ impl AppShell {
         if self.details_panel.is_none() {
             return;
         }
+        self.cancel_active_checksum(cx);
         self.clear_details_panel();
         let shell = cx.entity().downgrade();
         let handle = self.window_handle;
@@ -1236,11 +1733,120 @@ impl AppShell {
 
     pub(crate) fn close_task_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.details_panel.is_some() {
+            self.cancel_active_checksum(cx);
             self.clear_details_panel();
             self.sync_details_sheet(window, cx);
             window.focus(&self.focus_handle, cx);
             cx.notify();
         }
+    }
+
+    pub(crate) fn request_file_checksum(
+        &mut self,
+        directory: String,
+        file_path: String,
+        algorithm: ariadeck_domain::ChecksumAlgorithm,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.snapshot.local_path_actions_available {
+            return;
+        }
+        let Some(panel) = self.details_panel.clone() else {
+            return;
+        };
+        self.cancel_active_checksum(cx);
+        let identity = panel.read(cx).identity.clone();
+        let request_id = self.allocate_request_id();
+        let total_bytes = panel.read_with(cx, |drawer, _| match &drawer.state {
+            TaskDetailsLoadState::Ready { details } => details
+                .files
+                .iter()
+                .find(|f| f.path == file_path)
+                .map_or(0, |f| f.length),
+            _ => 0,
+        });
+        panel.update(cx, |drawer, cx| {
+            drawer.checksum_pending = Some((request_id, 0, total_bytes));
+            drawer.checksum_result = None;
+            cx.notify();
+        });
+        cx.emit(AppShellEvent::FileChecksumRequested(
+            FileChecksumRequestView {
+                request_id,
+                identity,
+                directory,
+                file_path,
+                algorithm,
+            },
+        ));
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_file_checksum(&mut self, request_id: RequestId, cx: &mut Context<Self>) {
+        let Some(panel) = self.details_panel.clone() else {
+            return;
+        };
+        let cancelled = panel.update(cx, |drawer, cx| {
+            if drawer
+                .checksum_pending
+                .is_some_and(|(pending_id, _, _)| pending_id == request_id)
+            {
+                drawer.checksum_pending = None;
+                cx.notify();
+                true
+            } else {
+                false
+            }
+        });
+        if cancelled {
+            cx.emit(AppShellEvent::FileChecksumCancelled(request_id));
+            cx.notify();
+        }
+    }
+
+    pub fn set_file_checksum_progress(
+        &mut self,
+        progress: FileChecksumProgressView,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(panel) = self.details_panel.clone() else {
+            return;
+        };
+        panel.update(cx, |drawer, cx| {
+            if drawer.identity == progress.identity
+                && drawer
+                    .checksum_pending
+                    .is_some_and(|(id, _, _)| id == progress.request_id)
+            {
+                drawer.checksum_pending = Some((
+                    progress.request_id,
+                    progress.processed_bytes,
+                    progress.total_bytes,
+                ));
+                cx.notify();
+            }
+        });
+    }
+
+    pub fn set_file_checksum_result(
+        &mut self,
+        result: FileChecksumResultView,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(panel) = self.details_panel.clone() else {
+            return;
+        };
+        panel.update(cx, |drawer, cx| {
+            if drawer.identity == result.identity
+                && drawer
+                    .checksum_pending
+                    .is_some_and(|(id, _, _)| id == result.request_id)
+            {
+                drawer.checksum_pending = None;
+                drawer.checksum_result = Some((result.algorithm, result.outcome));
+                cx.notify();
+            }
+        });
     }
 
     pub(crate) fn desired_details_sheet_open(&self, window: &Window) -> bool {

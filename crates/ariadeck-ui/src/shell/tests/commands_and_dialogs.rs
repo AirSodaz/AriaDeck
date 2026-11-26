@@ -1380,6 +1380,7 @@ fn force_pause_is_blocked_when_capabilities_omit_the_method(cx: &mut TestAppCont
             force_remove: false,
             queue_positioning: true,
             change_option: true,
+            change_uri: true,
             change_global_option: true,
             get_peers: true,
             get_servers: true,
@@ -1727,4 +1728,344 @@ fn add_download_dialog_closes_when_clicking_outside_unless_busy(cx: &mut TestApp
         );
     });
     assert!(visual_cx.update(|window, cx| window.has_active_dialog(cx)));
+}
+
+#[gpui::test]
+fn add_dialog_applies_domain_header_preset_without_overwriting_user_edits(cx: &mut TestAppContext) {
+    let settings = SettingsView {
+        download_directory: "C:/Downloads".into(),
+        categories: vec![crate::DownloadCategoryView {
+            id: "00000000-0000-4000-8000-000000000001".into(),
+            name: "General".into(),
+            directory: "C:/Downloads".into(),
+            extensions: String::new(),
+            is_fallback: true,
+        }],
+        header_presets: vec![crate::DomainHeaderPresetView {
+            id: "p1".into(),
+            name: "CDN Rule".into(),
+            enabled: true,
+            domains: "*.cdn.example".into(),
+            referer: "https://cdn.example/ref".into(),
+            user_agent: "CustomUA/2.0".into(),
+            headers: "X-Token: abc".into(),
+        }],
+        ..SettingsView::default()
+    };
+    let (view, cx) =
+        cx.add_window_view(move |window, cx| AppShell::new_with_settings(settings, window, cx));
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.snapshot = snapshot(1);
+        shell.open_add_download(&OpenAddDownload, window, cx);
+        let dialog = shell.add_dialog_entity().expect("add dialog open").clone();
+        dialog.update(cx, |dialog, cx| {
+            dialog.add_inputs.referer.update(cx, |input, cx| {
+                input.set_value("https://user.override/", window, cx)
+            });
+            dialog.add_input.update(cx, |input, cx| {
+                input.set_value("https://dl.cdn.example/archive.bin", window, cx);
+            });
+            dialog.apply_matched_preset_to_inputs(window, cx);
+        });
+    });
+
+    view.read_with(cx, |shell, cx| {
+        let dialog = shell.add_dialog_entity().expect("add dialog open").read(cx);
+        let sources = parse_add_download_sources(dialog.add_input.read(cx).value().as_ref());
+        let matched = dialog
+            .matched_preset_for_sources(&sources)
+            .expect("matched preset");
+        assert_eq!(matched.preset_names, vec!["CDN Rule"]);
+        assert_eq!(
+            dialog.add_inputs.referer.read(cx).value(),
+            "https://user.override/",
+            "user-supplied referer must not be overwritten by auto preset"
+        );
+        assert_eq!(
+            dialog.add_inputs.user_agent.read(cx).value(),
+            "CustomUA/2.0"
+        );
+        assert_eq!(dialog.add_inputs.headers.read(cx).value(), "X-Token: abc");
+    });
+}
+
+#[gpui::test]
+fn add_dialog_mirror_rewrite_submits_mirror_pair_and_probe_routes_category(
+    cx: &mut TestAppContext,
+) {
+    let settings = SettingsView {
+        download_directory: "C:/Downloads".into(),
+        categories: vec![
+            crate::DownloadCategoryView {
+                id: "00000000-0000-4000-8000-000000000001".into(),
+                name: "General".into(),
+                directory: "C:/Downloads".into(),
+                extensions: String::new(),
+                is_fallback: true,
+            },
+            crate::DownloadCategoryView {
+                id: "00000000-0000-4000-8000-000000000002".into(),
+                name: "Compressed".into(),
+                directory: "C:/Downloads/Compressed".into(),
+                extensions: "zip, tar".into(),
+                is_fallback: false,
+            },
+        ],
+        mirror_rules: crate::MirrorRewriteSettingsView {
+            keep_original_as_mirror: true,
+            rules: vec![crate::MirrorRewriteRuleView {
+                id: "gh".into(),
+                name: "GH Mirror".into(),
+                enabled: true,
+                match_kind: crate::MirrorMatchKindView::Prefix,
+                pattern: "https://github.com/".into(),
+                replacement: "https://mirror.example/https://github.com/".into(),
+            }],
+        },
+        ..SettingsView::default()
+    };
+    let (view, cx) =
+        cx.add_window_view(move |window, cx| AppShell::new_with_settings(settings, window, cx));
+    let events: std::rc::Rc<std::cell::RefCell<Vec<AppShellEvent>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = events.clone();
+    cx.update(|_, cx| {
+        cx.subscribe(&view, move |_, event, _| {
+            captured.borrow_mut().push(event.clone());
+        })
+        .detach();
+    });
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.snapshot = snapshot(1);
+        shell.open_add_download(&OpenAddDownload, window, cx);
+        let dialog = shell.add_dialog_entity().expect("add dialog open").clone();
+        dialog.update(cx, |dialog, cx| {
+            dialog.add_input.update(cx, |input, cx| {
+                input.set_value("https://github.com/org/repo/download?id=42", window, cx);
+            });
+            assert!(
+                dialog
+                    .matched_mirror_for_uri("https://github.com/org/repo/download?id=42")
+                    .is_some()
+            );
+            dialog.trigger_probe(cx);
+        });
+    });
+
+    let probe_req = match events.borrow().last().cloned() {
+        Some(AppShellEvent::ProbeDownloadUrlRequested(req)) => req,
+        other => panic!("expected ProbeDownloadUrlRequested, got {other:?}"),
+    };
+    assert_eq!(
+        probe_req.url,
+        "https://mirror.example/https://github.com/org/repo/download?id=42"
+    );
+
+    view.update(cx, |shell, cx| {
+        shell.set_add_probe_result(
+            crate::ProbeDownloadUrlResultView {
+                request_id: probe_req.request_id,
+                url: probe_req.url,
+                outcome: Ok(crate::ProbedDownloadMetadataView {
+                    final_url: "https://cdn.example/release.zip".into(),
+                    resolved_filename: Some("release.zip".into()),
+                    total_bytes: Some(2048),
+                    etag: None,
+                    accept_ranges: true,
+                }),
+            },
+            cx,
+        );
+        shell.submit_add_download(cx);
+    });
+
+    let req = match events.borrow().last().cloned() {
+        Some(AppShellEvent::AddDownloadRequested(req)) => req,
+        other => panic!("expected AddDownloadRequested, got {other:?}"),
+    };
+    assert_eq!(req.mode, AddDownloadModeView::Mirrors);
+    assert_eq!(
+        req.sources,
+        vec![
+            AddDownloadSourceView::Uri {
+                line: 1,
+                uri: "https://mirror.example/https://github.com/org/repo/download?id=42".into(),
+            },
+            AddDownloadSourceView::Uri {
+                line: 1,
+                uri: "https://github.com/org/repo/download?id=42".into(),
+            },
+        ]
+    );
+    assert_eq!(req.destination.as_deref(), Some("C:/Downloads/Compressed"));
+    assert_eq!(req.required_bytes, Some(2048));
+}
+
+#[gpui::test]
+fn edit_task_dialog_requires_confirmation_on_probe_mismatch_then_forces_relink(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(1);
+        shell.snapshot.tasks[0].status = TaskStatusView::Paused;
+        shell.snapshot.tasks[0].source_kind = TaskSourceKindView::DirectUri;
+        shell.snapshot.tasks[0].primary_source = Some("https://old.example/file.iso".into());
+        shell.snapshot.capabilities.change_option = true;
+        shell.snapshot.capabilities.change_uri = true;
+        shell
+    });
+    let events: std::rc::Rc<std::cell::RefCell<Vec<AppShellEvent>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = events.clone();
+    cx.update(|_, cx| {
+        cx.subscribe(&view, move |_, event, _| {
+            captured.borrow_mut().push(event.clone());
+        })
+        .detach();
+    });
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_edit_task_for(shell.snapshot.tasks[0].clone(), window, cx);
+    });
+    let prepare_req = match events.borrow().last().cloned() {
+        Some(AppShellEvent::PrepareEditTaskRequested(req)) => req,
+        other => panic!("expected PrepareEditTaskRequested, got {other:?}"),
+    };
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.set_prepare_edit_task_result(
+            crate::PrepareEditTaskResultView {
+                request_id: prepare_req.request_id,
+                identity: prepare_req.identity,
+                outcome: Ok(crate::TaskEditableStateView {
+                    uris: vec!["https://old.example/file.iso".into()],
+                    referer: String::new(),
+                    user_agent: String::new(),
+                    headers: String::new(),
+                    proxy: String::new(),
+                    max_download_limit: String::new(),
+                    max_connection_per_server: "8".into(),
+                    split: "8".into(),
+                    out: "file.iso".into(),
+                    dir: "C:/Downloads".into(),
+                }),
+            },
+            window,
+            cx,
+        );
+        let ActiveModal::EditTask { url_input, .. } =
+            shell.active_modal.as_ref().expect("edit modal")
+        else {
+            panic!("expected EditTask modal");
+        };
+        url_input.update(cx, |input, cx| {
+            input.set_value("https://new.example/other.iso", window, cx);
+        });
+        shell.submit_edit_task(cx);
+    });
+    let first_req = match events.borrow().last().cloned() {
+        Some(AppShellEvent::RelinkEditTaskRequested(req)) => req,
+        other => panic!("expected first RelinkEditTaskRequested, got {other:?}"),
+    };
+    assert!(!first_req.force_mismatch);
+    assert_eq!(
+        first_req.new_url.as_deref(),
+        Some("https://new.example/other.iso")
+    );
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.set_relink_edit_task_result(
+            crate::RelinkEditTaskResultView {
+                request_id: first_req.request_id,
+                session: first_req.session,
+                identity: first_req.identity,
+                outcome: crate::RelinkEditOutcomeView::NeedsMismatchConfirmation {
+                    warning_message: "Size mismatch".into(),
+                    probed_filename: Some("other.iso".into()),
+                    probed_total_bytes: Some(999),
+                },
+            },
+            window,
+            cx,
+        );
+        assert!(matches!(
+            shell.active_modal,
+            Some(ActiveModal::EditTask { ref dialog, .. }) if dialog.mismatch_warning.is_some()
+        ));
+        shell.submit_edit_task(cx);
+    });
+    let second_req = match events.borrow().last().cloned() {
+        Some(AppShellEvent::RelinkEditTaskRequested(req)) => req,
+        other => panic!("expected second RelinkEditTaskRequested, got {other:?}"),
+    };
+    assert!(second_req.force_mismatch);
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.set_relink_edit_task_result(
+            crate::RelinkEditTaskResultView {
+                request_id: second_req.request_id,
+                session: second_req.session,
+                identity: second_req.identity.clone(),
+                outcome: crate::RelinkEditOutcomeView::Succeeded(CommandOutcomeView::Success {
+                    tasks: vec![second_req.identity],
+                }),
+            },
+            window,
+            cx,
+        );
+        assert!(shell.active_modal.is_none());
+    });
+}
+
+#[gpui::test]
+fn add_dialog_does_not_leak_domain_preset_across_mixed_domain_batch(cx: &mut TestAppContext) {
+    let settings = SettingsView {
+        download_directory: "C:/Downloads".into(),
+        categories: vec![crate::DownloadCategoryView {
+            id: "00000000-0000-4000-8000-000000000001".into(),
+            name: "General".into(),
+            directory: "C:/Downloads".into(),
+            extensions: String::new(),
+            is_fallback: true,
+        }],
+        header_presets: vec![crate::DomainHeaderPresetView {
+            id: "p1".into(),
+            name: "CDN Rule".into(),
+            enabled: true,
+            domains: "cdn.example".into(),
+            referer: "https://cdn.example/ref".into(),
+            user_agent: "CustomUA/2.0".into(),
+            headers: "X-Token: abc".into(),
+        }],
+        ..SettingsView::default()
+    };
+    let (view, cx) =
+        cx.add_window_view(move |window, cx| AppShell::new_with_settings(settings, window, cx));
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.snapshot = snapshot(1);
+        shell.open_add_download(&OpenAddDownload, window, cx);
+        let dialog = shell.add_dialog_entity().expect("add dialog open").clone();
+        dialog.update(cx, |dialog, cx| {
+            dialog.add_input.update(cx, |input, cx| {
+                input.set_value(
+                    "https://cdn.example/a.zip\nhttps://other.example/b.zip",
+                    window,
+                    cx,
+                );
+            });
+            dialog.apply_matched_preset_to_inputs(window, cx);
+        });
+    });
+
+    view.read_with(cx, |shell, cx| {
+        let dialog = shell.add_dialog_entity().expect("add dialog open").read(cx);
+        let sources = parse_add_download_sources(dialog.add_input.read(cx).value().as_ref());
+        assert!(dialog.matched_preset_for_sources(&sources).is_none());
+        assert_eq!(dialog.add_inputs.referer.read(cx).value(), "");
+        assert_eq!(dialog.add_inputs.headers.read(cx).value(), "");
+    });
 }

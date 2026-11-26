@@ -52,6 +52,10 @@ pub enum SettingsError {
     InvalidNoProxyEntry { entry: String, reason: String },
     #[error("invalid transfer policy field {field}: {reason}")]
     InvalidTransferPolicy { field: &'static str, reason: String },
+    #[error("invalid domain header preset: {reason}")]
+    InvalidHeaderPreset { reason: String },
+    #[error("invalid mirror rewrite rule: {reason}")]
+    InvalidMirrorRule { reason: String },
     #[error("unsupported settings schema version {found}; this build supports {supported}")]
     UnsupportedSchemaVersion { found: u32, supported: u32 },
     #[error("unsupported settings export version {found}; this build supports {supported}")]
@@ -99,7 +103,9 @@ impl SettingsError {
             | Self::ProxyCredentialWithoutUsername
             | Self::InvalidProxyEndpoint { .. }
             | Self::InvalidNoProxyEntry { .. }
-            | Self::InvalidTransferPolicy { .. } => true,
+            | Self::InvalidTransferPolicy { .. }
+            | Self::InvalidHeaderPreset { .. }
+            | Self::InvalidMirrorRule { .. } => true,
             Self::InvalidStorePath { .. }
             | Self::UnsupportedSchemaVersion { .. }
             | Self::UnsupportedExportVersion { .. }

@@ -182,6 +182,34 @@ impl SettingsPanelView {
             cx,
         );
         let category_extensions = make_input("mp4, mkv, zip".into(), false, window, cx);
+        let header_preset_name = make_input(
+            translator
+                .t("settings-header-preset-name-placeholder")
+                .into(),
+            false,
+            window,
+            cx,
+        );
+        let header_preset_domains =
+            make_input("example.com, *.cdn.example".into(), false, window, cx);
+        let header_preset_referer = make_input("https://example.com/".into(), false, window, cx);
+        let header_preset_user_agent = make_input("Mozilla/5.0 ...".into(), false, window, cx);
+        let header_preset_headers = cx.new(|cx| {
+            TextareaState::new(window, cx).placeholder("Accept-Language: en-US")
+        });
+        let mirror_rule_name = make_input(
+            translator.t("settings-mirror-rule-name-placeholder").into(),
+            false,
+            window,
+            cx,
+        );
+        let mirror_rule_pattern = make_input("https://github.com/".into(), false, window, cx);
+        let mirror_rule_replacement = make_input(
+            "https://mirror.example/https://github.com/".into(),
+            false,
+            window,
+            cx,
+        );
 
         let mut input_subs = [
             &directory,
@@ -205,6 +233,13 @@ impl SettingsPanelView {
             &tracker_list_text,
             &category_name,
             &category_extensions,
+            &header_preset_name,
+            &header_preset_domains,
+            &header_preset_referer,
+            &header_preset_user_agent,
+            &mirror_rule_name,
+            &mirror_rule_pattern,
+            &mirror_rule_replacement,
         ]
         .into_iter()
         .map(|input| {
@@ -218,6 +253,17 @@ impl SettingsPanelView {
             })
         })
         .collect::<Vec<_>>();
+        input_subs.push(cx.subscribe(
+            &header_preset_headers,
+            |this: &mut Self, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change)
+                    && this.pending_settings_save_source.is_none()
+                    && this.settings_page.error.take().is_some()
+                {
+                    cx.notify();
+                }
+            },
+        ));
         input_subs.push(cx.subscribe(
             &proxy_password,
             |this: &mut Self, _input, event: &InputEvent, cx| {
@@ -279,6 +325,13 @@ impl SettingsPanelView {
             draft_language: settings.language,
             draft_proxy_mode: settings.download_proxy.mode,
             draft_check_certificate: settings.download_proxy.check_certificate,
+            draft_auto_probe_on_add: settings.auto_probe_on_add,
+            draft_header_presets: settings.header_presets.clone(),
+            draft_header_preset_edit_index: None,
+            next_draft_header_preset_seq: 0,
+            draft_mirror_rules: settings.mirror_rules.clone(),
+            draft_mirror_rule_edit_index: None,
+            next_draft_mirror_rule_seq: 0,
             draft_file_allocation: settings.transfer_policy.file_allocation,
             draft_check_integrity: settings.transfer_policy.check_integrity,
             draft_notifications: settings.notifications,
@@ -336,6 +389,14 @@ impl SettingsPanelView {
                 tracker_list_text,
                 category_name,
                 category_extensions,
+                header_preset_name,
+                header_preset_domains,
+                header_preset_referer,
+                header_preset_user_agent,
+                header_preset_headers,
+                mirror_rule_name,
+                mirror_rule_pattern,
+                mirror_rule_replacement,
             },
             settings_scroll: ScrollHandle::new(),
             core_setup_panel,
@@ -540,6 +601,11 @@ impl SettingsPanelView {
         self.settings_page.draft_proxy_mode = settings.download_proxy.mode;
         self.settings_page.draft_file_allocation = settings.transfer_policy.file_allocation;
         self.settings_page.draft_check_certificate = settings.download_proxy.check_certificate;
+        self.settings_page.draft_auto_probe_on_add = settings.auto_probe_on_add;
+        self.settings_page.draft_header_presets = settings.header_presets.clone();
+        self.settings_page.draft_header_preset_edit_index = None;
+        self.settings_page.draft_mirror_rules = settings.mirror_rules.clone();
+        self.settings_page.draft_mirror_rule_edit_index = None;
         self.settings_page.draft_check_integrity = settings.transfer_policy.check_integrity;
         self.settings_page.draft_notifications = settings.notifications;
         self.settings_page.draft_platform = settings.platform;
@@ -894,9 +960,22 @@ impl SettingsPanelView {
             }
             SettingsCategory::Network => {
                 let (proxy_draft, password_update) = self.read_proxy_draft(cx);
+                let header_presets_draft = self.preview_draft_header_presets(cx);
+                let mirror_rules_draft = self.preview_draft_mirror_rules(cx);
                 let dirty = proxy_draft != self.settings.download_proxy
-                    || !matches!(password_update, ProxyPasswordUpdateView::Unchanged);
-                let saving = self.pending_settings_save_source == Some(SettingsSaveSource::Proxy);
+                    || !matches!(password_update, ProxyPasswordUpdateView::Unchanged)
+                    || header_presets_draft != self.settings.header_presets
+                    || mirror_rules_draft != self.settings.mirror_rules
+                    || self.settings_page.draft_auto_probe_on_add
+                        != self.settings.auto_probe_on_add;
+                let saving = matches!(
+                    self.pending_settings_save_source,
+                    Some(
+                        SettingsSaveSource::Proxy
+                            | SettingsSaveSource::NetworkRules
+                            | SettingsSaveSource::Network
+                    )
+                );
                 (dirty, saving)
             }
             SettingsCategory::Transfers => {
@@ -1175,7 +1254,10 @@ impl AppShell {
                     panel.update(cx, |panel, cx| {
                         panel.settings_page.error = None;
                         panel.pending_settings_save_source = None;
-                        if source == SettingsSaveSource::Proxy {
+                        if matches!(
+                            source,
+                            SettingsSaveSource::Proxy | SettingsSaveSource::Network
+                        ) {
                             panel
                                 .settings_inputs
                                 .proxy_password
@@ -1190,6 +1272,8 @@ impl AppShell {
                     SettingsSaveSource::Language => self.t("settings-language-saved"),
                     SettingsSaveSource::Categories => self.t("notice-settings-categories"),
                     SettingsSaveSource::Proxy => self.t("notice-settings-proxy"),
+                    SettingsSaveSource::NetworkRules => self.t("notice-settings-network-rules"),
+                    SettingsSaveSource::Network => self.t("notice-settings-network"),
                     SettingsSaveSource::SpeedLimit => self.t("notice-settings-speed"),
                     SettingsSaveSource::TransferPolicy => self.t("notice-settings-transfer-policy"),
                     SettingsSaveSource::Transfers => self.t("notice-settings-transfers"),

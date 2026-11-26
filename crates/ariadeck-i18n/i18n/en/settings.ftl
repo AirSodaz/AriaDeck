@@ -307,3 +307,28 @@ settings-category-name-placeholder = General
 # Platform capability hints
 settings-keep-awake-unsupported-desc = Keep-awake power management is currently supported on Windows only.
 settings-bridge-unsupported-desc = Native browser bridge packaging and registration are currently supported on Windows only.
+
+# Network — Domain Header Presets & URL Mirror Rules
+settings-network-header-presets = Domain header presets
+settings-header-presets-desc = Auto-fill Referer, User-Agent, and custom headers when a download URL matches these host patterns. Cookies and Authorization headers are excluded.
+settings-header-presets-empty = No domain header presets configured.
+settings-header-preset-add = Add preset
+settings-header-preset-name = Preset name
+settings-header-preset-name-placeholder = e.g. CDN Referer
+settings-header-preset-domains = Matching hosts (comma-separated, e.g. *.example.com)
+settings-header-preset-no-domains = No host patterns configured
+settings-network-mirrors = Mirror rewrite rules & pre-add probe
+settings-auto-probe-on-add = Auto-probe single HTTP(S) URLs in Add Download
+settings-auto-probe-on-add-desc = Automatically run a lightweight HEAD/Range request after typing a link to resolve filename and size.
+settings-mirror-keep-original = Keep original URL as fallback mirror
+settings-mirror-keep-original-desc = When enabled, aria2 receives both the rewritten mirror and the original source URL.
+settings-mirror-templates = Quick-add templates:
+settings-mirror-rules-empty = No mirror rewrite rules configured.
+settings-mirror-rule-add = Add mirror rule
+settings-mirror-rule-match-kind = Match mode
+settings-mirror-kind-prefix = Prefix
+settings-mirror-kind-host = Host
+settings-mirror-rule-name = Rule name
+settings-mirror-rule-name-placeholder = e.g. GitHub Release Mirror
+settings-mirror-rule-pattern = Match pattern
+settings-mirror-rule-replacement = Mirror replacement

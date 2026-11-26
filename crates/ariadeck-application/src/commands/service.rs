@@ -14,9 +14,9 @@ use crate::{
 use super::{
     outcome::{ApplicationError, ApplicationErrorCode, CommandItem, CommandOutcome, ItemFailure},
     requests::{
-        AddDownloadRequest, AddDownloadSource, AppCommand, DownloadProxyConfig, FileConflictPolicy,
-        QueueMove, SetTaskConnectionPolicyRequest, SetTaskOptionsRequest, SetTaskOutputNameRequest,
-        SetTaskSpeedLimitRequest, TaskCommandContext, TaskRemovalScope,
+        AddDownloadRequest, AddDownloadSource, AppCommand, DownloadProxyConfig, EditTaskRequest,
+        FileConflictPolicy, QueueMove, SetTaskConnectionPolicyRequest, SetTaskOptionsRequest,
+        SetTaskOutputNameRequest, SetTaskSpeedLimitRequest, TaskCommandContext, TaskRemovalScope,
     },
 };
 
@@ -157,6 +157,7 @@ impl CommandService {
             AppCommand::SetTaskOptions(request) => {
                 self.set_task_options(request, task_contexts).await
             }
+            AppCommand::EditTask(request) => self.edit_task(request, task_contexts).await,
         }
     }
 
@@ -370,6 +371,185 @@ impl CommandService {
             item,
             self.change_options_gated(request.task.gid, &options).await,
         )
+    }
+
+    async fn edit_task(
+        &self,
+        request: EditTaskRequest,
+        task_contexts: &HashMap<TaskIdentity, TaskCommandContext>,
+    ) -> CommandOutcome {
+        let item = CommandItem::Task(request.task);
+        if let Err(error) = request.validate() {
+            return CommandOutcome::item_failure(item, error);
+        }
+        if request.task.profile_id != self.profile_id {
+            return CommandOutcome::item_failure(
+                item,
+                ApplicationError::new(
+                    ApplicationErrorCode::WrongProfile,
+                    "The task belongs to a different engine profile.",
+                    false,
+                ),
+            );
+        }
+        let Some(context) = task_contexts.get(&request.task) else {
+            return CommandOutcome::item_failure(
+                item,
+                ApplicationError::new(
+                    ApplicationErrorCode::Rejected,
+                    "The task is no longer present in the current engine session.",
+                    false,
+                ),
+            );
+        };
+
+        let option_pairs = request.options.to_option_pairs();
+        if context.status == DownloadStatus::Error {
+            if !request.allow_error_relink_resume {
+                return CommandOutcome::item_failure(
+                    item,
+                    ApplicationError::new(
+                        ApplicationErrorCode::Rejected,
+                        "A failed task requires relink resume mode to restart with updated parameters.",
+                        false,
+                    ),
+                );
+            }
+            if context.metadata.source_kind != TaskSourceKind::DirectUri {
+                return CommandOutcome::item_failure(
+                    item,
+                    ApplicationError::new(
+                        ApplicationErrorCode::Unsupported,
+                        "Error-task relink resume is supported only for direct URI downloads.",
+                        false,
+                    ),
+                );
+            }
+            let uris: Vec<String> = match request.new_uris {
+                Some(uris) => uris.into_iter().map(|u| u.trim().to_owned()).collect(),
+                None => match context.metadata.primary_uri.clone() {
+                    Some(uri) if uri != ariadeck_domain::REDACTED_SOURCE_PLACEHOLDER => vec![uri],
+                    _ => {
+                        return CommandOutcome::item_failure(
+                            item,
+                            ApplicationError::new(
+                                ApplicationErrorCode::Validation,
+                                "Provide a new download URL to relink this failed task.",
+                                false,
+                            ),
+                        );
+                    }
+                },
+            };
+            return match self
+                .gateway
+                .relink_error_download(
+                    request.task.gid,
+                    &uris,
+                    &option_pairs,
+                    context.metadata.directory.as_ref(),
+                )
+                .await
+            {
+                Ok(new_gid) => CommandOutcome::Success {
+                    succeeded: vec![CommandItem::Task(TaskIdentity::new(
+                        self.profile_id,
+                        new_gid,
+                    ))],
+                },
+                Err(error) => CommandOutcome::item_failure(item, error.into()),
+            };
+        }
+
+        if context.status.is_terminal() {
+            return CommandOutcome::item_failure(
+                item,
+                ApplicationError::new(
+                    ApplicationErrorCode::Rejected,
+                    "A completed or removed task cannot be edited.",
+                    false,
+                ),
+            );
+        }
+
+        if request.new_uris.is_some() {
+            if context.metadata.source_kind != TaskSourceKind::DirectUri {
+                return CommandOutcome::item_failure(
+                    item,
+                    ApplicationError::new(
+                        ApplicationErrorCode::Unsupported,
+                        "URL relinking is supported only for direct URI downloads.",
+                        false,
+                    ),
+                );
+            }
+            if let Err(error) = self.require_method("aria2.changeUri") {
+                return CommandOutcome::item_failure(item, error);
+            }
+        }
+        if !option_pairs.is_empty()
+            && let Err(error) = self.require_method("aria2.changeOption")
+        {
+            return CommandOutcome::item_failure(item, error);
+        }
+
+        let needs_pause_for_mutation = context.status == DownloadStatus::Active
+            && (request.new_uris.is_some() || request.options.out.is_some());
+        if needs_pause_for_mutation {
+            if let Err(error) = self.require_method("aria2.pause") {
+                return CommandOutcome::item_failure(item, error);
+            }
+            if let Err(error) = self.require_method("aria2.unpause") {
+                return CommandOutcome::item_failure(item, error);
+            }
+            if let Err(error) = self.gateway.pause(request.task.gid).await {
+                return CommandOutcome::item_failure(item, error.into());
+            }
+        }
+
+        if let Some(new_uris) = request.new_uris {
+            let trimmed_new: Vec<String> =
+                new_uris.into_iter().map(|u| u.trim().to_owned()).collect();
+            let old_uris = match self.gateway.get_uris(request.task.gid).await {
+                Ok(uris) => uris,
+                Err(error) => {
+                    if needs_pause_for_mutation {
+                        let _ = self.gateway.resume(request.task.gid).await;
+                    }
+                    return CommandOutcome::item_failure(item, error.into());
+                }
+            };
+            if let Err(error) = self
+                .gateway
+                .change_uri(request.task.gid, 1, &old_uris, &trimmed_new, Some(0))
+                .await
+            {
+                if needs_pause_for_mutation {
+                    let _ = self.gateway.resume(request.task.gid).await;
+                }
+                return CommandOutcome::item_failure(item, error.into());
+            }
+        }
+
+        if !option_pairs.is_empty()
+            && let Err(error) = self
+                .change_options_gated(request.task.gid, &option_pairs)
+                .await
+        {
+            if needs_pause_for_mutation {
+                let _ = self.gateway.resume(request.task.gid).await;
+            }
+            return CommandOutcome::item_failure(item, error.into());
+        }
+
+        if needs_pause_for_mutation && let Err(error) = self.gateway.resume(request.task.gid).await
+        {
+            return CommandOutcome::item_failure(item, error.into());
+        }
+
+        CommandOutcome::Success {
+            succeeded: vec![item],
+        }
     }
 
     async fn execute_global(&self, operation: GlobalTaskOperation) -> CommandOutcome {

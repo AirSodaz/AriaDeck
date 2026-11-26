@@ -63,6 +63,8 @@ fn command_outcome_detects_unknown_failures_in_full_and_partial_results() {
 }
 
 type ChangedOptionCall = (Gid, Vec<(String, String)>);
+type UriChangeCall = (Gid, Vec<String>, Vec<String>);
+type RelinkResumeCall = (Gid, Vec<String>, Vec<(String, String)>);
 
 #[derive(Default)]
 struct FakeGateway {
@@ -74,6 +76,9 @@ struct FakeGateway {
     changed_options: Mutex<Vec<ChangedOptionCall>>,
     global_options: Mutex<Vec<Vec<(String, String)>>>,
     queue_moves: Mutex<Vec<(Gid, QueueMove)>>,
+    uris: Mutex<Vec<String>>,
+    uri_changes: Mutex<Vec<UriChangeCall>>,
+    relink_resumes: Mutex<Vec<RelinkResumeCall>>,
     fail_gid: Option<Gid>,
 }
 
@@ -169,6 +174,43 @@ impl DownloadEngineGateway for FakeGateway {
         Ok(())
     }
 
+    async fn get_uris(&self, _gid: Gid) -> Result<Vec<String>, GatewayError> {
+        Ok(self
+            .uris
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone())
+    }
+
+    async fn change_uri(
+        &self,
+        gid: Gid,
+        _file_index: u32,
+        del_uris: &[String],
+        add_uris: &[String],
+        _position: Option<u32>,
+    ) -> Result<(u32, u32), GatewayError> {
+        self.uri_changes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((gid, del_uris.to_vec(), add_uris.to_vec()));
+        Ok((del_uris.len() as u32, add_uris.len() as u32))
+    }
+
+    async fn relink_error_download(
+        &self,
+        gid: Gid,
+        new_uris: &[String],
+        override_options: &[(String, String)],
+        _fallback_dir: Option<&EnginePath>,
+    ) -> Result<Gid, GatewayError> {
+        self.relink_resumes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((gid, new_uris.to_vec(), override_options.to_vec()));
+        Ok(Gid::from_u64(0x101))
+    }
+
     async fn apply_transfer_policy(
         &self,
         config: &TransferPolicyConfig,
@@ -242,15 +284,8 @@ impl FakeGateway {
 fn batch_command_reports_partial_success_and_deduplicates() {
     let profile_id = ProfileId::new();
     let gateway = Arc::new(FakeGateway {
-        adds: Mutex::default(),
-        add_gids: Mutex::default(),
-        retries: Mutex::default(),
-        calls: Mutex::default(),
-        removals: Mutex::default(),
-        changed_options: Mutex::default(),
-        global_options: Mutex::default(),
-        queue_moves: Mutex::default(),
         fail_gid: Some(Gid::from_u64(2)),
+        ..FakeGateway::default()
     });
     let service = CommandService::new_unprobed(profile_id, gateway.clone());
     let one = TaskIdentity::new(profile_id, Gid::from_u64(1));
@@ -1594,4 +1629,167 @@ fn download_proxy_debug_redacts_credentials_and_validate_rejects_whitespace_and_
         ..DownloadProxyConfig::default()
     };
     assert!(crlf.validate().is_err());
+}
+
+#[test]
+fn edit_task_relinks_active_task_with_pause_change_uri_change_option_and_resume() {
+    let profile_id = ProfileId::new();
+    let gid = Gid::from_u64(0x42);
+    let identity = TaskIdentity::new(profile_id, gid);
+    let gateway = Arc::new(FakeGateway::default());
+    *gateway
+        .uris
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        vec!["https://expired.example.test/file.zip".into()];
+    let capabilities = EngineCapabilities {
+        version: "1.37.0".into(),
+        enabled_features: Vec::new(),
+        methods: vec![
+            "aria2.changeUri".into(),
+            "aria2.changeOption".into(),
+            "aria2.pause".into(),
+            "aria2.unpause".into(),
+        ],
+    };
+    let service = CommandService::new(profile_id, gateway.clone(), capabilities);
+    let contexts = HashMap::from([(
+        identity,
+        TaskCommandContext {
+            status: DownloadStatus::Active,
+            metadata: TaskMetadata {
+                source_kind: TaskSourceKind::DirectUri,
+                ..TaskMetadata::default()
+            },
+            is_history_only: false,
+        },
+    )]);
+
+    let outcome = block_on(service.execute(
+        AppCommand::EditTask(EditTaskRequest {
+            task: identity,
+            new_uris: Some(vec!["https://fresh.example.test/file.zip".into()]),
+            options: EditTaskDynamicOptions {
+                referer: Some("https://ref.example.test/".into()),
+                user_agent: Some("AriaDeck/2".into()),
+                headers: Some(vec!["X-Mirrors: 1".into()]),
+                ..EditTaskDynamicOptions::default()
+            },
+            allow_error_relink_resume: false,
+        }),
+        &contexts,
+    ));
+    assert_eq!(
+        outcome,
+        CommandOutcome::Success {
+            succeeded: vec![CommandItem::Task(identity)],
+        }
+    );
+    let ops = gateway
+        .calls
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    assert_eq!(
+        ops,
+        vec![(TaskOperation::Pause, gid), (TaskOperation::Resume, gid)]
+    );
+    let uri_changes = gateway
+        .uri_changes
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    assert_eq!(
+        uri_changes,
+        vec![(
+            gid,
+            vec!["https://expired.example.test/file.zip".into()],
+            vec!["https://fresh.example.test/file.zip".into()],
+        )]
+    );
+    let option_changes = gateway
+        .changed_options
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    assert_eq!(option_changes.len(), 1);
+    assert!(
+        option_changes[0]
+            .1
+            .contains(&("referer".into(), "https://ref.example.test/".into()))
+    );
+}
+
+#[test]
+fn edit_task_supports_error_relink_resume_and_gates_change_uri_capability() {
+    let profile_id = ProfileId::new();
+    let gid = Gid::from_u64(0x43);
+    let identity = TaskIdentity::new(profile_id, gid);
+    let gateway = Arc::new(FakeGateway::default());
+
+    let missing_cap = EngineCapabilities {
+        version: "1.37.0".into(),
+        enabled_features: Vec::new(),
+        methods: vec!["aria2.changeOption".into()],
+    };
+    let gated_service = CommandService::new(profile_id, gateway.clone(), missing_cap);
+    let paused_contexts = HashMap::from([(
+        identity,
+        TaskCommandContext {
+            status: DownloadStatus::Paused,
+            metadata: TaskMetadata {
+                source_kind: TaskSourceKind::DirectUri,
+                ..TaskMetadata::default()
+            },
+            is_history_only: false,
+        },
+    )]);
+    let gated = block_on(gated_service.execute(
+        AppCommand::EditTask(EditTaskRequest {
+            task: identity,
+            new_uris: Some(vec!["https://fresh.example.test/file.zip".into()]),
+            options: EditTaskDynamicOptions::default(),
+            allow_error_relink_resume: false,
+        }),
+        &paused_contexts,
+    ));
+    let CommandOutcome::Failure { failed } = gated else {
+        panic!("expected capability failure");
+    };
+    assert_eq!(failed[0].error.code, ApplicationErrorCode::Unsupported);
+
+    let service = CommandService::new_unprobed(profile_id, gateway.clone());
+    let error_contexts = HashMap::from([(
+        identity,
+        TaskCommandContext {
+            status: DownloadStatus::Error,
+            metadata: TaskMetadata {
+                source_kind: TaskSourceKind::DirectUri,
+                directory: Some(EnginePath::new("/downloads")),
+                ..TaskMetadata::default()
+            },
+            is_history_only: false,
+        },
+    )]);
+    let resumed = block_on(service.execute(
+        AppCommand::EditTask(EditTaskRequest {
+            task: identity,
+            new_uris: Some(vec!["https://fresh.example.test/file.zip".into()]),
+            options: EditTaskDynamicOptions {
+                proxy: Some("http://proxy.example.test:8080".into()),
+                ..EditTaskDynamicOptions::default()
+            },
+            allow_error_relink_resume: true,
+        }),
+        &error_contexts,
+    ));
+    assert_eq!(
+        resumed,
+        CommandOutcome::Success {
+            succeeded: vec![CommandItem::Task(TaskIdentity::new(
+                profile_id,
+                Gid::from_u64(0x101),
+            ))],
+        }
+    );
 }

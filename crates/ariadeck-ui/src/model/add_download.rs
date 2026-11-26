@@ -266,3 +266,29 @@ pub struct AddDownloadResultView {
     pub session: EngineSessionView,
     pub items: Vec<AddDownloadItemResultView>,
 }
+
+/// Request to run a lightweight HTTP HEAD/Range probe before adding a URI.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProbeDownloadUrlRequestView {
+    pub request_id: RequestId,
+    pub url: String,
+    pub referer: String,
+    pub user_agent: String,
+    pub headers: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProbedDownloadMetadataView {
+    pub final_url: String,
+    pub resolved_filename: Option<String>,
+    pub total_bytes: Option<u64>,
+    pub etag: Option<String>,
+    pub accept_ranges: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProbeDownloadUrlResultView {
+    pub request_id: RequestId,
+    pub url: String,
+    pub outcome: Result<ProbedDownloadMetadataView, OperationErrorView>,
+}

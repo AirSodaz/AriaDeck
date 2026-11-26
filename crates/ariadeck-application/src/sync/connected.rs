@@ -261,6 +261,14 @@ impl<'a> ConnectedRunner<'a> {
                 self.handle_connection_details(session, task, active, is_bittorrent, sender);
                 None
             }
+            Control::EditableState {
+                session,
+                task,
+                sender,
+            } => {
+                self.handle_editable_state(session, task, sender);
+                None
+            }
         }
     }
 
@@ -376,6 +384,11 @@ impl<'a> ConnectedRunner<'a> {
             AppCommand::SetTaskOutputName(request) => {
                 Some((request.task.gid, request.output_name.trim().to_owned()))
             }
+            AppCommand::EditTask(request) if !request.allow_error_relink_resume => request
+                .options
+                .out
+                .as_ref()
+                .map(|name| (request.task.gid, name.trim().to_owned())),
             _ => None,
         };
         let remove_gids = match &command {
@@ -556,6 +569,41 @@ impl<'a> ConnectedRunner<'a> {
         });
     }
 
+    fn handle_editable_state(
+        &self,
+        expected_session: ariadeck_domain::EngineSession,
+        task: ariadeck_domain::TaskIdentity,
+        sender: tokio::sync::oneshot::Sender<
+            Result<ariadeck_domain::TaskEditableState, crate::ApplicationError>,
+        >,
+    ) {
+        if expected_session != self.ctx.store.session() {
+            let _ = sender.send(Err(stale_session_error()));
+            return;
+        }
+        if task.profile_id != self.ctx.config.profile_id {
+            let _ = sender.send(Err(wrong_profile_error()));
+            return;
+        }
+        let Some(gateway) = self.ctx.connection_gateway.cloned() else {
+            let _ = sender.send(Err(unsupported_error(
+                "The connected engine does not expose editable task state.",
+            )));
+            return;
+        };
+        let mut cancel_rx = self.ctx.cancellation.clone();
+        let mut session_cancel_rx = self.session_cancel_rx.clone();
+        tokio::spawn(async move {
+            let result = tokio::select! {
+                biased;
+                () = wait_for_cancellation(&mut cancel_rx) => return,
+                () = wait_for_cancellation(&mut session_cancel_rx) => return,
+                result = gateway.editable_state(task.gid) => result.map_err(Into::into),
+            };
+            let _ = sender.send(result);
+        });
+    }
+
     async fn handle_notification_tick(&mut self) -> Option<ConnectedExit> {
         if !self.pending_full && self.pending_tasks.is_empty() {
             return None;
@@ -724,6 +772,7 @@ fn build_task_contexts(
         AppCommand::SetTaskSpeedLimit(request) => Some(std::slice::from_ref(&request.task)),
         AppCommand::SetTaskConnectionPolicy(request) => Some(std::slice::from_ref(&request.task)),
         AppCommand::SetTaskOptions(request) => Some(std::slice::from_ref(&request.task)),
+        AppCommand::EditTask(request) => Some(std::slice::from_ref(&request.task)),
         _ => None,
     };
     tasks.map_or_else(HashMap::new, |tasks| {
@@ -752,6 +801,9 @@ fn refresh_hint_for_command(command: &AppCommand) -> RefreshHint {
         AppCommand::SetTaskSpeedLimit(request) => RefreshHint::Task(request.task.gid),
         AppCommand::SetTaskConnectionPolicy(request) => RefreshHint::Task(request.task.gid),
         AppCommand::SetTaskOptions(request) => RefreshHint::Task(request.task.gid),
+        AppCommand::EditTask(request) if !request.allow_error_relink_resume => {
+            RefreshHint::Task(request.task.gid)
+        }
         _ => RefreshHint::Full,
     }
 }

@@ -1222,6 +1222,469 @@ impl AppShell {
         }
         self.selected_task_view(cx)
     }
+
+    pub(crate) fn open_edit_task_action(
+        &mut self,
+        _: &OpenEditTask,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_edit_task(window, cx);
+    }
+
+    pub(crate) fn close_edit_task_action(
+        &mut self,
+        _: &CloseEditTask,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_edit_task(window, cx);
+    }
+
+    pub(crate) fn submit_edit_task_action(
+        &mut self,
+        _: &SubmitEditTask,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.submit_edit_task(cx);
+    }
+
+    pub(crate) fn open_edit_task(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(task) = self.selected_task_view(cx) {
+            self.open_edit_task_for(task, window, cx);
+        } else {
+            self.show_notice(self.t("notice-select-task-first"), true, cx);
+        }
+    }
+
+    pub(crate) fn open_edit_task_for(
+        &mut self,
+        task: DownloadRowView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(ActiveModal::EditTask { url_input, .. }) = &self.active_modal {
+            window.focus(&url_input.focus_handle(cx), cx);
+            return;
+        }
+        if self.active_modal.is_some()
+            || self.pending_task_command.is_some()
+            || self.pending_batch_command.is_some()
+        {
+            return;
+        }
+        if !self.snapshot.commands_available() || !task.can_edit_or_relink() {
+            self.show_notice(self.t("notice-edit-task-unavailable"), true, cx);
+            return;
+        }
+        let Some(session) = self.snapshot.engine_session() else {
+            self.show_notice(self.t("notice-connect-before-command"), true, cx);
+            return;
+        };
+
+        let is_error_resume = task.status == TaskStatusView::Failed;
+        let can_relink_url = task.can_relink_url();
+        let can_edit_out = task.can_set_output_name()
+            && matches!(
+                task.status,
+                TaskStatusView::Paused | TaskStatusView::Waiting | TaskStatusView::Active
+            );
+
+        let url_input = make_input("https://example.test/file.zip".into(), false, window, cx);
+        if let Some(primary) = task.primary_source.as_deref()
+            && primary != ariadeck_domain::REDACTED_SOURCE_PLACEHOLDER
+        {
+            url_input.update(cx, |input, cx| {
+                input.set_value(primary.to_owned(), window, cx)
+            });
+        }
+        let referer_input = make_input("https://example.test/".into(), false, window, cx);
+        let user_agent_input = make_input(
+            self.t("dialog-add-user-agent-placeholder").into(),
+            false,
+            window,
+            cx,
+        );
+        let headers_input = cx.new(|cx| {
+            TextareaState::new(window, cx).placeholder(self.t("dialog-add-headers-placeholder"))
+        });
+        let proxy_input = make_input("http://proxy.example:8080".into(), false, window, cx);
+        let speed_limit_input = make_input(
+            self.t("input-download-limit-placeholder").into(),
+            false,
+            window,
+            cx,
+        );
+        let connections_input = make_input("1-16".into(), false, window, cx);
+        let split_input = make_input("1-64".into(), false, window, cx);
+        let out_input = make_input(task.display_name.clone().into(), false, window, cx);
+        if can_edit_out && !task.name_state.is_resolving() {
+            out_input.update(cx, |input, cx| {
+                input.set_value(task.display_name.clone(), window, cx)
+            });
+        }
+
+        let mut subs = Vec::new();
+        for input in [
+            &url_input,
+            &referer_input,
+            &user_agent_input,
+            &proxy_input,
+            &speed_limit_input,
+            &connections_input,
+            &split_input,
+            &out_input,
+        ] {
+            let is_url = input == &url_input;
+            subs.push(
+                cx.subscribe(input, move |this: &mut Self, _, event: &InputEvent, cx| {
+                    if let InputEvent::Change = event
+                        && let Some(ActiveModal::EditTask { dialog, .. }) = &mut this.active_modal
+                        && dialog.submit_request.is_none()
+                    {
+                        let mut changed = dialog.error.take().is_some();
+                        if is_url {
+                            changed |= dialog.mismatch_warning.take().is_some();
+                        }
+                        if changed {
+                            cx.notify();
+                        }
+                    }
+                }),
+            );
+        }
+        subs.push(cx.subscribe(
+            &headers_input,
+            |this: &mut Self, _, event: &InputEvent, cx| {
+                if let InputEvent::Change = event
+                    && let Some(ActiveModal::EditTask { dialog, .. }) = &mut this.active_modal
+                    && dialog.submit_request.is_none()
+                    && dialog.error.take().is_some()
+                {
+                    cx.notify();
+                }
+            },
+        ));
+
+        let loading_id = self.allocate_request_id();
+        let expected_total_bytes = (task.total_bytes > 0).then_some(task.total_bytes);
+        let expected_filename =
+            (!task.name_state.is_resolving()).then(|| task.display_name.clone());
+        self.active_modal = Some(ActiveModal::EditTask {
+            dialog: Box::new(EditTaskDialog {
+                identity: task.identity.clone(),
+                display_name: task_display_name(&task, &self.translator),
+                can_relink_url,
+                is_error_resume,
+                can_edit_out,
+                original_primary_uri: task.primary_source.clone(),
+                expected_total_bytes,
+                expected_filename,
+                initial_state: None,
+                loading_request: Some(loading_id),
+                submit_request: None,
+                mismatch_warning: None,
+                error: None,
+            }),
+            url_input: url_input.clone(),
+            referer_input,
+            user_agent_input,
+            headers_input,
+            proxy_input,
+            speed_limit_input,
+            connections_input,
+            split_input,
+            out_input,
+            _subs: subs,
+        });
+        self.sync_kit_modals(window, cx);
+        cx.emit(AppShellEvent::PrepareEditTaskRequested(
+            PrepareEditTaskRequestView {
+                request_id: loading_id,
+                session,
+                identity: task.identity,
+            },
+        ));
+        cx.notify();
+    }
+
+    pub(crate) fn close_edit_task(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.active_modal, Some(ActiveModal::EditTask { .. }))
+            || matches!(
+                &self.active_modal,
+                Some(ActiveModal::EditTask { dialog, .. }) if dialog.submit_request.is_some()
+            )
+        {
+            return;
+        }
+        self.active_modal = None;
+        self.sync_kit_modals(window, cx);
+        if !has_kit_root(window) {
+            window.focus(&self.focus_handle, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn set_prepare_edit_task_result(
+        &mut self,
+        result: PrepareEditTaskResultView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ActiveModal::EditTask {
+            dialog,
+            url_input,
+            referer_input,
+            user_agent_input,
+            headers_input,
+            proxy_input,
+            speed_limit_input,
+            connections_input,
+            split_input,
+            out_input,
+            ..
+        }) = &mut self.active_modal
+        else {
+            return;
+        };
+        if dialog.loading_request != Some(result.request_id) || dialog.identity != result.identity {
+            return;
+        }
+        dialog.loading_request = None;
+        match result.outcome {
+            Ok(state) => {
+                if let Some(first_uri) = state.uris.first() {
+                    dialog.original_primary_uri = Some(first_uri.clone());
+                    url_input.update(cx, |input, cx| {
+                        input.set_value(first_uri.clone(), window, cx)
+                    });
+                }
+                referer_input.update(cx, |input, cx| {
+                    input.set_value(state.referer.clone(), window, cx)
+                });
+                user_agent_input.update(cx, |input, cx| {
+                    input.set_value(state.user_agent.clone(), window, cx)
+                });
+                headers_input.update(cx, |input, cx| {
+                    input.set_value(state.headers.clone(), window, cx)
+                });
+                proxy_input.update(cx, |input, cx| {
+                    input.set_value(state.proxy.clone(), window, cx)
+                });
+                speed_limit_input.update(cx, |input, cx| {
+                    input.set_value(state.max_download_limit.clone(), window, cx)
+                });
+                connections_input.update(cx, |input, cx| {
+                    input.set_value(state.max_connection_per_server.clone(), window, cx)
+                });
+                split_input.update(cx, |input, cx| {
+                    input.set_value(state.split.clone(), window, cx)
+                });
+                if !state.out.is_empty() {
+                    out_input.update(cx, |input, cx| {
+                        input.set_value(state.out.clone(), window, cx)
+                    });
+                }
+                dialog.initial_state = Some(state);
+            }
+            Err(error) => {
+                // Non-fatal on Error tasks whose GID was purged from aria2 memory.
+                if !dialog.is_error_resume {
+                    dialog.error = Some(error);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn submit_edit_task(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.snapshot.engine_session() else {
+            return;
+        };
+        let Some(ActiveModal::EditTask {
+            dialog,
+            url_input,
+            referer_input,
+            user_agent_input,
+            headers_input,
+            proxy_input,
+            speed_limit_input,
+            connections_input,
+            split_input,
+            out_input,
+            ..
+        }) = &self.active_modal
+        else {
+            return;
+        };
+        if dialog.loading_request.is_some() || dialog.submit_request.is_some() {
+            return;
+        }
+
+        let new_url_raw = url_input.read(cx).value().trim().to_owned();
+        let referer_raw = referer_input.read(cx).value().trim().to_owned();
+        let ua_raw = user_agent_input.read(cx).value().trim().to_owned();
+        let headers_raw = headers_input.read(cx).value().to_string();
+        let proxy_raw = proxy_input.read(cx).value().trim().to_owned();
+        let speed_raw = speed_limit_input.read(cx).value().trim().to_owned();
+        let connections_raw = connections_input.read(cx).value().trim().to_owned();
+        let split_raw = split_input.read(cx).value().trim().to_owned();
+        let out_raw = out_input.read(cx).value().trim().to_owned();
+
+        let initial = dialog.initial_state.clone().unwrap_or_default();
+        let initial_url = initial
+            .uris
+            .first()
+            .cloned()
+            .or_else(|| dialog.original_primary_uri.clone())
+            .unwrap_or_default();
+
+        let new_url = if dialog.can_relink_url
+            && !new_url_raw.is_empty()
+            && (new_url_raw != initial_url || dialog.is_error_resume)
+        {
+            Some(new_url_raw)
+        } else {
+            None
+        };
+        let referer = (referer_raw != initial.referer).then_some(referer_raw);
+        let user_agent = (ua_raw != initial.user_agent).then_some(ua_raw);
+        let headers = (headers_raw.trim() != initial.headers.trim()).then_some(headers_raw);
+        let proxy = (proxy_raw != initial.proxy).then_some(proxy_raw);
+        let max_download_limit = (speed_raw != initial.max_download_limit).then_some(speed_raw);
+        let max_connection_per_server =
+            (connections_raw != initial.max_connection_per_server).then_some(connections_raw);
+        let split = (split_raw != initial.split).then_some(split_raw);
+        let out_unchanged = if !initial.out.is_empty() {
+            out_raw == initial.out
+        } else {
+            out_raw == dialog.display_name
+        };
+        let out = (dialog.can_edit_out && !out_raw.is_empty() && !out_unchanged).then_some(out_raw);
+
+        if new_url.is_none()
+            && referer.is_none()
+            && user_agent.is_none()
+            && headers.is_none()
+            && proxy.is_none()
+            && max_download_limit.is_none()
+            && max_connection_per_server.is_none()
+            && split.is_none()
+            && out.is_none()
+        {
+            let summary = self.t("dialog-edit-task-no-changes");
+            if let Some(ActiveModal::EditTask { dialog, .. }) = &mut self.active_modal {
+                dialog.error = Some(OperationErrorView {
+                    code: "validation.empty_task_options".into(),
+                    summary,
+                    retryable: false,
+                });
+            }
+            cx.notify();
+            return;
+        }
+
+        if new_url.is_some() && !dialog.is_error_resume && !self.snapshot.capabilities.change_uri {
+            let summary = self
+                .snapshot
+                .capabilities
+                .unsupported_change_uri_message()
+                .to_owned();
+            if let Some(ActiveModal::EditTask { dialog, .. }) = &mut self.active_modal {
+                dialog.error = Some(OperationErrorView {
+                    code: "command.unsupported".into(),
+                    summary,
+                    retryable: false,
+                });
+            }
+            cx.notify();
+            return;
+        }
+
+        let identity = dialog.identity.clone();
+        let original_primary_uri = dialog.original_primary_uri.clone();
+        let expected_total_bytes = dialog.expected_total_bytes;
+        let expected_filename = dialog.expected_filename.clone();
+        let allow_error_relink_resume = dialog.is_error_resume;
+        let force_mismatch = dialog.mismatch_warning.is_some();
+
+        let request_id = self.allocate_request_id();
+        let req = RelinkEditTaskRequestView {
+            request_id,
+            session,
+            identity,
+            original_primary_uri,
+            expected_total_bytes,
+            expected_filename,
+            new_url,
+            referer,
+            user_agent,
+            headers,
+            proxy,
+            max_download_limit,
+            max_connection_per_server,
+            split,
+            out,
+            allow_error_relink_resume,
+            force_mismatch,
+        };
+        if let Some(ActiveModal::EditTask { dialog, .. }) = &mut self.active_modal {
+            dialog.submit_request = Some(request_id);
+            dialog.error = None;
+        }
+        cx.emit(AppShellEvent::RelinkEditTaskRequested(req));
+        cx.notify();
+    }
+
+    pub fn set_relink_edit_task_result(
+        &mut self,
+        result: RelinkEditTaskResultView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ActiveModal::EditTask { dialog, .. }) = &mut self.active_modal else {
+            return;
+        };
+        if dialog.submit_request != Some(result.request_id) {
+            return;
+        }
+        dialog.submit_request = None;
+        match result.outcome {
+            RelinkEditOutcomeView::NeedsMismatchConfirmation {
+                warning_message,
+                probed_filename,
+                probed_total_bytes,
+            } => {
+                dialog.mismatch_warning =
+                    Some((warning_message, probed_filename, probed_total_bytes));
+                cx.notify();
+            }
+            RelinkEditOutcomeView::Succeeded(CommandOutcomeView::Success { tasks }) => {
+                self.active_modal = None;
+                self.sync_kit_modals(window, cx);
+                if !has_kit_root(window) {
+                    window.focus(&self.focus_handle, cx);
+                }
+                let activity_target = tasks.first().cloned().unwrap_or(result.identity);
+                let message = self.t("notice-task-relinked");
+                self.record_activity(
+                    ActivityKindView::Command,
+                    message.clone(),
+                    None,
+                    Some(activity_target),
+                    1,
+                    cx,
+                );
+                self.show_notice(message, false, cx);
+                cx.notify();
+            }
+            RelinkEditOutcomeView::Succeeded(CommandOutcomeView::Failure(error)) => {
+                dialog.error = Some(error);
+                cx.notify();
+            }
+        }
+    }
 }
 
 const fn task_command_label_key(command: &TaskCommandView) -> &'static str {

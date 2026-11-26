@@ -20,6 +20,8 @@ fn settings(root: &Path) -> AppSettings {
         ui: UiPreferences::default(),
         categories: default_download_categories(root.join("downloads")),
         tracker_list: TrackerListSettings::default(),
+        header_presets: Vec::new(),
+        mirror_rules: MirrorRewriteSettings::default(),
     }
 }
 
@@ -58,6 +60,7 @@ fn ui_preferences_and_system_theme_round_trip() {
         list_filter: ListFilterPreference::Completed,
         list_sort_key: ListSortKeyPreference::Size,
         list_sort_direction: ListSortDirectionPreference::Descending,
+        auto_probe_on_add: true,
     };
 
     store.save(&expected).expect("save ui preferences");
@@ -665,4 +668,62 @@ fn settings_document_allows_omitted_bridge_and_onboarding_flags() {
     assert!(!parsed.browser_bridge.allow_cookies);
     assert!(!parsed.browser_bridge.auto_submit);
     assert!(!parsed.onboarding.core_setup_dismissed);
+}
+
+#[test]
+fn settings_and_export_round_trip_header_presets_and_mirror_rules() {
+    use ariadeck_domain::{DomainHeaderPreset, MirrorMatchKind, MirrorRewriteRule};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = JsonSettingsStore::new(dir.path().join("settings.json"));
+    let mut current = settings(dir.path());
+    current.header_presets = vec![DomainHeaderPreset {
+        id: "preset-1".into(),
+        name: "CDN".into(),
+        enabled: true,
+        domains: vec!["*.cdn.example".into()],
+        referer: Some("https://cdn.example/".into()),
+        user_agent: Some("AriaDeckTest/1.0".into()),
+        headers: vec!["Accept: */*".into()],
+    }];
+    current.mirror_rules = MirrorRewriteSettings {
+        keep_original_as_mirror: true,
+        rules: vec![MirrorRewriteRule {
+            id: "mirror-1".into(),
+            name: "HF".into(),
+            enabled: true,
+            match_kind: MirrorMatchKind::Host,
+            pattern: "huggingface.co".into(),
+            replacement: "https://hf-mirror.com".into(),
+        }],
+    };
+    current.ui.auto_probe_on_add = true;
+
+    store.save(&current).expect("save settings with rules");
+    let loaded = store.load().expect("load settings with rules");
+    assert_eq!(loaded, current);
+
+    let exported = export_settings_json(&current).expect("export");
+    let imported = import_settings_json(&exported, &settings(dir.path())).expect("import");
+    assert_eq!(imported.header_presets, current.header_presets);
+    assert_eq!(imported.mirror_rules, current.mirror_rules);
+    assert!(imported.ui.auto_probe_on_add);
+
+    // Omitting new fields from an older schema v1 settings file still loads cleanly.
+    let mut legacy_doc: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(store.path()).expect("read")).expect("parse");
+    let obj = legacy_doc.as_object_mut().expect("object");
+    obj.remove("header_presets");
+    obj.remove("mirror_rules");
+    obj["ui"]
+        .as_object_mut()
+        .expect("ui obj")
+        .remove("auto_probe_on_add");
+    fs::write(store.path(), serde_json::to_vec(&legacy_doc).expect("ser")).expect("write");
+
+    let legacy_loaded = store.load().expect("legacy schema v1 loads");
+    assert!(legacy_loaded.header_presets.is_empty());
+    assert!(legacy_loaded.mirror_rules.rules.is_empty());
+    assert!(legacy_loaded.mirror_rules.keep_original_as_mirror);
+    assert!(!legacy_loaded.ui.auto_probe_on_add);
 }

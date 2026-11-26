@@ -70,6 +70,11 @@ impl EngineCapabilities {
     }
 
     #[must_use]
+    pub fn supports_change_uri(&self) -> bool {
+        self.allows_method("aria2.changeUri")
+    }
+
+    #[must_use]
     pub fn supports_change_global_option(&self) -> bool {
         self.allows_method("aria2.changeGlobalOption")
     }
@@ -107,6 +112,10 @@ impl EngineCapabilities {
             }
             "aria2.changeOption" => {
                 "This aria2 build does not expose per-task option changes (aria2.changeOption)."
+                    .into()
+            }
+            "aria2.changeUri" => {
+                "This aria2 build does not expose per-task URI replacement (aria2.changeUri)."
                     .into()
             }
             "aria2.changeGlobalOption" => {

@@ -210,3 +210,44 @@ input-download-limit-placeholder = Unlimited (e.g. 2M, 512K)
 input-upload-limit-placeholder = Unlimited (e.g. 1M, 256K)
 dialog-task-options-seed-ratio-placeholder = e.g. 1.0 or 0 to disable
 dialog-task-options-seed-time-placeholder = Minutes (e.g. 60)
+
+# Pre-add Probe, Preset Badge & Mirror Banner
+dialog-add-probe = Probe
+dialog-add-probing = Probing…
+dialog-add-probe-unknown-name = Unknown filename
+dialog-add-preset-matched = Preset: { $name }
+dialog-add-mirror-enable = Use mirror rewrite
+dialog-add-mirror-summary = { $rule } -> { $target }
+
+# Edit / Relink Task Dialog
+dialog-edit-task-title = Edit & Relink Task
+dialog-edit-task-description = Modify download URL or dynamic transfer options for “{ $name }”.
+dialog-edit-task-loading = Loading task options…
+dialog-edit-task-url = Download URL
+dialog-edit-task-proxy = Proxy URL
+dialog-edit-task-save = Apply changes
+dialog-edit-task-confirm-relink = Confirm Relink
+dialog-edit-task-saving = Applying…
+dialog-edit-task-cancel-aria = Close Edit Task dialog
+dialog-edit-task-no-changes = No changes to apply.
+dialog-edit-task-dir-note = Directory changes are locked to preserve partial progress and .aria2 control data.
+dialog-edit-task-error-resume-hint = Failed direct downloads create a resumed task in the same folder using existing .aria2 progress.
+
+# Details Verify (Checksum) Tab
+dialog-details-verify = Verify
+dialog-details-verify-unavailable = Local file verification is unavailable for this task.
+dialog-details-verify-remote-desc = Checksum verification only inspects files on the local machine for managed local tasks.
+dialog-details-verify-file = Target file
+dialog-details-verify-select-file = Select file
+dialog-details-verify-algorithm = Algorithm
+dialog-details-verify-algo-aria = Checksum algorithm
+dialog-details-verify-calculate = Calculate Checksum
+dialog-details-verify-computed = Computed { $algo }
+dialog-details-verify-copy-tooltip = Copy checksum
+dialog-details-verify-copy-aria = Copy computed checksum to clipboard
+dialog-details-verify-expected = Expected checksum
+dialog-details-verify-expected-placeholder = Paste expected hex or sha-256=<hex>
+dialog-details-verify-match = Checksum matches.
+dialog-details-verify-mismatch = Checksum mismatch! File may be corrupted or modified.
+dialog-details-verify-algo-mismatch = Algorithm mismatch: expected { $expected }, calculated { $actual }.
+dialog-details-verify-invalid-expected = Expected checksum format is invalid.

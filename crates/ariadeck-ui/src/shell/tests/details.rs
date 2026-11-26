@@ -473,6 +473,7 @@ fn details_drawer_tabs_render_with_scrollbars_inside_viewport(cx: &mut TestAppCo
                 TaskDetailsTab::Files => drawer.file_scroll.0.borrow().base_handle.bounds(),
                 TaskDetailsTab::Network => drawer.network_scroll.bounds(),
                 TaskDetailsTab::Options => drawer.options_scroll.bounds(),
+                TaskDetailsTab::Verify => drawer.verify_scroll.bounds(),
             };
             assert!(
                 bounds.size.width > px(0.0) && bounds.size.height > px(0.0),
@@ -557,5 +558,184 @@ fn details_drawer_preserves_active_tab_when_switching_selected_task(cx: &mut Tes
             TaskDetailsTab::Network,
             "active details tab must stay selected when browsing tasks"
         );
+    });
+}
+
+#[gpui::test]
+fn details_verify_tab_prefills_checksum_and_gates_remote_tasks(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(1);
+        shell.snapshot.local_path_actions_available = false;
+        shell.open_details_for(task(0), cx);
+        shell
+    });
+    let events: std::rc::Rc<std::cell::RefCell<Vec<AppShellEvent>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = events.clone();
+    cx.update(|_, cx| {
+        cx.subscribe(&view, move |_, event, _| {
+            captured.borrow_mut().push(event.clone());
+        })
+        .detach();
+    });
+
+    // Remote profile must not emit local checksum requests.
+    view.update(cx, |shell, cx| {
+        shell.request_file_checksum(
+            "C:/Downloads".into(),
+            "C:/Downloads/file.bin".into(),
+            ariadeck_domain::ChecksumAlgorithm::Sha256,
+            cx,
+        );
+    });
+    assert!(
+        !events
+            .borrow()
+            .iter()
+            .any(|e| matches!(e, AppShellEvent::FileChecksumRequested(_)))
+    );
+
+    // Managed local task prefills expected checksum from aria2 options and stores computed result.
+    view.update(cx, |shell, cx| {
+        shell.snapshot.local_path_actions_available = true;
+        shell.sync_details_panel_context(cx);
+        let details = TaskDetailsView {
+            directory: Some("C:/Downloads".into()),
+            primary_source: Some("https://example.com/file.bin".into()),
+            output_path: Some("C:/Downloads/file.bin".into()),
+            path_validation: TaskPathValidationView::Unavailable,
+            info_hash: None,
+            piece_length: None,
+            piece_count: None,
+            trackers: Vec::new(),
+            uris: Vec::new(),
+            servers: Vec::new(),
+            peers: Vec::new(),
+            options: vec![crate::TaskOptionView {
+                key: "checksum".into(),
+                value: format!("sha-256={}", "a".repeat(64)),
+                redacted: false,
+            }],
+            files: vec![crate::TaskFileView {
+                index: 1,
+                path: "C:/Downloads/file.bin".into(),
+                length: 512,
+                completed_length: 512,
+                selected: true,
+            }],
+        };
+        let panel = shell.details_panel().expect("details open").clone();
+        panel.update(cx, |drawer, cx| {
+            drawer.prefill_checksum_from_options(&details.options, cx);
+            drawer.state = TaskDetailsLoadState::Ready {
+                details: Arc::new(details),
+            };
+        });
+        shell.request_file_checksum(
+            "C:/Downloads".into(),
+            "C:/Downloads/file.bin".into(),
+            ariadeck_domain::ChecksumAlgorithm::Sha256,
+            cx,
+        );
+    });
+    let req = match events.borrow().last().cloned() {
+        Some(AppShellEvent::FileChecksumRequested(req)) => req,
+        other => panic!("expected FileChecksumRequested, got {other:?}"),
+    };
+    view.update(cx, |shell, cx| {
+        shell.set_file_checksum_result(
+            crate::FileChecksumResultView {
+                request_id: req.request_id,
+                identity: req.identity,
+                algorithm: ariadeck_domain::ChecksumAlgorithm::Sha256,
+                outcome: Ok("a".repeat(64)),
+            },
+            cx,
+        );
+        let panel = shell.details_panel().expect("details open");
+        let drawer = panel.read(cx);
+        assert!(drawer.checksum_pending.is_none());
+        assert_eq!(
+            drawer.checksum_result,
+            Some((
+                ariadeck_domain::ChecksumAlgorithm::Sha256,
+                Ok("a".repeat(64))
+            ))
+        );
+        assert!(drawer.checksum_prefilled_from_task);
+        let prefilled = drawer
+            .checksum_expected_input
+            .as_ref()
+            .map(|input| input.read(cx).value().to_string())
+            .filter(|v| !v.is_empty())
+            .or_else(|| drawer.checksum_expected_pending_value.clone());
+        assert_eq!(prefilled, Some(format!("sha-256={}", "a".repeat(64))));
+    });
+}
+
+#[gpui::test]
+fn details_verify_tab_prefills_new_task_checksum_when_switching_tasks(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+    let task_a = task(0);
+    let mut task_b = task(1);
+    task_b.display_name = "b.bin".into();
+
+    view.update_in(cx, |shell, window, cx| {
+        let mut snap = snapshot(1);
+        snap.tasks = vec![task_a.clone(), task_b.clone()];
+        shell.snapshot = snap;
+        shell.open_details_for(task_a.clone(), cx);
+        let panel = shell.details_panel().expect("details open").clone();
+        panel.update(cx, |drawer, cx| {
+            let input = cx.new(|cx| InputState::new(window, cx));
+            input.update(cx, |state, cx| state.set_value("deadbeef", window, cx));
+            drawer.checksum_expected_input = Some(input);
+        });
+
+        // Switch to Task B and immediately deliver its Ready details before the next render.
+        shell.open_details_for(task_b.clone(), cx);
+        let details_b = TaskDetailsView {
+            directory: Some("C:/Downloads".into()),
+            primary_source: Some("https://example.com/b.bin".into()),
+            output_path: Some("C:/Downloads/b.bin".into()),
+            path_validation: TaskPathValidationView::Unavailable,
+            info_hash: None,
+            piece_length: None,
+            piece_count: None,
+            trackers: Vec::new(),
+            uris: Vec::new(),
+            servers: Vec::new(),
+            peers: Vec::new(),
+            options: vec![crate::TaskOptionView {
+                key: "checksum".into(),
+                value: format!("sha-256={}", "b".repeat(64)),
+                redacted: false,
+            }],
+            files: vec![crate::TaskFileView {
+                index: 1,
+                path: "C:/Downloads/b.bin".into(),
+                length: 256,
+                completed_length: 256,
+                selected: true,
+            }],
+        };
+        panel.update(cx, |drawer, cx| {
+            drawer.prefill_checksum_from_options(&details_b.options, cx);
+            drawer.state = TaskDetailsLoadState::Ready {
+                details: Arc::new(details_b),
+            };
+        });
+    });
+
+    view.read_with(cx, |shell, cx| {
+        let drawer = shell.details_panel().expect("details open").read(cx);
+        let prefilled = drawer
+            .checksum_expected_input
+            .as_ref()
+            .map(|input| input.read(cx).value().to_string())
+            .filter(|v| !v.is_empty())
+            .or_else(|| drawer.checksum_expected_pending_value.clone());
+        assert_eq!(prefilled, Some(format!("sha-256={}", "b".repeat(64))));
     });
 }

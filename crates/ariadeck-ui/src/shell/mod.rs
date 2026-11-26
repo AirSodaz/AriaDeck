@@ -80,6 +80,13 @@ use crate::{
     WorkspaceQuery, WorkspaceSnapshot, WorkspaceSortDirection, WorkspaceSortKey, format_bytes,
     format_eta, format_percent, format_rate, format_share_ratio,
 };
+use crate::{
+    CloseEditTask, DomainHeaderPresetView, FileChecksumProgressView, FileChecksumRequestView,
+    FileChecksumResultView, MirrorRewriteSettingsView, OpenEditTask, PrepareEditTaskRequestView,
+    PrepareEditTaskResultView, ProbeDownloadUrlRequestView, ProbeDownloadUrlResultView,
+    ProbedDownloadMetadataView, RelinkEditOutcomeView, RelinkEditTaskRequestView,
+    RelinkEditTaskResultView, SubmitEditTask, TaskEditableStateView,
+};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 
 #[cfg(test)]
@@ -194,6 +201,11 @@ pub enum AppShellEvent {
     LoadMoreStoppedRequested,
     AddDownloadRequested(AddDownloadRequestView),
     AddDownloadMetadataPreviewRequested(AddDownloadMetadataPreviewRequestView),
+    ProbeDownloadUrlRequested(ProbeDownloadUrlRequestView),
+    PrepareEditTaskRequested(PrepareEditTaskRequestView),
+    RelinkEditTaskRequested(RelinkEditTaskRequestView),
+    FileChecksumRequested(FileChecksumRequestView),
+    FileChecksumCancelled(RequestId),
     TaskCommandRequested(TaskCommandRequestView),
     GlobalTaskCommandRequested(GlobalTaskCommandRequestView),
     BatchTaskCommandRequested(BatchTaskCommandRequestView),
@@ -319,6 +331,7 @@ enum TaskDetailsTab {
     Files,
     Network,
     Options,
+    Verify,
 }
 
 pub(crate) const DEFAULT_LINKS_INPUT_HEIGHT: f32 = 120.0;
@@ -372,6 +385,13 @@ pub(crate) struct SettingsPage {
     draft_language: LanguagePreferenceView,
     draft_proxy_mode: ProxyModeView,
     draft_check_certificate: bool,
+    draft_auto_probe_on_add: bool,
+    draft_header_presets: Vec<crate::DomainHeaderPresetView>,
+    draft_header_preset_edit_index: Option<usize>,
+    next_draft_header_preset_seq: u64,
+    draft_mirror_rules: crate::MirrorRewriteSettingsView,
+    draft_mirror_rule_edit_index: Option<usize>,
+    next_draft_mirror_rule_seq: u64,
     draft_file_allocation: FileAllocationView,
     draft_check_integrity: bool,
     draft_notifications: NotificationSettingsView,
@@ -507,6 +527,8 @@ pub(crate) enum SettingsSaveSource {
     Language,
     Categories,
     Proxy,
+    NetworkRules,
+    Network,
     SpeedLimit,
     TransferPolicy,
     /// Combined speed limits + transfer policy (Settings → Transfers footer).
@@ -550,6 +572,22 @@ struct TaskOptionsDialog {
     error: Option<OperationErrorView>,
 }
 
+struct EditTaskDialog {
+    identity: TaskIdentity,
+    display_name: String,
+    can_relink_url: bool,
+    is_error_resume: bool,
+    can_edit_out: bool,
+    original_primary_uri: Option<String>,
+    expected_total_bytes: Option<u64>,
+    expected_filename: Option<String>,
+    initial_state: Option<TaskEditableStateView>,
+    loading_request: Option<RequestId>,
+    submit_request: Option<RequestId>,
+    mismatch_warning: Option<(String, Option<String>, Option<u64>)>,
+    error: Option<OperationErrorView>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StatusBarPopover {
     Speed,
@@ -586,6 +624,14 @@ pub(crate) struct SettingsInputs {
     pub(crate) tracker_list_text: Entity<InputState>,
     pub(crate) category_name: Entity<InputState>,
     pub(crate) category_extensions: Entity<InputState>,
+    pub(crate) header_preset_name: Entity<InputState>,
+    pub(crate) header_preset_domains: Entity<InputState>,
+    pub(crate) header_preset_referer: Entity<InputState>,
+    pub(crate) header_preset_user_agent: Entity<InputState>,
+    pub(crate) header_preset_headers: Entity<TextareaState>,
+    pub(crate) mirror_rule_name: Entity<InputState>,
+    pub(crate) mirror_rule_pattern: Entity<InputState>,
+    pub(crate) mirror_rule_replacement: Entity<InputState>,
 }
 
 /// Add-download advanced option InputState entities (lazily owned by `AddDownloadDialogView`).
@@ -1028,6 +1074,7 @@ impl AppShell {
                         theme,
                         translator,
                         commands_available,
+                        change_option_available: self.snapshot.capabilities.change_option,
                         local_path_actions_available,
                         drawer_width,
                     },
@@ -1638,6 +1685,7 @@ impl AppShell {
             let background_refresh = matches!(drawer.state, TaskDetailsLoadState::Ready { .. });
             match result.outcome {
                 TaskDetailsOutcomeView::Ready(details) => {
+                    drawer.prefill_checksum_from_options(&details.options, cx);
                     drawer.state = TaskDetailsLoadState::Ready {
                         details: Arc::from(details),
                     };
@@ -2453,6 +2501,9 @@ impl Render for AppShell {
             .on_action(cx.listener(Self::submit_task_speed_limit_action))
             .on_action(cx.listener(Self::close_task_options_action))
             .on_action(cx.listener(Self::submit_task_options_action))
+            .on_action(cx.listener(Self::open_edit_task_action))
+            .on_action(cx.listener(Self::close_edit_task_action))
+            .on_action(cx.listener(Self::submit_edit_task_action))
             .on_action(cx.listener(Self::close_batch_failure_details_action))
             .on_action(cx.listener(Self::close_core_setup_onboarding_action))
             .on_action(cx.listener(Self::remove_selected))

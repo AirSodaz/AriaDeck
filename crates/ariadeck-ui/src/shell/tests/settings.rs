@@ -314,6 +314,7 @@ fn proxy_settings_build_a_manual_draft_with_a_masked_password(cx: &mut TestAppCo
             is_fallback: true,
         }],
         tracker_list: Default::default(),
+        ..SettingsView::default()
     };
     let (view, cx) =
         cx.add_window_view(move |window, cx| AppShell::new_with_settings(initial, window, cx));
@@ -2098,5 +2099,74 @@ fn sidebar_settings_button_toggles_settings_page(cx: &mut TestAppContext) {
     shell.read_with(&visual_cx, |shell, _| {
         assert_eq!(shell.page, AppPage::Downloads);
         assert!(shell.settings_panel().is_none());
+    });
+}
+
+#[gpui::test]
+fn network_settings_reject_sensitive_headers_and_emit_network_rules_save(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| AppShell::new(Theme::dark(), window, cx));
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.open_settings(&OpenSettings, window, cx);
+        let panel = shell.settings_panel().expect("settings open").clone();
+        panel.update(cx, |panel, cx| {
+            panel.select_settings_category(SettingsCategory::Network, cx);
+            panel.add_header_preset(window, cx);
+            panel
+                .settings_inputs
+                .header_preset_domains
+                .update(cx, |input, cx| input.set_value("example.com", window, cx));
+            panel
+                .settings_inputs
+                .header_preset_headers
+                .update(cx, |input, cx| {
+                    input.set_value("Cookie: secret=1", window, cx);
+                });
+            panel.submit_proxy_settings(cx);
+            assert!(
+                panel.settings_page.error.is_some(),
+                "Cookie in header preset must be blocked by SEC-001 validation"
+            );
+
+            panel
+                .settings_inputs
+                .header_preset_domains
+                .update(cx, |input, cx| {
+                    input.set_value("https://bad.example/path", window, cx);
+                });
+            panel
+                .settings_inputs
+                .header_preset_headers
+                .update(cx, |input, cx| {
+                    input.set_value("X-Custom: ok\nX-Second: two", window, cx);
+                });
+            panel.submit_proxy_settings(cx);
+            assert!(
+                panel.settings_page.error.is_some(),
+                "invalid domain pattern with scheme/path must be rejected inline"
+            );
+
+            panel
+                .settings_inputs
+                .header_preset_domains
+                .update(cx, |input, cx| input.set_value("example.com", window, cx));
+            panel.toggle_auto_probe_on_add(cx);
+            panel.submit_proxy_settings(cx);
+            assert!(panel.settings_page.error.is_none());
+        });
+    });
+
+    view.read_with(cx, |shell, _| {
+        let pending = shell
+            .pending_settings_save
+            .as_ref()
+            .expect("pending network rules save");
+        assert_eq!(pending.source, SettingsSaveSource::NetworkRules);
+        assert!(pending.settings.auto_probe_on_add);
+        assert_eq!(pending.settings.header_presets.len(), 1);
+        assert_eq!(
+            pending.settings.header_presets[0].headers,
+            "X-Custom: ok\nX-Second: two"
+        );
     });
 }

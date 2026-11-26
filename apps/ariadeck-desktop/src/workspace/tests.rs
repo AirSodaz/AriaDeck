@@ -1910,6 +1910,7 @@ fn system_theme_and_list_preferences_round_trip_through_settings_mapping() {
         list_filter: ListFilterPreference::Paused,
         list_sort_key: ListSortKeyPreference::Name,
         list_sort_direction: ListSortDirectionPreference::Descending,
+        ..UiPreferences::default()
     };
     let settings = map_settings(&current);
     assert_eq!(settings.color_scheme, ColorSchemeView::System);
@@ -2016,6 +2017,7 @@ fn settings_mapping_allocates_a_credential_reference_without_exposing_the_passwo
             is_fallback: true,
         }],
         tracker_list: Default::default(),
+        ..SettingsView::default()
     };
 
     let (mapped, password) = map_settings_request(
@@ -2272,6 +2274,8 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
         ui: UiPreferences::default(),
         categories: ariadeck_settings::default_download_categories(root.path().join("first")),
         tracker_list: Default::default(),
+        header_presets: Default::default(),
+        mirror_rules: Default::default(),
     };
     let second = AppSettings {
         color_scheme: ColorScheme::Light,
@@ -2287,6 +2291,8 @@ fn settings_worker_persists_requests_in_order_and_drains_on_close() {
         ui: UiPreferences::default(),
         categories: ariadeck_settings::default_download_categories(root.path().join("second")),
         tracker_list: Default::default(),
+        header_presets: Default::default(),
+        mirror_rules: Default::default(),
     };
     sender
         .send(PersistenceCommand::SaveSettings(Box::new(
@@ -2370,6 +2376,8 @@ fn external_engine_settings_do_not_touch_the_desktop_filesystem() {
         ui: UiPreferences::default(),
         categories: ariadeck_settings::default_download_categories(&remote_path),
         tracker_list: Default::default(),
+        header_presets: Default::default(),
+        mirror_rules: Default::default(),
     };
 
     persist_settings(&store, &settings, None).expect("persist external engine path");
@@ -2765,5 +2773,100 @@ fn windows_update_command_passes_paths_via_env_without_shell_interpolation() {
         envs.get("ARIADECK_UPDATE_EXECUTABLE")
             .map(std::ffi::OsString::as_os_str),
         Some(executable.as_os_str())
+    );
+}
+
+#[test]
+fn find_matching_add_task_with_mirrors_detects_rewritten_duplicate() {
+    let mut existing = DownloadTask::from_snapshot(TaskSnapshot::new(
+        Gid::from_u64(42),
+        DownloadStatus::Active,
+        "archive.zip",
+    ));
+    existing.metadata.primary_uri =
+        Some("https://github.com/org/repo/releases/download/v1/a.zip".into());
+    let rules = vec![ariadeck_domain::MirrorRewriteRule {
+        id: "gh".into(),
+        name: "GH Mirror".into(),
+        enabled: true,
+        match_kind: ariadeck_domain::MirrorMatchKind::Prefix,
+        pattern: "https://github.com/".into(),
+        replacement: "https://mirror.example/https://github.com/".into(),
+    }];
+    let mirror_only_sources = vec![AddDownloadSourceView::Uri {
+        line: 1,
+        uri: "https://mirror.example/https://github.com/org/repo/releases/download/v1/a.zip".into(),
+    }];
+    assert!(find_matching_add_task(&[existing.clone()], &mirror_only_sources).is_none());
+    assert!(
+        find_matching_add_task_with_mirrors(&[existing], &mirror_only_sources, &rules).is_some()
+    );
+}
+
+#[test]
+fn execute_file_checksum_verifies_local_file_and_rejects_path_escape() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = fs::canonicalize(temp.path()).expect("canonicalize temp root");
+    let download_file = root.join("sample.bin");
+    fs::write(&download_file, b"ariadeck-checksum").expect("write sample file");
+
+    let gateway: Arc<dyn TaskFileGateway> =
+        Arc::new(ariadeck_engine::LocalTaskFileGateway::new(&root));
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    let identity = TaskIdentity {
+        profile_id: "default".into(),
+        gid: "0000000000000001".into(),
+    };
+
+    let ok_res = rt.block_on(async {
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let (prog_tx, _prog_rx) = tokio::sync::mpsc::unbounded_channel();
+        execute_file_checksum(
+            Some(Arc::clone(&gateway)),
+            cancel_rx,
+            ariadeck_ui::FileChecksumRequestView {
+                request_id: ariadeck_ui::RequestId::from_u64(1),
+                identity: identity.clone(),
+                directory: root.to_string_lossy().into_owned(),
+                file_path: download_file.to_string_lossy().into_owned(),
+                algorithm: ariadeck_domain::ChecksumAlgorithm::Sha256,
+            },
+            prog_tx,
+        )
+        .await
+    });
+    assert!(
+        ok_res.outcome.is_ok(),
+        "expected checksum success, got {ok_res:?}"
+    );
+
+    let escape_res = rt.block_on(async {
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let (prog_tx, _prog_rx) = tokio::sync::mpsc::unbounded_channel();
+        execute_file_checksum(
+            Some(gateway),
+            cancel_rx,
+            ariadeck_ui::FileChecksumRequestView {
+                request_id: ariadeck_ui::RequestId::from_u64(2),
+                identity,
+                directory: root.to_string_lossy().into_owned(),
+                file_path: root
+                    .join("..")
+                    .join("outside.bin")
+                    .to_string_lossy()
+                    .into_owned(),
+                algorithm: ariadeck_domain::ChecksumAlgorithm::Sha256,
+            },
+            prog_tx,
+        )
+        .await
+    });
+    assert!(
+        escape_res.outcome.is_err(),
+        "path traversal outside download root must be rejected"
     );
 }

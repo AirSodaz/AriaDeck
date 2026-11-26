@@ -345,3 +345,70 @@ pub struct BatchTaskCommandResultView {
     pub command: BatchTaskCommandView,
     pub outcome: BatchCommandOutcomeView,
 }
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TaskEditableStateView {
+    pub uris: Vec<String>,
+    pub referer: String,
+    pub user_agent: String,
+    pub headers: String,
+    pub proxy: String,
+    pub max_download_limit: String,
+    pub max_connection_per_server: String,
+    pub split: String,
+    pub out: String,
+    pub dir: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrepareEditTaskRequestView {
+    pub request_id: RequestId,
+    pub session: EngineSessionView,
+    pub identity: TaskIdentity,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrepareEditTaskResultView {
+    pub request_id: RequestId,
+    pub identity: TaskIdentity,
+    pub outcome: Result<TaskEditableStateView, OperationErrorView>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelinkEditTaskRequestView {
+    pub request_id: RequestId,
+    pub session: EngineSessionView,
+    pub identity: TaskIdentity,
+    pub original_primary_uri: Option<String>,
+    pub expected_total_bytes: Option<u64>,
+    pub expected_filename: Option<String>,
+    pub new_url: Option<String>,
+    pub referer: Option<String>,
+    pub user_agent: Option<String>,
+    pub headers: Option<String>,
+    pub proxy: Option<String>,
+    pub max_download_limit: Option<String>,
+    pub max_connection_per_server: Option<String>,
+    pub split: Option<String>,
+    pub out: Option<String>,
+    pub allow_error_relink_resume: bool,
+    pub force_mismatch: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RelinkEditOutcomeView {
+    Succeeded(CommandOutcomeView),
+    NeedsMismatchConfirmation {
+        warning_message: String,
+        probed_filename: Option<String>,
+        probed_total_bytes: Option<u64>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelinkEditTaskResultView {
+    pub request_id: RequestId,
+    pub session: EngineSessionView,
+    pub identity: TaskIdentity,
+    pub outcome: RelinkEditOutcomeView,
+}

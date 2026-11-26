@@ -98,6 +98,24 @@ fn category_directory(
 pub(super) enum AddDownloadDialogEvent {
     LinksInputHeightChanged(f32),
     MetadataPathsChosen(Vec<PathBuf>),
+    ProbeRequested {
+        url: String,
+        referer: String,
+        user_agent: String,
+        headers: String,
+    },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct AutoAppliedPresetValues {
+    referer: String,
+    user_agent: String,
+    headers: String,
+}
+
+pub(super) struct PendingUrlProbe {
+    pub(super) request_id: RequestId,
+    pub(super) url: String,
 }
 
 pub(super) struct AddDownloadDialogView {
@@ -105,6 +123,9 @@ pub(super) struct AddDownloadDialogView {
     translator: Translator,
     categories: Vec<crate::DownloadCategoryView>,
     download_directory: String,
+    header_presets: Vec<DomainHeaderPresetView>,
+    mirror_rules: MirrorRewriteSettingsView,
+    auto_probe_on_add: bool,
     pub(super) add_input: Entity<TextareaState>,
     pub(super) add_inputs: AddInputs,
     pub(super) input_mode: AddDownloadInputModeView,
@@ -113,13 +134,20 @@ pub(super) struct AddDownloadDialogView {
     pub(super) category_id: Option<String>,
     pub(super) advanced_open: bool,
     pub(super) from_bridge: bool,
+    pub(super) use_mirror_rewrite: bool,
     pub(super) metadata_files: Vec<AddDownloadMetadataPreviewView>,
     pub(super) active_metadata_file: Option<usize>,
     pub(super) preview_pending: Option<PendingMetadataPreview>,
+    pub(super) probe_pending: Option<PendingUrlProbe>,
+    pub(super) probe_result: Option<(String, ProbedDownloadMetadataView)>,
+    pub(super) probe_error: Option<OperationErrorView>,
     pub(super) pending: Option<PendingAddDownload>,
     pub(super) error: Option<OperationErrorView>,
     pub(super) results: Vec<AddDownloadItemResultView>,
     pub(super) links_input_height: f32,
+    auto_applied_preset: AutoAppliedPresetValues,
+    last_auto_probed_url: Option<String>,
+    auto_probe_seq: u64,
     resize_drag_origin: Option<(Pixels, f32)>,
     metadata_file_scroll: UniformListScrollHandle,
     metadata_source_scroll: ScrollHandle,
@@ -130,11 +158,15 @@ pub(super) struct AddDownloadDialogView {
 impl gpui::EventEmitter<AddDownloadDialogEvent> for AddDownloadDialogView {}
 
 impl AddDownloadDialogView {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         theme: Theme,
         translator: Translator,
         categories: Vec<crate::DownloadCategoryView>,
         download_directory: String,
+        header_presets: Vec<DomainHeaderPresetView>,
+        mirror_rules: MirrorRewriteSettingsView,
+        auto_probe_on_add: bool,
         links_input_height: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -170,17 +202,17 @@ impl AddDownloadDialogView {
         let add_checksum_input = make_input("sha-256=…".into(), false, window, cx);
 
         let mut input_subs = Vec::with_capacity(8);
-        input_subs.push(cx.subscribe(
+        input_subs.push(cx.subscribe_in(
             &add_input,
-            |this: &mut Self, _input, event: &InputEvent, cx| {
+            window,
+            |this: &mut Self, _input, event: &InputEvent, window, cx| {
                 if let InputEvent::Change = event
                     && this.pending.is_none()
                 {
-                    let changed = this.error.take().is_some() || !this.results.is_empty();
+                    this.error = None;
                     this.results.clear();
-                    if changed {
-                        cx.notify();
-                    }
+                    this.on_links_text_changed(window, cx);
+                    cx.notify();
                 }
             },
         ));
@@ -211,6 +243,9 @@ impl AddDownloadDialogView {
             translator,
             categories,
             download_directory,
+            header_presets,
+            mirror_rules,
+            auto_probe_on_add,
             add_input,
             add_inputs: AddInputs {
                 referer: add_referer_input,
@@ -227,13 +262,20 @@ impl AddDownloadDialogView {
             category_id: None, // None = auto-route by extension (D-042)
             advanced_open: false,
             from_bridge: false,
+            use_mirror_rewrite: true,
             metadata_files: Vec::new(),
             active_metadata_file: None,
             preview_pending: None,
+            probe_pending: None,
+            probe_result: None,
+            probe_error: None,
             pending: None,
             error: None,
             results: Vec::new(),
             links_input_height,
+            auto_applied_preset: AutoAppliedPresetValues::default(),
+            last_auto_probed_url: None,
+            auto_probe_seq: 0,
             resize_drag_origin: None,
             metadata_file_scroll: UniformListScrollHandle::new(),
             metadata_source_scroll: ScrollHandle::new(),
@@ -242,12 +284,16 @@ impl AddDownloadDialogView {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn sync_context(
         &mut self,
         theme: Theme,
         translator: Translator,
         categories: Vec<crate::DownloadCategoryView>,
         download_directory: String,
+        header_presets: Vec<DomainHeaderPresetView>,
+        mirror_rules: MirrorRewriteSettingsView,
+        auto_probe_on_add: bool,
         window: Option<&mut Window>,
         cx: &mut Context<Self>,
     ) {
@@ -255,6 +301,9 @@ impl AddDownloadDialogView {
         self.translator = translator;
         self.categories = categories;
         self.download_directory = download_directory;
+        self.header_presets = header_presets;
+        self.mirror_rules = mirror_rules;
+        self.auto_probe_on_add = auto_probe_on_add;
         if let Some(category_id) = self.category_id.as_deref()
             && !self.categories.iter().any(|c| c.id == category_id)
         {
@@ -293,6 +342,206 @@ impl AddDownloadDialogView {
 
     pub(super) fn is_busy(&self) -> bool {
         self.pending.is_some() || self.preview_pending.is_some()
+    }
+
+    fn single_http_uri_from_sources(&self, sources: &[AddDownloadSourceView]) -> Option<String> {
+        if self.input_mode != AddDownloadInputModeView::Links || sources.len() != 1 {
+            return None;
+        }
+        let AddDownloadSourceView::Uri { uri, .. } = &sources[0] else {
+            return None;
+        };
+        let lower = uri.trim().to_ascii_lowercase();
+        (lower.starts_with("http://") || lower.starts_with("https://"))
+            .then(|| uri.trim().to_owned())
+    }
+
+    fn effective_single_probe_uri(&self, sources: &[AddDownloadSourceView]) -> Option<String> {
+        let single = self.single_http_uri_from_sources(sources)?;
+        if self.use_mirror_rewrite
+            && let Some(rewritten) = self.matched_mirror_for_uri(&single)
+            && rewritten.was_rewritten()
+        {
+            return Some(rewritten.rewritten);
+        }
+        Some(single)
+    }
+
+    pub(super) fn matched_preset_for_sources(
+        &self,
+        sources: &[AddDownloadSourceView],
+    ) -> Option<ariadeck_domain::MatchedHeaderPreset> {
+        let presets = to_domain_header_presets(&self.header_presets);
+        if presets.is_empty() {
+            return None;
+        }
+        let mut matched: Option<ariadeck_domain::MatchedHeaderPreset> = None;
+        for source in sources {
+            let AddDownloadSourceView::Uri { uri, .. } = source else {
+                continue;
+            };
+            let current = ariadeck_domain::match_header_presets(uri, &presets)?;
+            if let Some(existing) = &matched {
+                if existing != &current {
+                    return None;
+                }
+            } else {
+                matched = Some(current);
+            }
+        }
+        matched
+    }
+
+    pub(super) fn matched_mirror_for_uri(
+        &self,
+        uri: &str,
+    ) -> Option<ariadeck_domain::MirrorRewriteResult> {
+        let rules = to_domain_mirror_rules(&self.mirror_rules);
+        if rules.is_empty() {
+            return None;
+        }
+        let res = ariadeck_domain::rewrite_uri_with_rules(uri, &rules);
+        res.was_rewritten().then_some(res)
+    }
+
+    fn probed_metadata_for_sources(
+        &self,
+        sources: &[AddDownloadSourceView],
+    ) -> Option<&ProbedDownloadMetadataView> {
+        let effective = self.effective_single_probe_uri(sources)?;
+        let (probed_url, meta) = self.probe_result.as_ref()?;
+        (probed_url == &effective).then_some(meta)
+    }
+
+    pub(super) fn apply_matched_preset_to_inputs(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let sources = parse_add_download_sources(self.add_input.read(cx).value().as_ref());
+        let matched = self.matched_preset_for_sources(&sources);
+        let next_referer = matched
+            .as_ref()
+            .and_then(|m| m.referer.clone())
+            .unwrap_or_default();
+        let next_ua = matched
+            .as_ref()
+            .and_then(|m| m.user_agent.clone())
+            .unwrap_or_default();
+        let next_headers = matched
+            .as_ref()
+            .map(|m| m.headers.join("\n"))
+            .unwrap_or_default();
+
+        let cur_ref = self.add_inputs.referer.read(cx).value().to_string();
+        if cur_ref.trim().is_empty() || cur_ref == self.auto_applied_preset.referer {
+            self.add_inputs.referer.update(cx, |input, cx| {
+                input.set_value(next_referer.clone(), window, cx)
+            });
+            self.auto_applied_preset.referer = next_referer;
+        }
+        let cur_ua = self.add_inputs.user_agent.read(cx).value().to_string();
+        if cur_ua.trim().is_empty() || cur_ua == self.auto_applied_preset.user_agent {
+            self.add_inputs
+                .user_agent
+                .update(cx, |input, cx| input.set_value(next_ua.clone(), window, cx));
+            self.auto_applied_preset.user_agent = next_ua;
+        }
+        let cur_headers = self.add_inputs.headers.read(cx).value().to_string();
+        if cur_headers.trim().is_empty() || cur_headers == self.auto_applied_preset.headers {
+            self.add_inputs.headers.update(cx, |input, cx| {
+                input.set_value(next_headers.clone(), window, cx)
+            });
+            self.auto_applied_preset.headers = next_headers;
+        }
+    }
+
+    fn on_links_text_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let sources = parse_add_download_sources(self.add_input.read(cx).value().as_ref());
+        let effective = self.effective_single_probe_uri(&sources);
+        if self
+            .probe_result
+            .as_ref()
+            .is_some_and(|(url, _)| effective.as_ref() != Some(url))
+        {
+            self.probe_result = None;
+        }
+        if self
+            .probe_pending
+            .as_ref()
+            .is_some_and(|pending| effective.as_ref() != Some(&pending.url))
+        {
+            self.probe_pending = None;
+        }
+        self.probe_error = None;
+        self.apply_matched_preset_to_inputs(window, cx);
+
+        if self.auto_probe_on_add
+            && let Some(url) = effective
+            && self.last_auto_probed_url.as_ref() != Some(&url)
+        {
+            self.auto_probe_seq = self.auto_probe_seq.saturating_add(1);
+            let seq = self.auto_probe_seq;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(600))
+                    .await;
+                this.update(cx, |this, cx| {
+                    if this.auto_probe_seq == seq
+                        && this.auto_probe_on_add
+                        && !this.is_busy()
+                        && this.probe_pending.is_none()
+                    {
+                        let sources =
+                            parse_add_download_sources(this.add_input.read(cx).value().as_ref());
+                        if this.effective_single_probe_uri(&sources).as_ref() == Some(&url) {
+                            this.last_auto_probed_url = Some(url.clone());
+                            this.trigger_probe(cx);
+                        }
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }
+    }
+
+    pub(super) fn trigger_probe(&mut self, cx: &mut Context<Self>) {
+        if self.is_busy() {
+            return;
+        }
+        let sources = parse_add_download_sources(self.add_input.read(cx).value().as_ref());
+        let Some(url) = self.effective_single_probe_uri(&sources) else {
+            return;
+        };
+        let referer = self.add_inputs.referer.read(cx).value().trim().to_owned();
+        let user_agent = self
+            .add_inputs
+            .user_agent
+            .read(cx)
+            .value()
+            .trim()
+            .to_owned();
+        let headers = self.add_inputs.headers.read(cx).value().to_string();
+        self.probe_error = None;
+        self.last_auto_probed_url = Some(url.clone());
+        cx.emit(AddDownloadDialogEvent::ProbeRequested {
+            url,
+            referer,
+            user_agent,
+            headers,
+        });
+        cx.notify();
+    }
+
+    pub(super) fn toggle_mirror_rewrite(&mut self, cx: &mut Context<Self>) {
+        if self.is_busy() {
+            return;
+        }
+        self.use_mirror_rewrite = !self.use_mirror_rewrite;
+        self.probe_result = None;
+        self.probe_error = None;
+        cx.notify();
     }
 
     pub(super) fn dialog_width(&self) -> f32 {
@@ -522,7 +771,12 @@ impl AddDownloadDialogView {
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
         });
-        let hint = filename_hint_for_add(links, metadata_name.as_deref());
+        let probed_name = self
+            .probed_metadata_for_sources(links)
+            .and_then(|meta| meta.resolved_filename.as_deref());
+        let hint = probed_name
+            .map(str::to_owned)
+            .or_else(|| filename_hint_for_add(links, metadata_name.as_deref()));
         let auto_id = resolve_add_category_id(&self.categories, None, hint.as_deref());
         let auto_name = auto_id
             .as_deref()
@@ -585,6 +839,7 @@ impl AddDownloadDialogView {
     fn render_advanced_section(
         &self,
         pending: bool,
+        preset_names: Vec<String>,
         colors: crate::ThemeColors,
         cx: &mut Context<Self>,
     ) -> Collapsible {
@@ -622,10 +877,33 @@ impl AddDownloadDialogView {
             .on_click(cx.listener(|this, _, _, cx| this.toggle_advanced(cx)))
             .child(
                 div()
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(colors.text_secondary)
-                    .child(self.t("ui-advanced-options")),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(colors.text_secondary)
+                            .child(self.t("ui-advanced-options")),
+                    )
+                    .when(!preset_names.is_empty(), |row| {
+                        let label = self.t_args(
+                            "dialog-add-preset-matched",
+                            &[("name", FluentValue::from(preset_names.join(", ")))],
+                        );
+                        row.child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .px_2()
+                                .py_0p5()
+                                .rounded_full()
+                                .bg(with_alpha(colors.accent, 0.12))
+                                .text_color(colors.accent)
+                                .child(label),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -1499,6 +1777,17 @@ impl Render for AddDownloadDialogView {
                 .ok();
         });
         let category_picker = self.render_category_picker(&sources, cx);
+        let single_http_uri = self.single_http_uri_from_sources(&sources);
+        let matched_preset_names = self
+            .matched_preset_for_sources(&sources)
+            .map(|m| m.preset_names)
+            .unwrap_or_default();
+        let matched_mirror = single_http_uri
+            .as_deref()
+            .and_then(|uri| self.matched_mirror_for_uri(uri));
+        let probed_meta = self.probed_metadata_for_sources(&sources).cloned();
+        let probing = self.probe_pending.is_some();
+        let probe_error = self.probe_error.clone();
         let links_input_height = self.links_input_height;
         let mono_font_family = cx.theme().mono_font_family.clone();
         let reduced_motion = crate::accessibility::is_reduced_motion(cx);
@@ -1511,10 +1800,35 @@ impl Render for AddDownloadDialogView {
                     .gap_2()
                     .child(
                         div()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(colors.text_secondary)
-                            .child(self.t("dialog-add-url-or-magnet")),
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(colors.text_secondary)
+                                    .child(self.t("dialog-add-url-or-magnet")),
+                            )
+                            .when(single_http_uri.is_some(), |row| {
+                                row.child(
+                                    KitButton::new("probe-download-url")
+                                        .small()
+                                        .compact()
+                                        .icon(gpui_kit::component::Icon::new(IconName::ScanSearch))
+                                        .label(if probing {
+                                            self.t("dialog-add-probing")
+                                        } else {
+                                            self.t("dialog-add-probe")
+                                        })
+                                        .disabled(pending || probing)
+                                        .loading(probing)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.trigger_probe(cx);
+                                        })),
+                                )
+                            }),
                     )
                     .child(
                         div()
@@ -1588,6 +1902,101 @@ impl Render for AddDownloadDialogView {
                             ))
                             .child(mode_control),
                     )
+                    .when_some(probed_meta, |element, meta| {
+                        let name_text = meta
+                            .resolved_filename
+                            .clone()
+                            .unwrap_or_else(|| self.t("dialog-add-probe-unknown-name"));
+                        let size_text = meta
+                            .total_bytes
+                            .map(format_bytes)
+                            .unwrap_or_else(|| self.t("dialog-add-size-unknown"));
+                        element.child(
+                            div()
+                                .id("add-download-probe-summary")
+                                .rounded_md()
+                                .border_1()
+                                .border_color(colors.border)
+                                .bg(colors.elevated_surface)
+                                .px_3()
+                                .py_1p5()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .min_w_0()
+                                        .child(
+                                            Icon::new(IconName::CircleCheck)
+                                                .size(IconSize::XSmall)
+                                                .color(colors.success),
+                                        )
+                                        .child(
+                                            div()
+                                                .truncate()
+                                                .text_xs()
+                                                .text_color(colors.text_primary)
+                                                .child(name_text),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_xs()
+                                        .text_color(colors.text_muted)
+                                        .child(size_text),
+                                ),
+                        )
+                    })
+                    .when_some(probe_error, |element, err| {
+                        element.child(
+                            Alert::warning("add-download-probe-error", self.te(&err)).xsmall(),
+                        )
+                    })
+                    .when_some(matched_mirror, |element, mirror| {
+                        let rule_name = mirror.matched_rule_name.unwrap_or_default();
+                        let redacted_target = ariadeck_domain::redact_source_uri(&mirror.rewritten);
+                        let summary = self.t_args(
+                            "dialog-add-mirror-summary",
+                            &[
+                                ("rule", FluentValue::from(rule_name)),
+                                ("target", FluentValue::from(redacted_target)),
+                            ],
+                        );
+                        element.child(
+                            div()
+                                .id("add-download-mirror-banner")
+                                .rounded_md()
+                                .border_1()
+                                .border_color(colors.border)
+                                .bg(colors.elevated_surface)
+                                .px_3()
+                                .py_1p5()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_xs()
+                                        .text_color(colors.text_secondary)
+                                        .child(summary),
+                                )
+                                .child(
+                                    Checkbox::new("toggle-add-mirror-rewrite")
+                                        .checked(self.use_mirror_rewrite)
+                                        .label(self.t("dialog-add-mirror-enable"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_mirror_rewrite(cx);
+                                        })),
+                                ),
+                        )
+                    })
                     .child(
                         div()
                             .flex()
@@ -1621,7 +2030,7 @@ impl Render for AddDownloadDialogView {
                             ))
                         },
                     )
-                    .child(self.render_advanced_section(pending, colors, cx)),
+                    .child(self.render_advanced_section(pending, matched_preset_names, colors, cx)),
                 "add-download-mode-links-enter",
                 px(4.0),
                 140,
@@ -1720,6 +2129,9 @@ impl AppShell {
         let translator = self.translator.clone();
         let categories = self.settings.categories.clone();
         let download_directory = self.settings.download_directory.clone();
+        let header_presets = self.settings.header_presets.clone();
+        let mirror_rules = self.settings.mirror_rules.clone();
+        let auto_probe_on_add = self.settings.auto_probe_on_add;
         let links_input_height = self.links_input_height;
         let view = cx.new(|cx| {
             AddDownloadDialogView::new(
@@ -1727,6 +2139,9 @@ impl AppShell {
                 translator,
                 categories,
                 download_directory,
+                header_presets,
+                mirror_rules,
+                auto_probe_on_add,
                 links_input_height,
                 window,
                 cx,
@@ -1741,6 +2156,20 @@ impl AppShell {
                 }
                 AddDownloadDialogEvent::MetadataPathsChosen(paths) => {
                     let _ = this.open_metadata_paths(paths.clone(), window, cx);
+                }
+                AddDownloadDialogEvent::ProbeRequested {
+                    url,
+                    referer,
+                    user_agent,
+                    headers,
+                } => {
+                    this.request_add_url_probe(
+                        url.clone(),
+                        referer.clone(),
+                        user_agent.clone(),
+                        headers.clone(),
+                        cx,
+                    );
                 }
             },
         );
@@ -1884,21 +2313,117 @@ impl AppShell {
                     }
                 }
             } else {
-                None
+                dialog
+                    .probed_metadata_for_sources(&sources)
+                    .and_then(|meta| meta.total_bytes)
             };
-            let metadata_name = dialog.metadata_files.first().and_then(|file| {
-                file.path
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-            });
-            let advanced = if dialog.input_mode == AddDownloadInputModeView::Links {
+            let metadata_name = if dialog.input_mode == AddDownloadInputModeView::MetadataFiles {
+                dialog.metadata_files.first().and_then(|file| {
+                    file.path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                })
+            } else {
+                dialog
+                    .probed_metadata_for_sources(&sources)
+                    .and_then(|meta| meta.resolved_filename.clone())
+            };
+            let mut advanced = if dialog.input_mode == AddDownloadInputModeView::Links {
                 dialog.collect_advanced_options(cx)
             } else {
                 AddDownloadAdvancedOptionsView::default()
             };
+            if dialog.input_mode == AddDownloadInputModeView::Links
+                && let Some(matched) = dialog.matched_preset_for_sources(&sources)
+            {
+                if advanced.referer.trim().is_empty()
+                    && let Some(referer) = matched.referer
+                {
+                    advanced.referer = referer;
+                }
+                if advanced.user_agent.trim().is_empty()
+                    && let Some(ua) = matched.user_agent
+                {
+                    advanced.user_agent = ua;
+                }
+                if advanced.headers.trim().is_empty() && !matched.headers.is_empty() {
+                    advanced.headers = matched.headers.join("\n");
+                }
+            }
+            let (sources, mode) = if dialog.input_mode == AddDownloadInputModeView::Links
+                && dialog.use_mirror_rewrite
+            {
+                let rules = to_domain_mirror_rules(&dialog.mirror_rules);
+                if !rules.is_empty() && !sources.is_empty() {
+                    if sources.len() == 1
+                        && dialog.mirror_rules.keep_original_as_mirror
+                        && let AddDownloadSourceView::Uri { line, uri } = &sources[0]
+                    {
+                        let res = ariadeck_domain::rewrite_uri_with_rules(uri, &rules);
+                        if res.was_rewritten() {
+                            (
+                                vec![
+                                    AddDownloadSourceView::Uri {
+                                        line: *line,
+                                        uri: res.rewritten,
+                                    },
+                                    AddDownloadSourceView::Uri {
+                                        line: *line,
+                                        uri: res.original,
+                                    },
+                                ],
+                                AddDownloadModeView::Mirrors,
+                            )
+                        } else {
+                            (sources, dialog.mode)
+                        }
+                    } else {
+                        let mut originals = Vec::new();
+                        let mut rewritten_sources = sources
+                            .into_iter()
+                            .map(|source| match source {
+                                AddDownloadSourceView::Uri { line, uri } => {
+                                    let res = ariadeck_domain::rewrite_uri_with_rules(&uri, &rules);
+                                    if dialog.mode == AddDownloadModeView::Mirrors
+                                        && dialog.mirror_rules.keep_original_as_mirror
+                                        && res.was_rewritten()
+                                    {
+                                        originals.push(AddDownloadSourceView::Uri {
+                                            line,
+                                            uri: res.original,
+                                        });
+                                    }
+                                    AddDownloadSourceView::Uri {
+                                        line,
+                                        uri: res.rewritten,
+                                    }
+                                }
+                                other => other,
+                            })
+                            .collect::<Vec<_>>();
+                        for original in originals {
+                            let AddDownloadSourceView::Uri { uri: ref orig_uri, .. } = original
+                            else {
+                                continue;
+                            };
+                            let already_present = rewritten_sources.iter().any(|existing| {
+                                matches!(existing, AddDownloadSourceView::Uri { uri, .. } if uri == orig_uri)
+                            });
+                            if !already_present {
+                                rewritten_sources.push(original);
+                            }
+                        }
+                        (rewritten_sources, dialog.mode)
+                    }
+                } else {
+                    (sources, dialog.mode)
+                }
+            } else {
+                (sources, dialog.mode)
+            };
             (
                 dialog.input_mode,
-                dialog.mode,
+                mode,
                 dialog.file_conflict,
                 dialog.category_id.clone(),
                 dialog.from_bridge,
@@ -2144,10 +2669,74 @@ impl AppShell {
                 // the most sensitive part of the request from whoever confirms it.
                 dialog.advanced_open = true;
             }
+            dialog.apply_matched_preset_to_inputs(window, cx);
             cx.notify();
         });
         cx.notify();
         group_len
+    }
+
+    fn request_add_url_probe(
+        &mut self,
+        url: String,
+        referer: String,
+        user_agent: String,
+        headers: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(view) = self.add_dialog_view().cloned() else {
+            return;
+        };
+        let request_id = self.allocate_request_id();
+        view.update(cx, |dialog, cx| {
+            dialog.probe_pending = Some(PendingUrlProbe {
+                request_id,
+                url: url.clone(),
+            });
+            dialog.probe_error = None;
+            cx.notify();
+        });
+        cx.emit(AppShellEvent::ProbeDownloadUrlRequested(
+            ProbeDownloadUrlRequestView {
+                request_id,
+                url,
+                referer,
+                user_agent,
+                headers,
+            },
+        ));
+    }
+
+    pub fn set_add_probe_result(
+        &mut self,
+        result: ProbeDownloadUrlResultView,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(view) = self.add_dialog_view().cloned() else {
+            return;
+        };
+        view.update(cx, |dialog, cx| {
+            if dialog
+                .probe_pending
+                .as_ref()
+                .is_none_or(|pending| pending.request_id != result.request_id)
+            {
+                return;
+            }
+            dialog.probe_pending = None;
+            match result.outcome {
+                Ok(meta) => {
+                    dialog.probe_error = None;
+                    dialog.probe_result = Some((result.url, meta));
+                }
+                Err(error) => {
+                    dialog.probe_result = None;
+                    dialog.probe_error = Some(error);
+                }
+            }
+            cx.notify();
+        });
+        cx.notify();
     }
 
     /// Open the add-download dialog and enqueue metadata files for preview.

@@ -294,6 +294,9 @@ impl AppShell {
         let can_speed = commands_available
             && task.status.can_set_speed_limit()
             && self.snapshot.capabilities.change_option;
+        let can_edit_task = commands_available
+            && task.can_edit_or_relink()
+            && (task.status == TaskStatusView::Failed || self.snapshot.capabilities.change_option);
         let has_source = task
             .primary_source
             .as_deref()
@@ -419,8 +422,19 @@ impl AppShell {
                 ));
         }
 
-        if task.can_set_output_name() || task.status.can_set_speed_limit() {
+        if task.can_set_output_name()
+            || task.status.can_set_speed_limit()
+            || task.can_edit_or_relink()
+        {
             menu = menu.separator();
+            if task.can_edit_or_relink() {
+                menu = menu.item(make_item(
+                    ContextMenuAction::EditTask,
+                    self.t("action-edit-relink-task"),
+                    None,
+                    can_edit_task,
+                ));
+            }
             if task.can_set_output_name() {
                 menu = menu.item(make_item(
                     ContextMenuAction::OutputName,
@@ -525,6 +539,11 @@ impl AppShell {
             ContextMenuAction::OutputName => self.open_task_output_name(window, cx),
             ContextMenuAction::SpeedLimit => self.open_task_speed_limit(window, cx),
             ContextMenuAction::TaskOptions => self.open_task_options(window, cx),
+            ContextMenuAction::EditTask => {
+                if let Some(task) = menu_task.or_else(|| self.selected_task_view(cx)) {
+                    self.open_edit_task_for(task, window, cx);
+                }
+            }
             ContextMenuAction::Remove => self.confirm_remove_selected(window, cx),
         }
     }
@@ -865,6 +884,29 @@ impl AppShell {
                     .when(retry_enabled, |button| {
                         button.on_click(cx.listener(|this, _, _window, cx| {
                             this.begin_task_command(TaskCommandView::Retry, cx);
+                        }))
+                    }),
+                )
+            })
+            .when(task.can_edit_or_relink(), |element| {
+                let edit_enabled = commands_available
+                    && (task.status == TaskStatusView::Failed
+                        || self.snapshot.capabilities.change_option);
+                let task_for_edit = task.clone();
+                element.child(
+                    toolbar_icon_button(
+                        "task-edit-relink-action",
+                        IconName::Link,
+                        self.t("action-edit-relink-task"),
+                        ToolbarButtonState::from_flags(edit_enabled, false),
+                        false,
+                        None,
+                        colors,
+                        &self.translator,
+                    )
+                    .when(edit_enabled, |button| {
+                        button.on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_edit_task_for(task_for_edit.clone(), window, cx);
                         }))
                     }),
                 )

@@ -1,6 +1,6 @@
 use ariadeck_domain::{
-    EngineSession, Gid, SpeedLimitConfig, TaskConnectionDetails, TaskDetails, TaskIdentity,
-    TransferPolicyConfig,
+    EngineSession, Gid, SpeedLimitConfig, TaskConnectionDetails, TaskDetails, TaskEditableState,
+    TaskIdentity, TransferPolicyConfig,
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
@@ -191,6 +191,20 @@ impl SyncHandle {
         .await
     }
 
+    /// Fetch non-secret URIs and editable task options for the Edit / Relink modal.
+    pub async fn editable_state(
+        &self,
+        session: EngineSession,
+        task: TaskIdentity,
+    ) -> Result<TaskEditableState, ApplicationError> {
+        self.request(|sender| Control::EditableState {
+            session,
+            task,
+            sender,
+        })
+        .await
+    }
+
     pub async fn stop(&self) {
         let _ = self.cancellation.send(true);
         let mut completion = self.completion.clone();
@@ -252,6 +266,11 @@ pub(super) enum Control {
         active: bool,
         is_bittorrent: bool,
         sender: oneshot::Sender<Result<TaskConnectionDetails, ApplicationError>>,
+    },
+    EditableState {
+        session: EngineSession,
+        task: TaskIdentity,
+        sender: oneshot::Sender<Result<TaskEditableState, ApplicationError>>,
     },
 }
 

@@ -3,15 +3,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use ariadeck_domain::DomainHeaderPreset;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     BrowserBridgeSettings, CURRENT_SETTINGS_SCHEMA_VERSION, ColorScheme, DownloadCategory,
-    DownloadProxySettings, LanguagePreference, NotificationSettings, OnboardingSettings,
-    PlatformSettings, SettingsError, SpeedLimitSettings, TrackerListSettings,
+    DownloadProxySettings, LanguagePreference, MirrorRewriteSettings, NotificationSettings,
+    OnboardingSettings, PlatformSettings, SettingsError, SpeedLimitSettings, TrackerListSettings,
     TransferPolicySettings, UiPreferences, atomic_io, default_download_categories,
     environment::{sync_fallback_directory, validate_engine_environment},
     error::io_error,
+    rules::validate_header_preset_list,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -33,6 +35,10 @@ pub struct AppSettings {
     pub categories: Vec<DownloadCategory>,
     /// Extra BitTorrent trackers for aria2 `bt-tracker` (D1).
     pub tracker_list: TrackerListSettings,
+    /// Client-wide domain-matched request header presets (cookie-free).
+    pub header_presets: Vec<DomainHeaderPreset>,
+    /// Client-wide URL mirror rewrite rules.
+    pub mirror_rules: MirrorRewriteSettings,
 }
 
 impl AppSettings {
@@ -53,6 +59,8 @@ impl AppSettings {
             ui: UiPreferences::default(),
             categories: default_download_categories(&download_directory),
             tracker_list: TrackerListSettings::default(),
+            header_presets: Vec::new(),
+            mirror_rules: MirrorRewriteSettings::default(),
         }
     }
 
@@ -63,7 +71,10 @@ impl AppSettings {
             &self.transfer_policy,
             &self.categories,
             &self.tracker_list,
-        )
+        )?;
+        validate_header_preset_list(&self.header_presets)?;
+        self.mirror_rules.validate()?;
+        Ok(())
     }
 }
 
@@ -114,6 +125,10 @@ struct SettingsDocument {
     ui: UiPreferences,
     categories: Vec<DownloadCategory>,
     tracker_list: TrackerListSettings,
+    #[serde(default)]
+    header_presets: Vec<DomainHeaderPreset>,
+    #[serde(default)]
+    mirror_rules: MirrorRewriteSettings,
 }
 
 impl From<&AppSettings> for SettingsDocument {
@@ -133,6 +148,8 @@ impl From<&AppSettings> for SettingsDocument {
             ui: settings.ui,
             categories: settings.categories.clone(),
             tracker_list: settings.tracker_list.clone(),
+            header_presets: settings.header_presets.clone(),
+            mirror_rules: settings.mirror_rules.clone(),
         }
     }
 }
@@ -161,6 +178,8 @@ impl TryFrom<SettingsDocument> for AppSettings {
             ui: document.ui,
             categories: document.categories,
             tracker_list: document.tracker_list,
+            header_presets: document.header_presets,
+            mirror_rules: document.mirror_rules,
         };
         sync_download_directory_from_fallback(&mut settings);
         settings.validate()?;

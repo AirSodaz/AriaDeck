@@ -20,6 +20,7 @@ ariadeck-ui = { path = "../../crates/ariadeck-ui" }
 data-encoding.workspace = true
 gpui-kit = { workspace = true }
 lava_torrent.workspace = true
+md-5.workspace = true
 minisign-verify.workspace = true
 notify-rust.workspace = true
 quick-xml.workspace = true
@@ -27,6 +28,7 @@ reqwest.workspace = true
 secrecy.workspace = true
 semver.workspace = true
 serde_json.workspace = true
+sha1.workspace = true
 sha2.workspace = true
 sysinfo.workspace = true
 # Staging directory for the verified aria2 download (B4).

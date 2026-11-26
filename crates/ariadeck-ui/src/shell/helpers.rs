@@ -145,6 +145,7 @@ pub(crate) enum ContextMenuAction {
     OutputName,
     SpeedLimit,
     TaskOptions,
+    EditTask,
     Remove,
 }
 
@@ -1093,5 +1094,75 @@ pub(crate) fn category_display_name(name: &str, translator: &Translator) -> Stri
         "programs" => translator.t("category-programs"),
         "images" => translator.t("category-images"),
         _ => name.to_owned(),
+    }
+}
+
+pub(crate) fn split_comma_patterns(raw: &str) -> Vec<String> {
+    raw.split([',', ';'])
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+pub(crate) fn split_header_lines(raw: &str) -> Vec<String> {
+    raw.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+pub(crate) fn to_domain_header_presets(
+    views: &[crate::DomainHeaderPresetView],
+) -> Vec<ariadeck_domain::DomainHeaderPreset> {
+    views
+        .iter()
+        .map(|view| ariadeck_domain::DomainHeaderPreset {
+            id: view.id.clone(),
+            name: view.name.trim().to_owned(),
+            enabled: view.enabled,
+            domains: split_comma_patterns(&view.domains),
+            referer: (!view.referer.trim().is_empty()).then(|| view.referer.trim().to_owned()),
+            user_agent: (!view.user_agent.trim().is_empty())
+                .then(|| view.user_agent.trim().to_owned()),
+            headers: split_header_lines(&view.headers),
+        })
+        .collect()
+}
+
+pub(crate) fn to_domain_mirror_rules(
+    settings: &crate::MirrorRewriteSettingsView,
+) -> Vec<ariadeck_domain::MirrorRewriteRule> {
+    settings
+        .rules
+        .iter()
+        .map(|view| ariadeck_domain::MirrorRewriteRule {
+            id: view.id.clone(),
+            name: view.name.trim().to_owned(),
+            enabled: view.enabled,
+            match_kind: match view.match_kind {
+                crate::MirrorMatchKindView::Prefix => ariadeck_domain::MirrorMatchKind::Prefix,
+                crate::MirrorMatchKindView::Host => ariadeck_domain::MirrorMatchKind::Host,
+            },
+            pattern: view.pattern.trim().to_owned(),
+            replacement: view.replacement.trim().to_owned(),
+        })
+        .collect()
+}
+
+pub(crate) fn from_domain_mirror_rule(
+    rule: &ariadeck_domain::MirrorRewriteRule,
+) -> crate::MirrorRewriteRuleView {
+    crate::MirrorRewriteRuleView {
+        id: rule.id.clone(),
+        name: rule.name.clone(),
+        enabled: rule.enabled,
+        match_kind: match rule.match_kind {
+            ariadeck_domain::MirrorMatchKind::Prefix => crate::MirrorMatchKindView::Prefix,
+            ariadeck_domain::MirrorMatchKind::Host => crate::MirrorMatchKindView::Host,
+        },
+        pattern: rule.pattern.clone(),
+        replacement: rule.replacement.clone(),
     }
 }

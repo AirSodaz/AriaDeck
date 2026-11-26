@@ -40,6 +40,9 @@ pub struct UiPreferences {
     pub list_filter: ListFilterPreference,
     pub list_sort_key: ListSortKeyPreference,
     pub list_sort_direction: ListSortDirectionPreference,
+    /// Automatically run lightweight HTTP probe when adding a single HTTP(S) URI.
+    #[serde(default)]
+    pub auto_probe_on_add: bool,
 }
 
 /// First-run guidance state (B4).

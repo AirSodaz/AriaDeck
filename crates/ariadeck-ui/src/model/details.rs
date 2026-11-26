@@ -126,3 +126,28 @@ pub struct TaskDetailsResultView {
     pub identity: TaskIdentity,
     pub outcome: TaskDetailsOutcomeView,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileChecksumRequestView {
+    pub request_id: RequestId,
+    pub identity: TaskIdentity,
+    pub directory: String,
+    pub file_path: String,
+    pub algorithm: ariadeck_domain::ChecksumAlgorithm,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileChecksumProgressView {
+    pub request_id: RequestId,
+    pub identity: TaskIdentity,
+    pub processed_bytes: u64,
+    pub total_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileChecksumResultView {
+    pub request_id: RequestId,
+    pub identity: TaskIdentity,
+    pub algorithm: ariadeck_domain::ChecksumAlgorithm,
+    pub outcome: Result<String, OperationErrorView>,
+}

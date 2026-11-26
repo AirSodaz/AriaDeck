@@ -46,6 +46,7 @@ use tokio::{
 
 use crate::platform::{self, TrayAction};
 
+mod checksum;
 mod core_fetch;
 mod diagnostics;
 mod engine_setup;
@@ -73,9 +74,11 @@ use mapping::{
     map_settings_request, map_ui_preferences_to_query, trimmed_value,
 };
 use ops::{
-    execute_add_download, execute_batch_task_command, execute_core_command_on_store,
-    execute_global_task_command, execute_task_command, execute_task_details, execute_task_open,
-    metadata_preview_worker_failure, preview_metadata_files,
+    execute_add_download_with_mirrors, execute_batch_task_command, execute_core_command_on_store,
+    execute_file_checksum, execute_global_task_command, execute_prepare_edit_task,
+    execute_probe_download_url, execute_relink_edit_task, execute_task_command,
+    execute_task_details, execute_task_open, metadata_preview_worker_failure,
+    preview_metadata_files,
 };
 use persistence::{
     PersistenceCommand, PersistenceWorkerDeps, ProfileCatalogSaveJob, ProfileSwitchRequest,
@@ -180,6 +183,7 @@ pub struct DesktopRoot {
     tracker_list_sender: Option<mpsc::UnboundedSender<TrackerListRefreshRequest>>,
     /// Verified aria2 download worker (B4). Only ever fed by a button press.
     core_download_sender: Option<mpsc::UnboundedSender<CoreDownloadRequest>>,
+    checksum_cancel_sender: Option<(ariadeck_ui::RequestId, tokio::sync::watch::Sender<bool>)>,
     settings: AppSettings,
     data_dir: PathBuf,
     profile_catalog: ProfileCatalog,
@@ -445,6 +449,21 @@ impl DesktopRoot {
                 AppShellEvent::AddDownloadMetadataPreviewRequested(request) => {
                     this.spawn_add_download_metadata_preview(request.clone(), window, cx);
                 }
+                AppShellEvent::ProbeDownloadUrlRequested(request) => {
+                    this.spawn_probe_download_url(request.clone(), window, cx);
+                }
+                AppShellEvent::PrepareEditTaskRequested(request) => {
+                    this.spawn_prepare_edit_task(request.clone(), window, cx);
+                }
+                AppShellEvent::RelinkEditTaskRequested(request) => {
+                    this.spawn_relink_edit_task(request.clone(), window, cx);
+                }
+                AppShellEvent::FileChecksumRequested(request) => {
+                    this.spawn_file_checksum(request.clone(), window, cx);
+                }
+                AppShellEvent::FileChecksumCancelled(request_id) => {
+                    this.cancel_file_checksum(*request_id);
+                }
                 AppShellEvent::TaskCommandRequested(request) => {
                     this.spawn_task_command(request.clone(), window, cx);
                 }
@@ -684,6 +703,7 @@ impl DesktopRoot {
             settings_persistence_available,
             tracker_list_sender,
             core_download_sender,
+            checksum_cancel_sender: None,
             settings,
             data_dir: data_dir.clone(),
             profile_catalog,
@@ -1030,6 +1050,7 @@ impl DesktopRoot {
                 WorkspaceSortDirection::Ascending => ListSortDirectionPreference::Ascending,
                 WorkspaceSortDirection::Descending => ListSortDirectionPreference::Descending,
             },
+            auto_probe_on_add: self.settings.ui.auto_probe_on_add,
         };
         if self.settings.ui == ui {
             return;
@@ -1379,15 +1400,210 @@ impl DesktopRoot {
         let runtime = self.runtime.handle().clone();
         let sync = self.sync.clone();
         let download_destination_gateway = self.download_destination_gateway.clone();
+        let mirror_rules = self.settings.mirror_rules.rules.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let result =
-                execute_add_download(runtime, sync, download_destination_gateway, request).await;
+            let result = execute_add_download_with_mirrors(
+                runtime,
+                sync,
+                download_destination_gateway,
+                request,
+                mirror_rules,
+            )
+            .await;
             this.update_in(cx, |this, window, cx| {
                 this.workspace.update(cx, |workspace, cx| {
                     workspace.set_add_download_result(result, window, cx);
                 });
             })
             .ok();
+        })
+        .detach();
+    }
+
+    fn spawn_probe_download_url(
+        &self,
+        request: ariadeck_ui::ProbeDownloadUrlRequestView,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let runtime = self.runtime.handle().clone();
+        let proxy = settings_bridge::map_download_proxy_config(&self.settings, None).ok();
+        cx.spawn_in(window, async move |this, cx| {
+            let fallback_id = request.request_id;
+            let fallback_url = request.url.clone();
+            let result = match runtime
+                .spawn(execute_probe_download_url(request, proxy))
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => ariadeck_ui::ProbeDownloadUrlResultView {
+                    request_id: fallback_id,
+                    url: fallback_url,
+                    outcome: Err(OperationErrorView {
+                        code: "network.probe_worker_failed".into(),
+                        summary: format!("Probe worker failed: {error}"),
+                        retryable: true,
+                    }),
+                },
+            };
+            this.update_in(cx, |this, _window, cx| {
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.set_add_probe_result(result, cx);
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn spawn_prepare_edit_task(
+        &self,
+        request: ariadeck_ui::PrepareEditTaskRequestView,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let runtime = self.runtime.handle().clone();
+        let sync = self.sync.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let fallback_id = request.request_id;
+            let fallback_identity = request.identity.clone();
+            let result = match runtime
+                .spawn(execute_prepare_edit_task(sync, request))
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => ariadeck_ui::PrepareEditTaskResultView {
+                    request_id: fallback_id,
+                    identity: fallback_identity,
+                    outcome: Err(OperationErrorView {
+                        code: "engine.prepare_edit_failed".into(),
+                        summary: format!("Prepare edit worker failed: {error}"),
+                        retryable: true,
+                    }),
+                },
+            };
+            this.update_in(cx, |this, window, cx| {
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.set_prepare_edit_task_result(result, window, cx);
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn spawn_relink_edit_task(
+        &self,
+        request: ariadeck_ui::RelinkEditTaskRequestView,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let runtime = self.runtime.handle().clone();
+        let sync = self.sync.clone();
+        let proxy = settings_bridge::map_download_proxy_config(&self.settings, None).ok();
+        cx.spawn_in(window, async move |this, cx| {
+            let fallback_id = request.request_id;
+            let fallback_session = request.session.clone();
+            let fallback_identity = request.identity.clone();
+            let result = match runtime
+                .spawn(execute_relink_edit_task(sync, proxy, request))
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => ariadeck_ui::RelinkEditTaskResultView {
+                    request_id: fallback_id,
+                    session: fallback_session,
+                    identity: fallback_identity,
+                    outcome: ariadeck_ui::RelinkEditOutcomeView::Succeeded(
+                        ariadeck_ui::CommandOutcomeView::Failure(OperationErrorView {
+                            code: "engine.relink_failed".into(),
+                            summary: format!("Relink task worker failed: {error}"),
+                            retryable: true,
+                        }),
+                    ),
+                },
+            };
+            this.update_in(cx, |this, window, cx| {
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.set_relink_edit_task_result(result, window, cx);
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn cancel_file_checksum(&mut self, request_id: ariadeck_ui::RequestId) {
+        if let Some((active_id, sender)) = &self.checksum_cancel_sender
+            && *active_id == request_id
+        {
+            let _ = sender.send(true);
+            self.checksum_cancel_sender = None;
+        }
+    }
+
+    fn spawn_file_checksum(
+        &mut self,
+        request: ariadeck_ui::FileChecksumRequestView,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((_, prev_sender)) = self.checksum_cancel_sender.take() {
+            let _ = prev_sender.send(true);
+        }
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        self.checksum_cancel_sender = Some((request.request_id, cancel_tx));
+
+        let runtime = self.runtime.handle().clone();
+        let task_file_gateway = self.task_file_gateway.clone();
+        let req_id = request.request_id;
+        let identity = request.identity.clone();
+        let algorithm = request.algorithm;
+
+        cx.spawn_in(window, async move |this, cx| {
+            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+            let join = runtime.spawn(execute_file_checksum(
+                task_file_gateway,
+                cancel_rx,
+                request,
+                progress_tx,
+            ));
+            while let Some((processed_bytes, total_bytes)) = progress_rx.recv().await {
+                let progress = ariadeck_ui::FileChecksumProgressView {
+                    request_id: req_id,
+                    identity: identity.clone(),
+                    processed_bytes,
+                    total_bytes,
+                };
+                let _ = this.update_in(cx, |this, _window, cx| {
+                    this.workspace.update(cx, |workspace, cx| {
+                        workspace.set_file_checksum_progress(progress, cx);
+                    });
+                });
+            }
+            let result = match join.await {
+                Ok(result) => result,
+                Err(error) => ariadeck_ui::FileChecksumResultView {
+                    request_id: req_id,
+                    identity,
+                    algorithm,
+                    outcome: Err(OperationErrorView {
+                        code: "checksum.worker_failed".into(),
+                        summary: format!("Checksum worker failed: {error}"),
+                        retryable: true,
+                    }),
+                },
+            };
+            let _ = this.update_in(cx, |this, _window, cx| {
+                if let Some((active_id, _)) = &this.checksum_cancel_sender
+                    && *active_id == req_id
+                {
+                    this.checksum_cancel_sender = None;
+                }
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.set_file_checksum_result(result, cx);
+                });
+            });
         })
         .detach();
     }

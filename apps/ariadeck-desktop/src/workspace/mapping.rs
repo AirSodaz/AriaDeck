@@ -12,9 +12,10 @@ use ariadeck_application::{
     ItemFailure, StoreSnapshot, TaskListQuery,
 };
 use ariadeck_domain::{
-    ConnectionState, DownloadSort, DownloadStatus, DownloadTask, EngineSession, EngineSessionId,
-    Gid, ProfileId, SessionGeneration, TaskConnectionDetails, TaskDetails,
-    TaskIdentity as DomainTaskIdentity, TaskProgress, TaskUriStatus,
+    ConnectionState, DomainHeaderPreset, DownloadSort, DownloadStatus, DownloadTask, EngineSession,
+    EngineSessionId, Gid, MirrorMatchKind, MirrorRewriteRule, ProfileId, SessionGeneration,
+    TaskConnectionDetails, TaskDetails, TaskEditableState, TaskIdentity as DomainTaskIdentity,
+    TaskProgress, TaskUriStatus,
 };
 use ariadeck_engine::{
     CoreDiscoveryOrigin, CoreInstallStatus, CoreSource, CoreStore, DiscoveredCore,
@@ -23,19 +24,21 @@ use ariadeck_engine::{
 use ariadeck_settings::{
     AppSettings, CloseBehavior, ColorScheme, CompletionPowerAction, DownloadProxyMode,
     DownloadProxySettings, FileAllocationSetting, LanguagePreference, ListFilterPreference,
-    ListSortDirectionPreference, ListSortKeyPreference, NotificationSettings, NotificationVolume,
-    PlatformSettings, SpeedLimitSettings, TransferPolicySettings, UiPreferences,
+    ListSortDirectionPreference, ListSortKeyPreference, MirrorRewriteSettings,
+    NotificationSettings, NotificationVolume, PlatformSettings, SpeedLimitSettings,
+    TransferPolicySettings, UiPreferences,
 };
 use ariadeck_ui::{
     BatchCommandOutcomeView, BatchTaskFailureView, BrowserBridgeSettingsView, CloseBehaviorView,
     ColorSchemeView, CommandOutcomeView, CompletionPowerActionView, ConnectionView,
     CoreDiscoveryOriginView, CoreDownloadOfferView, CoreInstallStatusView, CoreInstallationView,
-    CoreRegistryView, CoreSourceView, DiscoveredCoreView, DownloadCategoryView,
-    DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView, EngineHealthView,
-    EngineSessionView, FileAllocationView, LanguagePreferenceView, NotificationSettingsView,
-    NotificationVolumeView, OperationErrorView, PlatformSettingsView, ProfileCatalogView,
-    ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView, ProxyModeView,
-    ProxyPasswordUpdateView, SettingsView, SpeedLimitSettingsView, SpeedSampleView,
+    CoreRegistryView, CoreSourceView, DiscoveredCoreView, DomainHeaderPresetView,
+    DownloadCategoryView, DownloadProxySettingsView, DownloadRowView, EngineCapabilitiesView,
+    EngineHealthView, EngineSessionView, FileAllocationView, LanguagePreferenceView,
+    MirrorMatchKindView, MirrorRewriteRuleView, MirrorRewriteSettingsView,
+    NotificationSettingsView, NotificationVolumeView, OperationErrorView, PlatformSettingsView,
+    ProfileCatalogView, ProfileEntryView, ProfileKindView, ProfileRpcSecretUpdateView,
+    ProxyModeView, ProxyPasswordUpdateView, SettingsView, SpeedLimitSettingsView, SpeedSampleView,
     StoppedHistoryView, TaskCountsView, TaskDetailsView, TaskErrorView, TaskFileView, TaskIdentity,
     TaskOptionView, TaskPathValidationView, TaskPeerView, TaskServerView, TaskStatusView,
     TaskTrackerView, TaskUriStatusView, TaskUriView, TrackerListSettingsView,
@@ -678,6 +681,39 @@ pub(crate) fn map_settings(settings: &AppSettings) -> SettingsView {
             last_refreshed_at: settings.tracker_list.last_refreshed_at,
             list_text: settings.tracker_list.list_text.clone(),
         },
+        header_presets: settings
+            .header_presets
+            .iter()
+            .map(|preset| DomainHeaderPresetView {
+                id: preset.id.clone(),
+                name: preset.name.clone(),
+                enabled: preset.enabled,
+                domains: preset.domains.join(", "),
+                referer: preset.referer.clone().unwrap_or_default(),
+                user_agent: preset.user_agent.clone().unwrap_or_default(),
+                headers: preset.headers.join("\n"),
+            })
+            .collect(),
+        mirror_rules: MirrorRewriteSettingsView {
+            keep_original_as_mirror: settings.mirror_rules.keep_original_as_mirror,
+            rules: settings
+                .mirror_rules
+                .rules
+                .iter()
+                .map(|rule| MirrorRewriteRuleView {
+                    id: rule.id.clone(),
+                    name: rule.name.clone(),
+                    enabled: rule.enabled,
+                    match_kind: match rule.match_kind {
+                        MirrorMatchKind::Prefix => MirrorMatchKindView::Prefix,
+                        MirrorMatchKind::Host => MirrorMatchKindView::Host,
+                    },
+                    pattern: rule.pattern.clone(),
+                    replacement: rule.replacement.clone(),
+                })
+                .collect(),
+        },
+        auto_probe_on_add: settings.ui.auto_probe_on_add,
     }
 }
 
@@ -807,9 +843,12 @@ pub(crate) fn map_settings_request(
         // First-run state is owned by the core-setup guide (B4), not the settings
         // form; saving Settings must never re-arm or dismiss it.
         onboarding: current.onboarding,
-        // List preferences are owned by the shell query path (UI-001), not the
-        // settings form. Preserve whatever is currently persisted.
-        ui: current.ui,
+        // List preferences are owned by the shell query path (UI-001); preserve
+        // them while updating `auto_probe_on_add` from the settings panel.
+        ui: UiPreferences {
+            auto_probe_on_add: settings.auto_probe_on_add,
+            ..current.ui
+        },
         categories: Vec::new(),
         tracker_list: ariadeck_settings::TrackerListSettings {
             enabled: settings.tracker_list.enabled,
@@ -821,6 +860,50 @@ pub(crate) fn map_settings_request(
             auto_refresh: settings.tracker_list.auto_refresh,
             last_refreshed_at: settings.tracker_list.last_refreshed_at,
             list_text: settings.tracker_list.list_text.clone(),
+        },
+        header_presets: settings
+            .header_presets
+            .iter()
+            .map(|preset| DomainHeaderPreset {
+                id: preset.id.trim().to_owned(),
+                name: preset.name.trim().to_owned(),
+                enabled: preset.enabled,
+                domains: preset
+                    .domains
+                    .split([',', ';', '\n'])
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect(),
+                referer: trimmed_value(&preset.referer),
+                user_agent: trimmed_value(&preset.user_agent),
+                headers: preset
+                    .headers
+                    .lines()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect(),
+            })
+            .collect(),
+        mirror_rules: MirrorRewriteSettings {
+            keep_original_as_mirror: settings.mirror_rules.keep_original_as_mirror,
+            rules: settings
+                .mirror_rules
+                .rules
+                .iter()
+                .map(|rule| MirrorRewriteRule {
+                    id: rule.id.trim().to_owned(),
+                    name: rule.name.trim().to_owned(),
+                    enabled: rule.enabled,
+                    match_kind: match rule.match_kind {
+                        MirrorMatchKindView::Prefix => MirrorMatchKind::Prefix,
+                        MirrorMatchKindView::Host => MirrorMatchKind::Host,
+                    },
+                    pattern: rule.pattern.trim().to_owned(),
+                    replacement: rule.replacement.trim().to_owned(),
+                })
+                .collect(),
         },
     };
     let mut categories = Vec::with_capacity(settings.categories.len());
@@ -971,10 +1054,34 @@ pub(crate) fn map_capabilities(capabilities: &EngineCapabilities) -> EngineCapab
         force_remove: capabilities.supports_force_remove(),
         queue_positioning: capabilities.supports_queue_positioning(),
         change_option: capabilities.supports_change_option(),
+        change_uri: capabilities.supports_change_uri(),
         change_global_option: capabilities.supports_change_global_option(),
         get_peers: capabilities.supports_get_peers(),
         get_servers: capabilities.supports_get_servers(),
         multicall: capabilities.supports_multicall(),
+    }
+}
+
+pub(crate) fn map_task_editable_state(
+    state: TaskEditableState,
+) -> ariadeck_ui::TaskEditableStateView {
+    ariadeck_ui::TaskEditableStateView {
+        uris: state.uris,
+        referer: state.referer.unwrap_or_default(),
+        user_agent: state.user_agent.unwrap_or_default(),
+        headers: state.headers.join("\n"),
+        proxy: state.proxy.unwrap_or_default(),
+        max_download_limit: state.max_download_limit.unwrap_or_default(),
+        max_connection_per_server: state
+            .max_connection_per_server
+            .map_or_else(String::new, |value| value.to_string()),
+        split: state
+            .split
+            .map_or_else(String::new, |value| value.to_string()),
+        out: state.out.unwrap_or_default(),
+        dir: state
+            .dir
+            .map_or_else(String::new, |dir| dir.as_str().to_owned()),
     }
 }
 

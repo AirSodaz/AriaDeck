@@ -1108,3 +1108,52 @@ async fn retry_uri_falls_back_when_original_gid_was_purged() {
         .expect("retry should fall back to fallback URI");
     assert_eq!(next, Gid::from_u64(0xaa));
 }
+
+#[tokio::test]
+async fn change_uri_and_editable_state_decode_and_strip_secrets() {
+    let transport = ScriptedTransport::new([
+        Ok(json!([1, 1])),
+        Ok(json!([
+            [[{"uri": "https://cdn.example.test/a.bin", "status": "used"}]],
+            [{
+                "referer": "https://ref.example.test/",
+                "user-agent": "AriaDeck/2",
+                "header": ["Cookie: secret=1", "Authorization: Bearer abc", "X-Custom: ok"],
+                "all-proxy": "http://user:pass@proxy.example.test:8080",
+                "max-download-limit": "512K",
+                "split": "8",
+                "out": "a.bin",
+                "dir": "/downloads"
+            }]
+        ])),
+    ]);
+    let client = Aria2Client::new(transport);
+    let counts = client
+        .change_uri(
+            Gid::from_u64(7),
+            1,
+            &["https://old.example.test/a.bin".into()],
+            &["https://cdn.example.test/a.bin".into()],
+            Some(0),
+        )
+        .await
+        .expect("changeUri succeeds");
+    assert_eq!(counts, (1, 1));
+
+    let state = client
+        .editable_state(Gid::from_u64(7))
+        .await
+        .expect("editable_state succeeds");
+    assert_eq!(state.uris, vec!["https://cdn.example.test/a.bin"]);
+    assert_eq!(state.referer.as_deref(), Some("https://ref.example.test/"));
+    assert_eq!(state.user_agent.as_deref(), Some("AriaDeck/2"));
+    assert_eq!(state.headers, vec!["X-Custom: ok"]);
+    assert_eq!(
+        state.proxy.as_deref(),
+        Some("http://proxy.example.test:8080/")
+    );
+    assert_eq!(state.max_download_limit.as_deref(), Some("512K"));
+    assert_eq!(state.split.as_deref(), Some("8"));
+    assert_eq!(state.out.as_deref(), Some("a.bin"));
+    assert_eq!(state.dir.as_deref(), Some("/downloads"));
+}
