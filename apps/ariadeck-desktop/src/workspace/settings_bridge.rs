@@ -322,6 +322,8 @@ pub(crate) fn spawn_persistence_event_bridge(
                     super::persistence::PersistenceEvent::SettingsSaved(result) => {
                         if result.result.is_ok() {
                             this.settings = result.settings.clone();
+                            this.clipboard_watch
+                                .sync_enabled(this.settings.platform.watch_clipboard);
                             this.sync_tray_with_settings(cx);
                         }
                         let outcome = result.result.map_or_else(
@@ -356,6 +358,8 @@ pub(crate) fn spawn_persistence_event_bridge(
                             Ok(()) => {
                                 if let Some(next_settings) = result.next_settings {
                                     this.settings = next_settings;
+                                    this.clipboard_watch
+                                        .sync_enabled(this.settings.platform.watch_clipboard);
                                 }
                                 let settings_view = map_settings(&this.settings);
                                 this.workspace.update(cx, |shell, cx| {

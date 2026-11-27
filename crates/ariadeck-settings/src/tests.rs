@@ -100,6 +100,7 @@ fn window_geometry_round_trips_and_sanitizes() {
 fn platform_settings_default_keep_awake_and_action() {
     let defaults = PlatformSettings::default();
     assert!(defaults.keep_awake_while_active);
+    assert!(!defaults.watch_clipboard);
     assert_eq!(defaults.action_after_done, CompletionPowerAction::None);
     assert!(!defaults.action_after_done.is_armed());
     assert_eq!(defaults.action_after_done.as_str(), "none");
@@ -119,6 +120,7 @@ fn platform_settings_round_trip() {
         start_minimized_to_tray: true,
         keep_awake_while_active: false,
         action_after_done: CompletionPowerAction::Shutdown,
+        watch_clipboard: true,
     };
     expected.notifications.os_notifications = false;
     expected.notifications.notify_on_low_disk = false;
@@ -146,6 +148,7 @@ fn platform_settings_backward_compatibility_when_fields_missing() {
     std::fs::write(store.path(), legacy_json).expect("seed legacy settings");
     let loaded = store.load().expect("load legacy settings");
     assert!(loaded.platform.keep_awake_while_active);
+    assert!(!loaded.platform.watch_clipboard);
     assert_eq!(
         loaded.platform.action_after_done,
         CompletionPowerAction::None
@@ -157,11 +160,28 @@ fn platform_settings_export_sanitizes_armed_action() {
     let root = tempfile::tempdir().expect("temporary directory");
     let mut source = settings(root.path());
     source.platform.action_after_done = CompletionPowerAction::Shutdown;
+    source.platform.watch_clipboard = true;
     let exported = export_settings_json(&source).expect("export settings");
     assert!(
         exported.contains(r#""action_after_done": "none""#),
         "{exported}"
     );
+    let imported =
+        import_settings_json(&exported, &settings(root.path())).expect("import settings");
+    assert!(imported.platform.watch_clipboard);
+
+    let mut legacy_export: serde_json::Value =
+        serde_json::from_str(&exported).expect("parse exported settings");
+    legacy_export["platform"]
+        .as_object_mut()
+        .expect("platform obj")
+        .remove("watch_clipboard");
+    let legacy_imported = import_settings_json(
+        &serde_json::to_string(&legacy_export).expect("serialize legacy export"),
+        &settings(root.path()),
+    )
+    .expect("legacy export without watch_clipboard imports");
+    assert!(!legacy_imported.platform.watch_clipboard);
 }
 #[test]
 fn browser_bridge_settings_default_off_and_round_trip() {

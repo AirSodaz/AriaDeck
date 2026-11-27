@@ -445,6 +445,117 @@ fn magnet_launch_opens_links_without_submitting_and_does_not_clobber_open_dialog
 }
 
 #[gpui::test]
+fn clipboard_uris_open_add_dialog_without_submitting_and_respect_open_modal(
+    cx: &mut TestAppContext,
+) {
+    let first = "https://cdn.example.test/archive.zip".to_owned();
+    let second =
+        "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Example".to_owned();
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(1);
+        shell.settings.auto_probe_on_add = true;
+        shell.settings.header_presets = vec![DomainHeaderPresetView {
+            id: "preset-cdn".into(),
+            name: "CDN".into(),
+            enabled: true,
+            domains: "cdn.example.test".into(),
+            referer: "https://cdn.example.test/page".into(),
+            user_agent: "AriaDeckTest/2.0".into(),
+            headers: String::new(),
+        }];
+        shell
+    });
+    let probe_urls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let probe_sink = probe_urls.clone();
+    let _sub = view.update(cx, |_, cx| {
+        cx.subscribe(&view, move |_, _, event: &AppShellEvent, _| {
+            if let AppShellEvent::ProbeDownloadUrlRequested(request) = event {
+                probe_sink
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(request.url.clone());
+            }
+        })
+    });
+
+    // Disconnected engine and open Settings page must both refuse clipboard popup.
+    view.update_in(cx, |shell, window, cx| {
+        shell.snapshot.connection = ConnectionView::Disconnected;
+        assert!(!shell.can_open_clipboard_uris());
+        assert!(!shell.open_clipboard_uris(vec![first.clone()], window, cx));
+
+        shell.snapshot.connection = ConnectionView::Connected;
+        shell.open_settings(&OpenSettings, window, cx);
+        assert!(!shell.can_open_clipboard_uris());
+        assert!(!shell.open_clipboard_uris(vec![first.clone()], window, cx));
+        assert!(shell.settings_panel().is_some());
+
+        shell.leave_settings_page();
+        assert!(shell.can_open_clipboard_uris());
+        assert!(!shell.open_clipboard_uris(Vec::new(), window, cx));
+        assert!(shell.open_clipboard_uris(
+            vec![first.clone(), first.clone(), second.clone()],
+            window,
+            cx,
+        ));
+        let dialog = shell.add_dialog_entity().expect("dialog open").clone();
+        assert!(dialog.read(cx).pending.is_none());
+        assert_eq!(
+            dialog.read(cx).add_input.read(cx).value().as_ref(),
+            format!("{first}\n{second}")
+        );
+        assert!(!shell.can_open_clipboard_uris());
+        assert!(!shell.open_clipboard_uris(
+            vec!["https://cdn.example.test/other.iso".into()],
+            window,
+            cx,
+        ));
+        assert_eq!(
+            dialog.read(cx).add_input.read(cx).value().as_ref(),
+            format!("{first}\n{second}")
+        );
+
+        // Single HTTP(S) clipboard URI should apply matching header presets and schedule auto-probe.
+        shell.close_add_download(window, cx);
+        assert!(shell.open_clipboard_uris(vec![first.clone()], window, cx));
+        let single_dialog = shell
+            .add_dialog_entity()
+            .expect("single dialog open")
+            .clone();
+        assert_eq!(
+            single_dialog
+                .read(cx)
+                .add_inputs
+                .referer
+                .read(cx)
+                .value()
+                .as_ref(),
+            "https://cdn.example.test/page"
+        );
+        assert_eq!(
+            single_dialog
+                .read(cx)
+                .add_inputs
+                .user_agent
+                .read(cx)
+                .value()
+                .as_ref(),
+            "AriaDeckTest/2.0"
+        );
+    });
+
+    cx.executor().advance_clock(Duration::from_millis(650));
+    cx.run_until_parked();
+
+    let captured_probes = probe_urls
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    assert_eq!(captured_probes, vec![first]);
+}
+
+#[gpui::test]
 fn metadata_preview_keeps_successes_reports_failures_and_ignores_stale_results(
     cx: &mut TestAppContext,
 ) {

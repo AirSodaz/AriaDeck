@@ -107,6 +107,46 @@ fn context_menu_opens_from_right_click_and_preserves_multi_selection(cx: &mut Te
 }
 
 #[gpui::test]
+fn copy_task_source_emits_clipboard_source_copied_event(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        let mut row = task(0);
+        row.primary_source = Some("https://cdn.example.test/archive.zip".into());
+        shell.snapshot.tasks = vec![row];
+        shell
+    });
+    let copied = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = copied.clone();
+    let _subscription = view.update(cx, |_, cx| {
+        cx.subscribe(&view, move |_, _, event: &AppShellEvent, _| {
+            if let AppShellEvent::ClipboardSourceCopied(source) = event {
+                sink.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(source.clone());
+            }
+        })
+    });
+
+    view.update(cx, |shell, cx| {
+        let row = shell.snapshot.tasks[0].clone();
+        shell.copy_task_source(&row, cx);
+    });
+
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some("https://cdn.example.test/archive.zip".to_owned()),
+    );
+    let captured = copied
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    assert_eq!(
+        captured,
+        vec!["https://cdn.example.test/archive.zip".to_owned()]
+    );
+}
+
+#[gpui::test]
 fn visible_selection_counts_and_header_toggle_exclude_hidden_tasks(cx: &mut TestAppContext) {
     let hidden = task(99).identity;
     let (view, cx) = cx.add_window_view(|window, cx| {
@@ -606,6 +646,7 @@ fn platform_preferences_save_and_close_policy(cx: &mut TestAppContext) {
         panel.update(cx, |panel, cx| {
             panel.select_close_behavior(CloseBehaviorView::Quit, cx);
             panel.toggle_start_minimized_to_tray(cx);
+            panel.toggle_watch_clipboard(cx);
             panel.submit_platform(cx);
         });
     });
@@ -620,6 +661,7 @@ fn platform_preferences_save_and_close_policy(cx: &mut TestAppContext) {
             CloseBehaviorView::Quit
         );
         assert!(pending.settings.platform.start_minimized_to_tray);
+        assert!(pending.settings.platform.watch_clipboard);
 
         // Apply saved platform prefs and verify close interception.
         shell.apply_settings(pending.settings.clone(), Some(window), cx);

@@ -530,6 +530,7 @@ pub struct PlatformSettingsView {
     pub start_minimized_to_tray: bool,
     pub keep_awake_while_active: bool,
     pub action_after_done: CompletionPowerActionView,
+    pub watch_clipboard: bool,
 }
 
 impl Default for PlatformSettingsView {
@@ -540,6 +541,7 @@ impl Default for PlatformSettingsView {
             start_minimized_to_tray: false,
             keep_awake_while_active: true,
             action_after_done: CompletionPowerActionView::None,
+            watch_clipboard: false,
         }
     }
 }

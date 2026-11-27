@@ -128,6 +128,11 @@ settings-bridge-cookies = Send cookies
 settings-bridge-cookies-desc = Allow the extension to attach the site's cookie so downloads behind a login work. Off unless you need it.
 settings-bridge-hint = Cookies are used for the download only: scoped to that site, kept in memory, never written to settings, history, logs, or a diagnostic export—and never restored after a restart, so a retried download may need signing in again. The extension must also grant the site permission. Requires the browser bridge to be enabled during installation.
 
+settings-clipboard = Clipboard
+settings-clipboard-watch = Watch clipboard for links
+settings-clipboard-watch-desc = Monitor the clipboard while AriaDeck is running and open the Add Download dialog when a download or magnet link is copied (without starting downloads automatically).
+settings-clipboard-watch-hint = Matches magnet, FTP/SFTP, and HTTP(S) links ending with common or category file extensions. Ordinary web page URLs and mixed text are ignored.
+
 settings-network-proxy = Network proxy
 settings-proxy-mode-aria = Download proxy mode
 settings-proxy-disabled = Disabled

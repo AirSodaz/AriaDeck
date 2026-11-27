@@ -249,6 +249,8 @@ pub enum AppShellEvent {
     QuitRequested,
     /// Execute power action (sleep, hibernate, shutdown) after completion countdown (D5).
     CompletionPowerActionRequested(CompletionPowerActionView),
+    /// Task source URI copied inside AriaDeck; used to avoid re-triggering clipboard watch.
+    ClipboardSourceCopied(String),
     OsNotificationRequested {
         title: String,
         body: String,

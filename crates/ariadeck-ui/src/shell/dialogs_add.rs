@@ -2540,7 +2540,7 @@ impl AppShell {
     #[must_use]
     pub fn open_magnet_uris(
         &mut self,
-        mut uris: Vec<String>,
+        uris: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -2552,8 +2552,44 @@ impl AppShell {
         {
             return false;
         }
+        self.open_prefilled_links_dialog(uris, false, window, cx)
+    }
+
+    /// Whether the shell can accept clipboard-captured download links right now.
+    ///
+    /// Uses the same modal/command guard as magnet launches and also defers
+    /// while Settings is open so clipboard copies never discard unsaved drafts.
+    #[must_use]
+    pub fn can_open_clipboard_uris(&self) -> bool {
+        self.page != AppPage::Settings && self.can_open_magnet_uris()
+    }
+
+    /// Open the add-download dialog with clipboard-captured links awaiting confirmation.
+    #[must_use]
+    pub fn open_clipboard_uris(
+        &mut self,
+        uris: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.can_open_clipboard_uris() || uris.is_empty() {
+            return false;
+        }
+        self.open_prefilled_links_dialog(uris, true, window, cx)
+    }
+
+    fn open_prefilled_links_dialog(
+        &mut self,
+        mut uris: Vec<String>,
+        apply_presets_and_probe: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let mut known = HashSet::new();
         uris.retain(|uri| known.insert(uri.clone()));
+        if uris.is_empty() {
+            return false;
+        }
         self.open_add_download(&OpenAddDownload, window, cx);
         let Some(view) = self.add_dialog_view().cloned() else {
             return false;
@@ -2563,6 +2599,9 @@ impl AppShell {
             dialog
                 .add_input
                 .update(cx, |input, cx| input.set_value(joined, window, cx));
+            if apply_presets_and_probe {
+                dialog.on_links_text_changed(window, cx);
+            }
             cx.notify();
         });
         cx.notify();

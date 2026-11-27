@@ -743,6 +743,7 @@ impl AppShell {
             return;
         }
         cx.write_to_clipboard(ClipboardItem::new_string(source.to_owned()));
+        cx.emit(AppShellEvent::ClipboardSourceCopied(source.to_owned()));
         self.show_notice(self.t("notice-source-copied"), false, cx);
     }
 

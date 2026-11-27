@@ -128,6 +128,11 @@ settings-bridge-cookies = 发送 Cookie
 settings-bridge-cookies-desc = 允许扩展附带站点 Cookie，以便下载需要登录的资源。除确有需要，请保持关闭。
 settings-bridge-hint = Cookie 只用于本次下载：限于该站点、仅存于内存，不会写入设置、历史、日志或诊断导出——重启后也不保留，因此重试的任务可能需要重新登录。扩展侧还需授予该站点权限。需要在安装时启用浏览器接管。
 
+settings-clipboard = 剪贴板
+settings-clipboard-watch = 监听剪贴板下载链接
+settings-clipboard-watch-desc = 运行期间监听剪贴板变化；检测到下载直链或磁力链接时自动弹出「添加下载」窗口（不会自动开始下载）。
+settings-clipboard-watch-hint = 仅匹配磁力链接、FTP/SFTP 以及带常见或分类扩展名的 HTTP(S) 直链，忽略普通网页链接与混排文本。
+
 settings-network-proxy = 网络代理
 settings-proxy-mode-aria = 下载代理模式
 settings-proxy-disabled = 禁用

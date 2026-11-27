@@ -99,6 +99,9 @@ pub struct PlatformSettings {
     pub keep_awake_while_active: bool,
     #[serde(default)]
     pub action_after_done: CompletionPowerAction,
+    /// Watch the system clipboard for downloadable links while AriaDeck is running (Opt-in).
+    #[serde(default)]
+    pub watch_clipboard: bool,
 }
 
 impl Default for PlatformSettings {
@@ -109,6 +112,7 @@ impl Default for PlatformSettings {
             start_minimized_to_tray: false,
             keep_awake_while_active: true,
             action_after_done: CompletionPowerAction::None,
+            watch_clipboard: false,
         }
     }
 }

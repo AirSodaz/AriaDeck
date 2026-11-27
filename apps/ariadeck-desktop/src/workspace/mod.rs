@@ -47,6 +47,7 @@ use tokio::{
 use crate::platform::{self, TrayAction};
 
 mod checksum;
+mod clipboard_watch;
 mod core_fetch;
 mod diagnostics;
 mod engine_setup;
@@ -62,6 +63,7 @@ mod test_support;
 mod tracker_list;
 mod updates;
 
+use clipboard_watch::ClipboardWatchController;
 use core_fetch::{CoreDownloadRequest, CoreDownloadResult, spawn_core_download_bridge};
 use engine_setup::{
     EngineBootstrapOutput, EngineSessionRecovery, create_sync_handle, default_download_dir,
@@ -190,6 +192,7 @@ pub struct DesktopRoot {
     core_store: CoreStore,
     updates: UpdateController,
     platform: PlatformController,
+    clipboard_watch: ClipboardWatchController,
     launch_queue: LaunchQueue,
     _workspace_subscription: Subscription,
 }
@@ -595,6 +598,9 @@ impl DesktopRoot {
                     })
                     .detach();
                 }
+                AppShellEvent::ClipboardSourceCopied(source) => {
+                    this.clipboard_watch.suppress(source.clone());
+                }
             },
         );
         // Intercept the native close control so Minimize-to-tray can keep the
@@ -685,6 +691,7 @@ impl DesktopRoot {
         }
 
         let platform = PlatformController::new(&settings, last_saved_geometry);
+        let clipboard_watch = ClipboardWatchController::new(settings.platform.watch_clipboard);
         let launch_queue = LaunchQueue::new(initial_request, instance_requests);
 
         let root = Self {
@@ -710,6 +717,7 @@ impl DesktopRoot {
             core_store,
             updates: UpdateController::default(),
             platform,
+            clipboard_watch,
             launch_queue,
             _workspace_subscription: workspace_subscription,
         };
@@ -951,6 +959,7 @@ impl DesktopRoot {
 
     fn poll_platform_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.poll_instance_requests(window, cx);
+        self.poll_clipboard_watch(window, cx);
         for action in self.platform.poll_tray_actions() {
             match action {
                 TrayAction::Show => self.show_from_tray(window, cx),
@@ -987,6 +996,35 @@ impl DesktopRoot {
         }
         self.launch_queue
             .dispatch_ready(&self.workspace, window, cx);
+    }
+
+    fn poll_clipboard_watch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.clipboard_watch.should_poll_now() {
+            return;
+        }
+        let current_text = cx.read_from_clipboard().and_then(|item| item.text());
+        let can_open_dialog = self.workspace.read(cx).can_open_clipboard_uris();
+        let extra_extensions: Vec<&str> = self
+            .settings
+            .categories
+            .iter()
+            .flat_map(|category| category.extensions.iter().map(String::as_str))
+            .collect();
+        let Some(uris) =
+            self.clipboard_watch
+                .poll_step(current_text, can_open_dialog, &extra_extensions)
+        else {
+            return;
+        };
+        if self.platform.is_hidden_to_tray() {
+            self.show_from_tray(window, cx);
+        } else {
+            show_native_window(window);
+            cx.activate(true);
+        }
+        let _ = self
+            .workspace
+            .update(cx, |shell, cx| shell.open_clipboard_uris(uris, window, cx));
     }
 
     fn hide_to_tray(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -5,6 +5,7 @@
 
 mod category_route;
 mod checksum;
+mod clipboard;
 mod engine;
 mod header_preset;
 mod ids;
@@ -21,6 +22,10 @@ pub use category_route::{
 pub use checksum::{
     ChecksumAlgorithm, ChecksumComparison, ParsedExpectedChecksum, compare_checksum,
     parse_expected_checksum,
+};
+pub use clipboard::{
+    MAX_CLIPBOARD_LINKS, MAX_CLIPBOARD_TEXT_BYTES, extract_clipboard_download_uris,
+    is_clipboard_download_uri,
 };
 pub use engine::{
     ConnectionFailure, ConnectionState, EngineSession, EngineSource, ProcessOwnership,

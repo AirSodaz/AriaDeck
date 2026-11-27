@@ -2031,6 +2031,14 @@ fn settings_mapping_allocates_a_credential_reference_without_exposing_the_passwo
     assert!(matches!(password, ProxyPasswordUpdate::Set(_)));
     assert_eq!(map_settings(&mapped), settings);
     assert!(!format!("{:?}", map_settings(&mapped)).contains("secret-value"));
+
+    let mut watch_enabled = settings.clone();
+    watch_enabled.platform.watch_clipboard = true;
+    let (mapped_watch, _) =
+        map_settings_request(&watch_enabled, &mapped, ProxyPasswordUpdateView::Unchanged)
+            .expect("valid watch_clipboard settings");
+    assert!(mapped_watch.platform.watch_clipboard);
+    assert_eq!(map_settings(&mapped_watch), watch_enabled);
 }
 
 #[test]

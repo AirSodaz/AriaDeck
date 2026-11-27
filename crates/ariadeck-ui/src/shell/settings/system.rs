@@ -192,6 +192,16 @@ impl SettingsPanelView {
         cx.notify();
     }
 
+    pub(crate) fn toggle_watch_clipboard(&mut self, cx: &mut Context<Self>) {
+        if self.is_pending() {
+            return;
+        }
+        self.settings_page.draft_platform.watch_clipboard =
+            !self.settings_page.draft_platform.watch_clipboard;
+        self.settings_page.error = None;
+        cx.notify();
+    }
+
     pub(super) fn render_settings_notifications(&mut self, cx: &mut Context<Self>) -> Div {
         let colors = self.theme.colors;
         let pending = self.is_pending();
@@ -399,6 +409,8 @@ impl SettingsPanelView {
         let p2 = cx.entity().downgrade();
         let p3 = cx.entity().downgrade();
         let p4 = cx.entity().downgrade();
+        let p5 = cx.entity().downgrade();
+        let draft_watch_clipboard = platform.watch_clipboard;
         let draft_allow_cookies = self.settings_page.draft_browser_bridge.allow_cookies;
         let draft_auto_submit = self.settings_page.draft_browser_bridge.auto_submit;
         let tray_section = settings_section_owned(self.t("settings-window-tray"), colors)
@@ -480,12 +492,34 @@ impl SettingsPanelView {
                     }),
             );
 
+        let clipboard_section = settings_section_owned(self.t("settings-clipboard"), colors)
+            .child(settings_section_row_owned(
+                self.t("settings-clipboard-watch"),
+                Some(self.t("settings-clipboard-watch-desc")),
+                Switch::new("toggle-watch-clipboard")
+                    .checked(draft_watch_clipboard)
+                    .accessibility_label(self.t("settings-clipboard-watch"))
+                    .disabled(pending)
+                    .on_change(move |_, _, cx| {
+                        p5.update(cx, |panel, cx| panel.toggle_watch_clipboard(cx))
+                            .ok();
+                    }),
+                colors,
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(self.t("settings-clipboard-watch-hint")),
+            );
+
         div()
             .flex()
             .flex_col()
             .gap_6()
             .child(power_section)
             .child(tray_section)
+            .child(clipboard_section)
             .child(bridge_section)
     }
 }

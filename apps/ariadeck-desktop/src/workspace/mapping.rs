@@ -654,6 +654,7 @@ pub(crate) fn map_settings(settings: &AppSettings) -> SettingsView {
             action_after_done: map_completion_power_action_to_view(
                 settings.platform.action_after_done,
             ),
+            watch_clipboard: settings.platform.watch_clipboard,
         },
         browser_bridge: BrowserBridgeSettingsView {
             allow_cookies: settings.browser_bridge.allow_cookies,
@@ -835,6 +836,7 @@ pub(crate) fn map_settings_request(
             start_minimized_to_tray: settings.platform.start_minimized_to_tray,
             keep_awake_while_active: settings.platform.keep_awake_while_active,
             action_after_done: map_view_completion_power_action_to_app(settings.platform.action_after_done),
+            watch_clipboard: settings.platform.watch_clipboard,
         },
         browser_bridge: ariadeck_settings::BrowserBridgeSettings {
             allow_cookies: settings.browser_bridge.allow_cookies,
