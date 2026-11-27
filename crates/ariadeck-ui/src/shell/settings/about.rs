@@ -3,7 +3,19 @@
 use super::*;
 
 impl SettingsPanelView {
+    #[cfg(test)]
     pub(crate) fn render_settings_about(&mut self, cx: &mut Context<Self>) -> Div {
+        let mut container = div().flex().flex_col().gap_4();
+        for (_, section) in self.render_settings_about_sections(cx) {
+            container = container.child(section);
+        }
+        container
+    }
+
+    pub(super) fn render_settings_about_sections(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Vec<(SettingsSectionId, Div)> {
         let colors = self.theme.colors;
         let app_title = self.t("settings-about-app");
         let name_label = self.t("settings-about-name");
@@ -187,11 +199,9 @@ impl SettingsPanelView {
             _ => div(),
         };
 
-        div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(
+        let mut sections = vec![
+            (
+                SettingsSectionId::AboutApp,
                 settings_section_owned(app_title, colors)
                     .child(settings_section_info_row_owned(
                         name_label, "AriaDeck", colors,
@@ -211,8 +221,9 @@ impl SettingsPanelView {
                         authors,
                         colors,
                     )),
-            )
-            .child(
+            ),
+            (
+                SettingsSectionId::AboutRuntime,
                 settings_section_owned(runtime_title, colors)
                     .child(settings_section_info_row_owned(
                         platform_label,
@@ -224,47 +235,52 @@ impl SettingsPanelView {
                         aria2_version,
                         colors,
                     )),
-            )
-            .when(self.update_enabled, |content| {
-                content.child(
-                    settings_section_owned(self.t("settings-update-title"), colors).child(
-                        settings_section_row_owned(
-                            self.t("settings-update-status"),
-                            Some(update_info),
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_2()
-                                .child(update_check_button)
-                                .child(update_actions)
-                                .child(update_details),
-                            colors,
-                        ),
+            ),
+        ];
+        if self.update_enabled {
+            sections.push((
+                SettingsSectionId::AboutUpdates,
+                settings_section_owned(self.t("settings-update-title"), colors).child(
+                    settings_section_row_owned(
+                        self.t("settings-update-status"),
+                        Some(update_info),
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(update_check_button)
+                            .child(update_actions)
+                            .child(update_details),
+                        colors,
                     ),
-                )
-            })
-            .child(
-                settings_section_owned(transfer_title, colors)
-                    .child(settings_section_row_owned(
-                        settings_export_label,
-                        Some(settings_export_description),
-                        settings_export_button,
-                        colors,
-                    ))
-                    .child(settings_section_row_owned(
-                        settings_import_label,
-                        Some(settings_import_description),
-                        settings_import_button,
-                        colors,
-                    )),
-            )
-            .child(settings_section_owned(diagnostics_title, colors).child(
-                settings_section_row_owned(
-                    diagnostics_label,
-                    Some(diagnostics_description),
-                    diagnostic_button,
-                    colors,
                 ),
-            ))
+            ));
+        }
+        sections.push((
+            SettingsSectionId::SettingsTransfer,
+            settings_section_owned(transfer_title, colors)
+                .child(settings_section_row_owned(
+                    settings_export_label,
+                    Some(settings_export_description),
+                    settings_export_button,
+                    colors,
+                ))
+                .child(settings_section_row_owned(
+                    settings_import_label,
+                    Some(settings_import_description),
+                    settings_import_button,
+                    colors,
+                )),
+        ));
+        sections.push((
+            SettingsSectionId::Diagnostics,
+            settings_section_owned(diagnostics_title, colors).child(settings_section_row_owned(
+                diagnostics_label,
+                Some(diagnostics_description),
+                diagnostic_button,
+                colors,
+            )),
+        ));
+        sections
     }
 }

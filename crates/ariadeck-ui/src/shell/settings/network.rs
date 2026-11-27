@@ -613,7 +613,10 @@ impl SettingsPanelView {
         cx.notify();
     }
 
-    pub(super) fn render_settings_network(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn render_settings_network_sections(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Vec<(SettingsSectionId, Div)> {
         let colors = self.theme.colors;
         let pending = self.is_pending();
         let (proxy_draft, _) = self.read_proxy_draft(cx);
@@ -819,13 +822,17 @@ impl SettingsPanelView {
                 },
             );
 
-        div()
-            .flex()
-            .flex_col()
-            .gap_6()
-            .child(proxy_section)
-            .child(self.render_header_presets_section(cx))
-            .child(self.render_mirror_rules_section(cx))
+        vec![
+            (SettingsSectionId::NetworkProxy, proxy_section),
+            (
+                SettingsSectionId::NetworkHeaderPresets,
+                self.render_header_presets_section(cx),
+            ),
+            (
+                SettingsSectionId::NetworkMirrors,
+                self.render_mirror_rules_section(cx),
+            ),
+        ]
     }
 
     fn render_header_presets_section(&mut self, cx: &mut Context<Self>) -> Div {

@@ -276,3 +276,124 @@ fn operation_error_codes_localize_in_chinese_without_english_fallback() {
         );
     }
 }
+
+#[test]
+fn tray_status_formats_title_multiline_tooltip_and_clamps_utf16_limit() {
+    use ariadeck_i18n::{LocaleId, Translator};
+
+    let translator = Translator::new(LocaleId::En);
+    let mut snapshot = WorkspaceSnapshot {
+        connection: ConnectionView::Connected,
+        download_rate: 2 * 1024 * 1024,
+        upload_rate: 512 * 1024,
+        counts: TaskCountsView {
+            all: 2,
+            active: 2,
+            ..TaskCountsView::default()
+        },
+        tasks: vec![
+            DownloadRowView {
+                identity: TaskIdentity {
+                    profile_id: "default".into(),
+                    gid: "a1".into(),
+                },
+                display_name: "ubuntu-24.04.1-desktop-amd64-very-long-release-filename-with-extra-checksum-suffix.iso".into(),
+                name_state: TaskNameStateView::Resolved,
+                source_kind: TaskSourceKindView::DirectUri,
+                primary_source: None,
+                directory: None,
+                category_id: None,
+                followed_by: Vec::new(),
+                belongs_to: None,
+                status: TaskStatusView::Active,
+                error: None,
+                total_bytes: 1_000_000,
+                completed_bytes: 500_000,
+                uploaded_bytes: 0,
+                download_rate: 2 * 1024 * 1024,
+                upload_rate: 0,
+                eta_seconds: Some(10),
+                observed_seeding_seconds: None,
+                revision: 1,
+            },
+            DownloadRowView {
+                identity: TaskIdentity {
+                    profile_id: "default".into(),
+                    gid: "a2".into(),
+                },
+                display_name: "seeding-pack".into(),
+                name_state: TaskNameStateView::Resolved,
+                source_kind: TaskSourceKindView::BitTorrent,
+                primary_source: None,
+                directory: None,
+                category_id: None,
+                followed_by: Vec::new(),
+                belongs_to: None,
+                status: TaskStatusView::Seeding,
+                error: None,
+                total_bytes: 1_000_000,
+                completed_bytes: 1_000_000,
+                uploaded_bytes: 200_000,
+                download_rate: 0,
+                upload_rate: 512 * 1024,
+                eta_seconds: None,
+                observed_seeding_seconds: Some(30),
+                revision: 1,
+            },
+        ],
+        ..WorkspaceSnapshot::default()
+    };
+
+    let status = snapshot.tray_status(&translator);
+    assert_eq!(status.active_transfers, 2);
+    assert_eq!(status.title.as_deref(), Some("↓ 2.0 MiB/s ↑ 512 KiB/s"));
+    assert!(status.tooltip.contains("2 active"));
+    assert!(status.tooltip.contains("↓ 2.0 MiB/s · ↑ 512 KiB/s"));
+    assert!(status.tooltip.contains("+1 more"));
+    assert!(
+        status.tooltip.encode_utf16().count() <= 127,
+        "Windows szTip must fit within 127 UTF-16 code units, got {}",
+        status.tooltip.encode_utf16().count()
+    );
+
+    snapshot.download_rate = 0;
+    snapshot.upload_rate = 0;
+    snapshot.counts.active = 0;
+    snapshot.tasks.clear();
+    let idle = snapshot.tray_status(&translator);
+    assert_eq!(idle.title, None);
+    assert!(idle.tooltip.contains("Idle"));
+
+    // Verify zh-CN localization, non-BMP emoji truncation, and download-only title.
+    let zh = Translator::new(LocaleId::ZhCn);
+    snapshot.counts.active = 1;
+    snapshot.download_rate = 1024 * 1024;
+    snapshot.tasks.push(DownloadRowView {
+        identity: TaskIdentity {
+            profile_id: "default".into(),
+            gid: "z1".into(),
+        },
+        display_name: "🚀".repeat(80),
+        name_state: TaskNameStateView::Resolved,
+        source_kind: TaskSourceKindView::DirectUri,
+        primary_source: None,
+        directory: None,
+        category_id: None,
+        followed_by: Vec::new(),
+        belongs_to: None,
+        status: TaskStatusView::Active,
+        error: None,
+        total_bytes: 1_000_000,
+        completed_bytes: 500_000,
+        uploaded_bytes: 0,
+        download_rate: 1024 * 1024,
+        upload_rate: 0,
+        eta_seconds: None,
+        observed_seeding_seconds: None,
+        revision: 1,
+    });
+    let zh_status = snapshot.tray_status(&zh);
+    assert_eq!(zh_status.title.as_deref(), Some("↓ 1.0 MiB/s"));
+    assert!(zh_status.tooltip.contains("1 活动"));
+    assert!(zh_status.tooltip.encode_utf16().count() <= 127);
+}

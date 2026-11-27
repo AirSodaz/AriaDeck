@@ -2170,3 +2170,125 @@ fn network_settings_reject_sensitive_headers_and_emit_network_rules_save(cx: &mu
         );
     });
 }
+
+#[test]
+fn settings_search_index_matches_en_zh_and_respects_update_flag() {
+    use super::super::settings::search_index::{
+        SettingsSectionId, search_settings, sections_for_category,
+    };
+    use ariadeck_i18n::{LocaleId, Translator};
+
+    let en = Translator::new(LocaleId::En);
+    let zh = Translator::new(LocaleId::ZhCn);
+
+    let cat_hits = search_settings("categories", &en, true);
+    assert!(cat_hits.iter().any(|hit| {
+        hit.category == SettingsCategory::General && hit.section == SettingsSectionId::Categories
+    }));
+
+    let update_hits = search_settings("updates", &en, true);
+    assert!(update_hits.iter().any(|hit| {
+        hit.category == SettingsCategory::About && hit.section == SettingsSectionId::AboutUpdates
+    }));
+    assert!(search_settings("updates", &en, false).is_empty());
+
+    let zh_proxy_hits = search_settings("代理", &zh, true);
+    assert!(zh_proxy_hits.iter().any(|hit| {
+        hit.category == SettingsCategory::Network && hit.section == SettingsSectionId::NetworkProxy
+    }));
+
+    assert_eq!(
+        sections_for_category(SettingsCategory::About, true).len(),
+        5
+    );
+    assert_eq!(
+        sections_for_category(SettingsCategory::About, false).len(),
+        4
+    );
+
+    // Ensure every key referenced by search_index resolves cleanly in En and ZhCn.
+    for key in super::super::settings::search_index::all_referenced_translation_keys() {
+        assert_ne!(en.t(key), key, "missing en translation for {key}");
+        assert_ne!(zh.t(key), key, "missing zh-CN translation for {key}");
+    }
+}
+
+#[gpui::test]
+fn settings_search_jumps_to_category_and_escape_clears_search_before_closing(
+    cx: &mut TestAppContext,
+) {
+    use super::super::settings::search_index::SettingsSectionId;
+
+    cx.update(crate::init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.open_settings(&OpenSettings, window, cx);
+        shell
+    });
+
+    let panel = view
+        .read_with(cx, |shell, _| shell.settings_panel().cloned())
+        .expect("settings panel open");
+
+    view.update_in(cx, |shell, window, cx| {
+        shell.focus_search(&FocusSearch, window, cx);
+    });
+    cx.run_until_parked();
+    let _ = cx.update(|window, cx| window.draw(cx));
+    cx.simulate_input("proxy");
+    cx.run_until_parked();
+
+    panel.read_with(cx, |panel, cx| {
+        assert_eq!(panel.search_input.read(cx).value(), "proxy");
+        assert_eq!(panel.search_query, "proxy");
+    });
+
+    // Pressing Escape clears the search query without closing Settings yet.
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    view.read_with(cx, |shell, _| {
+        assert_eq!(shell.page, AppPage::Settings);
+    });
+    panel.read_with(cx, |panel, cx| {
+        assert!(panel.search_query.is_empty());
+        assert!(panel.search_input.read(cx).value().is_empty());
+    });
+
+    // Type again and press Enter to jump to Network -> Proxy.
+    view.update_in(cx, |shell, window, cx| {
+        shell.focus_search(&FocusSearch, window, cx);
+    });
+    cx.run_until_parked();
+    let _ = cx.update(|window, cx| window.draw(cx));
+    cx.simulate_input("proxy");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+
+    panel.read_with(cx, |panel, _| {
+        assert_eq!(
+            panel.settings_page.active_category,
+            SettingsCategory::Network
+        );
+        assert_eq!(
+            panel.highlighted_section,
+            Some(SettingsSectionId::NetworkProxy)
+        );
+    });
+
+    // Clicking an anchor rail item updates active_anchor_section immediately.
+    panel.update_in(cx, |panel, _, cx| {
+        panel.scroll_to_section(SettingsSectionId::NetworkMirrors, cx);
+    });
+    let _ = cx.update(|window, cx| window.draw(cx));
+    panel.read_with(cx, |panel, _| {
+        let sections = super::super::settings::search_index::sections_for_category(
+            SettingsCategory::Network,
+            panel.update_enabled,
+        );
+        assert_eq!(
+            panel.active_anchor_section(&sections),
+            Some(SettingsSectionId::NetworkMirrors)
+        );
+    });
+}

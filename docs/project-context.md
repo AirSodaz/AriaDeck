@@ -124,7 +124,7 @@ Env knobs: see root `README.md` (`ARIADECK_RPC_*`).
 | D-026 | Profile exclusive lock; corrupt session → backup + notice |
 | D-028 | Multi-profile catalog; activate → restart. Catalog schema is v1 (same policy as settings: no historical in-tree migrations; previous-tag path only when a release needs it) |
 | D-029 | Core registry under `data/cores/aria2`; activate → restart |
-| D-030 | Tray + close-to-tray; OS notifications; low-disk warnings |
+| D-030 | Tray + close-to-tray + tray speed meter (B5: multi-line tooltip capped at 127 UTF-16 units, theme-adaptive monochrome icon + active badge on Windows, template icon + `set_title` on macOS/Linux); OS notifications; low-disk warnings |
 | D-031 | Theme System/Light/Dark; debounced window geometry |
 | D-032 | **SEC-001:** redact secrets in UI/clipboard/notices/Debug/diagnostics (`domain::privacy`) |
 | D-033 | **PERF-001:** tray → Background poll; virtualize; details coalesce ≥500ms; 10k stress |

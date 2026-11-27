@@ -72,7 +72,10 @@ impl AppShell {
 }
 
 impl SettingsPanelView {
-    pub(super) fn render_settings_general(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn render_settings_general_sections(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Vec<(SettingsSectionId, Div)> {
         let colors = self.theme.colors;
         let pending = self.is_pending();
         let draft_scheme = self.settings_page.draft_color_scheme;
@@ -134,25 +137,25 @@ impl SettingsPanelView {
         let theme_label = self.t("settings-theme");
         let language_label = self.t("settings-language");
         let language_desc = self.t("settings-language-description");
-        div()
-            .flex()
-            .flex_col()
-            .gap_6()
-            .child(
-                settings_section_owned(appearance_title, colors)
-                    .child(settings_section_row_owned(
-                        theme_label,
-                        None::<SharedString>,
-                        scheme_control,
-                        colors,
-                    ))
-                    .child(settings_section_row_owned(
-                        language_label,
-                        Some(language_desc),
-                        language_control,
-                        colors,
-                    )),
-            )
-            .child(self.render_settings_categories(cx))
+        let appearance_section = settings_section_owned(appearance_title, colors)
+            .child(settings_section_row_owned(
+                theme_label,
+                None::<SharedString>,
+                scheme_control,
+                colors,
+            ))
+            .child(settings_section_row_owned(
+                language_label,
+                Some(language_desc),
+                language_control,
+                colors,
+            ));
+        vec![
+            (SettingsSectionId::Appearance, appearance_section),
+            (
+                SettingsSectionId::Categories,
+                self.render_settings_categories(cx),
+            ),
+        ]
     }
 }

@@ -514,15 +514,73 @@ impl WorkspaceSnapshot {
         self.counts.active > 0
     }
 
-    /// Compact transfer summary for the system-tray tooltip (PLAT-001).
+    /// Rich tray speed-meter status for tooltips, macOS/Linux titles, and badge state (B5).
     #[must_use]
-    pub fn tray_tooltip(&self) -> String {
-        format!(
-            "AriaDeck · {} · ↓ {} · ↑ {}",
-            self.connection.label(),
+    pub fn tray_status(&self, translator: &ariadeck_i18n::Translator) -> TrayStatusView {
+        let active_transfers = self.counts.active;
+        let title = match (self.download_rate, self.upload_rate) {
+            (0, 0) => None,
+            (down, 0) => Some(format!("↓ {}", format_rate(down))),
+            (0, up) => Some(format!("↑ {}", format_rate(up))),
+            (down, up) => Some(format!("↓ {} ↑ {}", format_rate(down), format_rate(up))),
+        };
+        let status_label = translator.t(self.connection.message_key());
+        let header = if active_transfers > 0 {
+            translate_with_args(
+                translator,
+                "tray-tooltip-header-active",
+                &[
+                    (
+                        "status",
+                        ariadeck_i18n::FluentValue::from(status_label.as_str()),
+                    ),
+                    (
+                        "count",
+                        ariadeck_i18n::FluentValue::from(
+                            i64::try_from(active_transfers).unwrap_or(i64::MAX),
+                        ),
+                    ),
+                ],
+            )
+        } else {
+            translate_with_args(
+                translator,
+                "tray-tooltip-header-idle",
+                &[(
+                    "status",
+                    ariadeck_i18n::FluentValue::from(status_label.as_str()),
+                )],
+            )
+        };
+        let rates = format!(
+            "↓ {} · ↑ {}",
             format_rate(self.download_rate),
             format_rate(self.upload_rate),
-        )
+        );
+        let base_tooltip = format!("{header}\n{rates}");
+        let tooltip = format_tray_tooltip_with_top_task(
+            &base_tooltip,
+            self.top_active_task(),
+            active_transfers,
+            translator,
+        );
+        TrayStatusView {
+            tooltip,
+            title,
+            active_transfers,
+        }
+    }
+
+    fn top_active_task(&self) -> Option<&DownloadRowView> {
+        self.tasks
+            .iter()
+            .filter(|task| {
+                matches!(
+                    task.status,
+                    TaskStatusView::Active | TaskStatusView::Seeding | TaskStatusView::Verifying
+                )
+            })
+            .max_by_key(|task| task.download_rate.saturating_add(task.upload_rate))
     }
 
     #[must_use]
@@ -636,4 +694,105 @@ pub struct ActivityEntryView {
     pub detail: Option<String>,
     pub task: Option<TaskIdentity>,
     pub count: u32,
+}
+
+/// Snapshot-derived status payload for the desktop tray speed meter (B5).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrayStatusView {
+    pub tooltip: String,
+    pub title: Option<String>,
+    pub active_transfers: usize,
+}
+
+const MAX_TRAY_TOOLTIP_UTF16_UNITS: usize = 127;
+
+fn translate_with_args(
+    translator: &ariadeck_i18n::Translator,
+    id: &str,
+    pairs: &[(&str, ariadeck_i18n::FluentValue<'_>)],
+) -> String {
+    let mut args = ariadeck_i18n::FluentArgs::new();
+    for (key, value) in pairs {
+        args.set(*key, value.clone());
+    }
+    translator.t_args(id, Some(&args))
+}
+
+fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+fn truncate_utf16_with_ellipsis(text: &str, max_units: usize) -> String {
+    if utf16_len(text) <= max_units {
+        return text.to_owned();
+    }
+    if max_units <= 1 {
+        return if max_units == 1 {
+            "…".to_owned()
+        } else {
+            String::new()
+        };
+    }
+    let budget = max_units - 1;
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let len = ch.len_utf16();
+        if used + len > budget {
+            break;
+        }
+        out.push(ch);
+        used += len;
+    }
+    out.push('…');
+    out
+}
+
+fn format_tray_tooltip_with_top_task(
+    base_tooltip: &str,
+    top_task: Option<&DownloadRowView>,
+    active_transfers: usize,
+    translator: &ariadeck_i18n::Translator,
+) -> String {
+    let Some(task) = top_task else {
+        return truncate_utf16_with_ellipsis(base_tooltip, MAX_TRAY_TOOLTIP_UTF16_UNITS);
+    };
+    let name = if task.name_state.is_resolving() {
+        translator.t("task-name-resolving")
+    } else {
+        task.display_name.clone()
+    };
+    let rate = if task.status == TaskStatusView::Seeding
+        || (task.download_rate == 0 && task.upload_rate > 0)
+    {
+        format!("↑ {}", format_rate(task.upload_rate))
+    } else {
+        format!("↓ {}", format_rate(task.download_rate))
+    };
+    let more_suffix = if active_transfers > 1 {
+        format!(
+            " ({})",
+            translate_with_args(
+                translator,
+                "tray-tooltip-more",
+                &[(
+                    "count",
+                    ariadeck_i18n::FluentValue::from(
+                        i64::try_from(active_transfers - 1).unwrap_or(i64::MAX),
+                    ),
+                )],
+            )
+        )
+    } else {
+        String::new()
+    };
+    let fixed_suffix = format!(" · {rate}{more_suffix}");
+    let prefix = format!("{base_tooltip}\n");
+    let used_without_name = utf16_len(&prefix) + utf16_len(&fixed_suffix);
+    if used_without_name + 4 > MAX_TRAY_TOOLTIP_UTF16_UNITS {
+        return truncate_utf16_with_ellipsis(base_tooltip, MAX_TRAY_TOOLTIP_UTF16_UNITS);
+    }
+    let name_budget = MAX_TRAY_TOOLTIP_UTF16_UNITS - used_without_name;
+    let short_name = truncate_utf16_with_ellipsis(name.trim(), name_budget);
+    format!("{prefix}{short_name}{fixed_suffix}")
 }

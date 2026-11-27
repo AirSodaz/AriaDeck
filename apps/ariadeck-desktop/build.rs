@@ -38,10 +38,26 @@ fn main() {
     let opt = usvg::Options::default();
     let tree = usvg::Tree::from_data(&svg_data, &opt).expect("failed to parse icon.svg");
 
-    // ── Tray icon: 32×32 raw RGBA ─────────────────────────────────────────────
-    let tray_rgba = render_pixmap(&tree, 32, 32).data().to_vec();
-    fs::write(out_dir.join("tray_icon.rgba"), &tray_rgba)
-        .unwrap_or_else(|e| panic!("failed to write tray_icon.rgba: {e}"));
+    // ── Tray monochrome template silhouettes (straight RGBA for OS tray APIs) ─
+    for (filename, fill, bar_opacity) in [
+        ("tray_template_dark.rgba", "#FFFFFF", "0.78"),
+        ("tray_template_light.rgba", "#18181B", "0.78"),
+    ] {
+        let template_svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <g transform="translate(256 256) scale(1.32) translate(-256 -244)">
+    <path fill-rule="evenodd" fill="{fill}" d="M 256 76 L 416 298 L 96 298 Z M 256 168 L 168 298 L 344 298 Z"/>
+    <rect x="116" y="320" width="280" height="42" rx="21" fill="{fill}"/>
+    <rect x="156" y="378" width="200" height="42" rx="21" fill="{fill}" opacity="{bar_opacity}"/>
+  </g>
+</svg>"#
+        );
+        let template_tree = usvg::Tree::from_data(template_svg.as_bytes(), &opt)
+            .expect("failed to parse tray template svg");
+        let rgba = render_pixmap(&template_tree, 32, 32).take_demultiplied();
+        fs::write(out_dir.join(filename), &rgba)
+            .unwrap_or_else(|e| panic!("failed to write {filename}: {e}"));
+    }
 
     // ── Window icon: 128×128 raw RGBA (Linux/X11 WindowOptions::icon) ─────────
     let window_icon_rgba = render_pixmap(&tree, 128, 128).data().to_vec();

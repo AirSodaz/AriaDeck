@@ -337,3 +337,11 @@ settings-mirror-rule-name = 规则名称
 settings-mirror-rule-name-placeholder = 例如：GitHub Release 加速
 settings-mirror-rule-pattern = 匹配模式
 settings-mirror-rule-replacement = 镜像替换前缀/域名
+
+# 设置搜索与右侧快速锚点导航
+settings-search-placeholder = 搜索设置…
+settings-search-aria = 在全部分类中搜索设置项
+settings-search-clear = 清除设置搜索
+settings-search-empty = 未找到匹配的设置项。
+settings-anchors-title = 本页导航
+settings-anchors-aria = 跳转到当前页指定分区

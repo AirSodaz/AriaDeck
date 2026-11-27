@@ -341,7 +341,10 @@ impl SettingsPanelView {
         cx.notify();
     }
 
-    pub(super) fn render_settings_transfers(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn render_settings_transfers_sections(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Vec<(SettingsSectionId, Div)> {
         let colors = self.theme.colors;
         let pending = self.is_pending();
         let allocation_selected = FileAllocationView::all()
@@ -375,126 +378,126 @@ impl SettingsPanelView {
         });
         let draft_check_integrity = self.settings_page.draft_check_integrity;
         let integrity_panel = cx.entity().downgrade();
-        div()
-            .flex()
-            .flex_col()
-            .gap_6()
-            .child(
-                settings_section_owned(self.t("settings-speed-limits"), colors).child(
-                    div()
-                        .py_4()
-                        .max_w(px(760.0))
-                        .flex()
-                        .gap_3()
-                        .child(
-                            settings_labeled_input(
-                                self.t("settings-download-limit"),
-                                &self.settings_inputs.download_limit,
-                                colors,
-                            )
-                            .flex_1()
-                            .min_w_0(),
-                        )
-                        .child(
-                            settings_labeled_input(
-                                self.t("settings-upload-limit"),
-                                &self.settings_inputs.upload_limit,
-                                colors,
-                            )
-                            .flex_1()
-                            .min_w_0(),
-                        ),
+        let speed_section = settings_section_owned(self.t("settings-speed-limits"), colors).child(
+            div()
+                .py_4()
+                .max_w(px(760.0))
+                .flex()
+                .gap_3()
+                .child(
+                    settings_labeled_input(
+                        self.t("settings-download-limit"),
+                        &self.settings_inputs.download_limit,
+                        colors,
+                    )
+                    .flex_1()
+                    .min_w_0(),
+                )
+                .child(
+                    settings_labeled_input(
+                        self.t("settings-upload-limit"),
+                        &self.settings_inputs.upload_limit,
+                        colors,
+                    )
+                    .flex_1()
+                    .min_w_0(),
                 ),
-            )
+        );
+        let policy_section = settings_section_owned(self.t("settings-transfer-policy"), colors)
             .child(
-                settings_section_owned(self.t("settings-transfer-policy"), colors).child(
-                    div()
-                        .pt_4()
-                        .max_w(px(760.0))
-                        .flex()
-                        .flex_col()
-                        .gap_3()
-                        .child(
-                            div()
-                                .flex()
-                                .gap_3()
-                                .child(
-                                    settings_labeled_input(
-                                        self.t("settings-max-concurrent"),
-                                        &self.settings_inputs.max_concurrent,
-                                        colors,
-                                    )
-                                    .flex_1()
-                                    .min_w_0(),
+                div()
+                    .pt_4()
+                    .max_w(px(760.0))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .child(
+                                settings_labeled_input(
+                                    self.t("settings-max-concurrent"),
+                                    &self.settings_inputs.max_concurrent,
+                                    colors,
                                 )
-                                .child(
-                                    settings_labeled_input(
-                                        self.t("settings-connections-per-server"),
-                                        &self.settings_inputs.max_connection,
-                                        colors,
-                                    )
-                                    .flex_1()
-                                    .min_w_0(),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .gap_3()
-                                .child(
-                                    settings_labeled_input(
-                                        self.t("settings-split"),
-                                        &self.settings_inputs.split,
-                                        colors,
-                                    )
-                                    .flex_1()
-                                    .min_w_0(),
+                                .flex_1()
+                                .min_w_0(),
+                            )
+                            .child(
+                                settings_labeled_input(
+                                    self.t("settings-connections-per-server"),
+                                    &self.settings_inputs.max_connection,
+                                    colors,
                                 )
-                                .child(
-                                    settings_labeled_input(
-                                        self.t("settings-min-split-size"),
-                                        &self.settings_inputs.min_split_size,
-                                        colors,
-                                    )
-                                    .flex_1()
-                                    .min_w_0(),
-                                ),
-                        )
-                        .child(settings_section_row_owned(
-                            self.t("settings-file-allocation"),
-                            Some(self.t("settings-file-allocation-desc")),
-                            allocation_control,
-                            colors,
-                        ))
-                        .child(settings_section_row_owned(
-                            self.t("settings-integrity-check"),
-                            Some(self.t("settings-integrity-check-desc")),
-                            Switch::new("toggle-check-integrity")
-                                .checked(draft_check_integrity)
-                                .accessibility_label(if draft_check_integrity {
-                                    self.t("settings-integrity-check-disable")
-                                } else {
-                                    self.t("settings-integrity-check-enable")
-                                })
-                                .disabled(pending)
-                                .on_change(move |_, _, cx| {
-                                    integrity_panel
-                                        .update(cx, |panel, cx| {
-                                            panel.toggle_check_integrity(cx);
-                                        })
-                                        .ok();
-                                }),
-                            colors,
-                        ))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(colors.text_muted)
-                                .child(self.t("settings-transfer-policy-hint")),
-                        ),
-                ),
-            )
-            .child(self.render_settings_tracker_list(cx))
+                                .flex_1()
+                                .min_w_0(),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .child(
+                                settings_labeled_input(
+                                    self.t("settings-split"),
+                                    &self.settings_inputs.split,
+                                    colors,
+                                )
+                                .flex_1()
+                                .min_w_0(),
+                            )
+                            .child(
+                                settings_labeled_input(
+                                    self.t("settings-min-split-size"),
+                                    &self.settings_inputs.min_split_size,
+                                    colors,
+                                )
+                                .flex_1()
+                                .min_w_0(),
+                            ),
+                    )
+                    .child(settings_section_row_owned(
+                        self.t("settings-file-allocation"),
+                        Some(self.t("settings-file-allocation-desc")),
+                        allocation_control,
+                        colors,
+                    ))
+                    .child(settings_section_row_owned(
+                        self.t("settings-integrity-check"),
+                        Some(self.t("settings-integrity-check-desc")),
+                        Switch::new("toggle-check-integrity")
+                            .checked(draft_check_integrity)
+                            .accessibility_label(if draft_check_integrity {
+                                self.t("settings-integrity-check-disable")
+                            } else {
+                                self.t("settings-integrity-check-enable")
+                            })
+                            .disabled(pending)
+                            .on_change(move |_, _, cx| {
+                                integrity_panel
+                                    .update(cx, |panel, cx| {
+                                        panel.toggle_check_integrity(cx);
+                                    })
+                                    .ok();
+                            }),
+                        colors,
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(self.t("settings-transfer-policy-hint")),
+                    ),
+            );
+        vec![
+            (SettingsSectionId::SpeedLimits, speed_section),
+            (SettingsSectionId::TransferPolicy, policy_section),
+            (
+                SettingsSectionId::TrackerList,
+                self.render_settings_tracker_list(cx),
+            ),
+        ]
     }
 
     fn render_settings_tracker_list(&mut self, cx: &mut Context<Self>) -> Div {

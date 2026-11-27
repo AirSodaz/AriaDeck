@@ -133,6 +133,7 @@ impl AppShell {
         let task_count = self.snapshot.tasks.len();
         let selected_count = self.visible_selected_task_count();
         let hidden_selected_count = self.selected_tasks.len().saturating_sub(selected_count);
+        let marquee_overlay = self.active_marquee_overlay();
         let content = if task_count == 0 {
             self.render_empty_state(cx)
         } else {
@@ -146,6 +147,16 @@ impl AppShell {
                 .relative()
                 .size_full()
                 .overflow_hidden()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                        this.begin_marquee_selection(
+                            event.position,
+                            event.modifiers.secondary(cx),
+                            event.modifiers.shift,
+                        );
+                    }),
+                )
                 .child(
                     uniform_list(
                         "download-tasks",
@@ -166,6 +177,21 @@ impl AppShell {
                     .h_full()
                     .w_full(),
                 )
+                .when_some(marquee_overlay, |container, rect| {
+                    container.child(
+                        div()
+                            .id("marquee-selection-box")
+                            .absolute()
+                            .left(px(rect.left))
+                            .top(px(rect.top))
+                            .w(px(rect.width))
+                            .h(px(rect.height))
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(with_alpha(colors.accent, 0.78))
+                            .bg(with_alpha(colors.accent, 0.14)),
+                    )
+                })
                 .vertical_scrollbar(&self.list_scroll)
                 .into_any_element()
         };
@@ -1279,6 +1305,10 @@ impl AppShell {
                 )
             })
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                if this.marquee_consumed_click {
+                    this.marquee_consumed_click = false;
+                    return;
+                }
                 if !event.standard_click() {
                     return;
                 }

@@ -40,6 +40,9 @@ tray-show = Show AriaDeck
 tray-pause-all = Pause all
 tray-resume-all = Resume all
 tray-quit = Quit AriaDeck
+tray-tooltip-header-active = AriaDeck · { $status } · { $count } active
+tray-tooltip-header-idle = AriaDeck · { $status } · Idle
+tray-tooltip-more = +{ $count } more
 
 # Profiles
 notice-profile-select = Select a profile to activate.

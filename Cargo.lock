@@ -321,6 +321,7 @@ dependencies = [
  "tracing",
  "tray-icon",
  "url",
+ "winreg",
  "winres",
  "zip",
 ]

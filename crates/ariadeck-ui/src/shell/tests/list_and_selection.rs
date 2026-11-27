@@ -778,3 +778,138 @@ fn task_list_keyboard_navigation_supports_home_end_page_and_shift_range(cx: &mut
         );
     });
 }
+
+#[test]
+fn band_selector_geometry_and_modifiers_work_as_expected() {
+    use super::super::band_selector::{
+        band_row_range, compute_band_selection, edge_autoscroll_delta, marquee_overlay_geometry,
+    };
+    use gpui::{Bounds, size};
+
+    assert_eq!(band_row_range(10.0, 140.0, 64.0, 10), Some(0..=2));
+    // Dragging upward reverses coordinates cleanly.
+    assert_eq!(band_row_range(200.0, 70.0, 64.0, 10), Some(1..=3));
+    // Below all rows selects nothing.
+    assert_eq!(band_row_range(700.0, 800.0, 64.0, 10), None);
+    // Exact boundary at bottom of row 0 (64.0) does not leak into row 1.
+    assert_eq!(band_row_range(0.0, 64.0, 64.0, 10), Some(0..=0));
+
+    // Edge auto-scroll triggers near top and bottom, zero in center.
+    assert!(edge_autoscroll_delta(105.0, 100.0, 500.0) < 0.0);
+    assert_eq!(edge_autoscroll_delta(300.0, 100.0, 500.0), 0.0);
+    assert!(edge_autoscroll_delta(490.0, 100.0, 500.0) > 0.0);
+
+    // Overlay rect clamps to viewport bounds when scrolled.
+    let viewport = Bounds::new(Point::new(px(200.0), px(100.0)), size(px(600.0), px(400.0)));
+    let overlay = marquee_overlay_geometry(
+        Point::new(px(40.0), px(300.0)),
+        Point::new(px(350.0), px(550.0)),
+        viewport,
+        Point::new(px(0.0), px(-120.0)),
+    )
+    .expect("overlay");
+    assert_eq!(overlay.left, 40.0);
+    assert_eq!(overlay.top, 180.0);
+    assert_eq!(overlay.width, 110.0);
+    assert_eq!(overlay.height, 220.0);
+
+    // Modifier combinations: replace, Shift union, Ctrl symmetric toggle.
+    let rows = snapshot(5).tasks;
+    let base = HashSet::from([task(0).identity, task(2).identity]);
+    assert_eq!(
+        compute_band_selection(&rows, &base, Some(1..=2), false, false),
+        HashSet::from([task(1).identity, task(2).identity])
+    );
+    assert_eq!(
+        compute_band_selection(&rows, &base, Some(1..=2), false, true),
+        HashSet::from([task(0).identity, task(1).identity, task(2).identity])
+    );
+    assert_eq!(
+        compute_band_selection(&rows, &base, Some(1..=2), true, false),
+        HashSet::from([task(0).identity, task(1).identity])
+    );
+}
+
+#[gpui::test]
+fn marquee_drag_updates_selection_and_empty_click_clears_selection(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut shell = AppShell::new(Theme::dark(), window, cx);
+        shell.snapshot = snapshot(6);
+        shell
+    });
+    cx.run_until_parked();
+    let _ = cx.update(|window, cx| window.draw(cx));
+
+    let viewport = view.read_with(cx, |shell, _| shell.list_viewport_bounds());
+    assert!(viewport.size.width > px(0.0) && viewport.size.height > px(0.0));
+
+    // Real GPUI mouse drag from row 1 into row 3 (> 5px drag threshold).
+    let start = Point::new(viewport.origin.x + px(120.0), viewport.origin.y + px(80.0));
+    let end = Point::new(viewport.origin.x + px(180.0), viewport.origin.y + px(210.0));
+    cx.simulate_mouse_down(start, gpui::MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), Default::default());
+    cx.simulate_mouse_up(end, gpui::MouseButton::Left, Default::default());
+    cx.run_until_parked();
+
+    view.read_with(cx, |shell, _| {
+        assert_eq!(
+            shell.selected_tasks,
+            HashSet::from([task(1).identity, task(2).identity, task(3).identity])
+        );
+        assert_eq!(shell.range_anchor, Some(task(1).identity));
+        assert_eq!(shell.selected, Some(task(3).identity));
+        assert!(!shell.marquee_consumed_click);
+    });
+
+    // Upward drag from row 4 to row 2 sets anchor at start (row 4) and focus at end (row 2).
+    let up_start = Point::new(viewport.origin.x + px(120.0), viewport.origin.y + px(270.0));
+    let up_end = Point::new(viewport.origin.x + px(180.0), viewport.origin.y + px(140.0));
+    cx.simulate_mouse_down(up_start, gpui::MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(up_end, Some(gpui::MouseButton::Left), Default::default());
+    cx.simulate_mouse_up(up_end, gpui::MouseButton::Left, Default::default());
+    cx.run_until_parked();
+    view.read_with(cx, |shell, _| {
+        assert_eq!(
+            shell.selected_tasks,
+            HashSet::from([task(2).identity, task(3).identity, task(4).identity])
+        );
+        assert_eq!(shell.range_anchor, Some(task(4).identity));
+        assert_eq!(shell.selected, Some(task(2).identity));
+    });
+
+    // Dragging exclusively across empty space below all rows clears both selected_tasks and selected.
+    let empty_a = Point::new(
+        viewport.origin.x + px(120.0),
+        viewport.origin.y + px(6.0 * super::super::TASK_ROW_HEIGHT + 16.0),
+    );
+    let empty_b = Point::new(
+        viewport.origin.x + px(180.0),
+        viewport.origin.y + px(6.0 * super::super::TASK_ROW_HEIGHT + 44.0),
+    );
+    cx.simulate_mouse_down(empty_a, gpui::MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(empty_b, Some(gpui::MouseButton::Left), Default::default());
+    cx.simulate_mouse_up(empty_b, gpui::MouseButton::Left, Default::default());
+    cx.run_until_parked();
+    view.read_with(cx, |shell, _| {
+        assert!(shell.selected_tasks.is_empty());
+        assert!(shell.selected.is_none());
+        assert!(shell.range_anchor.is_none());
+    });
+
+    // Short click (< 5px) on row 0 still triggers normal row click selection.
+    let row0 = Point::new(viewport.origin.x + px(120.0), viewport.origin.y + px(20.0));
+    cx.simulate_click(row0, Default::default());
+    cx.run_until_parked();
+    view.read_with(cx, |shell, _| {
+        assert_eq!(shell.selected_tasks, HashSet::from([task(0).identity]));
+        assert_eq!(shell.selected, Some(task(0).identity));
+    });
+
+    // Short click in empty space below row 5 clears selection.
+    cx.simulate_click(empty_a, Default::default());
+    cx.run_until_parked();
+    view.read_with(cx, |shell, _| {
+        assert!(shell.selected_tasks.is_empty());
+        assert!(shell.selected.is_none());
+    });
+}

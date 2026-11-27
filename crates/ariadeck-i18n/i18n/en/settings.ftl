@@ -337,3 +337,11 @@ settings-mirror-rule-name = Rule name
 settings-mirror-rule-name-placeholder = e.g. GitHub Release Mirror
 settings-mirror-rule-pattern = Match pattern
 settings-mirror-rule-replacement = Mirror replacement
+
+# Settings search & anchor navigation
+settings-search-placeholder = Search settings…
+settings-search-aria = Search settings across all categories
+settings-search-clear = Clear settings search
+settings-search-empty = No matching settings found.
+settings-anchors-title = On this page
+settings-anchors-aria = Jump to section on this page

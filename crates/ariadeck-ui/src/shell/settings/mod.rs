@@ -9,9 +9,14 @@ mod engine;
 mod general;
 mod network;
 mod profiles;
+pub(crate) mod search_index;
 mod system;
 mod transfers;
 mod updates;
+
+use search_index::{
+    SettingsSectionId, SettingsSectionMeta, search_settings, sections_for_category,
+};
 
 pub(super) enum SettingsPanelEvent {
     Close,
@@ -61,6 +66,14 @@ pub(crate) struct SettingsPanelView {
     pub(crate) pending_tracker_refresh: bool,
     pub(crate) settings_page: SettingsPage,
     pub(crate) settings_inputs: SettingsInputs,
+    pub(crate) search_input: Entity<InputState>,
+    pub(crate) search_query: String,
+    pub(crate) highlighted_section: Option<SettingsSectionId>,
+    pub(crate) pending_scroll_section: Option<SettingsSectionId>,
+    pub(crate) active_anchor_override: Option<SettingsSectionId>,
+    anchor_override_settled: Option<gpui::Point<Pixels>>,
+    anchor_scroll_pending: bool,
+    highlight_generation: u64,
     pub(crate) settings_scroll: ScrollHandle,
     pub(crate) core_setup_panel: Entity<CoreSetupPanelView>,
     focus_handle: FocusHandle,
@@ -209,6 +222,12 @@ impl SettingsPanelView {
             window,
             cx,
         );
+        let search_input = make_input(
+            translator.t("settings-search-placeholder").into(),
+            false,
+            window,
+            cx,
+        );
 
         let mut input_subs = [
             &directory,
@@ -275,6 +294,34 @@ impl SettingsPanelView {
                     if changed {
                         cx.notify();
                     }
+                }
+            },
+        ));
+        input_subs.push(cx.subscribe_in(
+            &search_input,
+            window,
+            |this: &mut Self, input, event: &InputEvent, window, cx| {
+                match event {
+                    InputEvent::Change => {
+                        let next = input.read(cx).value().to_string();
+                        if this.search_query != next {
+                            this.search_query = next;
+                            cx.notify();
+                        }
+                    }
+                    InputEvent::PressEnter { .. } => {
+                        if let Some(hit) = search_settings(
+                            &this.search_query,
+                            &this.translator,
+                            this.update_enabled,
+                        )
+                        .into_iter()
+                        .next()
+                        {
+                            this.jump_to_section(hit.category, hit.section, window, cx);
+                        }
+                    }
+                    _ => {}
                 }
             },
         ));
@@ -397,6 +444,14 @@ impl SettingsPanelView {
                 mirror_rule_pattern,
                 mirror_rule_replacement,
             },
+            search_input,
+            search_query: String::new(),
+            highlighted_section: None,
+            pending_scroll_section: None,
+            active_anchor_override: None,
+            anchor_override_settled: None,
+            anchor_scroll_pending: false,
+            highlight_generation: 0,
             settings_scroll: ScrollHandle::new(),
             core_setup_panel,
             focus_handle: cx.focus_handle(),
@@ -472,7 +527,7 @@ impl SettingsPanelView {
     }
 
     pub(super) fn refresh_placeholders(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let localized_inputs: [(&Entity<InputState>, &'static str); 8] = [
+        let localized_inputs: [(&Entity<InputState>, &'static str); 9] = [
             (
                 &self.settings_inputs.profile_name,
                 "settings-profile-name-placeholder",
@@ -505,6 +560,7 @@ impl SettingsPanelView {
                 &self.settings_inputs.category_name,
                 "settings-category-name-placeholder",
             ),
+            (&self.search_input, "settings-search-placeholder"),
         ];
         for (entity, key) in localized_inputs {
             let placeholder = self.t(key);
@@ -647,8 +703,68 @@ impl SettingsPanelView {
         if self.settings_page.active_category != category {
             self.settings_page.active_category = category;
             self.settings_scroll.set_offset(gpui::Point::default());
+            self.highlighted_section = None;
+            self.pending_scroll_section = None;
+            self.active_anchor_override = None;
+            self.anchor_override_settled = None;
+            self.anchor_scroll_pending = false;
             cx.notify();
         }
+    }
+
+    pub(crate) fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.search_input.focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    pub(crate) fn clear_settings_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_query.clear();
+        self.search_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn jump_to_section(
+        &mut self,
+        category: SettingsCategory,
+        section: SettingsSectionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings_page.active_category = category;
+        self.pending_scroll_section = Some(section);
+        self.active_anchor_override = Some(section);
+        self.anchor_override_settled = None;
+        self.anchor_scroll_pending = true;
+        self.highlighted_section = Some(section);
+        self.highlight_generation = self.highlight_generation.wrapping_add(1);
+        let generation = self.highlight_generation;
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1800))
+                .await;
+            let _ = this.update_in(cx, |panel, _, cx| {
+                if panel.highlight_generation == generation
+                    && panel.highlighted_section == Some(section)
+                {
+                    panel.highlighted_section = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn scroll_to_section(&mut self, section: SettingsSectionId, cx: &mut Context<Self>) {
+        self.pending_scroll_section = Some(section);
+        self.active_anchor_override = Some(section);
+        self.anchor_override_settled = None;
+        self.anchor_scroll_pending = true;
+        self.highlighted_section = None;
+        cx.notify();
     }
 
     pub(crate) fn submit_active_settings_category(&mut self, cx: &mut Context<Self>) {
@@ -845,100 +961,372 @@ impl SettingsPanelView {
             )
     }
 
-    fn render_settings_nav(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn render_settings_nav(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let colors = self.theme.colors;
         let active = self.settings_page.active_category;
-        let mut nav = div()
+        let query = self.search_query.trim().to_owned();
+        let has_query = !query.is_empty();
+
+        let search_bar = div()
+            .id("settings-search-box")
+            .px_2p5()
+            .pb_3()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(
+                div().flex_1().min_w_0().child(
+                    Input::new(&self.search_input).small().prefix(
+                        Icon::new(IconName::Search)
+                            .size(IconSize::XSmall)
+                            .color(colors.text_muted),
+                    ),
+                ),
+            )
+            .when(has_query, |bar| {
+                bar.child(
+                    KitButton::new("clear-settings-search")
+                        .ghost()
+                        .small()
+                        .compact()
+                        .icon(gpui_kit::component::Icon::new(IconName::X))
+                        .accessibility_label(self.t("settings-search-clear"))
+                        .tooltip(self.t("settings-search-clear"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.clear_settings_search(window, cx);
+                        })),
+                )
+            });
+
+        let mut list = div()
             .id("settings-category-list")
-            .w(px(168.0))
-            .flex_none()
+            .flex_1()
             .min_h_0()
             .overflow_y_scroll()
+            .flex()
+            .flex_col();
+
+        if has_query {
+            let hits = search_settings(&query, &self.translator, self.update_enabled);
+            if hits.is_empty() {
+                list = list.child(
+                    div()
+                        .id("settings-search-empty")
+                        .px_3()
+                        .py_4()
+                        .text_xs()
+                        .text_color(colors.text_muted)
+                        .child(self.t("settings-search-empty")),
+                );
+            } else {
+                list = list
+                    .role(Role::List)
+                    .aria_label(self.t("settings-search-aria"));
+                for (idx, hit) in hits.into_iter().enumerate() {
+                    let target_cat = hit.category;
+                    let target_sec = hit.section;
+                    let is_current =
+                        target_cat == active && self.highlighted_section == Some(target_sec);
+                    let subtitle = format!("{} · {}", hit.category_title, hit.section_title);
+                    let hit_aria = format!("{}, {}", hit.label, subtitle);
+                    list = list.child(
+                        div()
+                            .id(("settings-search-hit", idx))
+                            .role(Role::ListItem)
+                            .aria_label(hit_aria)
+                            .focusable()
+                            .tab_stop(true)
+                            .border_1()
+                            .border_color(gpui::transparent_black())
+                            .focus_visible(|style| style.border_color(colors.focus_ring))
+                            .mx_2()
+                            .mb_1()
+                            .px_2p5()
+                            .py_1p5()
+                            .rounded_md()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .bg(if is_current {
+                                with_alpha(colors.accent, 0.12)
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .hover(|style| style.bg(colors.surface_hover))
+                            .active(|style| style.bg(colors.surface_active))
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                    if is_activation_key(event) {
+                                        cx.stop_propagation();
+                                        this.jump_to_section(target_cat, target_sec, window, cx);
+                                    }
+                                },
+                            ))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.jump_to_section(target_cat, target_sec, window, cx);
+                            }))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(colors.text_primary)
+                                    .truncate()
+                                    .child(hit.label),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(colors.text_muted)
+                                    .truncate()
+                                    .child(subtitle),
+                            ),
+                    );
+                }
+            }
+        } else {
+            list = list
+                .role(Role::TabList)
+                .aria_label(self.t("settings-nav-aria"));
+            for (index, category) in SettingsCategory::ALL.into_iter().enumerate() {
+                let is_active = category == active;
+                let prev_index =
+                    (index + SettingsCategory::ALL.len() - 1) % SettingsCategory::ALL.len();
+                let next_index = (index + 1) % SettingsCategory::ALL.len();
+                let item =
+                    div()
+                        .id(SharedString::from(format!("nav-{}", category.label())))
+                        .role(Role::Tab)
+                        .aria_label(self.t(category.message_key()))
+                        .aria_selected(is_active)
+                        .track_focus(&self.nav_focus_handles[index])
+                        .tab_stop(is_active)
+                        .border_1()
+                        .border_color(gpui::transparent_black())
+                        .focus_visible(|style| style.border_color(colors.focus_ring))
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .mx_2()
+                        .px_2p5()
+                        .py_2()
+                        .rounded_md()
+                        .text_sm()
+                        .text_color(if is_active {
+                            colors.text_primary
+                        } else {
+                            colors.text_secondary
+                        })
+                        .when(is_active, |el| {
+                            el.font_weight(FontWeight::MEDIUM)
+                                .bg(with_alpha(colors.accent, 0.12))
+                        })
+                        .when(!is_active, |el| {
+                            el.hover(|style| style.bg(colors.surface_hover))
+                                .active(|style| style.bg(colors.surface_active))
+                        })
+                        .child(Icon::new(category.icon()).size(IconSize::Small).color(
+                            if is_active {
+                                colors.accent
+                            } else {
+                                colors.text_secondary
+                            },
+                        ))
+                        .child(div().child(self.t(category.message_key())))
+                        .on_key_down(cx.listener(
+                            move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                if is_activation_key(event) {
+                                    cx.stop_propagation();
+                                    this.select_settings_category(category, cx);
+                                } else {
+                                    let target_index = match event.keystroke.key.as_str() {
+                                        "up" => Some(prev_index),
+                                        "down" => Some(next_index),
+                                        "home" => Some(0),
+                                        "end" => Some(SettingsCategory::ALL.len() - 1),
+                                        _ => None,
+                                    };
+                                    if let Some(target_index) = target_index {
+                                        cx.stop_propagation();
+                                        this.select_settings_category(
+                                            SettingsCategory::ALL[target_index],
+                                            cx,
+                                        );
+                                        window.focus(&this.nav_focus_handles[target_index], cx);
+                                    }
+                                }
+                            },
+                        ))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.select_settings_category(category, cx);
+                            window.focus(&this.nav_focus_handles[index], cx);
+                        }));
+                list = list.child(item);
+            }
+        }
+
+        let _ = window;
+        div()
+            .id("settings-nav-sidebar")
+            .w(px(212.0))
+            .flex_none()
+            .min_h_0()
             .flex()
             .flex_col()
             .border_r_1()
             .border_color(colors.border)
             .bg(colors.background)
-            .py_4()
-            .role(Role::TabList)
-            .aria_label(self.t("settings-nav-aria"));
-        for (index, category) in SettingsCategory::ALL.into_iter().enumerate() {
-            let is_active = category == active;
-            let prev_index =
-                (index + SettingsCategory::ALL.len() - 1) % SettingsCategory::ALL.len();
-            let next_index = (index + 1) % SettingsCategory::ALL.len();
-            let item = div()
-                .id(SharedString::from(format!("nav-{}", category.label())))
-                .role(Role::Tab)
-                .aria_label(self.t(category.message_key()))
-                .aria_selected(is_active)
-                .track_focus(&self.nav_focus_handles[index])
-                .tab_stop(is_active)
-                .border_1()
-                .border_color(gpui::transparent_black())
-                .focus_visible(|style| style.border_color(colors.focus_ring))
-                .flex()
-                .items_center()
-                .gap_3()
-                .mx_2()
-                .px_2p5()
-                .py_2()
-                .rounded_md()
-                .text_sm()
-                .text_color(if is_active {
-                    colors.text_primary
-                } else {
-                    colors.text_secondary
-                })
-                .when(is_active, |el| {
-                    el.font_weight(FontWeight::MEDIUM)
-                        .bg(with_alpha(colors.accent, 0.12))
-                })
-                .when(!is_active, |el| {
-                    el.hover(|style| style.bg(colors.surface_hover))
-                        .active(|style| style.bg(colors.surface_active))
-                })
-                .child(
-                    Icon::new(category.icon())
-                        .size(IconSize::Small)
-                        .color(if is_active {
-                            colors.accent
-                        } else {
-                            colors.text_secondary
-                        }),
-                )
-                .child(div().child(self.t(category.message_key())))
-                .on_key_down(
-                    cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+            .py_3()
+            .child(search_bar)
+            .child(list)
+    }
+
+    fn render_active_sections(&mut self, cx: &mut Context<Self>) -> Vec<(SettingsSectionId, Div)> {
+        match self.settings_page.active_category {
+            SettingsCategory::General => self.render_settings_general_sections(cx),
+            SettingsCategory::Profiles => {
+                vec![(
+                    SettingsSectionId::ProfilesList,
+                    self.render_settings_profiles(cx),
+                )]
+            }
+            SettingsCategory::Engine => {
+                vec![(
+                    SettingsSectionId::EngineCores,
+                    self.render_settings_engine(cx),
+                )]
+            }
+            SettingsCategory::Network => self.render_settings_network_sections(cx),
+            SettingsCategory::Transfers => self.render_settings_transfers_sections(cx),
+            SettingsCategory::Notifications => {
+                vec![(
+                    SettingsSectionId::NotificationsMain,
+                    self.render_settings_notifications(cx),
+                )]
+            }
+            SettingsCategory::System => self.render_settings_system_sections(cx),
+            SettingsCategory::About => self.render_settings_about_sections(cx),
+        }
+    }
+
+    pub(crate) fn active_anchor_section(
+        &self,
+        sections: &[SettingsSectionMeta],
+    ) -> Option<SettingsSectionId> {
+        if let Some(highlighted) = self.highlighted_section
+            && sections.iter().any(|meta| meta.id == highlighted)
+        {
+            return Some(highlighted);
+        }
+        if let Some(override_id) = self.active_anchor_override
+            && sections.iter().any(|meta| meta.id == override_id)
+        {
+            return Some(override_id);
+        }
+        let viewport = self.settings_scroll.bounds();
+        let offset = self.settings_scroll.offset();
+        let max_y = self.settings_scroll.max_offset().y;
+        if max_y > px(0.0) && offset.y <= -max_y + px(2.0) {
+            return sections.last().map(|meta| meta.id);
+        }
+        let scroll_top = viewport.top() - offset.y + px(28.0);
+        let mut active = sections.first().map(|meta| meta.id);
+        for meta in sections {
+            if let Some(bounds) = self.settings_scroll.bounds_for_item(meta.scroll_index)
+                && bounds.top() <= scroll_top
+            {
+                active = Some(meta.id);
+            }
+        }
+        active
+    }
+
+    fn render_settings_anchor_rail(
+        &self,
+        sections: &[SettingsSectionMeta],
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let colors = self.theme.colors;
+        let active_id = self.active_anchor_section(sections);
+        let mut rail = div()
+            .id("settings-anchor-rail")
+            .w(px(164.0))
+            .flex_none()
+            .px_3()
+            .py_6()
+            .border_l_1()
+            .border_color(colors.border)
+            .flex()
+            .flex_col()
+            .gap_1()
+            .role(Role::Navigation)
+            .aria_label(self.t("settings-anchors-aria"))
+            .child(
+                div()
+                    .px_2()
+                    .pb_1()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(colors.text_muted)
+                    .child(self.t("settings-anchors-title")),
+            );
+
+        for meta in sections {
+            let section_id = meta.id;
+            let is_active = active_id == Some(section_id);
+            let title = self.t(meta.title_key);
+            rail = rail.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "settings-anchor-{section_id:?}"
+                    )))
+                    .role(Role::Button)
+                    .aria_label(title.clone())
+                    .aria_selected(is_active)
+                    .focusable()
+                    .tab_stop(true)
+                    .border_1()
+                    .border_color(gpui::transparent_black())
+                    .focus_visible(|style| style.border_color(colors.focus_ring))
+                    .px_2()
+                    .py_1p5()
+                    .rounded_sm()
+                    .border_l_2()
+                    .border_color(if is_active {
+                        colors.accent
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .bg(if is_active {
+                        with_alpha(colors.accent, 0.08)
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .text_xs()
+                    .text_color(if is_active {
+                        colors.text_primary
+                    } else {
+                        colors.text_secondary
+                    })
+                    .when(is_active, |el| el.font_weight(FontWeight::MEDIUM))
+                    .hover(|style| style.bg(colors.surface_hover))
+                    .active(|style| style.bg(colors.surface_active))
+                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
                         if is_activation_key(event) {
                             cx.stop_propagation();
-                            this.select_settings_category(category, cx);
-                        } else {
-                            let target_index = match event.keystroke.key.as_str() {
-                                "up" => Some(prev_index),
-                                "down" => Some(next_index),
-                                "home" => Some(0),
-                                "end" => Some(SettingsCategory::ALL.len() - 1),
-                                _ => None,
-                            };
-                            if let Some(target_index) = target_index {
-                                cx.stop_propagation();
-                                this.select_settings_category(
-                                    SettingsCategory::ALL[target_index],
-                                    cx,
-                                );
-                                window.focus(&this.nav_focus_handles[target_index], cx);
-                            }
+                            this.scroll_to_section(section_id, cx);
                         }
-                    }),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.select_settings_category(category, cx);
-                    window.focus(&this.nav_focus_handles[index], cx);
-                }));
-            nav = nav.child(item);
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.scroll_to_section(section_id, cx);
+                    }))
+                    .child(div().truncate().child(title)),
+            );
         }
-        nav
+        rail
     }
 
     pub(crate) fn render_settings_footer(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -1059,40 +1447,90 @@ impl SettingsPanelView {
 }
 
 impl Render for SettingsPanelView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = self.theme.colors;
         let active_category = self.settings_page.active_category;
         let reduced_motion = crate::accessibility::is_reduced_motion(cx);
-        let category_body = animate_fade_settle(
+        let section_metas = sections_for_category(active_category, self.update_enabled);
+        if let Some(target_section) = self.pending_scroll_section.take()
+            && let Some(meta) = section_metas.iter().find(|meta| meta.id == target_section)
+        {
+            self.settings_scroll
+                .scroll_to_top_of_item(meta.scroll_index);
+            self.anchor_scroll_pending = true;
+        } else if self.anchor_scroll_pending {
+            self.anchor_override_settled = Some(self.settings_scroll.offset());
+            self.anchor_scroll_pending = false;
+        } else if let Some(settled) = self.anchor_override_settled
+            && (self.settings_scroll.offset().y - settled.y).abs() > px(1.0)
+        {
+            self.active_anchor_override = None;
+            self.anchor_override_settled = None;
+        }
+        let sections = self.render_active_sections(cx);
+        let section_count = sections.len();
+        let highlighted_section = self.highlighted_section;
+        let mut scroll_container = div()
+            .id("settings-scroll")
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .px_6()
+            .py_6()
+            .overflow_y_scroll()
+            .track_scroll(&self.settings_scroll)
+            .on_scroll(cx.listener(|this, _, _, _| {
+                this.active_anchor_override = None;
+                this.anchor_override_settled = None;
+                this.anchor_scroll_pending = false;
+            }));
+        for (idx, (section_id, section_div)) in sections.into_iter().enumerate() {
+            let is_last = idx + 1 == section_count;
+            let is_highlighted = highlighted_section == Some(section_id);
+            scroll_container = scroll_container.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "settings-section-{section_id:?}"
+                    )))
+                    .w_full()
+                    .max_w(px(760.0))
+                    .when(!is_last, |el| el.mb_6())
+                    .when(is_highlighted, |el| {
+                        el.pl_3()
+                            .border_l_2()
+                            .border_color(colors.accent)
+                            .bg(with_alpha(colors.accent, 0.06))
+                            .rounded_r_md()
+                    })
+                    .child(section_div),
+            );
+        }
+
+        let show_anchor_rail =
+            section_metas.len() >= 2 && f32::from(window.viewport_size().width) >= 980.0;
+        let category_content = animate_fade_settle(
             div()
                 .id(SharedString::from(format!(
                     "settings-category-{}",
                     active_category.as_str()
                 )))
-                .w_full()
-                .max_w(px(760.0))
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
                 .flex()
-                .flex_col()
-                .gap_6()
-                .child(match active_category {
-                    SettingsCategory::General => {
-                        self.render_settings_general(cx).into_any_element()
-                    }
-                    SettingsCategory::Profiles => {
-                        self.render_settings_profiles(cx).into_any_element()
-                    }
-                    SettingsCategory::Engine => self.render_settings_engine(cx).into_any_element(),
-                    SettingsCategory::Network => {
-                        self.render_settings_network(cx).into_any_element()
-                    }
-                    SettingsCategory::Transfers => {
-                        self.render_settings_transfers(cx).into_any_element()
-                    }
-                    SettingsCategory::Notifications => {
-                        self.render_settings_notifications(cx).into_any_element()
-                    }
-                    SettingsCategory::System => self.render_settings_system(cx).into_any_element(),
-                    SettingsCategory::About => self.render_settings_about(cx).into_any_element(),
+                .child(
+                    div()
+                        .id("settings-scroll-shell")
+                        .relative()
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .overflow_hidden()
+                        .child(scroll_container)
+                        .vertical_scrollbar(&self.settings_scroll),
+                )
+                .when(show_anchor_rail, |row| {
+                    row.child(self.render_settings_anchor_rail(&section_metas, cx))
                 }),
             SharedString::from(format!(
                 "settings-category-enter:{}",
@@ -1106,8 +1544,15 @@ impl Render for SettingsPanelView {
             .id("settings-page")
             .key_context("SettingsPage")
             .track_focus(&self.focus_handle)
-            .on_action(cx.listener(|_this, _: &CloseSettings, _window, cx| {
-                cx.emit(SettingsPanelEvent::Close);
+            .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
+                this.focus_search(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CloseSettings, window, cx| {
+                if !this.search_query.is_empty() {
+                    this.clear_settings_search(window, cx);
+                } else {
+                    cx.emit(SettingsPanelEvent::Close);
+                }
             }))
             .on_action(cx.listener(|this, _: &SaveSettings, _window, cx| {
                 this.submit_active_settings_category(cx);
@@ -1145,7 +1590,7 @@ impl Render for SettingsPanelView {
                     .min_w_0()
                     .min_h_0()
                     .flex()
-                    .child(self.render_settings_nav(cx))
+                    .child(self.render_settings_nav(window, cx))
                     .child(
                         div()
                             .flex_1()
@@ -1153,28 +1598,7 @@ impl Render for SettingsPanelView {
                             .min_h_0()
                             .flex()
                             .flex_col()
-                            .child(
-                                div()
-                                    .id("settings-scroll-shell")
-                                    .relative()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .min_h_0()
-                                    .overflow_hidden()
-                                    .child(
-                                        div()
-                                            .id("settings-scroll")
-                                            .size_full()
-                                            .min_w_0()
-                                            .min_h_0()
-                                            .px_6()
-                                            .py_6()
-                                            .overflow_y_scroll()
-                                            .track_scroll(&self.settings_scroll)
-                                            .child(category_body),
-                                    )
-                                    .vertical_scrollbar(&self.settings_scroll),
-                            )
+                            .child(category_content)
                             .child(self.render_settings_footer(cx)),
                     ),
                 "settings-page-enter",
@@ -1442,6 +1866,7 @@ impl AppShell {
         if self.active_modal.is_some() {
             return;
         }
+        self.cancel_marquee_selection();
         let previous_focus = window.focused(cx).map(|focus| focus.downgrade());
         let settings = self.settings.clone();
         let core_setup = self.core_setup.clone();

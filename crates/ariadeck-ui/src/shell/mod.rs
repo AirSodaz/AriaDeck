@@ -95,6 +95,7 @@ use crate::{TaskPeerView, TaskServerView, TaskTrackerView, TaskUriView};
 use gpui::Point;
 
 mod activity;
+mod band_selector;
 mod chrome;
 mod commands;
 mod core_setup;
@@ -663,6 +664,8 @@ pub struct AppShell {
     selected: Option<TaskIdentity>,
     selected_tasks: HashSet<TaskIdentity>,
     range_anchor: Option<TaskIdentity>,
+    marquee: Option<band_selector::MarqueeSelectionState>,
+    marquee_consumed_click: bool,
     search_input: Entity<InputState>,
     active_modal: Option<ActiveModal>,
     active_kit_modal: Option<ModalKind>,
@@ -817,6 +820,8 @@ impl AppShell {
             selected: None,
             selected_tasks: HashSet::new(),
             range_anchor: None,
+            marquee: None,
+            marquee_consumed_click: false,
             search_input,
             active_modal: None,
             active_kit_modal: None,
@@ -962,8 +967,7 @@ impl AppShell {
 
         if profile_changed {
             self.selected = None;
-            self.selected_tasks.clear();
-            self.range_anchor = None;
+            self.clear_task_selection();
             self.clear_details_panel();
             if matches!(self.active_modal, Some(ActiveModal::BatchFailureDetails(_))) {
                 self.active_modal = None;
@@ -1011,9 +1015,24 @@ impl AppShell {
         let followed_task = selected_successor.is_some() || drawer_successor.is_some();
         self.observe_task_status_transitions(&previous_snapshot, cx);
 
-        for (previous, successor) in selection_migrations {
-            self.selected_tasks.remove(&previous);
-            self.selected_tasks.insert(successor);
+        for (previous, successor) in &selection_migrations {
+            self.selected_tasks.remove(previous);
+            self.selected_tasks.insert(successor.clone());
+        }
+        if let Some(marquee) = self.marquee.as_mut() {
+            for (previous, successor) in &selection_migrations {
+                if marquee.base_selection.remove(previous) {
+                    marquee.base_selection.insert(successor.clone());
+                }
+            }
+        }
+        if self.snapshot.tasks.is_empty()
+            || self.active_modal.is_some()
+            || self.page != AppPage::Downloads
+        {
+            self.cancel_marquee_selection();
+        } else if self.marquee.as_ref().is_some_and(|m| m.active) {
+            self.apply_marquee_selection(cx);
         }
 
         if let Some(successor) = selected_successor {
@@ -2035,8 +2054,19 @@ impl AppShell {
     }
 
     fn focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
-        self.leave_settings_page();
+        if self.active_modal.is_some() {
+            return;
+        }
         self.active_status_popover = None;
+        if self.page == AppPage::Settings
+            && let Some(panel) = self.settings_panel_entity()
+        {
+            panel.update(cx, |panel, cx| {
+                panel.focus_search(window, cx);
+            });
+            return;
+        }
+        self.leave_settings_page();
         window.focus(&self.search_input.focus_handle(cx), cx);
         cx.notify();
     }
@@ -2333,6 +2363,7 @@ impl AppShell {
     fn clear_task_selection(&mut self) {
         self.selected_tasks.clear();
         self.range_anchor = None;
+        self.cancel_marquee_selection();
     }
 
     pub fn handle_window_close_request(&mut self, cx: &mut Context<Self>) -> bool {
@@ -2365,8 +2396,31 @@ impl AppShell {
     }
 
     #[must_use]
-    pub fn tray_tooltip(&self) -> String {
-        self.snapshot.tray_tooltip()
+    pub fn tray_status(&self) -> crate::TrayStatusView {
+        self.snapshot.tray_status(&self.translator)
+    }
+
+    #[must_use]
+    pub fn tray_status_key(
+        &self,
+    ) -> (
+        u64,
+        u64,
+        crate::ConnectionView,
+        usize,
+        u64,
+        u64,
+        crate::LocaleId,
+    ) {
+        (
+            self.snapshot.source_revision,
+            self.snapshot.generation,
+            self.snapshot.connection.clone(),
+            self.snapshot.counts.active,
+            self.snapshot.download_rate,
+            self.snapshot.upload_rate,
+            self.translator.locale(),
+        )
     }
 
     #[must_use]
@@ -2461,6 +2515,12 @@ impl Render for AppShell {
                 self.sync_details_sheet_deferred(cx);
             }
         }
+        if self.page != AppPage::Downloads
+            || self.active_modal.is_some()
+            || self.snapshot.tasks.is_empty()
+        {
+            self.cancel_marquee_selection();
+        }
         let colors = self.theme.colors;
         let metadata_drop_enabled = self.can_open_metadata_paths();
         let shell_layout = shell_layout(f32::from(window.viewport_size().width));
@@ -2520,6 +2580,34 @@ impl Render for AppShell {
                     }
                 },
             ))
+            .on_mouse_move(
+                cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
+                    if this.marquee.is_some() {
+                        this.update_marquee_selection(
+                            event.position,
+                            event.pressed_button,
+                            window,
+                            cx,
+                        );
+                    }
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseUpEvent, window, cx| {
+                    if this.marquee.is_some() {
+                        this.finish_marquee_selection(event.position, window, cx);
+                    }
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseUpEvent, window, cx| {
+                    if this.marquee.is_some() {
+                        this.finish_marquee_selection(event.position, window, cx);
+                    }
+                }),
+            )
             .can_drop(move |value, _window, _cx| {
                 value.downcast_ref::<ExternalPaths>().is_some_and(|paths| {
                     can_accept_metadata_drop(metadata_drop_enabled, paths.paths())

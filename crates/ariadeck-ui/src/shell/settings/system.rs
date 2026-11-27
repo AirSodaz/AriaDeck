@@ -318,7 +318,10 @@ impl SettingsPanelView {
             ))
     }
 
-    pub(super) fn render_settings_system(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn render_settings_system_sections(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Vec<(SettingsSectionId, Div)> {
         let colors = self.theme.colors;
         let pending = self.is_pending();
         let platform = self.settings_page.draft_platform;
@@ -513,13 +516,11 @@ impl SettingsPanelView {
                     .child(self.t("settings-clipboard-watch-hint")),
             );
 
-        div()
-            .flex()
-            .flex_col()
-            .gap_6()
-            .child(power_section)
-            .child(tray_section)
-            .child(clipboard_section)
-            .child(bridge_section)
+        vec![
+            (SettingsSectionId::Power, power_section),
+            (SettingsSectionId::WindowTray, tray_section),
+            (SettingsSectionId::Clipboard, clipboard_section),
+            (SettingsSectionId::BrowserBridge, bridge_section),
+        ]
     }
 }

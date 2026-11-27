@@ -43,6 +43,9 @@ image.workspace = true
 raw-window-handle = "0.6"
 serde.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+winreg.workspace = true
+
 [build-dependencies]
 ico = "0.6.0"
 resvg = "0.50.0"

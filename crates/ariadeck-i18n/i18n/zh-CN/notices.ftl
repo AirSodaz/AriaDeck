@@ -39,6 +39,9 @@ tray-show = 显示 AriaDeck
 tray-pause-all = 全部暂停
 tray-resume-all = 全部继续
 tray-quit = 退出 AriaDeck
+tray-tooltip-header-active = AriaDeck · { $status } · { $count } 活动
+tray-tooltip-header-idle = AriaDeck · { $status } · 空闲
+tray-tooltip-more = 等 { $count } 项
 
 # Profiles
 notice-profile-select = 请选择要激活的配置。

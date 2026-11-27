@@ -70,7 +70,6 @@ pub fn init(cx: &mut App) {
             SubmitAddDownload,
             Some("AddDownloadDialog"),
         ),
-        KeyBinding::new("escape", ClearSearch, Some("SearchInput")),
         KeyBinding::new("escape", ClearSearch, Some("DownloadWorkspace")),
         KeyBinding::new("down", SelectNextTask, Some("DownloadWorkspace")),
         KeyBinding::new("up", SelectPreviousTask, Some("DownloadWorkspace")),

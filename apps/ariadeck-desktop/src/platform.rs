@@ -25,6 +25,56 @@ struct TrayMenuIds {
     quit: String,
 }
 
+/// Monochrome / template appearance chosen for the OS taskbar or menu bar (B5).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)] // Each variant is constructed per target OS and in cross-platform unit tests.
+pub enum TrayIconAppearance {
+    /// Light background (e.g., Windows light taskbar): dark monochrome silhouette.
+    LightTaskbar,
+    /// Dark background (e.g., Windows dark taskbar / Linux): light monochrome silhouette.
+    DarkTaskbar,
+    /// macOS template icon (OS adapts tint automatically).
+    Template,
+}
+
+/// Whether active downloads/seeds are running for tray indicator badge state (B5).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrayBadgeState {
+    Idle,
+    Active,
+}
+
+/// Detect whether the Windows taskbar/system theme uses light mode.
+#[must_use]
+pub fn detect_tray_appearance() -> TrayIconAppearance {
+    #[cfg(target_os = "macos")]
+    {
+        TrayIconAppearance::Template
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if windows_taskbar_uses_light_theme() {
+            TrayIconAppearance::LightTaskbar
+        } else {
+            TrayIconAppearance::DarkTaskbar
+        }
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        TrayIconAppearance::DarkTaskbar
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_taskbar_uses_light_theme() -> bool {
+    use winreg::{RegKey, enums::HKEY_CURRENT_USER};
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        .and_then(|key| key.get_value::<u32, _>("SystemUsesLightTheme"))
+        .map(|val| val != 0)
+        .unwrap_or(false)
+}
+
 /// Owns the tray icon for the process lifetime.
 pub struct SystemTray {
     icon: TrayIcon,
@@ -32,13 +82,14 @@ pub struct SystemTray {
 }
 
 impl SystemTray {
-    /// Build a tray icon with localized menu labels.
+    /// Build a tray icon with localized menu labels and adaptive appearance.
     pub fn try_new_with_labels(
         show_label: &str,
         pause_all_label: &str,
         resume_all_label: &str,
         quit_label: &str,
         tooltip: &str,
+        appearance: TrayIconAppearance,
     ) -> Result<Self, String> {
         let menu = Menu::new();
         let show = MenuItem::new(show_label, true, None);
@@ -62,14 +113,20 @@ impl SystemTray {
             quit: quit.id().0.clone(),
         };
 
-        let icon = tray_icon_image()?;
-        let tray = TrayIconBuilder::new()
+        let icon = compose_tray_icon(appearance, TrayBadgeState::Idle)?;
+        let builder = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_tooltip(tooltip)
-            .with_icon(icon)
-            .with_menu_on_left_click(false)
-            .build()
-            .map_err(|error| error.to_string())?;
+            .with_menu_on_left_click(false);
+        #[cfg(target_os = "macos")]
+        let builder = if matches!(appearance, TrayIconAppearance::Template) {
+            builder.with_icon_templated(icon)
+        } else {
+            builder.with_icon(icon)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let builder = builder.with_icon(icon);
+        let tray = builder.build().map_err(|error| error.to_string())?;
 
         Ok(Self {
             icon: tray,
@@ -86,6 +143,27 @@ impl SystemTray {
     pub fn set_tooltip(&self, tooltip: &str) {
         if let Err(error) = self.icon.set_tooltip(Some(tooltip)) {
             tracing::debug!(%error, "failed to update tray tooltip");
+        }
+    }
+
+    pub fn set_title(&self, title: Option<&str>) {
+        self.icon.set_title(title);
+    }
+
+    pub fn set_appearance(&self, appearance: TrayIconAppearance, badge: TrayBadgeState) {
+        let Ok(icon) = compose_tray_icon(appearance, badge) else {
+            return;
+        };
+        #[cfg(target_os = "macos")]
+        let result = if matches!(appearance, TrayIconAppearance::Template) {
+            self.icon.set_icon_templated(Some(icon))
+        } else {
+            self.icon.set_icon(Some(icon))
+        };
+        #[cfg(not(target_os = "macos"))]
+        let result = self.icon.set_icon(Some(icon));
+        if let Err(error) = result {
+            tracing::debug!(%error, "failed to update tray icon appearance");
         }
     }
 
@@ -138,16 +216,82 @@ fn push_unique(actions: &mut Vec<TrayAction>, action: TrayAction) {
     }
 }
 
-fn tray_icon_image() -> Result<Icon, String> {
-    // 32×32 RGBA rendered from assets/icon.svg at build time and written to
-    // OUT_DIR by build.rs. The file is 4 096 bytes (32 × 32 × 4).
-    const WIDTH: u32 = 32;
-    const HEIGHT: u32 = 32;
-    let rgba = include_bytes!(concat!(env!("OUT_DIR"), "/tray_icon.rgba"));
-    if rgba.len() != (WIDTH * HEIGHT * 4) as usize {
+fn compose_tray_rgba(
+    appearance: TrayIconAppearance,
+    badge: TrayBadgeState,
+) -> Result<Vec<u8>, String> {
+    // 32×32 RGBA rendered from monochrome silhouette SVGs at build time (4 096 bytes).
+    const WIDTH: usize = 32;
+    const HEIGHT: usize = 32;
+    let base: &[u8] = match appearance {
+        TrayIconAppearance::LightTaskbar | TrayIconAppearance::Template => {
+            include_bytes!(concat!(env!("OUT_DIR"), "/tray_template_light.rgba"))
+        }
+        TrayIconAppearance::DarkTaskbar => {
+            include_bytes!(concat!(env!("OUT_DIR"), "/tray_template_dark.rgba"))
+        }
+    };
+    if base.len() != WIDTH * HEIGHT * 4 {
         return Err("embedded tray icon has unexpected size".into());
     }
-    Icon::from_rgba(rgba.to_vec(), WIDTH, HEIGHT).map_err(|error| error.to_string())
+    let mut rgba = base.to_vec();
+    if badge == TrayBadgeState::Active && !matches!(appearance, TrayIconAppearance::Template) {
+        let badge_rgb = match appearance {
+            TrayIconAppearance::LightTaskbar => (8, 145, 178), // #0891B2 for light bar contrast
+            TrayIconAppearance::DarkTaskbar | TrayIconAppearance::Template => (6, 182, 212),
+        };
+        overlay_active_badge(&mut rgba, WIDTH, HEIGHT, badge_rgb);
+    }
+    Ok(rgba)
+}
+
+fn compose_tray_icon(
+    appearance: TrayIconAppearance,
+    badge: TrayBadgeState,
+) -> Result<Icon, String> {
+    let rgba = compose_tray_rgba(appearance, badge)?;
+    Icon::from_rgba(rgba, 32, 32).map_err(|error| error.to_string())
+}
+
+/// Overlay a crisp status indicator dot with a transparent halo in the
+/// bottom-right corner using straight RGBA so active state stays legible on
+/// both light and dark taskbars.
+fn overlay_active_badge(
+    rgba: &mut [u8],
+    width: usize,
+    height: usize,
+    (badge_r, badge_g, badge_b): (u8, u8, u8),
+) {
+    let cx = 25.5_f32;
+    let cy = 25.5_f32;
+    let dot_r = 4.0_f32;
+    let dot_aa_outer = dot_r + 0.5;
+    let halo_r = 5.8_f32;
+
+    for y in 18..height {
+        for x in 18..width {
+            let dx = x as f32 + 0.5 - cx;
+            let dy = y as f32 + 0.5 - cy;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let idx = (y * width + x) * 4;
+            if dist <= dot_aa_outer {
+                let cov = (dot_aa_outer - dist).clamp(0.0, 1.0);
+                rgba[idx] = badge_r;
+                rgba[idx + 1] = badge_g;
+                rgba[idx + 2] = badge_b;
+                rgba[idx + 3] = (cov * 255.0).round() as u8;
+            } else if dist <= halo_r {
+                // Smooth transparent cutout ring around the dot.
+                let keep = ((dist - dot_aa_outer) / (halo_r - dot_aa_outer)).clamp(0.0, 1.0);
+                rgba[idx + 3] = (f32::from(rgba[idx + 3]) * keep * keep).round() as u8;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn tray_icon_image() -> Result<Icon, String> {
+    compose_tray_icon(TrayIconAppearance::DarkTaskbar, TrayBadgeState::Idle)
 }
 
 /// Fire-and-forget OS desktop notification. Failures are logged only.
@@ -637,6 +781,41 @@ mod tests {
     #[test]
     fn tray_icon_bytes_decode() {
         assert!(tray_icon_image().is_ok());
+        assert!(compose_tray_icon(TrayIconAppearance::LightTaskbar, TrayBadgeState::Idle).is_ok());
+        assert!(compose_tray_icon(TrayIconAppearance::DarkTaskbar, TrayBadgeState::Active).is_ok());
+        assert!(compose_tray_icon(TrayIconAppearance::Template, TrayBadgeState::Active).is_ok());
+    }
+
+    #[test]
+    fn tray_active_badge_modifies_bottom_right_pixels_for_desktop_bars() {
+        let idle =
+            compose_tray_rgba(TrayIconAppearance::DarkTaskbar, TrayBadgeState::Idle).expect("idle");
+        let active = compose_tray_rgba(TrayIconAppearance::DarkTaskbar, TrayBadgeState::Active)
+            .expect("active");
+        assert_ne!(idle, active);
+        // Center of active badge dot at (25, 25) should be opaque cyan (#06B6D4).
+        let center_idx = (25 * 32 + 25) * 4;
+        assert_eq!(active[center_idx], 6);
+        assert_eq!(active[center_idx + 1], 182);
+        assert_eq!(active[center_idx + 2], 212);
+        assert_eq!(active[center_idx + 3], 255);
+
+        // Light taskbar uses deeper cyan (#0891B2) for higher contrast.
+        let light_active =
+            compose_tray_rgba(TrayIconAppearance::LightTaskbar, TrayBadgeState::Active)
+                .expect("light-active");
+        assert_eq!(light_active[center_idx], 8);
+        assert_eq!(light_active[center_idx + 1], 145);
+        assert_eq!(light_active[center_idx + 2], 178);
+        assert_eq!(light_active[center_idx + 3], 255);
+
+        // macOS template icons remain purely monochrome even when active.
+        let template_idle =
+            compose_tray_rgba(TrayIconAppearance::Template, TrayBadgeState::Idle).expect("t-idle");
+        let template_active =
+            compose_tray_rgba(TrayIconAppearance::Template, TrayBadgeState::Active)
+                .expect("t-active");
+        assert_eq!(template_idle, template_active);
     }
 
     #[test]

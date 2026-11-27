@@ -977,8 +977,9 @@ impl DesktopRoot {
             }
         }
         if self.platform.has_tray() {
-            let tooltip = self.workspace.read(cx).tray_tooltip();
-            self.platform.sync_tray_tooltip(tooltip);
+            let key = self.workspace.read(cx).tray_status_key();
+            self.platform
+                .sync_tray_if_needed(key, || self.workspace.read(cx).tray_status());
         }
 
         // Keep-awake management based on active downloads and user preference (D5).

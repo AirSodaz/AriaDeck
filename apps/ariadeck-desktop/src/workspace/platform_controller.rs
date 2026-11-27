@@ -1,20 +1,33 @@
 //! System tray, window visibility, keep-awake, and debounced window geometry
 //! persistence for [`super::DesktopRoot`].
 
-use std::sync::atomic::Ordering;
+use std::{
+    sync::atomic::Ordering,
+    time::{Duration, Instant},
+};
 
 use ariadeck_i18n::{LocaleId, Translator};
 use ariadeck_settings::{AppSettings, LanguagePreference, WindowGeometry};
+use ariadeck_ui::{ConnectionView, TrayStatusView};
 use gpui::{Context, Window};
 #[cfg(target_os = "windows")]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use super::TRAY_SESSION_ACTIVE;
-use crate::platform::{self, SystemTray, TrayAction};
+use crate::platform::{self, SystemTray, TrayAction, TrayBadgeState, TrayIconAppearance};
+
+const TRAY_THEME_PROBE_INTERVAL: Duration = Duration::from_secs(2);
+
+pub(crate) type TrayStatusKey = (u64, u64, ConnectionView, usize, u64, u64, LocaleId);
 
 pub(crate) struct PlatformController {
     tray: Option<SystemTray>,
+    last_tray_status_key: Option<TrayStatusKey>,
     last_tray_tooltip: String,
+    last_tray_title: Option<String>,
+    last_tray_appearance: Option<(TrayIconAppearance, TrayBadgeState)>,
+    cached_appearance: TrayIconAppearance,
+    last_theme_probe: Instant,
     window_hidden_to_tray: bool,
     is_keep_awake: bool,
     last_saved_geometry: Option<WindowGeometry>,
@@ -24,8 +37,9 @@ pub(crate) struct PlatformController {
 
 impl PlatformController {
     pub(crate) fn new(settings: &AppSettings, initial_geometry: Option<WindowGeometry>) -> Self {
+        let initial_appearance = platform::detect_tray_appearance();
         let tray = if settings.platform.show_tray_icon {
-            match tray_from_settings(settings) {
+            match tray_from_settings(settings, initial_appearance) {
                 Ok(tray) => Some(tray),
                 Err(error) => {
                     tracing::warn!(%error, "system tray icon could not be created");
@@ -37,7 +51,12 @@ impl PlatformController {
         };
         Self {
             tray,
+            last_tray_status_key: None,
             last_tray_tooltip: String::new(),
+            last_tray_title: None,
+            last_tray_appearance: Some((initial_appearance, TrayBadgeState::Idle)),
+            cached_appearance: initial_appearance,
+            last_theme_probe: Instant::now(),
             window_hidden_to_tray: false,
             is_keep_awake: false,
             last_saved_geometry: initial_geometry,
@@ -61,12 +80,63 @@ impl PlatformController {
             .unwrap_or_default()
     }
 
-    pub(crate) fn sync_tray_tooltip(&mut self, tooltip: String) {
-        if let Some(tray) = self.tray.as_ref()
-            && tooltip != self.last_tray_tooltip
-        {
-            tray.set_tooltip(&tooltip);
-            self.last_tray_tooltip = tooltip;
+    pub(crate) fn sync_tray_if_needed(
+        &mut self,
+        key: TrayStatusKey,
+        build_status: impl FnOnce() -> TrayStatusView,
+    ) {
+        if self.tray.is_none() {
+            return;
+        }
+        if self.last_tray_status_key.as_ref() != Some(&key) {
+            let status = build_status();
+            self.last_tray_status_key = Some(key);
+            self.sync_tray_status(status);
+        } else {
+            self.refresh_tray_appearance(None);
+        }
+    }
+
+    pub(crate) fn sync_tray_status(&mut self, status: TrayStatusView) {
+        let Some(tray) = self.tray.as_ref() else {
+            return;
+        };
+        if status.tooltip != self.last_tray_tooltip {
+            tray.set_tooltip(&status.tooltip);
+            self.last_tray_tooltip = status.tooltip;
+        }
+        if status.title != self.last_tray_title {
+            tray.set_title(status.title.as_deref());
+            self.last_tray_title = status.title;
+        }
+        self.refresh_tray_appearance(Some(status.active_transfers));
+    }
+
+    fn refresh_tray_appearance(&mut self, active_transfers: Option<usize>) {
+        let Some(tray) = self.tray.as_ref() else {
+            return;
+        };
+        if self.last_theme_probe.elapsed() >= TRAY_THEME_PROBE_INTERVAL {
+            self.cached_appearance = platform::detect_tray_appearance();
+            self.last_theme_probe = Instant::now();
+        }
+        let badge = if matches!(self.cached_appearance, TrayIconAppearance::Template) {
+            TrayBadgeState::Idle
+        } else if let Some(active) = active_transfers {
+            if active > 0 {
+                TrayBadgeState::Active
+            } else {
+                TrayBadgeState::Idle
+            }
+        } else {
+            self.last_tray_appearance
+                .map(|(_, prev)| prev)
+                .unwrap_or(TrayBadgeState::Idle)
+        };
+        let next_appearance = (self.cached_appearance, badge);
+        if self.last_tray_appearance != Some(next_appearance) {
+            tray.set_appearance(next_appearance.0, next_appearance.1);
+            self.last_tray_appearance = Some(next_appearance);
         }
     }
 
@@ -115,12 +185,27 @@ impl PlatformController {
     pub(crate) fn sync_tray_with_settings(&mut self, settings: &AppSettings) {
         let want_tray = settings.platform.show_tray_icon;
         match (want_tray, self.tray.is_some()) {
-            (true, false) => match tray_from_settings(settings) {
-                Ok(tray) => self.tray = Some(tray),
-                Err(error) => tracing::warn!(%error, "system tray icon could not be created"),
-            },
+            (true, false) => {
+                let appearance = platform::detect_tray_appearance();
+                self.cached_appearance = appearance;
+                self.last_theme_probe = Instant::now();
+                match tray_from_settings(settings, appearance) {
+                    Ok(tray) => {
+                        self.tray = Some(tray);
+                        self.last_tray_status_key = None;
+                        self.last_tray_tooltip.clear();
+                        self.last_tray_title = None;
+                        self.last_tray_appearance = Some((appearance, TrayBadgeState::Idle));
+                    }
+                    Err(error) => tracing::warn!(%error, "system tray icon could not be created"),
+                }
+            }
             (false, true) => {
                 self.tray.take();
+                self.last_tray_status_key = None;
+                self.last_tray_tooltip.clear();
+                self.last_tray_title = None;
+                self.last_tray_appearance = None;
                 if self.window_hidden_to_tray {
                     // Cannot stay hidden without a tray affordance.
                     TRAY_SESSION_ACTIVE.store(false, Ordering::SeqCst);
@@ -209,7 +294,10 @@ pub(crate) fn show_native_window(window: &Window) -> bool {
     true
 }
 
-fn tray_from_settings(settings: &AppSettings) -> Result<SystemTray, String> {
+fn tray_from_settings(
+    settings: &AppSettings,
+    appearance: TrayIconAppearance,
+) -> Result<SystemTray, String> {
     let locale = match settings.language {
         LanguagePreference::System => LocaleId::from_system_env(),
         LanguagePreference::En => LocaleId::En,
@@ -222,5 +310,6 @@ fn tray_from_settings(settings: &AppSettings) -> Result<SystemTray, String> {
         &translator.t("tray-resume-all"),
         &translator.t("tray-quit"),
         &translator.t("app-name"),
+        appearance,
     )
 }
