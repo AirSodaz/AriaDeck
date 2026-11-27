@@ -2402,7 +2402,9 @@ impl AppShell {
                             })
                             .collect::<Vec<_>>();
                         for original in originals {
-                            let AddDownloadSourceView::Uri { uri: ref orig_uri, .. } = original
+                            let AddDownloadSourceView::Uri {
+                                uri: ref orig_uri, ..
+                            } = original
                             else {
                                 continue;
                             };

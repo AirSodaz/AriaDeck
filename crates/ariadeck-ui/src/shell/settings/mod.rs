@@ -194,9 +194,8 @@ impl SettingsPanelView {
             make_input("example.com, *.cdn.example".into(), false, window, cx);
         let header_preset_referer = make_input("https://example.com/".into(), false, window, cx);
         let header_preset_user_agent = make_input("Mozilla/5.0 ...".into(), false, window, cx);
-        let header_preset_headers = cx.new(|cx| {
-            TextareaState::new(window, cx).placeholder("Accept-Language: en-US")
-        });
+        let header_preset_headers =
+            cx.new(|cx| TextareaState::new(window, cx).placeholder("Accept-Language: en-US"));
         let mirror_rule_name = make_input(
             translator.t("settings-mirror-rule-name-placeholder").into(),
             false,

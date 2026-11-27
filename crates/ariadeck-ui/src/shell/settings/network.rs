@@ -178,12 +178,7 @@ impl SettingsPanelView {
         let Some(index) = self.settings_page.draft_header_preset_edit_index else {
             return;
         };
-        let Some(mut preset) = self
-            .settings_page
-            .draft_header_presets
-            .get(index)
-            .cloned()
-        else {
+        let Some(mut preset) = self.settings_page.draft_header_presets.get(index).cloned() else {
             self.settings_page.draft_header_preset_edit_index = None;
             return;
         };
@@ -303,11 +298,7 @@ impl SettingsPanelView {
         cx.notify();
     }
 
-    fn apply_mirror_rule_editor_fields(
-        &self,
-        rule: &mut crate::MirrorRewriteRuleView,
-        cx: &App,
-    ) {
+    fn apply_mirror_rule_editor_fields(&self, rule: &mut crate::MirrorRewriteRuleView, cx: &App) {
         let name = self
             .settings_inputs
             .mirror_rule_name
@@ -514,9 +505,10 @@ impl SettingsPanelView {
             let (code, key) = match err {
                 ariadeck_domain::HeaderPresetValidationError::EmptyId
                 | ariadeck_domain::HeaderPresetValidationError::EmptyName
-                | ariadeck_domain::HeaderPresetValidationError::DuplicateId(_) => {
-                    ("settings.invalid_header_preset", "error-settings-header-preset-name")
-                }
+                | ariadeck_domain::HeaderPresetValidationError::DuplicateId(_) => (
+                    "settings.invalid_header_preset",
+                    "error-settings-header-preset-name",
+                ),
                 ariadeck_domain::HeaderPresetValidationError::EmptyDomains => (
                     "settings.invalid_header_preset",
                     "error-settings-header-preset-domains",

@@ -306,7 +306,8 @@ mod tests {
             enabled: true,
             match_kind: MirrorMatchKind::Prefix,
             pattern: "https://github.com/org/repo-long-name/".into(),
-            replacement: "https://mirror.example.test/https://github.com/org/repo-long-name/".into(),
+            replacement: "https://mirror.example.test/https://github.com/org/repo-long-name/"
+                .into(),
         }];
         // Pattern length (41) lands inside a multi-byte UTF-8 sequence in the URI.
         let utf8_uri = "https://github.com/中文测试中文测试中文测试中文测试";
@@ -322,7 +323,8 @@ mod tests {
             replacement: "https://mirror.example.test/https://github.com".into(),
         }];
         // Must not match a lookalike host `github.com.evil.test`.
-        let lookalike = rewrite_uri_with_rules("https://github.com.evil.test/file.zip", &no_slash_rules);
+        let lookalike =
+            rewrite_uri_with_rules("https://github.com.evil.test/file.zip", &no_slash_rules);
         assert!(!lookalike.was_rewritten());
 
         // Must not produce double slashes when joining suffix starting with '/'.
