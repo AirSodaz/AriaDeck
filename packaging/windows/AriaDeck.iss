@@ -14,7 +14,7 @@
 #define MyAppName "AriaDeck"
 ; Fallback only — packaging scripts pass /DMyAppVersion from Cargo.toml.
 #ifndef MyAppVersion
-  #define MyAppVersion "0.2.2"
+  #define MyAppVersion "0.2.3"
 #endif
 #define MyAppPublisher "AriaDeck contributors"
 #define MyAppURL "https://github.com/AirSodaz/AriaDeck"
